@@ -1,20 +1,24 @@
-data/trades.db
 # Python junk
 __pycache__/
 *.pyc
 *.pyo
 .env
 venv/
+.venv/
 env/
 
 # macOS junk
 .DS_Store
 
 # Config files with secrets
+config/settings.yaml
 config.json
 credentials.json
 *.key
 *.pem
+
+# Database
+data/trades.db
 
 # Logs
 *.log
