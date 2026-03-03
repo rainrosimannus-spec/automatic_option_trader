@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}Portfolio Trade History — Maggy &amp; Winston{% endblock %}
+{% block nav_portfolio_trades %}bg-gray-800 text-emerald-400{% endblock %}
+{% block m_nav_portfolio_trades %}bg-gray-800 text-emerald-400{% endblock %}
+
+{% block content %}
+<div class="max-w-[1400px]">
+
+<!-- Header -->
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold">Portfolio Trade History</h1>
+        <p class="text-sm text-gray-500 mt-1">All long-term portfolio transactions</p>
+    </div>
+    <div class="flex items-center gap-3">
+        <form method="post" action="/portfolio/trades/sync">
+            <button class="px-4 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition border border-gray-700">
+                🔄 Sync from IBKR
+            </button>
+        </form>
+        <a href="/portfolio" class="text-sm text-gray-500 hover:text-gray-300 transition">← Back to Portfolio</a>
+    </div>
+</div>
+
+<!-- ═══ Summary Cards ═══ -->
+<div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Total Bought</div>
+        <div class="text-xl font-bold text-emerald-400">${{ "{:,.0f}".format(total_bought) }}</div>
+        <div class="text-xs text-gray-600 mt-0.5">{{ buy_count }} buys</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Total Sold</div>
+        <div class="text-xl font-bold text-red-400">${{ "{:,.0f}".format(total_sold) }}</div>
+        <div class="text-xs text-gray-600 mt-0.5">{{ sell_count }} sells</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Dividends Received</div>
+        <div class="text-xl font-bold text-blue-400">${{ "{:,.0f}".format(total_dividends) }}</div>
+        <div class="text-xs text-gray-600 mt-0.5">{{ dividend_count }} payments</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Put Premium</div>
+        <div class="text-xl font-bold text-purple-400">${{ "{:,.0f}".format(total_premium) }}</div>
+        <div class="text-xs text-gray-600 mt-0.5">{{ put_entry_count }} CSP entries</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Total Transactions</div>
+        <div class="text-xl font-bold text-gray-200">{{ total_count }}</div>
+    </div>
+</div>
+
+<!-- ═══ Per-Symbol Summary ═══ -->
+{% if symbol_summary %}
+<div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+    <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Per Stock Summary</h2>
+    <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm">
+            <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
+                <tr>
+                    <th class="px-3 py-2">Stock</th>
+                    <th class="px-3 py-2 text-right">Buys</th>
+                    <th class="px-3 py-2 text-right">Sells</th>
+                    <th class="px-3 py-2 text-right">Shares Bought</th>
+                    <th class="px-3 py-2 text-right">Avg Buy Price</th>
+                    <th class="px-3 py-2 text-right">Total Invested</th>
+                    <th class="px-3 py-2 text-right">Dividends</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800/50">
+                {% for sym, stats in symbol_summary %}
+                <tr class="hover:bg-gray-800/50">
+                    <td class="px-3 py-2 font-medium text-white font-mono">{{ sym }}</td>
+                    <td class="px-3 py-2 text-right text-emerald-400">{{ stats.buys }}</td>
+                    <td class="px-3 py-2 text-right text-red-400">{{ stats.sells }}</td>
+                    <td class="px-3 py-2 text-right text-gray-300">{{ stats.shares_bought }}</td>
+                    <td class="px-3 py-2 text-right text-gray-300">{{ "%.2f" | format(stats.avg_buy) }}</td>
+                    <td class="px-3 py-2 text-right text-white">${{ "{:,.0f}".format(stats.total_invested) }}</td>
+                    <td class="px-3 py-2 text-right text-blue-400">{% if stats.dividends %}${{ "{:,.0f}".format(stats.dividends) }}{% else %}—{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- ═══ Full Transaction Log ═══ -->
+<div class="bg-gray-900 border border-gray-800 rounded-lg p-5">
+    <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">All Transactions</h2>
+    {% if transactions %}
+    <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm">
+            <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
+                <tr>
+                    <th class="px-3 py-2">Date</th>
+                    <th class="px-3 py-2">Stock</th>
+                    <th class="px-3 py-2">Action</th>
+                    <th class="px-3 py-2">Tier</th>
+                    <th class="px-3 py-2 text-right">Shares</th>
+                    <th class="px-3 py-2 text-right">Price</th>
+                    <th class="px-3 py-2 text-right">Amount</th>
+                    <th class="px-3 py-2">Signal</th>
+                    <th class="px-3 py-2 text-right">SMA 200</th>
+                    <th class="px-3 py-2 text-right">Discount</th>
+                    <th class="px-3 py-2 text-right">RSI</th>
+                    <th class="px-3 py-2">Notes</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800/50">
+                {% for t in transactions %}
+                <tr class="hover:bg-gray-800/50">
+                    <td class="px-3 py-2 text-gray-400 text-xs whitespace-nowrap">{{ t.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td class="px-3 py-2 font-medium text-white font-mono">{{ t.symbol }}</td>
+                    <td class="px-3 py-2">
+                        <span class="px-1.5 py-0.5 rounded text-xs
+                            {% if t.action == 'buy' %}bg-emerald-900/50 text-emerald-300
+                            {% elif t.action == 'sell' %}bg-red-900/50 text-red-300
+                            {% elif t.action == 'dividend' %}bg-blue-900/50 text-blue-300
+                            {% elif t.action == 'sell_put' %}bg-purple-900/50 text-purple-300
+                            {% elif t.action == 'buy_put' %}bg-purple-700/50 text-purple-200
+                            {% elif t.action == 'put_assigned' %}bg-amber-900/50 text-amber-300
+                            {% elif t.action == 'put_expired' %}bg-gray-700 text-gray-400
+                            {% else %}bg-gray-800 text-gray-400{% endif %}">
+                            {{ t.action | replace('_', ' ') | upper }}
+                        </span>
+                    </td>
+                    <td class="px-3 py-2">
+                        <span class="px-1.5 py-0.5 rounded text-xs
+                            {% if t.tier == 'dividend' %}bg-blue-900/40 text-blue-300
+                            {% elif t.tier == 'breakthrough' %}bg-purple-900/40 text-purple-300
+                            {% else %}bg-emerald-900/40 text-emerald-300{% endif %}">
+                            {{ t.tier }}
+                        </span>
+                    </td>
+                    <td class="px-3 py-2 text-right text-gray-300">{{ t.shares if t.shares else '—' }}</td>
+                    <td class="px-3 py-2 text-right text-gray-300">{{ "%.2f" | format(t.price) if t.price else '—' }}</td>
+                    <td class="px-3 py-2 text-right text-white">${{ "{:,.0f}".format(t.amount) }}</td>
+                    <td class="px-3 py-2 text-xs text-gray-400">{{ t.signal or '—' }}</td>
+                    <td class="px-3 py-2 text-right text-gray-500 text-xs">{{ "%.0f" | format(t.sma_200) if t.sma_200 else '—' }}</td>
+                    <td class="px-3 py-2 text-right text-xs {% if (t.discount_pct or 0) > 5 %}text-emerald-400{% else %}text-gray-500{% endif %}">
+                        {{ "%.1f" | format(t.discount_pct) if t.discount_pct else '—' }}%
+                    </td>
+                    <td class="px-3 py-2 text-right text-xs {% if (t.rsi or 50) < 30 %}text-emerald-400{% elif (t.rsi or 50) > 70 %}text-red-400{% else %}text-gray-500{% endif %}">
+                        {{ "%.0f" | format(t.rsi) if t.rsi else '—' }}
+                    </td>
+                    <td class="px-3 py-2 text-xs text-gray-600 max-w-[200px] truncate">{{ t.notes or '' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-gray-500 text-center py-8">No portfolio transactions yet.</div>
+    {% endif %}
+</div>
+
+</div>
+{% endblock %}

@@ -1,0 +1,761 @@
+# ============================================================
+# Long-Term Portfolio Universe — Three-Tier Structure
+# 25 Dividend + 25 Breakthrough + 50 Mature Growth = 100
+# ============================================================
+# Tier proportions are configurable in settings.yaml:
+#   portfolio.tier_allocation.dividend: 0.25
+#   portfolio.tier_allocation.breakthrough: 0.25
+#   portfolio.tier_allocation.growth: 0.50
+# ============================================================
+
+# ── TIER 1: DIVIDEND ANCHORS (25) ───────────────────────────
+# Strong dividend history, growing payout, durable moats
+# Best expected total return over 15-year horizon
+dividend:
+  - symbol: XOM
+    name: Exxon Mobil
+    exchange: SMART
+    currency: USD
+    sector: Energy
+    rationale: "Dominant integrated oil, 40+ yr dividend growth"
+
+  - symbol: CVX
+    name: Chevron
+    exchange: SMART
+    currency: USD
+    sector: Energy
+    rationale: "Strong balance sheet, 35+ yr dividend growth"
+
+  - symbol: ENB
+    name: Enbridge
+    exchange: SMART
+    currency: CAD
+    sector: Energy/Infrastructure
+    rationale: "Pipeline monopoly, ~7% yield, essential infrastructure"
+
+  - symbol: SO
+    name: Southern Company
+    exchange: SMART
+    currency: USD
+    sector: Utilities
+    rationale: "Regulated utility, nuclear + renewables transition"
+
+  - symbol: PG
+    name: Procter & Gamble
+    exchange: SMART
+    currency: USD
+    sector: Consumer Staples
+    rationale: "67+ yr dividend growth, global brands moat"
+
+  - symbol: KO
+    name: Coca-Cola
+    exchange: SMART
+    currency: USD
+    sector: Consumer Staples
+    rationale: "61+ yr dividend growth, unmatched distribution"
+
+  - symbol: NESN
+    name: Nestlé
+    exchange: SMART
+    currency: CHF
+    sector: Consumer Staples
+    rationale: "World's largest food company, pricing power"
+
+  - symbol: UL
+    name: Unilever
+    exchange: SMART
+    currency: USD
+    sector: Consumer Staples
+    rationale: "Global brands, emerging market exposure"
+
+  - symbol: JNJ
+    name: Johnson & Johnson
+    exchange: SMART
+    currency: USD
+    sector: Healthcare
+    rationale: "62+ yr dividend growth, diversified healthcare"
+
+  - symbol: ABBV
+    name: AbbVie
+    exchange: SMART
+    currency: USD
+    sector: Healthcare
+    rationale: "Immunology pipeline, ~4% yield"
+
+  - symbol: BMY
+    name: Bristol-Myers Squibb
+    exchange: SMART
+    currency: USD
+    sector: Healthcare
+    rationale: "Oncology/cardio pipeline, high yield phase"
+
+  - symbol: MDT
+    name: Medtronic
+    exchange: SMART
+    currency: USD
+    sector: Healthcare
+    rationale: "Med-tech leader, 46+ yr dividend growth"
+
+  - symbol: JPM
+    name: JPMorgan Chase
+    exchange: SMART
+    currency: USD
+    sector: Financials
+    rationale: "Best-in-class bank, growing dividend"
+
+  - symbol: BAC
+    name: Bank of America
+    exchange: SMART
+    currency: USD
+    sector: Financials
+    rationale: "Scale advantage, rate-sensitive earnings"
+
+  - symbol: BLK
+    name: BlackRock
+    exchange: SMART
+    currency: USD
+    sector: Financials
+    rationale: "AUM growth compounder, ~2.5% yield"
+
+  - symbol: AVGO
+    name: Broadcom
+    exchange: SMART
+    currency: USD
+    sector: Technology
+    rationale: "Growing dividend aristocrat in tech, ~2% yield, AI infrastructure"
+
+  - symbol: TXN
+    name: Texas Instruments
+    exchange: SMART
+    currency: USD
+    sector: Technology
+    rationale: "Analog chip leader, 19+ yr dividend growth, high FCF"
+
+  - symbol: MSFT
+    name: Microsoft
+    exchange: SMART
+    currency: USD
+    sector: Technology
+    rationale: "Cloud + AI compounder, growing dividend, fortress balance sheet"
+
+  - symbol: ASML
+    name: ASML Holding
+    exchange: SMART
+    currency: USD
+    sector: Technology
+    rationale: "Monopoly on EUV lithography, growing dividend"
+
+  - symbol: HD
+    name: Home Depot
+    exchange: SMART
+    currency: USD
+    sector: Consumer Discretionary
+    rationale: "Housing moat, 14+ yr dividend growth, pricing power"
+
+  - symbol: V
+    name: Visa
+    exchange: SMART
+    currency: USD
+    sector: Financials
+    rationale: "Payment network duopoly, small but fast-growing dividend"
+
+  - symbol: O
+    name: Realty Income
+    exchange: SMART
+    currency: USD
+    sector: REITs
+    rationale: "Monthly dividend, 100+ consecutive increases"
+
+  - symbol: MCD
+    name: McDonald's
+    exchange: SMART
+    currency: USD
+    sector: Consumer Discretionary
+    rationale: "48+ yr dividend growth, franchise model"
+
+  - symbol: UNP
+    name: Union Pacific
+    exchange: SMART
+    currency: USD
+    sector: Industrials
+    rationale: "Railroad duopoly, 17+ yr dividend growth"
+
+  - symbol: NVO
+    name: Novo Nordisk
+    exchange: SMART
+    currency: USD
+    sector: Healthcare
+    rationale: "GLP-1 dominance, growing dividend, demographic tailwind"
+
+
+# ── TIER 2: BREAKTHROUGH / FRONTIER (25) ────────────────────
+# Frontrunners in transformative technologies
+# May not be profitable yet, high R&D, paradigm-shifting potential
+breakthrough:
+  - symbol: CRSP
+    name: CRISPR Therapeutics
+    exchange: SMART
+    currency: USD
+    sector: Genomics
+    rationale: "Gene editing pioneer, first approved therapy (Casgevy)"
+
+  - symbol: NTLA
+    name: Intellia Therapeutics
+    exchange: SMART
+    currency: USD
+    sector: Genomics
+    rationale: "In-vivo CRISPR leader, liver disease pipeline"
+
+  - symbol: FANUY
+    name: FANUC Corp
+    exchange: SMART
+    currency: USD
+    sector: Robotics
+    rationale: "World's largest robotics maker, factory automation"
+
+  - symbol: "6861"
+    name: Keyence Corp
+    exchange: SMART
+    currency: JPY
+    sector: Automation
+    rationale: "Sensors/vision systems, 50%+ margins"
+
+  - symbol: PATH
+    name: UiPath
+    exchange: SMART
+    currency: USD
+    sector: Software/Automation
+    rationale: "RPA leader, AI-driven process automation"
+
+  - symbol: SYM
+    name: Symbotic
+    exchange: SMART
+    currency: USD
+    sector: Robotics
+    rationale: "Warehouse automation AI, Walmart-backed"
+
+  - symbol: ISRG
+    name: Intuitive Surgical
+    exchange: SMART
+    currency: USD
+    sector: Surgical Robotics
+    rationale: "Da Vinci monopoly, robotic surgery standard"
+
+  - symbol: TSLA
+    name: Tesla
+    exchange: SMART
+    currency: USD
+    sector: EV/Energy/AI
+    rationale: "EV + energy storage + robotics + AI, multiple optionality"
+
+  - symbol: BYD
+    name: BYD Company
+    exchange: SMART
+    currency: USD
+    sector: EV/Battery
+    rationale: "Vertically integrated EV + battery, global expansion"
+
+  - symbol: ALB
+    name: Albemarle
+    exchange: SMART
+    currency: USD
+    sector: Lithium/Materials
+    rationale: "Lithium leader, critical EV supply chain"
+
+  - symbol: LI
+    name: Li Auto
+    exchange: SMART
+    currency: USD
+    sector: EV
+    rationale: "China EV, range-extended + BEV, profitable"
+
+  - symbol: FSLR
+    name: First Solar
+    exchange: SMART
+    currency: USD
+    sector: Solar
+    rationale: "US solar manufacturing, CdTe thin-film technology"
+
+  - symbol: ENPH
+    name: Enphase Energy
+    exchange: SMART
+    currency: USD
+    sector: Solar/Storage
+    rationale: "Microinverter technology, grid-edge intelligence"
+
+  - symbol: SEDG
+    name: SolarEdge Technologies
+    exchange: SMART
+    currency: USD
+    sector: Solar/Storage
+    rationale: "DC-optimized inverters, battery integration"
+
+  - symbol: VWS
+    name: Vestas Wind Systems
+    exchange: SMART
+    currency: DKK
+    sector: Wind
+    rationale: "World's largest wind turbine manufacturer"
+
+  - symbol: ORSTED
+    name: Ørsted
+    exchange: SMART
+    currency: DKK
+    sector: Offshore Wind
+    rationale: "Offshore wind leader, green hydrogen potential"
+
+  - symbol: DXCM
+    name: DexCom
+    exchange: SMART
+    currency: USD
+    sector: Medical Devices
+    rationale: "CGM leader, expanding beyond diabetes"
+
+  # SWAV removed — acquired by Johnson & Johnson 2024
+
+  - symbol: IONQ
+    name: IonQ
+    exchange: SMART
+    currency: USD
+    sector: Quantum Computing
+    rationale: "Pure-play quantum computing, trapped-ion approach"
+
+  - symbol: RXRX
+    name: Recursion Pharmaceuticals
+    exchange: SMART
+    currency: USD
+    sector: AI Drug Discovery
+    rationale: "AI-first drug discovery, NVIDIA partnership"
+
+  - symbol: RKLB
+    name: Rocket Lab
+    exchange: SMART
+    currency: USD
+    sector: Space
+    rationale: "Only operational small-launch competitor to SpaceX"
+
+  - symbol: ACHR
+    name: Archer Aviation
+    exchange: SMART
+    currency: USD
+    sector: eVTOL
+    rationale: "Electric air taxi, United Airlines backing"
+
+  - symbol: DNA
+    name: Ginkgo Bioworks
+    exchange: SMART
+    currency: USD
+    sector: Synthetic Biology
+    rationale: "Cell programming platform, bio-manufacturing foundry"
+
+  - symbol: SMR
+    name: NuScale Power
+    exchange: SMART
+    currency: USD
+    sector: Nuclear/SMR
+    rationale: "First SMR to receive NRC approval, clean baseload"
+
+  - symbol: GFUZ
+    name: General Fusion
+    exchange: SMART
+    currency: USD
+    sector: Fusion Energy
+    rationale: "Magnetized target fusion, SPAC to Nasdaq"
+
+
+# ── TIER 3: MATURE GROWTH (50) ──────────────────────────────
+# Proven revenue/earnings growth, strong competitive position
+# Already profitable with clear path to continued growth
+growth:
+  # Semiconductors
+  - symbol: NVDA
+    name: NVIDIA
+    exchange: SMART
+    currency: USD
+    sector: Semiconductors
+    rationale: "AI compute monopoly, data center + automotive"
+
+  - symbol: AMD
+    name: AMD
+    exchange: SMART
+    currency: USD
+    sector: Semiconductors
+    rationale: "CPU/GPU challenger, data center share gains"
+
+  - symbol: TSM
+    name: TSMC
+    exchange: SMART
+    currency: USD
+    sector: Semiconductors
+    rationale: "Foundry monopoly, most advanced process nodes"
+
+  - symbol: ARM
+    name: Arm Holdings
+    exchange: SMART
+    currency: USD
+    sector: Semiconductors
+    rationale: "CPU architecture monopoly, royalty model"
+
+  - symbol: MU
+    name: Micron Technology
+    exchange: SMART
+    currency: USD
+    sector: Semiconductors
+    rationale: "Memory oligopoly, HBM for AI"
+
+  - symbol: MRVL
+    name: Marvell Technology
+    exchange: SMART
+    currency: USD
+    sector: Semiconductors
+    rationale: "Custom silicon, data center networking"
+
+  - symbol: AMAT
+    name: Applied Materials
+    exchange: SMART
+    currency: USD
+    sector: Semiconductor Equipment
+    rationale: "Largest semi equipment maker"
+
+  - symbol: LRCX
+    name: Lam Research
+    exchange: SMART
+    currency: USD
+    sector: Semiconductor Equipment
+    rationale: "Etch/deposition leader"
+
+  - symbol: KLAC
+    name: KLA Corp
+    exchange: SMART
+    currency: USD
+    sector: Semiconductor Equipment
+    rationale: "Process control monopoly"
+
+  - symbol: "ON"
+    name: ON Semiconductor
+    exchange: SMART
+    currency: USD
+    sector: Semiconductors
+    rationale: "SiC power semis, EV + industrial"
+
+  - symbol: NXPI
+    name: NXP Semiconductors
+    exchange: SMART
+    currency: USD
+    sector: Semiconductors
+    rationale: "Auto + IoT chips, ADAS content growth"
+
+  - symbol: MPWR
+    name: Monolithic Power Systems
+    exchange: SMART
+    currency: USD
+    sector: Semiconductors
+    rationale: "Power management, AI server power delivery"
+
+  - symbol: SMCI
+    name: Super Micro Computer
+    exchange: SMART
+    currency: USD
+    sector: Servers/Infrastructure
+    rationale: "AI server leader, liquid cooling"
+
+  - symbol: BESI
+    name: BE Semiconductor
+    exchange: SMART
+    currency: EUR
+    sector: Semiconductor Equipment
+    rationale: "Hybrid bonding leader, advanced packaging"
+
+  - symbol: ANET
+    name: Arista Networks
+    exchange: SMART
+    currency: USD
+    sector: Networking
+    rationale: "Data center networking, AI cluster connectivity"
+
+  - symbol: TER
+    name: Teradyne
+    exchange: SMART
+    currency: USD
+    sector: Semiconductor Equipment
+    rationale: "ATE leader + Universal Robots"
+
+  # Data Center / Cloud Infrastructure
+  - symbol: EQIX
+    name: Equinix
+    exchange: SMART
+    currency: USD
+    sector: Data Centers
+    rationale: "Largest data center REIT, interconnection moat"
+
+  - symbol: DLR
+    name: Digital Realty
+    exchange: SMART
+    currency: USD
+    sector: Data Centers
+    rationale: "#2 data center REIT, hyperscaler capacity"
+
+  - symbol: AMT
+    name: American Tower
+    exchange: SMART
+    currency: USD
+    sector: Telecom Infrastructure
+    rationale: "Tower REIT, 5G densification"
+
+  - symbol: CCI
+    name: Crown Castle
+    exchange: SMART
+    currency: USD
+    sector: Telecom Infrastructure
+    rationale: "US tower + small cells + fiber"
+
+  # Software / Cloud
+  - symbol: NOW
+    name: ServiceNow
+    exchange: SMART
+    currency: USD
+    sector: Enterprise Software
+    rationale: "Workflow automation platform, 20%+ growth"
+
+  - symbol: SNOW
+    name: Snowflake
+    exchange: SMART
+    currency: USD
+    sector: Cloud Data
+    rationale: "Data cloud platform, consumption model"
+
+  - symbol: MDB
+    name: MongoDB
+    exchange: SMART
+    currency: USD
+    sector: Databases
+    rationale: "Document database leader, Atlas cloud"
+
+  - symbol: CRWD
+    name: CrowdStrike
+    exchange: SMART
+    currency: USD
+    sector: Cybersecurity
+    rationale: "Endpoint security leader, platform consolidation"
+
+  - symbol: PANW
+    name: Palo Alto Networks
+    exchange: SMART
+    currency: USD
+    sector: Cybersecurity
+    rationale: "Network security platform"
+
+  - symbol: ZS
+    name: Zscaler
+    exchange: SMART
+    currency: USD
+    sector: Cybersecurity
+    rationale: "Zero trust cloud security"
+
+  - symbol: GOOGL
+    name: Alphabet
+    exchange: SMART
+    currency: USD
+    sector: Technology
+    rationale: "Search + cloud + AI + YouTube + Waymo"
+
+  - symbol: META
+    name: Meta Platforms
+    exchange: SMART
+    currency: USD
+    sector: Technology
+    rationale: "Social monopoly + AI + metaverse optionality"
+
+  # Industrial / Electrical Infrastructure
+  - symbol: ETN
+    name: Eaton Corp
+    exchange: SMART
+    currency: USD
+    sector: Electrical/Industrial
+    rationale: "Power management, grid modernization"
+
+  - symbol: PWR
+    name: Quanta Services
+    exchange: SMART
+    currency: USD
+    sector: Infrastructure
+    rationale: "Grid buildout, renewables connection"
+
+  - symbol: ABBN
+    name: ABB Ltd
+    exchange: SMART
+    currency: CHF
+    sector: Industrial Automation
+    rationale: "Electrification + automation, EV charging"
+
+  - symbol: SU
+    name: Schneider Electric
+    exchange: SMART
+    currency: USD
+    sector: Electrical/Industrial
+    rationale: "Energy management + automation"
+
+  - symbol: ROK
+    name: Rockwell Automation
+    exchange: SMART
+    currency: USD
+    sector: Industrial Automation
+    rationale: "Factory automation, smart manufacturing"
+
+  - symbol: HTHIY
+    name: Hitachi
+    exchange: SMART
+    currency: USD
+    sector: Industrial Conglomerate
+    rationale: "Digital transformation + energy + rail"
+
+  # Clean Energy (mature)
+  - symbol: NEE
+    name: NextEra Energy
+    exchange: SMART
+    currency: USD
+    sector: Utilities/Renewables
+    rationale: "Largest wind/solar operator"
+
+  - symbol: CEG
+    name: Constellation Energy
+    exchange: SMART
+    currency: USD
+    sector: Nuclear/Clean Energy
+    rationale: "Largest US nuclear fleet, AI power deals"
+
+  - symbol: BEPC
+    name: Brookfield Renewable
+    exchange: SMART
+    currency: USD
+    sector: Renewables
+    rationale: "Hydro + wind + solar, global platform"
+
+  # Healthcare (mature growth)
+  - symbol: LLY
+    name: Eli Lilly
+    exchange: SMART
+    currency: USD
+    sector: Pharma
+    rationale: "GLP-1 leader, Alzheimer's pipeline"
+
+  - symbol: REGN
+    name: Regeneron
+    exchange: SMART
+    currency: USD
+    sector: Biotech
+    rationale: "Eylea + Dupixent franchise, strong R&D"
+
+  # Emerging Market Fintech / E-commerce
+  - symbol: MELI
+    name: MercadoLibre
+    exchange: SMART
+    currency: USD
+    sector: E-commerce/Fintech
+    rationale: "LatAm Amazon + PayPal"
+
+  - symbol: SE
+    name: Sea Limited
+    exchange: SMART
+    currency: USD
+    sector: E-commerce/Gaming
+    rationale: "SE Asia e-commerce + gaming + fintech"
+
+  - symbol: NU
+    name: Nu Holdings
+    exchange: SMART
+    currency: USD
+    sector: Fintech
+    rationale: "LatAm digital bank, 100M+ customers"
+
+  - symbol: GRAB
+    name: Grab Holdings
+    exchange: SMART
+    currency: USD
+    sector: Super App
+    rationale: "SE Asia ride-hail + delivery + payments"
+
+  - symbol: ADYEY
+    name: Adyen
+    exchange: SMART
+    currency: USD
+    sector: Payments
+    rationale: "Global payment platform, unified commerce"
+
+  - symbol: KSPI
+    name: Kaspi.kz
+    exchange: SMART
+    currency: USD
+    sector: Super App/Fintech
+    rationale: "Kazakhstan super app, payments + marketplace"
+
+  # Claude suggestions
+  - symbol: SHOP
+    name: Shopify
+    exchange: SMART
+    currency: USD
+    sector: E-commerce Platform
+    rationale: "Merchant OS, global e-commerce enabler"
+
+  - symbol: UBER
+    name: Uber Technologies
+    exchange: SMART
+    currency: USD
+    sector: Mobility/Delivery
+    rationale: "Global mobility platform, autonomous optionality"
+
+  - symbol: COIN
+    name: Coinbase
+    exchange: SMART
+    currency: USD
+    sector: Crypto/Fintech
+    rationale: "US crypto infrastructure, regulatory moat"
+
+
+# ── IPO WATCHLIST (not yet public) ──────────────────────────
+# These tickers will be activated when they start trading
+ipo_watchlist:
+  - name: Anthropic
+    sector: AI/Foundation Models
+    tier: breakthrough
+    status: pre_ipo
+
+  - name: Cerebras
+    sector: AI Chips
+    tier: breakthrough
+    status: s1_filed
+
+  - name: SambaNova
+    sector: AI Hardware
+    tier: breakthrough
+    status: pre_ipo
+
+  - name: Neuralink
+    sector: Brain-Computer Interface
+    tier: breakthrough
+    status: pre_ipo
+
+  - name: Synchron
+    sector: Brain-Computer Interface
+    tier: breakthrough
+    status: pre_ipo
+
+  - name: Epirus
+    sector: Directed Energy/Defense
+    tier: breakthrough
+    status: pre_ipo
+
+  - name: Bluefors
+    sector: Quantum Infrastructure
+    tier: breakthrough
+    status: pre_ipo
+
+  - name: OctoAI
+    sector: AI Inference
+    tier: breakthrough
+    status: pre_ipo
+
+  - name: Omada Health
+    sector: Digital Health
+    tier: growth
+    status: pre_ipo

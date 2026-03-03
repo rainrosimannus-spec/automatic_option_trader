@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Universe Screener{% endblock %}
+{% block nav_screener %}text-emerald-400 bg-gray-800{% endblock %}
+{% block m_nav_screener %}bg-gray-800 text-emerald-400{% endblock %}
+
+{% block content %}
+<div class="max-w-[1400px]">
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h1 class="text-2xl font-bold">🔍 Universe Screener</h1>
+            <p class="text-sm text-gray-500 mt-1">Screen global stocks and refresh your trading watchlist</p>
+        </div>
+    </div>
+
+    <!-- ═══ Controls ═══ -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Screen Parameters</h2>
+        <form hx-post="/screener/start" hx-target="#screen-status" hx-swap="innerHTML">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">Regions (comma-separated, or blank for ALL)</label>
+                    <input type="text" name="regions" value=""
+                           placeholder="US,UK,DE,CH,JP,HK,SG,AU..."
+                           class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">Min Market Cap (USD)</label>
+                    <select name="min_mcap" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none">
+                        <option value="1000000000">$1B+</option>
+                        <option value="5000000000" selected>$5B+</option>
+                        <option value="10000000000">$10B+</option>
+                        <option value="20000000000">$20B+</option>
+                        <option value="50000000000">$50B+</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">Total Stocks to Select</label>
+                    <select name="top_n" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none">
+                        <option value="30">30</option>
+                        <option value="40">40</option>
+                        <option value="50" selected>50</option>
+                        <option value="75">75</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
+                <div class="flex items-end">
+                    <button type="submit"
+                            class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded px-4 py-2 text-sm transition">
+                        🔍 Start Screen
+                    </button>
+                </div>
+            </div>
+
+            <div class="flex flex-wrap gap-2 text-xs text-gray-500">
+                <span class="font-medium text-gray-400">Available regions:</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">US</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">CA</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">UK</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">DE</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">FR</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">NL</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">CH</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">ES</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">IT</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">SE</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">DK</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">FI</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">NO</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">BE</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">IE</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">JP</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">HK</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">SG</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">AU</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">KR</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">IN</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">ID</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">TW</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">IL</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">ZA</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">BR</span>
+                <span class="px-1.5 py-0.5 bg-gray-800 rounded">MX</span>
+            </div>
+        </form>
+    </div>
+
+    <!-- ═══ Progress ═══ -->
+    <div id="screen-status"
+         hx-get="/screener/progress"
+         hx-trigger="every 3s"
+         hx-swap="innerHTML"
+         class="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
+        <div class="text-gray-500">No screen running. Configure parameters above and click "Start Screen".</div>
+    </div>
+
+    <!-- ═══ Results ═══ -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider">Screening Results</h2>
+            <div class="flex gap-2">
+                <button hx-get="/screener/results" hx-target="#results-table" hx-swap="innerHTML"
+                        class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded px-3 py-1.5 transition">
+                    ↻ Refresh Table
+                </button>
+            </div>
+        </div>
+
+        <form hx-post="/screener/apply" hx-target="#apply-result" hx-swap="innerHTML" hx-confirm="Apply selected stocks as the new watchlist? The current watchlist will be backed up.">
+            <div id="results-table"
+                 hx-get="/screener/results"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+                <div class="text-gray-500 text-sm py-8 text-center">Run a screen to see results here.</div>
+            </div>
+
+            <div class="mt-4 flex items-center justify-between border-t border-gray-800 pt-4">
+                <div class="text-xs text-gray-500">
+                    Check/uncheck stocks, then click Apply to update your trading watchlist.
+                    A backup of the current watchlist will be saved automatically.
+                </div>
+                <button type="submit"
+                        class="bg-blue-600 hover:bg-blue-500 text-white font-medium rounded px-5 py-2 text-sm transition">
+                    ✅ Apply Selected as Watchlist
+                </button>
+            </div>
+        </form>
+
+        <div id="apply-result" class="mt-4"></div>
+    </div>
+
+    <!-- ═══ Scoring Legend ═══ -->
+    <div class="mt-6 bg-gray-900/50 border border-gray-800 rounded-lg p-4">
+        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Scoring Methodology</h3>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 text-xs text-gray-400">
+            <div>
+                <span class="text-gray-300 font-medium">Composite</span><br>
+                Weighted total of all factors
+            </div>
+            <div>
+                <span class="text-gray-300 font-medium">Growth (30%)</span><br>
+                Forward earnings & revenue estimates
+            </div>
+            <div>
+                <span class="text-gray-300 font-medium">Valuation (20%)</span><br>
+                P/E, PEG ratio attractiveness
+            </div>
+            <div>
+                <span class="text-gray-300 font-medium">Quality (15%)</span><br>
+                Debt/equity, ROE, cash flow
+            </div>
+            <div>
+                <span class="text-gray-300 font-medium">Options Liq (25%)</span><br>
+                Chain depth, bid-ask spreads
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

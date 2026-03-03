@@ -1,0 +1,20 @@
+# Python junk
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+env/
+
+# macOS junk
+.DS_Store
+
+# Config files with secrets
+config.json
+credentials.json
+*.key
+*.pem
+
+# Logs
+*.log
+logs/

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-950">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>{% block title %}Maggy &amp; Winston{% endblock %}</title>
+
+    <!-- PWA -->
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="M&W">
+    <meta name="theme-color" content="#030712">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        .pulse-green { animation: pulse-g 2s infinite; }
+        @keyframes pulse-g { 0%,100% { opacity:1 } 50% { opacity:.6 } }
+        body { font-family: 'DM Sans', system-ui, sans-serif; }
+        .font-display { font-family: 'Playfair Display', Georgia, serif; }
+        .sidebar-brand { font-family: 'Playfair Display', Georgia, serif; }
+
+        /* Safe area insets for iPhone notch */
+        body {
+            padding-top: env(safe-area-inset-top);
+            padding-bottom: env(safe-area-inset-bottom);
+            padding-left: env(safe-area-inset-left);
+            padding-right: env(safe-area-inset-right);
+        }
+
+        /* Mobile nav overlay */
+        #mobile-overlay {
+            transition: opacity 0.2s ease;
+        }
+        #mobile-nav {
+            transition: transform 0.25s ease;
+        }
+        #mobile-nav.closed {
+            transform: translateX(-100%);
+        }
+
+        /* Hide desktop sidebar on mobile, hide mobile header on desktop */
+        @media (max-width: 767px) {
+            #desktop-sidebar { display: none !important; }
+            main.desktop-main { padding: 1rem !important; }
+        }
+        @media (min-width: 768px) {
+            #mobile-header { display: none !important; }
+            #mobile-overlay { display: none !important; }
+            #mobile-nav { display: none !important; }
+        }
+
+        /* Make tables scroll horizontally on mobile */
+        @media (max-width: 767px) {
+            .overflow-x-auto { -webkit-overflow-scrolling: touch; }
+        }
+    </style>
+</head>
+<body class="h-full text-gray-100">
+
+<!-- ═══ Mobile Header ═══ -->
+<div id="mobile-header" class="sticky top-0 z-40 bg-gray-900 border-b border-gray-800 px-3 py-2 flex items-center justify-between">
+    <button id="hamburger-btn" class="p-2 rounded hover:bg-gray-800 transition" aria-label="Menu">
+        <svg class="w-5 h-5 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+        </svg>
+    </button>
+    <div class="sidebar-brand text-sm tracking-tight">
+        <span class="text-amber-300/90">Maggy</span>
+        <span class="text-gray-500 text-xs italic mx-0.5">&amp;</span>
+        <span class="text-amber-300/90">Winston</span>
+    </div>
+    <div class="w-9"></div> <!-- spacer for centering -->
+</div>
+
+<!-- ═══ Mobile Nav Overlay ═══ -->
+<div id="mobile-overlay" class="fixed inset-0 z-40 bg-black/60 opacity-0 pointer-events-none" onclick="closeMobileNav()"></div>
+
+<!-- ═══ Mobile Nav Drawer ═══ -->
+<nav id="mobile-nav" class="fixed top-0 left-0 z-50 h-full w-64 bg-gray-900 border-r border-gray-800 flex flex-col p-4 gap-0.5 closed overflow-y-auto">
+    <div class="flex items-center justify-between mb-5 px-1">
+        <div class="flex items-center gap-2.5">
+            <img src="/static/favicon.svg" alt="MW" class="w-7 h-7">
+            <div class="sidebar-brand text-base tracking-tight">
+                <span class="text-amber-300/90">Maggy</span>
+                <span class="text-gray-500 text-xs italic mx-0.5">&amp;</span>
+                <span class="text-amber-300/90">Winston</span>
+            </div>
+        </div>
+        <button onclick="closeMobileNav()" class="p-1 rounded hover:bg-gray-800 transition">
+            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+        </button>
+    </div>
+
+    <div class="text-[10px] uppercase tracking-widest text-gray-600 px-3 pt-2 pb-1">Options Trader</div>
+    <a href="/" onclick="closeMobileNav()" class="px-3 py-2 rounded hover:bg-gray-800 transition text-sm {% block m_nav_dashboard %}{% endblock %}">📊 Dashboard</a>
+    <a href="/positions" onclick="closeMobileNav()" class="px-3 py-2 rounded hover:bg-gray-800 transition text-sm {% block m_nav_positions %}{% endblock %}">📋 Positions</a>
+    <a href="/trades" onclick="closeMobileNav()" class="px-3 py-2 rounded hover:bg-gray-800 transition text-sm {% block m_nav_trades %}{% endblock %}">📜 Trade History</a>
+    <a href="/options-suggestions" onclick="closeMobileNav()" class="px-3 py-2 rounded hover:bg-gray-800 transition text-sm {% block m_nav_options_suggestions %}{% endblock %}">🎯 Suggestions</a>
+
+    <div class="text-[10px] uppercase tracking-widest text-gray-600 px-3 pt-4 pb-1">Portfolio Manager</div>
+    <a href="/portfolio" onclick="closeMobileNav()" class="px-3 py-2 rounded hover:bg-gray-800 transition text-sm {% block m_nav_portfolio %}{% endblock %}">📈 Portfolio</a>
+    <a href="/portfolio/trades" onclick="closeMobileNav()" class="px-3 py-2 rounded hover:bg-gray-800 transition text-sm {% block m_nav_portfolio_trades %}{% endblock %}">📜 Trade History</a>
+    <a href="/suggestions" onclick="closeMobileNav()" class="px-3 py-2 rounded hover:bg-gray-800 transition text-sm {% block m_nav_suggestions %}{% endblock %}">✅ Suggestions</a>
+
+    <div class="text-[10px] uppercase tracking-widest text-gray-600 px-3 pt-4 pb-1">IPO Rider</div>
+    <a href="/ipo" onclick="closeMobileNav()" class="px-3 py-2 rounded hover:bg-gray-800 transition text-sm {% block m_nav_ipo %}{% endblock %}">🚀 IPO Rider</a>
+
+    <div class="text-[10px] uppercase tracking-widest text-gray-600 px-3 pt-4 pb-1">Advisor</div>
+    <a href="/consigliere" onclick="closeMobileNav()" class="px-3 py-2 rounded hover:bg-gray-800 transition text-sm {% block m_nav_consigliere %}{% endblock %}">🤵 Consigliere</a>
+
+    <div class="text-[10px] uppercase tracking-widest text-gray-600 px-3 pt-4 pb-1">Tools</div>
+    <a href="/screener" onclick="closeMobileNav()" class="px-3 py-2 rounded hover:bg-gray-800 transition text-sm {% block m_nav_screener %}{% endblock %}">🔍 Screener</a>
+    <a href="/controls" onclick="closeMobileNav()" class="px-3 py-2 rounded hover:bg-gray-800 transition text-sm {% block m_nav_controls %}{% endblock %}">⚙️ Controls</a>
+
+    <div class="mt-auto pt-4 border-t border-gray-800 text-xs text-gray-500 px-2 space-y-1">
+        <div hx-get="/api/status" hx-trigger="every 10s" hx-swap="innerHTML" id="mobile-status-badge">
+            Loading...
+        </div>
+    </div>
+</nav>
+
+<div class="flex h-full">
+    <!-- Desktop Sidebar (hidden on mobile via CSS) -->
+    <nav id="desktop-sidebar" class="w-56 bg-gray-900 border-r border-gray-800 flex flex-col p-4 gap-0.5 shrink-0">
+        <div class="flex items-center gap-2.5 mb-5 px-1">
+            <img src="/static/favicon.svg" alt="MW" class="w-7 h-7">
+            <div class="sidebar-brand text-base tracking-tight">
+                <span class="text-amber-300/90">Maggy</span>
+                <span class="text-gray-500 text-xs italic mx-0.5">&amp;</span>
+                <span class="text-amber-300/90">Winston</span>
+            </div>
+        </div>
+
+        <div class="text-[10px] uppercase tracking-widest text-gray-600 px-3 pt-2 pb-1">Options Trader</div>
+        <a href="/" class="px-3 py-1.5 rounded hover:bg-gray-800 transition text-sm {% block nav_dashboard %}{% endblock %}">📊 Dashboard</a>
+        <a href="/positions" class="px-3 py-1.5 rounded hover:bg-gray-800 transition text-sm {% block nav_positions %}{% endblock %}">📋 Positions</a>
+        <a href="/trades" class="px-3 py-1.5 rounded hover:bg-gray-800 transition text-sm {% block nav_trades %}{% endblock %}">📜 Trade History</a>
+        <a href="/options-suggestions" class="px-3 py-1.5 rounded hover:bg-gray-800 transition text-sm {% block nav_options_suggestions %}{% endblock %}">🎯 Suggestions</a>
+
+        <div class="text-[10px] uppercase tracking-widest text-gray-600 px-3 pt-4 pb-1">Portfolio Manager</div>
+        <a href="/portfolio" class="px-3 py-1.5 rounded hover:bg-gray-800 transition text-sm {% block nav_portfolio %}{% endblock %}">📈 Portfolio</a>
+        <a href="/portfolio/trades" class="px-3 py-1.5 rounded hover:bg-gray-800 transition text-sm {% block nav_portfolio_trades %}{% endblock %}">📜 Trade History</a>
+        <a href="/suggestions" class="px-3 py-1.5 rounded hover:bg-gray-800 transition text-sm {% block nav_suggestions %}{% endblock %}">✅ Suggestions</a>
+
+        <div class="text-[10px] uppercase tracking-widest text-gray-600 px-3 pt-4 pb-1">IPO Rider</div>
+        <a href="/ipo" class="px-3 py-1.5 rounded hover:bg-gray-800 transition text-sm {% block nav_ipo %}{% endblock %}">🚀 IPO Rider</a>
+
+        <div class="text-[10px] uppercase tracking-widest text-gray-600 px-3 pt-4 pb-1">Advisor</div>
+        <a href="/consigliere" class="px-3 py-1.5 rounded hover:bg-gray-800 transition text-sm {% block nav_consigliere %}{% endblock %}">🤵 Consigliere</a>
+
+        <div class="text-[10px] uppercase tracking-widest text-gray-600 px-3 pt-4 pb-1">Tools</div>
+        <a href="/screener" class="px-3 py-1.5 rounded hover:bg-gray-800 transition text-sm {% block nav_screener %}{% endblock %}">🔍 Screener</a>
+        <a href="/controls" class="px-3 py-1.5 rounded hover:bg-gray-800 transition text-sm {% block nav_controls %}{% endblock %}">⚙️ Controls</a>
+
+        <div class="mt-auto pt-4 border-t border-gray-800 text-xs text-gray-500 px-2 space-y-1">
+            <div hx-get="/api/status" hx-trigger="every 10s" hx-swap="innerHTML" id="status-badge">
+                Loading...
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main content -->
+    <main class="desktop-main flex-1 overflow-y-auto p-4 md:p-8">
+        {% block content %}{% endblock %}
+    </main>
+</div>
+
+<script>
+// Mobile navigation
+function openMobileNav() {
+    document.getElementById('mobile-nav').classList.remove('closed');
+    const overlay = document.getElementById('mobile-overlay');
+    overlay.classList.remove('pointer-events-none');
+    overlay.style.opacity = '1';
+}
+function closeMobileNav() {
+    document.getElementById('mobile-nav').classList.add('closed');
+    const overlay = document.getElementById('mobile-overlay');
+    overlay.style.opacity = '0';
+    setTimeout(() => overlay.classList.add('pointer-events-none'), 200);
+}
+document.getElementById('hamburger-btn').addEventListener('click', openMobileNav);
+</script>
+
+</body>
+</html>

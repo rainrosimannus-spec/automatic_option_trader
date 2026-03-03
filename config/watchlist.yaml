@@ -1,0 +1,400 @@
+# ============================================================
+# Stock Universe — Global Options Wheel Strategy
+# 40 Growth Stocks + 10 Dividend Stocks
+# Best projected total return over next 10 years
+#
+# Each stock specifies:
+#   symbol          — ticker as known on the exchange
+#   name            — company name
+#   sector          — sector classification
+#   exchange        — IBKR exchange (SMART, SBF, TSE, OSE, ASX, etc.)
+#   currency        — trading currency (USD, CHF, JPY, NOK, AUD, etc.)
+#   primary_exchange — (optional) primary listing exchange for disambiguation
+#   contract_size   — (optional) options contract multiplier, default 100
+#
+# IBKR exchange codes:
+#   SMART        — US smart routing (NYSE, NASDAQ, ARCA, etc.)
+#   SWX / EBS    — SIX Swiss Exchange
+#   TSE          — Tokyo Stock Exchange
+#   OSE          — Oslo Stock Exchange (Euronext Oslo)
+#   ASX          — Australian Securities Exchange
+#   LSE          — London Stock Exchange
+#   IBIS / FWB   — Frankfurt / Xetra
+#   AEB          — Euronext Amsterdam
+# ============================================================
+
+growth:
+  # ── US (25) ──
+  - symbol: AAPL
+    name: Apple Inc.
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: MSFT
+    name: Microsoft Corp.
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: NVDA
+    name: NVIDIA Corp.
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: AMZN
+    name: Amazon.com Inc.
+    sector: Consumer Discretionary
+    exchange: SMART
+    currency: USD
+  - symbol: GOOGL
+    name: Alphabet Inc.
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: META
+    name: Meta Platforms Inc.
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: TSLA
+    name: Tesla Inc.
+    sector: Consumer Discretionary
+    exchange: SMART
+    currency: USD
+  - symbol: AVGO
+    name: Broadcom Inc.
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: CRM
+    name: Salesforce Inc.
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: AMD
+    name: Advanced Micro Devices
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: NFLX
+    name: Netflix Inc.
+    sector: Communication Services
+    exchange: SMART
+    currency: USD
+  - symbol: ADBE
+    name: Adobe Inc.
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: NOW
+    name: ServiceNow Inc.
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: UBER
+    name: Uber Technologies
+    sector: Industrials
+    exchange: SMART
+    currency: USD
+  - symbol: PLTR
+    name: Palantir Technologies
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: PANW
+    name: Palo Alto Networks
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: CRWD
+    name: CrowdStrike Holdings
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: SHOP
+    name: Shopify Inc.
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: COIN
+    name: Coinbase Global
+    sector: Financials
+    exchange: SMART
+    currency: USD
+  - symbol: MELI
+    name: MercadoLibre Inc.
+    sector: Consumer Discretionary
+    exchange: SMART
+    currency: USD
+  - symbol: ANET
+    name: Arista Networks
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: DDOG
+    name: Datadog Inc.
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: TTD
+    name: The Trade Desk
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: NET
+    name: Cloudflare Inc.
+    sector: Technology
+    exchange: SMART
+    currency: USD
+  - symbol: ARM
+    name: Arm Holdings
+    sector: Technology
+    exchange: SMART
+    currency: USD
+
+  # ── Switzerland (4) ──
+  - symbol: NESN
+    name: Nestlé S.A.
+    sector: Consumer Staples
+    exchange: SMART
+    currency: CHF
+    options_exchange: EUREX
+  - symbol: NOVN
+    name: Novartis AG
+    sector: Healthcare
+    exchange: SMART
+    currency: CHF
+    options_exchange: EUREX
+  - symbol: SIKA
+    name: Sika AG
+    sector: Materials
+    exchange: SMART
+    currency: CHF
+    options_exchange: EUREX
+  - symbol: LONN
+    name: Lonza Group AG
+    sector: Healthcare
+    exchange: SMART
+    currency: CHF
+    options_exchange: EUREX
+
+  # ── Japan (4) ──
+  - symbol: "6758"
+    name: Sony Group Corp.
+    sector: Technology
+    exchange: SMART
+    currency: JPY
+    options_exchange: OSE.JPN
+    contract_size: 100
+  - symbol: "6861"
+    name: Keyence Corp.
+    sector: Technology
+    exchange: SMART
+    currency: JPY
+    options_exchange: OSE.JPN
+    contract_size: 100
+  - symbol: "7203"
+    name: Toyota Motor Corp.
+    sector: Consumer Discretionary
+    exchange: SMART
+    currency: JPY
+    options_exchange: OSE.JPN
+    contract_size: 100
+  - symbol: "6367"
+    name: Daikin Industries
+    sector: Industrials
+    exchange: SMART
+    currency: JPY
+    options_exchange: OSE.JPN
+    contract_size: 100
+
+  # ── Norway (3) ──
+  - symbol: EQNR
+    name: Equinor ASA
+    sector: Energy
+    exchange: SMART
+    currency: NOK
+    options_exchange: OSE
+  - symbol: MOWI
+    name: Mowi ASA
+    sector: Consumer Staples
+    exchange: SMART
+    currency: NOK
+    options_exchange: OSE
+  - symbol: DNB
+    name: DNB Bank ASA
+    sector: Financials
+    exchange: SMART
+    currency: NOK
+    options_exchange: OSE
+
+  # ── Australia (4) ──
+  - symbol: CSL
+    name: CSL Limited
+    sector: Healthcare
+    exchange: SMART
+    currency: AUD
+    options_exchange: ASX
+  - symbol: WDS
+    name: Woodside Energy Group
+    sector: Energy
+    exchange: SMART
+    currency: AUD
+    options_exchange: ASX
+  - symbol: XRO
+    name: Xero Limited
+    sector: Technology
+    exchange: SMART
+    currency: AUD
+    options_exchange: ASX
+  - symbol: ALL
+    name: Aristocrat Leisure
+    sector: Consumer Discretionary
+    exchange: SMART
+    currency: AUD
+    options_exchange: ASX
+
+dividend:
+  # ── US (5) ──
+  - symbol: JNJ
+    name: Johnson & Johnson
+    sector: Healthcare
+    exchange: SMART
+    currency: USD
+    div_yield: 3.1
+  - symbol: PG
+    name: Procter & Gamble
+    sector: Consumer Staples
+    exchange: SMART
+    currency: USD
+    div_yield: 2.4
+  - symbol: KO
+    name: Coca-Cola Co.
+    sector: Consumer Staples
+    exchange: SMART
+    currency: USD
+    div_yield: 3.0
+  - symbol: ABBV
+    name: AbbVie Inc.
+    sector: Healthcare
+    exchange: SMART
+    currency: USD
+    div_yield: 3.5
+  - symbol: JPM
+    name: JPMorgan Chase
+    sector: Financials
+    exchange: SMART
+    currency: USD
+    div_yield: 2.2
+
+  # ── Switzerland (1) ──
+  - symbol: ZURN
+    name: Zurich Insurance Group
+    sector: Financials
+    exchange: SMART
+    currency: CHF
+    options_exchange: EUREX
+    div_yield: 5.2
+
+  # ── Japan (1) ──
+  - symbol: "8306"
+    name: Mitsubishi UFJ Financial
+    sector: Financials
+    exchange: SMART
+    currency: JPY
+    options_exchange: OSE.JPN
+    div_yield: 3.4
+    contract_size: 100
+
+  # ── Norway (1) ──
+  - symbol: TEL
+    name: Telenor ASA
+    sector: Communication Services
+    exchange: SMART
+    currency: NOK
+    options_exchange: OSE
+    div_yield: 6.8
+
+  # ── Australia (2) ──
+  - symbol: BHP
+    name: BHP Group Limited
+    sector: Materials
+    exchange: SMART
+    currency: AUD
+    options_exchange: ASX
+    div_yield: 5.0
+  - symbol: CBA
+    name: Commonwealth Bank
+    sector: Financials
+    exchange: SMART
+    currency: AUD
+    options_exchange: ASX
+    div_yield: 3.6
+
+  # ── London (4) ──
+  - symbol: RIO
+    name: Rio Tinto plc
+    sector: Materials
+    exchange: SMART
+    currency: GBP
+    options_exchange: ICEEU
+    div_yield: 6.5
+  - symbol: SHEL
+    name: Shell plc
+    sector: Energy
+    exchange: SMART
+    currency: GBP
+    options_exchange: ICEEU
+    div_yield: 3.8
+  - symbol: HSBA
+    name: HSBC Holdings
+    sector: Financials
+    exchange: SMART
+    currency: GBP
+    options_exchange: ICEEU
+    div_yield: 5.0
+  - symbol: AZN
+    name: AstraZeneca plc
+    sector: Healthcare
+    exchange: SMART
+    currency: GBP
+    options_exchange: ICEEU
+    div_yield: 2.1
+
+  # ── Frankfurt / Xetra (3) ──
+  - symbol: SAP
+    name: SAP SE
+    sector: Technology
+    exchange: SMART
+    currency: EUR
+    options_exchange: EUREX
+    div_yield: 1.0
+  - symbol: SIE
+    name: Siemens AG
+    sector: Industrials
+    exchange: SMART
+    currency: EUR
+    options_exchange: EUREX
+    div_yield: 2.8
+  - symbol: ALV
+    name: Allianz SE
+    sector: Financials
+    exchange: SMART
+    currency: EUR
+    options_exchange: EUREX
+    div_yield: 4.5
+
+  # ── Euronext Amsterdam (2) ──
+  - symbol: ASML
+    name: ASML Holding NV
+    sector: Technology
+    exchange: SMART
+    currency: EUR
+    options_exchange: EUREX
+    div_yield: 0.7
+  - symbol: INGA
+    name: ING Group NV
+    sector: Financials
+    exchange: SMART
+    currency: EUR
+    options_exchange: EUREX
+    div_yield: 6.0

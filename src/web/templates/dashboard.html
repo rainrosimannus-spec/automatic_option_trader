@@ -1,0 +1,427 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Maggy &amp; Winston
+{% endblock %}
+{% block nav_dashboard %}bg-gray-800 text-emerald-400
+{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto">
+
+<!-- ─── Header row ─── -->
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold tracking-tight">Dashboard</h1>
+    <div class="flex items-center gap-3 text-sm">
+        {% if pending_options > 0 %}
+        <a href="/options-suggestions" class="flex items-center gap-1.5 px-3 py-1 rounded-full border border-amber-600 bg-amber-950/40 text-amber-300 hover:bg-amber-900/40 transition">
+            🔔 {{ pending_options }} Options
+        </a>
+        {% endif %}
+        {% if pending_portfolio > 0 %}
+        <a href="/suggestions" class="flex items-center gap-1.5 px-3 py-1 rounded-full border border-blue-600 bg-blue-950/40 text-blue-300 hover:bg-blue-900/40 transition">
+            🔔 {{ pending_portfolio }} Portfolio
+        </a>
+        {% endif %}
+        {% if ipo_confirmed > 0 %}
+        <a href="/ipo" class="flex items-center gap-1.5 px-3 py-1 rounded-full border border-purple-600 bg-purple-950/40 text-purple-300 hover:bg-purple-900/40 transition">
+            🚀 {{ ipo_confirmed }} IPO{{ 's' if ipo_confirmed > 1 else '' }}
+        </a>
+        {% endif %}
+        <span class="flex items-center gap-1.5 px-3 py-1 rounded-full border
+            {{ 'border-emerald-700 bg-emerald-950/40 text-emerald-300' if connected else 'border-red-700 bg-red-950/40 text-red-300' }}">
+            <span class="w-1.5 h-1.5 rounded-full {{ 'bg-emerald-400 pulse-green' if connected else 'bg-red-500' }}"></span>
+            IBKR {{ 'Online' if connected else 'Offline' }}
+        </span>
+        {% if paused %}
+        <span class="flex items-center gap-1.5 px-3 py-1 rounded-full border border-amber-700 bg-amber-950/40 text-amber-300">
+            ⏸ PAUSED
+        </span>
+        {% endif %}
+    </div>
+</div>
+
+<!-- ═══ Account Overview ═══ -->
+<div class="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-6">
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Net Liquidation</div>
+        <div class="text-xl font-bold font-mono text-gray-100">
+            ${{ "{:,.0f}".format(net_liquidation) }}
+        </div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Cash Balance</div>
+        <div class="text-xl font-bold font-mono text-emerald-400">
+            ${{ "{:,.0f}".format(cash_balance) }}
+        </div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Buying Power</div>
+        <div class="text-xl font-bold font-mono text-blue-400">
+            ${{ "{:,.0f}".format(buying_power) }}
+        </div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Unrealized P&L</div>
+        <div class="text-xl font-bold font-mono {{ 'text-emerald-400' if unrealized_pnl >= 0 else 'text-red-400' }}">
+            {{ "+" if unrealized_pnl >= 0 else "" }}${{ "{:,.0f}".format(unrealized_pnl) }}
+        </div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Margin Used</div>
+        <div class="text-xl font-bold font-mono
+            {% if margin_used_pct > 60 %}text-red-400{% elif margin_used_pct > 40 %}text-amber-400{% else %}text-gray-300{% endif %}">
+            {{ "%.1f"|format(margin_used_pct) }}%
+        </div>
+        <div class="text-xs text-gray-600 mt-0.5">${{ "{:,.0f}".format(maintenance_margin) }}</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Market Regime</div>
+        <div class="text-lg font-bold
+            {% if market_regime == 'capitulation' %}text-red-400
+            {% elif market_regime == 'stabilization' %}text-amber-400
+            {% elif market_regime == 'elevated_fear' %}text-orange-400
+            {% else %}text-emerald-400{% endif %}">
+            {{ market_regime | upper }}
+        </div>
+    </div>
+</div>
+
+<!-- ═══ Market Regime Panel ═══ -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
+
+    <!-- VIX -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">VIX</span>
+            {% if current_vix %}
+            <span class="text-xs px-2 py-0.5 rounded-full
+                {% if current_vix > 30 %}bg-red-900/60 text-red-300
+                {% elif current_vix > 20 %}bg-amber-900/60 text-amber-300
+                {% else %}bg-emerald-900/60 text-emerald-300{% endif %}">
+                {% if current_vix > 30 %}HALT{% elif current_vix > 20 %}ELEVATED{% else %}NORMAL{% endif %}
+            </span>
+            {% endif %}
+        </div>
+        <div class="text-3xl font-mono font-bold
+            {% if current_vix and current_vix > 30 %}text-red-400
+            {% elif current_vix and current_vix > 20 %}text-amber-400
+            {% else %}text-emerald-400{% endif %}">
+            {{ "%.1f"|format(current_vix) if current_vix else '—' }}
+        </div>
+        <div class="text-xs text-gray-500 mt-1">Threshold: 30.0</div>
+    </div>
+
+    <!-- SPY Trend -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">SPY Trend</span>
+            {% if spy_bullish is not none %}
+            <span class="text-xs px-2 py-0.5 rounded-full
+                {% if spy_bullish %}bg-emerald-900/60 text-emerald-300{% else %}bg-orange-900/60 text-orange-300{% endif %}">
+                {% if spy_bullish %}BULLISH{% else %}BEARISH — 50% REDUCTION{% endif %}
+            </span>
+            {% endif %}
+        </div>
+        <div class="flex items-baseline gap-3">
+            <div>
+                <div class="text-lg font-mono font-bold text-gray-100">{{ "%.2f"|format(spy_price) if spy_price else '—' }}</div>
+                <div class="text-xs text-gray-500">SPY Price</div>
+            </div>
+            <div class="text-xs text-gray-400 leading-relaxed">
+                {% if spy_fast_ma and spy_slow_ma %}
+                MA10: <span class="font-mono {{ 'text-emerald-400' if spy_bullish else 'text-orange-400' }}">{{ "%.2f"|format(spy_fast_ma) }}</span><br>
+                MA20: <span class="font-mono text-gray-300">{{ "%.2f"|format(spy_slow_ma) }}</span>
+                {% else %}
+                Loading…
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Daily Limit -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Daily Trades</span>
+            <span class="text-xs px-2 py-0.5 rounded-full
+                {% if daily_count >= daily_limit %}bg-red-900/60 text-red-300
+                {% elif daily_count >= daily_limit * 0.7 %}bg-amber-900/60 text-amber-300
+                {% else %}bg-gray-800 text-gray-400{% endif %}">
+                {{ daily_count }} / {{ daily_limit }}
+            </span>
+        </div>
+        <div class="w-full bg-gray-800 rounded-full h-3 mt-3 mb-2">
+            <div class="h-3 rounded-full transition-all duration-500
+                {% if daily_count >= daily_limit %}bg-red-500
+                {% elif daily_count >= daily_limit * 0.7 %}bg-amber-500
+                {% else %}bg-emerald-500{% endif %}"
+                style="width: {{ (daily_count / daily_limit * 100) | int }}%">
+            </div>
+        </div>
+        <div class="text-xs text-gray-500">Max 10 new puts per day</div>
+    </div>
+</div>
+
+<!-- ═══ Stats Cards ═══ -->
+<div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Short Puts</div>
+        <div class="text-2xl font-bold text-blue-400">{{ open_puts }}</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Assigned Stock</div>
+        <div class="text-2xl font-bold text-yellow-400">{{ open_stock }}</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Covered Calls</div>
+        <div class="text-2xl font-bold text-purple-400">{{ open_calls }}</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Realized P&L</div>
+        <div class="text-2xl font-bold {{ 'text-emerald-400' if total_realized >= 0 else 'text-red-400' }}">
+            ${{ "{:,.2f}".format(total_realized) }}
+        </div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="text-xs text-gray-500 mb-1">Premium Collected</div>
+        <div class="text-2xl font-bold text-emerald-400">${{ "{:,.2f}".format(total_premium) }}</div>
+    </div>
+</div>
+
+<!-- ═══ Performance Chart: Actual P&L vs 24% Target ═══ -->
+{% if perf_labels and perf_labels|length > 1 %}
+<div class="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-sm font-semibold text-gray-200">Options Return % vs 24% Annual Target</h2>
+        <div class="flex items-center gap-4 text-xs">
+            <span class="flex items-center gap-1.5">
+                <span class="w-3 h-0.5 bg-emerald-400 rounded"></span>
+                Actual P&L
+            </span>
+            <span class="flex items-center gap-1.5">
+                <span class="w-3 h-0.5 bg-amber-400 rounded"></span>
+                24% Target
+            </span>
+        </div>
+    </div>
+    <div style="height: 280px;">
+        <canvas id="performanceChart"></canvas>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const ctx = document.getElementById('performanceChart');
+    if (!ctx) return;
+
+    const labels = {{ perf_labels | tojson }};
+    const actualData = {{ perf_actual | tojson }};
+    const targetData = {{ perf_target | tojson }};
+
+    const fmtLabels = labels.map(d => {
+        const parts = d.split('-');
+        return parts[1] + '/' + parts[2];
+    });
+
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: fmtLabels,
+            datasets: [
+                {
+                    label: 'Actual P&L',
+                    data: actualData,
+                    borderColor: '#34d399',
+                    backgroundColor: 'rgba(52, 211, 153, 0.08)',
+                    fill: true,
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                },
+                {
+                    label: '24% Annual Target',
+                    data: targetData,
+                    borderColor: '#f59e0b',
+                    borderDash: [6, 3],
+                    borderWidth: 1.5,
+                    tension: 0,
+                    pointRadius: 0,
+                    fill: false,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#1f2937',
+                    borderColor: '#374151',
+                    borderWidth: 1,
+                    titleColor: '#9ca3af',
+                    bodyColor: '#e5e7eb',
+                    callbacks: {
+                        label: function(ctx) {
+                            return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(1) + '%';
+                        }
+                    }
+                },
+            },
+            scales: {
+                x: {
+                    grid: { color: 'rgba(75, 85, 99, 0.2)' },
+                    ticks: { color: '#6b7280', maxRotation: 0, autoSkip: true, maxTicksLimit: 12 },
+                },
+                y: {
+                    grid: { color: 'rgba(75, 85, 99, 0.2)' },
+                    ticks: {
+                        color: '#6b7280',
+                        callback: function(v) { return v.toFixed(1) + '%'; }
+                    },
+                },
+            },
+        },
+    });
+});
+</script>
+{% else %}
+<div class="bg-gray-900 border border-gray-800 rounded-lg p-6 mb-6 text-center text-gray-600 text-sm">
+    📈 Performance chart will appear after trades are executed
+</div>
+{% endif %}
+
+<!-- ═══ Two-column: Positions + Trades ═══ -->
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+
+    <!-- Open Positions -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg">
+        <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-gray-200">Open Positions</h2>
+            <span class="text-xs text-gray-500">{{ total_open }} total</span>
+        </div>
+        <div class="overflow-x-auto max-h-96 overflow-y-auto">
+            {% if open_positions %}
+            <table class="w-full text-xs">
+                <thead class="sticky top-0 bg-gray-900">
+                    <tr class="text-gray-500 border-b border-gray-800">
+                        <th class="text-left py-2 px-3">Symbol</th>
+                        <th class="text-left py-2 px-3">Type</th>
+                        <th class="text-right py-2 px-3">Strike</th>
+                        <th class="text-left py-2 px-3">Exp</th>
+                        <th class="text-right py-2 px-3">Prem</th>
+                        <th class="text-left py-2 px-3"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in open_positions %}
+                    <tr class="border-b border-gray-800/30 hover:bg-gray-800/20">
+                        <td class="py-2 px-3 font-medium font-mono">{{ p.symbol }}</td>
+                        <td class="py-2 px-3">
+                            {% if p.position_type == 'short_put' %}
+                            <span class="text-blue-400">PUT</span>
+                            {% elif p.position_type == 'stock' %}
+                            <span class="text-yellow-400">STK</span>
+                            {% elif p.position_type == 'covered_call' %}
+                            <span class="text-purple-400">CALL</span>
+                            {% elif p.position_type == 'long_put_hedge' %}
+                            <span class="text-orange-400">HEDGE</span>
+                            {% endif %}
+                        </td>
+                        <td class="py-2 px-3 text-right font-mono">${{ "%.0f"|format(p.strike) if p.strike else '—' }}</td>
+                        <td class="py-2 px-3 text-gray-400">{{ p.expiry[4:6] + '/' + p.expiry[6:8] if p.expiry and p.expiry|length >= 8 else '—' }}</td>
+                        <td class="py-2 px-3 text-right text-emerald-400 font-mono">${{ "%.2f"|format(p.entry_premium) }}</td>
+                        <td class="py-2 px-3">
+                            <form method="post" action="/controls/force-close/{{ p.id }}"
+                                  onsubmit="return confirm('Force close {{ p.symbol }}?')">
+                                <button class="text-red-500/60 hover:text-red-400 transition">✕</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="p-6 text-center text-gray-600 text-sm">No open positions</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Recent Trades -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg">
+        <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-gray-200">Recent Trades</h2>
+            <a href="/trades" class="text-xs text-gray-500 hover:text-gray-300 transition">View all →</a>
+        </div>
+        <div class="overflow-x-auto max-h-96 overflow-y-auto">
+            {% if recent_trades %}
+            <table class="w-full text-xs">
+                <thead class="sticky top-0 bg-gray-900">
+                    <tr class="text-gray-500 border-b border-gray-800">
+                        <th class="text-left py-2 px-3">Time</th>
+                        <th class="text-left py-2 px-3">Symbol</th>
+                        <th class="text-left py-2 px-3">Action</th>
+                        <th class="text-right py-2 px-3">Strike/Qty</th>
+                        <th class="text-right py-2 px-3">Prem/Price</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in recent_trades %}
+                    <tr class="border-b border-gray-800/30 hover:bg-gray-800/20 ">
+                        <td class="py-2 px-3 text-gray-500">{{ t.created_at.strftime('%m/%d %H:%M') if t.created_at else '' }}</td>
+                        <td class="py-2 px-3 font-medium font-mono">{{ t.symbol }}</td>
+                        <td class="py-2 px-3">
+                            {% if t.trade_type.value == 'sell_put' %}<span class="text-blue-400">SELL PUT</span>
+                            {% elif t.trade_type.value == 'buy_put' %}<span class="text-blue-300">BUY PUT</span>
+                            {% elif t.trade_type.value == 'sell_call' %}<span class="text-purple-400">SELL CALL</span>
+                            {% elif t.trade_type.value == 'assignment' %}<span class="text-yellow-400">ASSIGNED</span>
+                            {% elif t.trade_type.value == 'called_away' %}<span class="text-orange-400">CALLED</span>
+                            {% elif t.trade_type.value == 'buy_stock' %}<span class="text-green-400">BUY STOCK</span>
+                            {% elif t.trade_type.value == 'sell_stock' %}<span class="text-red-400">SELL STOCK</span>
+                            {% else %}{{ t.trade_type.value }}{% endif %}
+                        </td>
+                        {% if t.trade_type.value in ('buy_stock', 'sell_stock') %}
+                        <td class="py-2 px-3 text-right font-mono">{{ t.quantity }}x</td>
+                        <td class="py-2 px-3 text-right text-emerald-400 font-mono">${{ "%.2f"|format(t.fill_price or 0) }}</td>
+                        {% else %}
+                        <td class="py-2 px-3 text-right font-mono">${{ "%.0f"|format(t.strike) }}</td>
+                        <td class="py-2 px-3 text-right text-emerald-400 font-mono">${{ "%.2f"|format(t.premium) }}</td>
+                        {% endif %}
+
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="p-6 text-center text-gray-600 text-sm">No trades yet</div>
+            {% endif %}
+        </div>
+    </div>
+
+</div>
+
+<!-- ═══ Risk Rules Summary ═══ -->
+<div class="mt-6 bg-gray-900 border border-gray-800 rounded-lg p-4">
+    <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Active Risk & Strategy Rules</h2>
+    <div class="flex flex-wrap gap-2 text-xs">
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">VIX &gt; 30 → halt</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">SPY MA10 &lt; MA20 → 50% reduction</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 10 trades/day</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 5% per position</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 30% per sector</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">VIX-adaptive IV rank</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Dynamic delta by VIX regime</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">DTE-adaptive delta widening</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Skip earnings within 3 days</span>
+        <span class="px-2.5 py-1 rounded bg-blue-900/40 text-blue-300">Progressive CC strikes</span>
+        <span class="px-2.5 py-1 rounded bg-blue-900/40 text-blue-300">SPY tail hedge (5% OTM)</span>
+        <span class="px-2.5 py-1 rounded bg-purple-900/40 text-purple-300">Portfolio-aware ranking</span>
+        <span class="px-2.5 py-1 rounded bg-purple-900/40 text-purple-300">Margin on capitulation/stabilization</span>
+    </div>
+</div>
+
+</div>
+
+
+
+{% endblock %}

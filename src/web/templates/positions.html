@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Positions — Maggy &amp; Winston{% endblock %}
+{% block nav_positions %}bg-gray-800 text-emerald-400{% endblock %}
+{% block m_nav_positions %}bg-gray-800 text-emerald-400{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold">Open Positions</h1>
+    <form method="post" action="/positions/sync">
+        <button class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2 rounded">
+            🔄 Sync IBKR
+        </button>
+    </form>
+</div>
+
+{% if positions %}
+<div class="overflow-x-auto">
+    <table class="w-full text-sm">
+        <thead>
+            <tr class="text-gray-400 border-b border-gray-800">
+                <th class="text-left py-3 px-4">Symbol</th>
+                <th class="text-left py-3 px-4">Type</th>
+                <th class="text-right py-3 px-4">Strike</th>
+                <th class="text-left py-3 px-4">Expiry</th>
+                <th class="text-right py-3 px-4">Premium</th>
+                <th class="text-right py-3 px-4">Qty</th>
+                <th class="text-left py-3 px-4">Opened</th>
+                <th class="text-left py-3 px-4">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in positions %}
+            <tr class="border-b border-gray-800/50 hover:bg-gray-800/30">
+                <td class="py-3 px-4 font-medium">{{ p.symbol }}</td>
+                <td class="py-3 px-4">
+                    {% if p.position_type == 'short_put' %}
+                        <span class="text-blue-400">Short Put</span>
+                    {% elif p.position_type == 'stock' %}
+                        <span class="text-yellow-400">Stock</span>
+                    {% elif p.position_type == 'covered_call' %}
+                        <span class="text-purple-400">Covered Call</span>
+                    {% endif %}
+                </td>
+                <td class="py-3 px-4 text-right">${{ "%.2f"|format(p.strike) if p.strike else '—' }}</td>
+                <td class="py-3 px-4">{{ p.expiry or '—' }}</td>
+                <td class="py-3 px-4 text-right text-emerald-400">${{ "%.2f"|format(p.entry_premium) }}</td>
+                <td class="py-3 px-4 text-right">{{ p.quantity }}</td>
+                <td class="py-3 px-4 text-gray-400">{{ p.opened_at.strftime('%m/%d %H:%M') if p.opened_at else '—' }}</td>
+                <td class="py-3 px-4">
+                    <form method="post" action="/controls/force-close/{{ p.id }}"
+                          onsubmit="return confirm('Force close {{ p.symbol }}?')">
+                        <button class="text-red-400 hover:text-red-300 text-xs">Force Close</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-gray-500">No open positions.</p>
+{% endif %}
+{% endblock %}

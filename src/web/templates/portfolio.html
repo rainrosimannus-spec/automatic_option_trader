@@ -1,0 +1,529 @@
+{% extends "base.html" %}
+{% block title %}Long-Term Portfolio{% endblock %}
+{% block nav_portfolio %}text-emerald-400 bg-gray-800{% endblock %}
+{% block m_nav_portfolio %}text-emerald-400 bg-gray-800{% endblock %}
+
+{% block content %}
+<div class="max-w-[1400px]">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-3">
+        <div>
+            <h1 class="text-xl sm:text-2xl font-bold">📈 Long-Term Portfolio</h1>
+            <p class="text-sm text-gray-500 mt-1">10–30 year wealth accumulation — buy quality at good prices</p>
+        </div>
+        <div class="flex items-center gap-3">
+            {% if market_status == "overbought" %}
+            <span class="px-3 py-1.5 rounded-full bg-amber-900/40 text-amber-300 text-sm">
+                ⚠ Market Overbought ({{market_pct}}% above 200 SMA) — Accumulating Cash
+            </span>
+            {% elif market_status == "normal" %}
+            <span class="px-3 py-1.5 rounded-full bg-emerald-900/40 text-emerald-300 text-sm">
+                ✓ Market Normal — Deploying Capital
+            </span>
+            {% else %}
+            <span class="px-3 py-1.5 rounded-full bg-gray-800 text-gray-400 text-sm">
+                Awaiting first scan
+            </span>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- ═══ Summary Cards ═══ -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Total Invested</div>
+            <div class="text-2xl font-bold text-white mt-1">${{"{:,.0f}".format(total_invested)}}</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Market Value</div>
+            <div class="text-2xl font-bold text-white mt-1">${{"{:,.0f}".format(total_value)}}</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Unrealized P&L</div>
+            <div class="text-2xl font-bold mt-1 {% if total_pnl >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">
+                ${{"{:,.0f}".format(total_pnl)}} ({{"{:.1f}".format(total_pnl_pct)}}%)
+            </div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Dividends</div>
+            <div class="text-2xl font-bold text-blue-400 mt-1">${{"{:,.0f}".format(total_dividends)}}</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Holdings</div>
+            <div class="text-2xl font-bold text-white mt-1">{{num_holdings}} stocks</div>
+        </div>
+    </div>
+
+    <!-- ═══ Performance Chart + Tier Breakdown ═══ -->
+    <div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-6">
+
+        <!-- Portfolio Value vs BRK-B -->
+        <div class="xl:col-span-2 bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-sm font-semibold text-gray-200">Portfolio Return % vs BRK-B Benchmark</h2>
+                <div class="flex items-center gap-4 text-xs">
+                    <span class="flex items-center gap-1.5">
+                        <span class="w-3 h-0.5 bg-emerald-400 rounded"></span>
+                        Portfolio Return %
+                    </span>
+                    <span class="flex items-center gap-1.5">
+                        <span class="w-3 h-0.5 bg-amber-400 rounded"></span>
+                        BRK-B Return %
+                    </span>
+                </div>
+            </div>
+            {% if perf_labels and perf_labels|length > 1 %}
+            <div style="height: 260px;">
+                <canvas id="portfolioChart"></canvas>
+            </div>
+            {% else %}
+            <div class="flex items-center justify-center h-48 text-gray-600 text-sm">
+                📈 Performance chart will appear after portfolio transactions
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Tier Allocation -->
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <h2 class="text-sm font-semibold text-gray-200 mb-4">Tier Allocation</h2>
+            {% set tier_total = tier_dividend + tier_growth + tier_breakthrough %}
+            {% if tier_total > 0 %}
+            <div style="height: 180px;">
+                <canvas id="tierChart"></canvas>
+            </div>
+            <div class="mt-3 space-y-2 text-xs">
+                <div class="flex items-center justify-between">
+                    <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-blue-400"></span> Dividend</span>
+                    <span class="text-gray-300">${{"{:,.0f}".format(tier_dividend)}} · {{"{:.0f}".format(tier_dividend / tier_total * 100)}}%</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span> Growth</span>
+                    <span class="text-gray-300">${{"{:,.0f}".format(tier_growth)}} · {{"{:.0f}".format(tier_growth / tier_total * 100)}}%</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-purple-400"></span> Breakthrough</span>
+                    <span class="text-gray-300">${{"{:,.0f}".format(tier_breakthrough)}} · {{"{:.0f}".format(tier_breakthrough / tier_total * 100)}}%</span>
+                </div>
+            </div>
+            <div class="mt-3 pt-2 border-t border-gray-800 text-xs text-gray-500">
+                Target: 25% / 50% / 25%
+            </div>
+            {% else %}
+            <div class="flex items-center justify-center h-48 text-gray-600 text-sm">
+                No holdings yet
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- ═══ Top & Bottom Performers ═══ -->
+    {% if top_performers %}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <!-- Top -->
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <h2 class="text-sm font-semibold text-gray-200 mb-3">🏆 Top Performers</h2>
+            <div class="space-y-2">
+                {% for p in top_performers %}
+                <div class="flex items-center justify-between text-sm">
+                    <div class="flex items-center gap-2">
+                        <span class="font-medium text-white">{{p.symbol}}</span>
+                        <span class="px-1.5 py-0.5 rounded text-xs
+                            {% if p.tier == 'dividend' %}bg-blue-900/50 text-blue-300
+                            {% elif p.tier == 'breakthrough' %}bg-purple-900/50 text-purple-300
+                            {% else %}bg-emerald-900/50 text-emerald-300{% endif %}">{{p.tier}}</span>
+                    </div>
+                    <span class="font-mono text-emerald-400">+{{"{:.1f}".format(p.pnl_pct)}}% · ${{"{:,.0f}".format(p.pnl_abs)}}</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        <!-- Bottom -->
+        {% if bottom_performers %}
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <h2 class="text-sm font-semibold text-gray-200 mb-3">📉 Underperformers</h2>
+            <div class="space-y-2">
+                {% for p in bottom_performers %}
+                <div class="flex items-center justify-between text-sm">
+                    <div class="flex items-center gap-2">
+                        <span class="font-medium text-white">{{p.symbol}}</span>
+                        <span class="px-1.5 py-0.5 rounded text-xs
+                            {% if p.tier == 'dividend' %}bg-blue-900/50 text-blue-300
+                            {% elif p.tier == 'breakthrough' %}bg-purple-900/50 text-purple-300
+                            {% else %}bg-emerald-900/50 text-emerald-300{% endif %}">{{p.tier}}</span>
+                    </div>
+                    <span class="font-mono text-red-400">{{"{:.1f}".format(p.pnl_pct)}}% · ${{"{:,.0f}".format(p.pnl_abs)}}</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- Chart.js scripts -->
+    {% if perf_labels and perf_labels|length > 1 %}
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // ── Portfolio vs BRK-B Benchmark Chart ──
+        const ctx = document.getElementById('portfolioChart');
+        if (ctx) {
+            const labels = {{ perf_labels | tojson }};
+            const fmtLabels = labels.map(d => { const p = d.split('-'); return p[1]+'/'+p[2]; });
+
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: fmtLabels,
+                    datasets: [
+                        {
+                            label: 'Portfolio Return %',
+                            data: {{ perf_portfolio | tojson }},
+                            borderColor: '#34d399',
+                            backgroundColor: 'rgba(52,211,153,0.06)',
+                            fill: true, borderWidth: 2, tension: 0.3,
+                            pointRadius: 0, pointHoverRadius: 4,
+                        },
+                        {
+                            label: 'BRK-B Return %',
+                            data: {{ perf_brkb | tojson }},
+                            borderColor: '#f59e0b',
+                            borderDash: [6, 3],
+                            borderWidth: 1.5, tension: 0.3,
+                            pointRadius: 0, fill: false,
+                        },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#1f2937',
+                            borderColor: '#374151', borderWidth: 1,
+                            titleColor: '#9ca3af', bodyColor: '#e5e7eb',
+                            callbacks: {
+                                label: function(c) {
+                                    return c.dataset.label + ': ' + c.parsed.y.toFixed(1) + '%';
+                                }
+                            }
+                        },
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(75,85,99,0.2)' },
+                            ticks: { color: '#6b7280', maxRotation: 0, autoSkip: true, maxTicksLimit: 12 },
+                        },
+                        y: {
+                            grid: { color: 'rgba(75,85,99,0.2)' },
+                            ticks: { color: '#6b7280', callback: v => v.toFixed(1) + '%' },
+                        },
+                    },
+                },
+            });
+        }
+    });
+    </script>
+    {% endif %}
+
+    <!-- Tier chart renders independently -->
+    {% set tier_total = tier_dividend + tier_growth + tier_breakthrough %}
+    {% if tier_total > 0 %}
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const tierCtx = document.getElementById('tierChart');
+        if (tierCtx) {
+            new Chart(tierCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Dividend', 'Growth', 'Breakthrough'],
+                    datasets: [{
+                        data: [{{ tier_dividend }}, {{ tier_growth }}, {{ tier_breakthrough }}],
+                        backgroundColor: ['#60a5fa', '#34d399', '#a78bfa'],
+                        borderColor: ['#1e3a5f', '#134e4a', '#3b1f7a'],
+                        borderWidth: 2,
+                    }],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '65%',
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#1f2937',
+                            borderColor: '#374151', borderWidth: 1,
+                            bodyColor: '#e5e7eb',
+                            callbacks: {
+                                label: function(c) {
+                                    const total = c.dataset.data.reduce((a,b) => a+b, 0);
+                                    const pct = (c.parsed / total * 100).toFixed(0);
+                                    return c.label + ': $' + c.parsed.toLocaleString() + ' (' + pct + '%)';
+                                }
+                            }
+                        },
+                    },
+                },
+            });
+        }
+    });
+    </script>
+    {% endif %}
+
+    <!-- ═══ Holdings Table ═══ -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Holdings</h2>
+        {% if holdings %}
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+                <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
+                    <tr>
+                        <th class="px-3 py-2">Stock</th>
+                        <th class="px-3 py-2">Sector</th>
+                        <th class="px-3 py-2 text-right">Shares</th>
+                        <th class="px-3 py-2 text-right">Avg Cost</th>
+                        <th class="px-3 py-2 text-right">Current</th>
+                        <th class="px-3 py-2 text-right">Market Value</th>
+                        <th class="px-3 py-2 text-right">P&L</th>
+                        <th class="px-3 py-2 text-right">P&L %</th>
+                        <th class="px-3 py-2">First Bought</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-800/50">
+                    {% for h in holdings %}
+                    <tr class="hover:bg-gray-800/50">
+                        <td class="px-3 py-2">
+                            <div class="font-medium text-white">{{h.symbol}}</div>
+                            <div class="text-xs text-gray-500">{{h.name[:25]}}</div>
+                        </td>
+                        <td class="px-3 py-2 text-gray-400">{{h.sector[:20]}}</td>
+                        <td class="px-3 py-2 text-right text-gray-300">{{h.shares}}</td>
+                        <td class="px-3 py-2 text-right text-gray-300">{{"{:.2f}".format(h.avg_cost)}}</td>
+                        <td class="px-3 py-2 text-right text-white">{{"{:.2f}".format(h.current_price or 0)}}</td>
+                        <td class="px-3 py-2 text-right text-white">${{"{:,.0f}".format(h.market_value or 0)}}</td>
+                        <td class="px-3 py-2 text-right {% if (h.unrealized_pnl or 0) >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">
+                            ${{"{:,.0f}".format(h.unrealized_pnl or 0)}}
+                        </td>
+                        <td class="px-3 py-2 text-right {% if (h.unrealized_pnl_pct or 0) >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">
+                            {{"{:.1f}".format(h.unrealized_pnl_pct or 0)}}%
+                        </td>
+                        <td class="px-3 py-2 text-gray-500 text-xs">{{h.first_bought.strftime('%Y-%m-%d') if h.first_bought else ''}}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-gray-500 text-center py-8">No holdings yet. The portfolio will start buying when signals appear.</div>
+        {% endif %}
+    </div>
+
+    <!-- ═══ Active Put Entries (CSPs) ═══ -->
+    {% if put_entries %}
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">
+            🎯 Active Put Entries
+            <span class="text-xs text-amber-400 ml-2">{{put_entries|length}} open CSPs — waiting for assignment</span>
+        </h2>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+                <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
+                    <tr>
+                        <th class="px-3 py-2">Stock</th>
+                        <th class="px-3 py-2">Tier</th>
+                        <th class="px-3 py-2 text-right">Strike</th>
+                        <th class="px-3 py-2">Expiry</th>
+                        <th class="px-3 py-2 text-right">Contracts</th>
+                        <th class="px-3 py-2 text-right">Premium</th>
+                        <th class="px-3 py-2 text-right">Effective Cost</th>
+                        <th class="px-3 py-2">Opened</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-800/50">
+                    {% for p in put_entries %}
+                    <tr class="hover:bg-gray-800/50">
+                        <td class="px-3 py-2 font-medium text-white">{{p.symbol}}</td>
+                        <td class="px-3 py-2">
+                            <span class="px-1.5 py-0.5 rounded text-xs
+                                {% if p.tier == 'dividend' %}bg-blue-900/50 text-blue-300
+                                {% elif p.tier == 'breakthrough' %}bg-purple-900/50 text-purple-300
+                                {% else %}bg-emerald-900/50 text-emerald-300{% endif %}">
+                                {{p.tier}}
+                            </span>
+                        </td>
+                        <td class="px-3 py-2 text-right text-white">{{"{:.2f}".format(p.strike)}}</td>
+                        <td class="px-3 py-2 text-amber-300">{{p.expiry}}</td>
+                        <td class="px-3 py-2 text-right text-gray-300">{{p.contracts}}</td>
+                        <td class="px-3 py-2 text-right text-emerald-400">${{"{:.2f}".format(p.premium)}}</td>
+                        <td class="px-3 py-2 text-right text-gray-300">
+                            ${{"{:.2f}".format(p.strike - p.premium)}}
+                        </td>
+                        <td class="px-3 py-2 text-xs text-gray-500">{{p.opened_at.strftime('%Y-%m-%d') if p.opened_at else ''}}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ═══ Buy Signals (Watchlist) ═══ -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">
+            Watchlist & Buy Signals
+            <span class="text-xs text-emerald-400 ml-2">
+                {{watchlist|selectattr('buy_signal')|list|length}} active signals
+            </span>
+        </h2>
+        {% if watchlist %}
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+                <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
+                    <tr>
+                        <th class="px-3 py-2">Stock</th>
+                        <th class="px-3 py-2">Tier</th>
+                        <th class="px-3 py-2">Score</th>
+                        <th class="px-3 py-2 text-right">Price</th>
+                        <th class="px-3 py-2 text-right">200 SMA</th>
+                        <th class="px-3 py-2 text-right">Discount</th>
+                        <th class="px-3 py-2 text-right">RSI(14)</th>
+                        <th class="px-3 py-2">Signal</th>
+                        <th class="px-3 py-2">Risks</th>
+                        <th class="px-3 py-2">Updated</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-800/50">
+                    {% for w in watchlist %}
+                    <tr class="hover:bg-gray-800/50 {% if w.buy_signal %}bg-emerald-950/20 border-l-2 border-emerald-500{% else %}border-l-2 border-transparent{% endif %}">
+                        <td class="px-3 py-2">
+                            <div class="font-medium text-white">{{w.symbol}}</div>
+                            <div class="text-xs text-gray-500">{{w.name[:25]}} · {{w.exchange}}</div>
+                        </td>
+                        <td class="px-3 py-2">
+                            <span class="px-1.5 py-0.5 rounded text-xs
+                                {% if w.tier == 'dividend' %}bg-blue-900/50 text-blue-300
+                                {% elif w.tier == 'breakthrough' %}bg-purple-900/50 text-purple-300
+                                {% elif w.category == 'existing_holding' %}bg-gray-700 text-gray-300
+                                {% else %}bg-emerald-900/50 text-emerald-300{% endif %}">
+                                {{w.tier or w.category or '—'}}
+                            </span>
+                        </td>
+                        <td class="px-3 py-2 text-emerald-400 font-medium">{{"{:.0f}".format(w.composite_score)}}</td>
+                        <td class="px-3 py-2 text-right text-white">{{"{:.2f}".format(w.current_price or 0)}}</td>
+                        <td class="px-3 py-2 text-right text-gray-400">{{"{:.2f}".format(w.sma_200 or 0)}}</td>
+                        <td class="px-3 py-2 text-right {% if (w.discount_pct or 0) > 5 %}text-emerald-400{% elif (w.discount_pct or 0) > 0 %}text-gray-300{% else %}text-red-400{% endif %}">
+                            {{"{:.1f}".format(w.discount_pct or 0)}}%
+                        </td>
+                        <td class="px-3 py-2 text-right {% if (w.rsi_14 or 50) < 30 %}text-emerald-400{% elif (w.rsi_14 or 50) > 70 %}text-red-400{% else %}text-gray-300{% endif %}">
+                            {{"{:.0f}".format(w.rsi_14 or 0)}}
+                        </td>
+                        <td class="px-3 py-2">
+                            {% if w.buy_signal %}
+                            <span class="px-2 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-300">
+                                {{w.signal_type or 'buy'}}
+                            </span>
+                            {% else %}
+                            <span class="text-xs text-gray-600">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-3 py-2">
+                            {% set penalty = w.risk_total_penalty or 0 %}
+                            {% if penalty > 0 %}
+                            <span class="text-xs {% if penalty >= 20 %}text-red-400{% elif penalty >= 10 %}text-yellow-400{% else %}text-gray-400{% endif %}" title="AI={{w.risk_ai_disruption or 'none'}} Reg={{w.risk_regulatory or 'none'}} Geo={{w.risk_geopolitical or 'none'}} Prod={{w.risk_single_product or 'none'}} Profit={{w.risk_profitability or 'none'}} | Penalty: -{{penalty}}">
+                                {% if w.risk_ai_disruption and w.risk_ai_disruption != 'none' %}🤖{% endif %}
+                                {% if w.risk_regulatory and w.risk_regulatory != 'none' %}⚖️{% endif %}
+                                {% if w.risk_geopolitical and w.risk_geopolitical != 'none' %}🌍{% endif %}
+                                {% if w.risk_single_product and w.risk_single_product != 'none' %}📦{% endif %}
+                                {% if w.risk_profitability and w.risk_profitability != 'none' %}💸{% endif %}
+                                <span class="text-[10px] opacity-70">-{{penalty|int}}</span>
+                            </span>
+                            {% else %}
+                            <span class="text-xs text-gray-700">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-3 py-2 text-xs text-gray-500">
+                            {{w.updated_at.strftime('%m-%d %H:%M') if w.updated_at else ''}}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-gray-500 text-center py-8">No watchlist loaded. Run the annual rescreen to populate.</div>
+        {% endif %}
+    </div>
+
+    <!-- ═══ Recent Transactions ═══ -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider">Recent Transactions</h2>
+            <a href="/portfolio/trades" class="text-xs text-gray-500 hover:text-gray-300 transition">View all →</a>
+        </div>
+        {% if transactions %}
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+                <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
+                    <tr>
+                        <th class="px-3 py-2">Date</th>
+                        <th class="px-3 py-2">Stock</th>
+                        <th class="px-3 py-2">Action</th>
+                        <th class="px-3 py-2 text-right">Shares</th>
+                        <th class="px-3 py-2 text-right">Price</th>
+                        <th class="px-3 py-2 text-right">Amount</th>
+                        <th class="px-3 py-2">Signal</th>
+                        <th class="px-3 py-2">Notes</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-800/50">
+                    {% for t in transactions %}
+                    <tr class="hover:bg-gray-800/50">
+                        <td class="px-3 py-2 text-gray-400 text-xs">{{t.created_at.strftime('%Y-%m-%d %H:%M')}}</td>
+                        <td class="px-3 py-2 font-medium text-white">{{t.symbol}}</td>
+                        <td class="px-3 py-2">
+                            <span class="px-1.5 py-0.5 rounded text-xs
+                                {% if t.action == 'buy' %}bg-emerald-900/50 text-emerald-300
+                                {% elif t.action == 'dividend' %}bg-blue-900/50 text-blue-300
+                                {% else %}bg-gray-800 text-gray-400{% endif %}">
+                                {{t.action}}
+                            </span>
+                        </td>
+                        <td class="px-3 py-2 text-right text-gray-300">{{t.shares}}</td>
+                        <td class="px-3 py-2 text-right text-gray-300">{{"{:.2f}".format(t.price)}}</td>
+                        <td class="px-3 py-2 text-right text-white">${{"{:,.0f}".format(t.amount)}}</td>
+                        <td class="px-3 py-2 text-xs text-gray-400">{{t.signal or ''}}</td>
+                        <td class="px-3 py-2 text-xs text-gray-500">{{t.notes or ''}}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-gray-500 text-center py-8">No transactions yet.</div>
+        {% endif %}
+    </div>
+
+    <!-- ═══ Strategy Info ═══ -->
+    <div class="mt-6 bg-gray-900/50 border border-gray-800 rounded-lg p-4">
+        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Buy Criteria</h3>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs text-gray-400">
+            <div>
+                <span class="text-emerald-400 font-medium">Below 200 SMA</span><br>
+                Buy when price ≥5% below 200-day average
+            </div>
+            <div>
+                <span class="text-emerald-400 font-medium">RSI Oversold</span><br>
+                Buy when RSI(14) ≤ 30 (emotional overreaction)
+            </div>
+            <div>
+                <span class="text-emerald-400 font-medium">52-Week Low</span><br>
+                Buy when within 5% of annual low
+            </div>
+            <div>
+                <span class="text-amber-400 font-medium">Market Guard</span><br>
+                Park cash when SPY >15% above 200 SMA
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

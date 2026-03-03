@@ -1,0 +1,441 @@
+{% extends "base.html" %}
+{% block title %}IPO Rider — Maggy &amp; Winston{% endblock %}
+{% block nav_ipo %}bg-gray-800 text-emerald-400{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto">
+
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold tracking-tight">🚀 IPO Rider</h1>
+    <span class="text-xs text-gray-500">Day-one flips + lockup re-entries</span>
+</div>
+
+<!-- ═══ ADD NEW IPO ═══════════════════════════════════════════ -->
+<div class="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8">
+    <h2 class="text-lg font-semibold mb-4">Add Upcoming IPO</h2>
+
+    <form method="post" action="/ipo/add" class="space-y-5">
+
+        <!-- Row 1: Company info -->
+        <div class="grid grid-cols-4 gap-4">
+            <div class="col-span-2">
+                <label class="block text-xs text-gray-400 mb-1">Company Name</label>
+                <input name="company_name" type="text" required placeholder="e.g. SpaceX"
+                       class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-amber-500">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Expected Ticker</label>
+                <input name="expected_ticker" type="text" required placeholder="e.g. SPACEX"
+                       class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-amber-500 uppercase">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Expected IPO Date</label>
+                <input name="expected_date" type="date"
+                       class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+            </div>
+        </div>
+
+        <!-- Row 2: Exchange/Currency -->
+        <div class="grid grid-cols-4 gap-4">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Exchange</label>
+                <input name="exchange" type="text" value="SMART"
+                       class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Currency</label>
+                <select name="currency"
+                        class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                    <option value="USD">USD</option>
+                    <option value="EUR">EUR</option>
+                    <option value="GBP">GBP</option>
+                    <option value="JPY">JPY</option>
+                    <option value="CHF">CHF</option>
+                </select>
+            </div>
+            <div class="col-span-2">
+                <label class="block text-xs text-gray-400 mb-1">Notes</label>
+                <input name="notes" type="text" placeholder="Optional notes..."
+                       class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-amber-500">
+            </div>
+        </div>
+
+        <!-- Phase 1: Day-one flip -->
+        <div class="border border-gray-700 rounded-lg p-4">
+            <div class="flex items-center gap-3 mb-3">
+                <input type="checkbox" name="flip_enabled" value="true" checked id="flip_check"
+                       class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-amber-500 focus:ring-amber-500">
+                <label for="flip_check" class="text-sm font-medium text-amber-300">Phase 1 — Day-One Flip</label>
+                <span class="text-xs text-gray-500">Auto-buy after opening auction, trailing stop sell</span>
+            </div>
+            <div class="grid grid-cols-4 gap-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Investment Amount</label>
+                    <input name="flip_amount" type="number" step="100" value="5000"
+                           class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Trailing Stop %</label>
+                    <input name="flip_trailing_pct" type="number" step="0.5" value="8.0"
+                           class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Hard Stop-Loss %</label>
+                    <input name="flip_stop_loss_pct" type="number" step="0.5" value="12.0"
+                           class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Max Hold Days</label>
+                    <input name="flip_max_hold_days" type="number" step="1" value="5" min="1" max="30"
+                           class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                </div>
+            </div>
+        </div>
+
+        <!-- Phase 2: Lockup re-entry -->
+        <div class="border border-gray-700 rounded-lg p-4">
+            <div class="flex items-center gap-3 mb-3">
+                <input type="checkbox" name="lockup_enabled" value="true" checked id="lockup_check"
+                       class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+                <label for="lockup_check" class="text-sm font-medium text-blue-300">Phase 2 — Lockup Re-entry</label>
+                <span class="text-xs text-gray-500">Trailing stop buy after lockup dip</span>
+            </div>
+            <div class="grid grid-cols-4 gap-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Lockup Expiry Date</label>
+                    <input name="lockup_date" type="date"
+                           class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Dip Target %</label>
+                    <input name="lockup_dip_pct" type="number" step="1" value="10"
+                           class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Trailing Buy %</label>
+                    <input name="lockup_trailing_buy_pct" type="number" step="0.5" value="5.0"
+                           class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Re-entry Amount</label>
+                    <input name="lockup_amount" type="number" step="100" value="10000"
+                           class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                </div>
+            </div>
+        </div>
+
+        <button type="submit"
+                class="px-6 py-2.5 rounded-lg font-medium bg-amber-600 hover:bg-amber-500 text-white transition">
+            ➕ Add to IPO Watchlist
+        </button>
+    </form>
+</div>
+
+<!-- ═══ ACTIVE IPOs ═══════════════════════════════════════════ -->
+{% if active %}
+<div class="mb-8">
+    <h2 class="text-lg font-semibold mb-3">Active IPOs</h2>
+    <div class="space-y-3">
+        {% for ipo in active %}
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+            <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-3">
+                    <span class="text-lg font-bold text-amber-300">{{ ipo.expected_ticker }}</span>
+                    <span class="text-sm text-gray-300">{{ ipo.company_name }}</span>
+
+                    <!-- Status badge -->
+                    {% if ipo.status == 'watching' %}
+                    <span class="px-2 py-0.5 text-xs rounded-full bg-gray-700 text-gray-300">👁 Watching</span>
+                    {% elif ipo.status == 'ipo_trading' %}
+                    <span class="px-2 py-0.5 text-xs rounded-full bg-emerald-900 text-emerald-300 pulse-green">📈 Day-1 Active</span>
+                    {% elif ipo.status == 'lockup_waiting' %}
+                    <span class="px-2 py-0.5 text-xs rounded-full bg-blue-900 text-blue-300">⏳ Lockup Wait</span>
+                    {% elif ipo.status == 'lockup_trading' %}
+                    <span class="px-2 py-0.5 text-xs rounded-full bg-blue-900 text-blue-300 pulse-green">🔄 Lockup Active</span>
+                    {% endif %}
+                </div>
+
+                {% if ipo.status in ('watching', 'lockup_waiting') %}
+                <div class="flex items-center gap-3">
+                    <button onclick="document.getElementById('edit-{{ ipo.id }}').classList.toggle('hidden')"
+                            class="text-xs text-gray-500 hover:text-amber-400 transition">✏️ Edit</button>
+                    <form method="post" action="/ipo/cancel/{{ ipo.id }}"
+                          onsubmit="return confirm('Cancel {{ ipo.expected_ticker }}?')">
+                        <button class="text-xs text-gray-500 hover:text-red-400 transition">✕ Cancel</button>
+                    </form>
+                </div>
+                {% endif %}
+            </div>
+
+            <div class="grid grid-cols-2 gap-x-8 gap-y-2 text-sm">
+                <!-- Phase 1 info -->
+                {% if ipo.flip_enabled %}
+                <div class="space-y-1">
+                    <div class="text-xs text-amber-400 font-medium mb-1">Phase 1 — Day-One Flip</div>
+                    <div class="flex justify-between text-gray-400">
+                        <span>Amount:</span>
+                        <span class="text-gray-200">${{ "{:,.0f}".format(ipo.flip_amount) }}</span>
+                    </div>
+                    <div class="flex justify-between text-gray-400">
+                        <span>Trailing Stop:</span>
+                        <span class="text-gray-200">{{ ipo.flip_trailing_pct }}%</span>
+                    </div>
+                    <div class="flex justify-between text-gray-400">
+                        <span>Hard Stop-Loss:</span>
+                        <span class="text-gray-200">{{ ipo.flip_stop_loss_pct }}%</span>
+                    </div>
+                    <div class="flex justify-between text-gray-400">
+                        <span>Max Hold:</span>
+                        <span class="text-gray-200">{{ ipo.flip_max_hold_days or 5 }} days</span>
+                    </div>
+                    {% if ipo.flip_entry_price %}
+                    <div class="flex justify-between text-gray-400 pt-1 border-t border-gray-800">
+                        <span>Entry:</span>
+                        <span class="text-emerald-400">${{ "%.2f"|format(ipo.flip_entry_price) }} × {{ ipo.flip_shares }} shares</span>
+                    </div>
+                    {% endif %}
+                    {% if ipo.flip_pnl is not none %}
+                    <div class="flex justify-between text-gray-400">
+                        <span>P&L:</span>
+                        <span class="{{ 'text-emerald-400' if ipo.flip_pnl >= 0 else 'text-red-400' }}">${{ "{:+,.2f}".format(ipo.flip_pnl) }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                <!-- Phase 2 info -->
+                {% if ipo.lockup_enabled %}
+                <div class="space-y-1">
+                    <div class="text-xs text-blue-400 font-medium mb-1">Phase 2 — Lockup Re-entry</div>
+                    <div class="flex justify-between text-gray-400">
+                        <span>Lockup Date:</span>
+                        <span class="text-gray-200">{{ ipo.lockup_date or 'TBD' }}</span>
+                    </div>
+                    <div class="flex justify-between text-gray-400">
+                        <span>Dip Target:</span>
+                        <span class="text-gray-200">-{{ ipo.lockup_dip_pct }}%</span>
+                    </div>
+                    <div class="flex justify-between text-gray-400">
+                        <span>Trailing Buy:</span>
+                        <span class="text-gray-200">{{ ipo.lockup_trailing_buy_pct }}% bounce</span>
+                    </div>
+                    <div class="flex justify-between text-gray-400">
+                        <span>Amount:</span>
+                        <span class="text-gray-200">${{ "{:,.0f}".format(ipo.lockup_amount) }}</span>
+                    </div>
+                    {% if ipo.pre_lockup_price %}
+                    <div class="flex justify-between text-gray-400 pt-1 border-t border-gray-800">
+                        <span>Pre-lockup price:</span>
+                        <span class="text-gray-200">${{ "%.2f"|format(ipo.pre_lockup_price) }}</span>
+                    </div>
+                    {% endif %}
+                    {% if ipo.lockup_entry_price %}
+                    <div class="flex justify-between text-gray-400">
+                        <span>Re-entry:</span>
+                        <span class="text-emerald-400">${{ "%.2f"|format(ipo.lockup_entry_price) }} × {{ ipo.lockup_shares }} shares</span>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+
+            {% if ipo.notes %}
+            <div class="mt-2 text-xs text-gray-500 italic">{{ ipo.notes }}</div>
+            {% endif %}
+
+            {% if ipo.expected_date %}
+            <div class="mt-2 text-xs text-gray-500">Expected IPO: {{ ipo.expected_date }}</div>
+            {% endif %}
+
+            <!-- Inline edit form (hidden by default) -->
+            {% if ipo.status in ('watching', 'lockup_waiting') %}
+            <div id="edit-{{ ipo.id }}" class="hidden mt-4 pt-4 border-t border-gray-700">
+                <form method="post" action="/ipo/edit/{{ ipo.id }}" class="space-y-4">
+                    <div class="grid grid-cols-4 gap-3">
+                        <div class="col-span-2">
+                            <label class="block text-xs text-gray-400 mb-1">Company Name</label>
+                            <input name="company_name" type="text" value="{{ ipo.company_name }}"
+                                   class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Ticker</label>
+                            <input name="expected_ticker" type="text" value="{{ ipo.expected_ticker }}"
+                                   class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500 uppercase">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">IPO Date</label>
+                            <input name="expected_date" type="date" value="{{ ipo.expected_date or '' }}"
+                                   class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-4 gap-3">
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Exchange</label>
+                            <input name="exchange" type="text" value="{{ ipo.exchange }}"
+                                   class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Currency</label>
+                            <select name="currency"
+                                    class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                                <option value="USD" {{ 'selected' if ipo.currency == 'USD' }}>USD</option>
+                                <option value="EUR" {{ 'selected' if ipo.currency == 'EUR' }}>EUR</option>
+                                <option value="GBP" {{ 'selected' if ipo.currency == 'GBP' }}>GBP</option>
+                                <option value="JPY" {{ 'selected' if ipo.currency == 'JPY' }}>JPY</option>
+                                <option value="CHF" {{ 'selected' if ipo.currency == 'CHF' }}>CHF</option>
+                            </select>
+                        </div>
+                        <div class="col-span-2">
+                            <label class="block text-xs text-gray-400 mb-1">Notes</label>
+                            <input name="notes" type="text" value="{{ ipo.notes or '' }}"
+                                   class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                        </div>
+                    </div>
+
+                    <!-- Phase 1 -->
+                    <div class="border border-gray-700 rounded-lg p-3">
+                        <div class="flex items-center gap-3 mb-2">
+                            <input type="checkbox" name="flip_enabled" value="true" {{ 'checked' if ipo.flip_enabled }}
+                                   class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-amber-500">
+                            <span class="text-xs font-medium text-amber-300">Phase 1 — Day-One Flip</span>
+                        </div>
+                        <div class="grid grid-cols-4 gap-3">
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Amount</label>
+                                <input name="flip_amount" type="number" step="100" value="{{ ipo.flip_amount }}"
+                                       class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Trailing Stop %</label>
+                                <input name="flip_trailing_pct" type="number" step="0.5" value="{{ ipo.flip_trailing_pct }}"
+                                       class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Hard Stop %</label>
+                                <input name="flip_stop_loss_pct" type="number" step="0.5" value="{{ ipo.flip_stop_loss_pct }}"
+                                       class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Max Hold Days</label>
+                                <input name="flip_max_hold_days" type="number" step="1" value="{{ ipo.flip_max_hold_days or 5 }}" min="1" max="30"
+                                       class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Phase 2 -->
+                    <div class="border border-gray-700 rounded-lg p-3">
+                        <div class="flex items-center gap-3 mb-2">
+                            <input type="checkbox" name="lockup_enabled" value="true" {{ 'checked' if ipo.lockup_enabled }}
+                                   class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500">
+                            <span class="text-xs font-medium text-blue-300">Phase 2 — Lockup Re-entry</span>
+                        </div>
+                        <div class="grid grid-cols-4 gap-3">
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Lockup Date</label>
+                                <input name="lockup_date" type="date" value="{{ ipo.lockup_date or '' }}"
+                                       class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Dip Target %</label>
+                                <input name="lockup_dip_pct" type="number" step="1" value="{{ ipo.lockup_dip_pct }}"
+                                       class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Trailing Buy %</label>
+                                <input name="lockup_trailing_buy_pct" type="number" step="0.5" value="{{ ipo.lockup_trailing_buy_pct }}"
+                                       class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Amount</label>
+                                <input name="lockup_amount" type="number" step="100" value="{{ ipo.lockup_amount }}"
+                                       class="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-amber-500">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-3">
+                        <button type="submit"
+                                class="px-4 py-1.5 rounded-lg text-sm font-medium bg-amber-600 hover:bg-amber-500 text-white transition">
+                            💾 Save Changes
+                        </button>
+                        <button type="button" onclick="document.getElementById('edit-{{ ipo.id }}').classList.add('hidden')"
+                                class="px-4 py-1.5 rounded-lg text-sm text-gray-400 hover:text-gray-200 transition">
+                            Cancel
+                        </button>
+                    </div>
+                </form>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- ═══ COMPLETED ═════════════════════════════════════════════ -->
+{% if completed %}
+<div class="mb-8">
+    <h2 class="text-lg font-semibold mb-3">Completed</h2>
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b border-gray-800 text-gray-400 text-xs">
+                    <th class="text-left py-2 px-3">Ticker</th>
+                    <th class="text-left py-2 px-3">Company</th>
+                    <th class="text-left py-2 px-3">Status</th>
+                    <th class="text-right py-2 px-3">Flip Entry</th>
+                    <th class="text-right py-2 px-3">Flip Exit</th>
+                    <th class="text-right py-2 px-3">Flip P&L</th>
+                    <th class="text-right py-2 px-3">Lockup Entry</th>
+                    <th class="text-right py-2 px-3">Date</th>
+                    <th class="text-center py-2 px-3"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for ipo in completed %}
+                <tr class="border-b border-gray-800/50 hover:bg-gray-800/30">
+                    <td class="py-2 px-3 font-medium text-amber-300">{{ ipo.expected_ticker }}</td>
+                    <td class="py-2 px-3 text-gray-300">{{ ipo.company_name }}</td>
+                    <td class="py-2 px-3">
+                        {% if ipo.status == 'flip_done' %}
+                        <span class="text-emerald-400 text-xs">Flip done</span>
+                        {% elif ipo.status == 'lockup_done' %}
+                        <span class="text-blue-400 text-xs">In portfolio</span>
+                        {% elif ipo.status == 'cancelled' %}
+                        <span class="text-gray-500 text-xs">Cancelled</span>
+                        {% endif %}
+                    </td>
+                    <td class="py-2 px-3 text-right text-gray-300">{{ "$%.2f"|format(ipo.flip_entry_price) if ipo.flip_entry_price else '—' }}</td>
+                    <td class="py-2 px-3 text-right text-gray-300">{{ "$%.2f"|format(ipo.flip_exit_price) if ipo.flip_exit_price else '—' }}</td>
+                    <td class="py-2 px-3 text-right {{ 'text-emerald-400' if ipo.flip_pnl and ipo.flip_pnl >= 0 else 'text-red-400' if ipo.flip_pnl else 'text-gray-500' }}">
+                        {{ "${:+,.2f}".format(ipo.flip_pnl) if ipo.flip_pnl is not none else '—' }}
+                    </td>
+                    <td class="py-2 px-3 text-right text-gray-300">{{ "$%.2f"|format(ipo.lockup_entry_price) if ipo.lockup_entry_price else '—' }}</td>
+                    <td class="py-2 px-3 text-right text-gray-500 text-xs">{{ ipo.updated_at.strftime('%Y-%m-%d') if ipo.updated_at else '' }}</td>
+                    <td class="py-2 px-3 text-center">
+                        {% if ipo.status == 'cancelled' %}
+                        <form method="post" action="/ipo/reactivate/{{ ipo.id }}" class="inline">
+                            <button class="text-xs text-gray-500 hover:text-amber-400 transition">↻ Reactivate</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- Empty state -->
+{% if not active and not completed %}
+<div class="text-center py-16">
+    <div class="text-4xl mb-3">🚀</div>
+    <p class="text-gray-400 mb-1">No IPOs tracked yet</p>
+    <p class="text-gray-500 text-sm">Add an upcoming IPO above to start monitoring</p>
+</div>
+{% endif %}
+
+</div>
+{% endblock %}

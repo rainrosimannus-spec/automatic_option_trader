@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}Consigliere — Maggy &amp; Winston{% endblock %}
+{% block nav_consigliere %}bg-gray-800 text-emerald-400{% endblock %}
+{% block m_nav_consigliere %}bg-gray-800 text-emerald-400{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto">
+
+<!-- ─── Header ─── -->
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold tracking-tight font-display">
+            <span class="text-amber-300/90">Consigliere</span>
+        </h1>
+        <p class="text-sm text-gray-500 mt-1">Independent advisor — observes, learns, suggests improvements. Never executes.</p>
+    </div>
+    <div class="flex items-center gap-3">
+        {% if new_count > 0 %}
+        <span class="px-3 py-1 rounded-full bg-amber-900/40 border border-amber-700 text-amber-300 text-sm">
+            {{ new_count }} new insight{{ 's' if new_count != 1 else '' }}
+        </span>
+        {% endif %}
+        <form method="post" action="/consigliere/run-review">
+            <button class="px-4 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition border border-gray-700">
+                🔍 Run Review Now
+            </button>
+        </form>
+    </div>
+</div>
+
+<!-- ═══ Category Summary ═══ -->
+{% if category_counts %}
+<div class="flex flex-wrap gap-2 mb-6">
+    {% for cat, count in category_counts.items() %}
+    <span class="px-3 py-1.5 rounded-lg text-xs font-medium
+        {% if cat == 'risk' %}bg-red-900/30 text-red-300 border border-red-800/50
+        {% elif cat == 'performance' %}bg-blue-900/30 text-blue-300 border border-blue-800/50
+        {% elif cat == 'strategy' %}bg-purple-900/30 text-purple-300 border border-purple-800/50
+        {% elif cat == 'portfolio' %}bg-emerald-900/30 text-emerald-300 border border-emerald-800/50
+        {% elif cat == 'missed' %}bg-amber-900/30 text-amber-300 border border-amber-800/50
+        {% elif cat == 'improvement' %}bg-cyan-900/30 text-cyan-300 border border-cyan-800/50
+        {% elif cat == 'market' %}bg-indigo-900/30 text-indigo-300 border border-indigo-800/50
+        {% else %}bg-gray-800 text-gray-400 border border-gray-700{% endif %}">
+        {{ cat | upper }} · {{ count }}
+    </span>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- ═══ Active Memos ═══ -->
+{% if active %}
+{% for memo in active %}
+<div class="bg-gray-900 border rounded-xl p-5 mb-4
+    {% if memo.severity == 'critical' %}border-red-600/70
+    {% elif memo.severity == 'warning' %}border-amber-600/50
+    {% elif memo.severity == 'suggestion' %}border-blue-600/40
+    {% else %}border-gray-700{% endif %}">
+
+    <div class="flex items-start justify-between">
+        <div class="flex-1">
+            <!-- Header -->
+            <div class="flex items-center gap-2.5 mb-2">
+                <!-- Severity icon -->
+                {% if memo.severity == 'critical' %}
+                <span class="text-red-400 text-lg">🔴</span>
+                {% elif memo.severity == 'warning' %}
+                <span class="text-amber-400 text-lg">🟡</span>
+                {% elif memo.severity == 'suggestion' %}
+                <span class="text-blue-400 text-lg">💡</span>
+                {% else %}
+                <span class="text-gray-400 text-lg">📌</span>
+                {% endif %}
+
+                <!-- Category badge -->
+                <span class="px-2 py-0.5 rounded text-xs font-medium
+                    {% if memo.category == 'risk' %}bg-red-900/40 text-red-300
+                    {% elif memo.category == 'performance' %}bg-blue-900/40 text-blue-300
+                    {% elif memo.category == 'strategy' %}bg-purple-900/40 text-purple-300
+                    {% elif memo.category == 'portfolio' %}bg-emerald-900/40 text-emerald-300
+                    {% elif memo.category == 'missed' %}bg-amber-900/40 text-amber-300
+                    {% elif memo.category == 'improvement' %}bg-cyan-900/40 text-cyan-300
+                    {% else %}bg-gray-800 text-gray-400{% endif %}">
+                    {{ memo.category }}
+                </span>
+
+                {% if memo.status == 'new' %}
+                <span class="px-2 py-0.5 rounded text-xs bg-amber-600 text-white font-medium">NEW</span>
+                {% endif %}
+
+                {% if memo.symbol %}
+                <span class="text-xs font-mono text-gray-400">{{ memo.symbol }}</span>
+                {% endif %}
+            </div>
+
+            <!-- Title -->
+            <h3 class="text-base font-semibold text-gray-100 mb-2">{{ memo.title }}</h3>
+
+            <!-- Body -->
+            <div class="text-sm text-gray-400 leading-relaxed whitespace-pre-line mb-3">{{ memo.body }}</div>
+
+            <!-- Metric bar (if applicable) -->
+            {% if memo.metric_value is not none and memo.metric_benchmark is not none and memo.metric_benchmark > 0 %}
+            <div class="flex items-center gap-3 mb-2">
+                <div class="flex-1 bg-gray-800 rounded-full h-2 max-w-xs">
+                    {% set pct = (memo.metric_value / memo.metric_benchmark * 100) | int %}
+                    {% set bar_pct = [pct, 100] | min %}
+                    <div class="h-2 rounded-full transition-all
+                        {% if pct > 120 %}bg-red-500{% elif pct > 100 %}bg-amber-500{% elif pct > 80 %}bg-emerald-500{% else %}bg-blue-500{% endif %}"
+                        style="width: {{ bar_pct }}%"></div>
+                </div>
+                <span class="text-xs text-gray-500 font-mono">
+                    {{ "%.1f" | format(memo.metric_value) }} / {{ "%.1f" | format(memo.metric_benchmark) }}
+                </span>
+            </div>
+            {% endif %}
+
+            <!-- Footer -->
+            <p class="text-xs text-gray-600">{{ memo.created_at.strftime('%b %d, %H:%M') }}</p>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex flex-col gap-1.5 ml-4">
+            {% if memo.status == 'new' %}
+            <form method="post" action="/consigliere/acknowledge/{{ memo.id }}">
+                <button class="w-20 px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-800 hover:bg-gray-700 text-gray-300 transition border border-gray-700">
+                    👁 Read
+                </button>
+            </form>
+            {% endif %}
+            <form method="post" action="/consigliere/acted/{{ memo.id }}">
+                <button class="w-20 px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-900/40 hover:bg-emerald-800/40 text-emerald-300 transition border border-emerald-800/50">
+                    ✓ Acted
+                </button>
+            </form>
+            <form method="post" action="/consigliere/dismiss/{{ memo.id }}">
+                <button class="w-20 px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-800/50 hover:bg-gray-700 text-gray-500 transition border border-gray-800">
+                    ✕ Dismiss
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endfor %}
+
+{% else %}
+<div class="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center mb-6">
+    <div class="text-4xl mb-3">🤵</div>
+    <p class="text-gray-400 mb-2">The Consigliere has no observations yet.</p>
+    <p class="text-gray-600 text-sm">Click "Run Review Now" to analyze current portfolio and trading activity, or wait for the automated daily review.</p>
+</div>
+{% endif %}
+
+<!-- ═══ Dismissed History ═══ -->
+{% if dismissed %}
+<details class="mt-6">
+    <summary class="text-sm text-gray-500 cursor-pointer hover:text-gray-400 transition mb-3">
+        📋 Dismissed memos ({{ dismissed | length }})
+    </summary>
+    <div class="space-y-2">
+        {% for memo in dismissed %}
+        <div class="bg-gray-900/50 border border-gray-800/50 rounded-lg p-3 opacity-60">
+            <div class="flex items-center gap-2 text-xs">
+                <span class="text-gray-500">{{ memo.created_at.strftime('%b %d') }}</span>
+                <span class="px-1.5 py-0.5 rounded text-xs bg-gray-800 text-gray-500">{{ memo.category }}</span>
+                <span class="text-gray-400 flex-1">{{ memo.title }}</span>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</details>
+{% endif %}
+
+<!-- ═══ What the Consigliere Monitors ═══ -->
+<div class="mt-8 bg-gray-900/50 border border-gray-800 rounded-lg p-4">
+    <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Areas of Analysis</h3>
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs text-gray-500">
+        <div>
+            <span class="text-blue-400 font-medium">Performance</span><br>
+            Win rate, premium trends, P&L trajectory
+        </div>
+        <div>
+            <span class="text-red-400 font-medium">Risk</span><br>
+            Concentration, expiry clustering, margin usage
+        </div>
+        <div>
+            <span class="text-purple-400 font-medium">Strategy</span><br>
+            Delta/DTE optimization, entry timing, acceptance rate
+        </div>
+        <div>
+            <span class="text-emerald-400 font-medium">Portfolio</span><br>
+            Tier allocation drift, sector balance, rebalancing needs
+        </div>
+        <div>
+            <span class="text-amber-400 font-medium">Missed Opportunities</span><br>
+            Rejected suggestions that would have been profitable
+        </div>
+        <div>
+            <span class="text-cyan-400 font-medium">Parameter Tuning</span><br>
+            Delta range, IV rank thresholds, VIX regime calibration
+        </div>
+    </div>
+</div>
+
+</div>
+{% endblock %}

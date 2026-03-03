@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Trade History — Maggy &amp; Winston{% endblock %}
+{% block nav_trades %}bg-gray-800 text-emerald-400{% endblock %}
+{% block m_nav_trades %}bg-gray-800 text-emerald-400{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold">Trade History</h1>
+    <form method="post" action="/trades/sync">
+        <button class="px-4 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition border border-gray-700">
+            🔄 Sync from IBKR
+        </button>
+    </form>
+</div>
+
+{% if trades %}
+<div class="overflow-x-auto">
+    <table class="w-full text-sm">
+        <thead>
+            <tr class="text-gray-400 border-b border-gray-800">
+                <th class="text-left py-3 px-4">Time</th>
+                <th class="text-left py-3 px-4">Symbol</th>
+                <th class="text-left py-3 px-4">Type</th>
+                <th class="text-right py-3 px-4">Strike</th>
+                <th class="text-left py-3 px-4">Expiry</th>
+                <th class="text-right py-3 px-4">Price</th>
+                <th class="text-right py-3 px-4">Qty</th>
+                <th class="text-right py-3 px-4">Commission</th>
+                <th class="text-left py-3 px-4">Source</th>
+                <th class="text-left py-3 px-4">Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for t in trades %}
+            <tr class="border-b border-gray-800/50 hover:bg-gray-800/30">
+                <td class="py-3 px-4 text-gray-400">{{ t.created_at.strftime('%m/%d %H:%M') if t.created_at else '—' }}</td>
+                <td class="py-3 px-4 font-medium text-white">{{ t.symbol }}</td>
+                <td class="py-3 px-4">
+                    {% if t.trade_type.value == 'sell_put' %}
+                        <span class="text-blue-400">Sell Put</span>
+                    {% elif t.trade_type.value == 'buy_put' %}
+                        <span class="text-blue-300">Buy Put (Close)</span>
+                    {% elif t.trade_type.value == 'sell_call' %}
+                        <span class="text-purple-400">Sell Call</span>
+                    {% elif t.trade_type.value == 'buy_call' %}
+                        <span class="text-purple-300">Buy Call (Close)</span>
+                    {% elif t.trade_type.value == 'assignment' %}
+                        <span class="text-yellow-400">Assignment</span>
+                    {% elif t.trade_type.value == 'called_away' %}
+                        <span class="text-orange-400">Called Away</span>
+                    {% elif t.trade_type.value == 'buy_stock' %}
+                        <span class="text-emerald-400">Buy Stock</span>
+                    {% elif t.trade_type.value == 'sell_stock' %}
+                        <span class="text-red-400">Sell Stock</span>
+                    {% else %}
+                        {{ t.trade_type.value }}
+                    {% endif %}
+                </td>
+                <td class="py-3 px-4 text-right text-gray-300">{{ "$%.2f"|format(t.strike) if t.strike else '—' }}</td>
+                <td class="py-3 px-4 text-gray-400">{{ t.expiry if t.expiry else '—' }}</td>
+                <td class="py-3 px-4 text-right text-emerald-400">${{ "%.2f"|format(t.fill_price) }}</td>
+                <td class="py-3 px-4 text-right text-gray-300">{{ t.quantity }}</td>
+                <td class="py-3 px-4 text-right text-gray-500">{{ "$%.2f"|format(t.commission) if t.commission else '—' }}</td>
+                <td class="py-3 px-4">
+                    {% if t.source == 'ibkr_sync' %}
+                    <span class="text-xs px-2 py-0.5 rounded-full bg-indigo-900/50 text-indigo-300">IBKR</span>
+                    {% elif t.source == 'system' %}
+                    <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-900/50 text-emerald-300">M&W</span>
+                    {% else %}
+                    <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-500">{{ t.source or 'system' }}</span>
+                    {% endif %}
+                </td>
+                <td class="py-3 px-4">
+                    <span class="text-xs px-2 py-0.5 rounded-full
+                        {% if t.order_status.value == 'filled' %}bg-emerald-900 text-emerald-300
+                        {% elif t.order_status.value == 'submitted' %}bg-blue-900 text-blue-300
+                        {% elif t.order_status.value == 'cancelled' %}bg-gray-800 text-gray-400
+                        {% else %}bg-red-900 text-red-300{% endif %}">
+                        {{ t.order_status.value }}
+                    </span>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+    <p class="text-gray-400">No trades recorded yet. Click "Sync from IBKR" to import your recent executions, or wait for the automatic sync (every 15 minutes).</p>
+</div>
+{% endif %}
+{% endblock %}

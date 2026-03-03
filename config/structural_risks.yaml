@@ -1,0 +1,206 @@
+# ============================================================
+# Structural Risk Flags — per-stock risk assessment
+# ============================================================
+# Each risk is rated: none, low, medium, high
+#
+# Risk categories:
+#   ai_disruption:   AI/LLMs threaten the core business model
+#   regulatory:      Antitrust, regulation, or policy risk
+#   geopolitical:    China/Taiwan/sanctions exposure
+#   single_product:  Revenue depends on one product/customer
+#   profitability:   Still unprofitable, cash burn risk
+#
+# Penalty per level: none=0, low=5, medium=10, high=20
+# Total penalty is subtracted from composite buy score
+# A stock with 60 composite score and 20 penalty → effective 40
+# ============================================================
+
+# ── DIVIDEND TIER ──
+XOM:
+  # Stable business, low disruption risk
+  regulatory: low        # climate regulation risk
+CVX:
+  regulatory: low
+ENB: {}                  # pipeline monopoly, no major risks
+SO: {}                   # regulated utility
+PG: {}                   # consumer staples, no structural risk
+KO: {}
+NESN: {}
+UL: {}
+JNJ:
+  regulatory: low        # litigation risk (talc, etc.)
+ABBV:
+  single_product: medium # Humira loss of exclusivity, Skyrizi/Rinvoq ramp
+BMY:
+  single_product: medium # Eliquis patent cliff
+MDT: {}                  # diversified med-tech
+JPM:
+  regulatory: low        # banking regulation
+BAC:
+  regulatory: low
+BLK: {}                  # asset management, AI-resistant
+AVGO: {}                 # diversified tech + dividend
+TXN: {}                  # analog chips, long cycle
+MSFT:
+  regulatory: medium     # antitrust scrutiny, AI regulatory risk
+ASML: {}                 # monopoly, irreplaceable
+HD: {}                   # physical retail moat
+V:
+  regulatory: low        # payment regulation, interchange fees
+O: {}                    # REIT, physical assets
+MCD: {}                  # franchise model
+UNP: {}                  # railroad duopoly
+NVO:
+  single_product: medium # GLP-1 concentration (Ozempic/Wegovy)
+  regulatory: low        # drug pricing pressure
+
+# ── BREAKTHROUGH TIER ──
+CRSP:
+  profitability: high    # pre-revenue gene therapy
+  single_product: medium # Casgevy early launch
+NTLA:
+  profitability: high    # pre-revenue, clinical stage
+PATH:
+  ai_disruption: high    # RPA directly replaced by AI agents/LLMs
+  profitability: low     # recently profitable but fragile
+SYM:
+  single_product: high   # Walmart is dominant customer
+  profitability: medium  # inconsistent profitability
+ISRG: {}                 # surgical robotics, AI enhances not replaces
+TSLA:
+  regulatory: medium     # EV subsidies, autonomous regulation
+  single_product: low    # diversifying but still mostly cars
+BYD:
+  geopolitical: medium   # China company, tariff/sanction risk
+  regulatory: low        # subsidy dependency
+LI:
+  geopolitical: high     # China-only EV, delisting risk
+  profitability: low     # recently profitable
+ALB:
+  single_product: high   # lithium price dependent
+FSLR:
+  regulatory: medium     # solar subsidy/tariff dependent
+  single_product: medium # mostly one product line
+ENPH:
+  single_product: medium # residential solar microinverters
+SEDG:
+  profitability: high    # severe financial distress
+  single_product: high   # inverter market share collapse
+VWS:
+  profitability: medium  # margin pressure, restructuring
+  single_product: medium # wind turbines only
+ORSTED:
+  profitability: medium  # offshore wind cost overruns
+  single_product: high   # offshore wind only
+DXCM:
+  single_product: medium # CGM devices mainly
+  regulatory: low        # FDA approval dependency
+IONQ:
+  profitability: high    # pre-revenue quantum computing
+  single_product: high   # no commercial product yet
+RXRX:
+  profitability: high    # pre-revenue AI drug discovery
+  ai_disruption: low     # AI is their moat, but also their risk if others do it better
+RKLB:
+  profitability: medium  # approaching break-even
+  single_product: medium # small-launch is niche
+ACHR:
+  profitability: high    # pre-revenue, pre-certification
+  regulatory: high       # FAA certification risk
+  single_product: high   # no product yet
+DNA:
+  profitability: high    # cash burn, dilution risk
+  single_product: medium # platform model but few paying customers
+SMR:
+  profitability: high    # pre-revenue nuclear
+  regulatory: high       # NRC approval, political risk
+  single_product: high   # single reactor design
+GFUZ:
+  profitability: high    # pre-revenue fusion
+  single_product: high   # experimental technology
+FANUY: {}                # factory automation, diversified
+"6861": {}               # Keyence, sensors, diversified
+
+# ── GROWTH TIER ──
+NVDA:
+  geopolitical: medium   # China export restrictions
+  regulatory: low        # antitrust attention
+AMD:
+  geopolitical: low      # some China exposure
+TSM:
+  geopolitical: high     # Taiwan invasion risk, single point of failure
+ARM:
+  geopolitical: medium   # China licensing uncertainty
+  single_product: medium # CPU architecture royalties
+MU:
+  geopolitical: low
+  single_product: medium # memory cycles
+MRVL: {}                 # diversified semi
+AMAT:
+  geopolitical: medium   # China equipment restrictions
+LRCX:
+  geopolitical: medium   # China equipment restrictions
+KLAC:
+  geopolitical: medium   # China equipment restrictions
+"ON": {}                 # power semis, diversified
+NXPI: {}                 # auto + IoT chips
+MPWR: {}                 # power management
+SMCI:
+  regulatory: medium     # accounting concerns, auditor issues
+  single_product: medium # AI servers concentration
+BESI:
+  single_product: medium # hybrid bonding niche
+ANET: {}                 # networking, AI demand
+TER: {}                  # diversified (ATE + robotics)
+EQIX: {}                 # data center REIT, physical moat
+DLR: {}                  # data center REIT
+AMT: {}                  # tower REIT
+CCI: {}                  # tower REIT
+NOW:
+  ai_disruption: medium  # workflow automation threatened by AI agents
+SNOW:
+  ai_disruption: medium  # data warehousing disrupted by AI-native tools
+  profitability: low     # recently profitable
+MDB:
+  ai_disruption: low     # databases still needed, but usage patterns changing
+CRWD: {}                 # cybersecurity BENEFITS from AI threats
+PANW: {}                 # same — AI increases demand
+ZS: {}                   # same — zero trust more needed than ever
+GOOGL:
+  regulatory: high       # DOJ antitrust, search monopoly ruling
+  ai_disruption: low     # they ARE the AI, but search disruption risk
+META:
+  regulatory: medium     # privacy, content moderation, antitrust
+MELI: {}                 # LatAm e-commerce, local moat
+SE:
+  profitability: low     # recently profitable, competitive pressure
+  geopolitical: low      # SE Asia political risk
+NU:
+  profitability: low     # recently profitable
+  geopolitical: low      # LatAm regulatory
+GRAB:
+  profitability: medium  # still burning cash
+  geopolitical: low      # SE Asia
+ADYEY: {}                # payments infrastructure
+KSPI: {}                 # Kazakhstan super app
+SHOP:
+  ai_disruption: low     # AI helps merchants, doesn't replace platform
+UBER:
+  regulatory: medium     # gig worker classification
+  ai_disruption: low     # autonomous vehicles could disrupt OR benefit
+COIN:
+  regulatory: high       # crypto regulation uncertainty
+  single_product: medium # revenue tied to crypto trading volume
+ETN: {}                  # electrical infrastructure, physical moat
+PWR: {}                  # grid buildout
+ABBN: {}                 # industrial automation
+SU: {}                   # Schneider, energy management
+ROK:
+  ai_disruption: low     # factory automation enhanced by AI
+HTHIY: {}                # diversified conglomerate
+NEE: {}                  # utility/renewables
+CEG: {}                  # nuclear fleet, AI power deals
+BEPC: {}                 # renewables platform
+LLY:
+  single_product: medium # GLP-1 concentration
+REGN: {}                 # diversified biotech pipeline

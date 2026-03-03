@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title | default('Trade Suggestions') }} — Maggy &amp; Winston{% endblock %}
+{% block nav_suggestions %}{% if source != 'options' %}bg-gray-800 text-emerald-400{% endif %}{% endblock %}
+{% block m_nav_suggestions %}{% if source != 'options' %}bg-gray-800 text-emerald-400{% endif %}{% endblock %}
+{% block nav_options_suggestions %}{% if source == 'options' %}bg-gray-800 text-emerald-400{% endif %}{% endblock %}
+{% block m_nav_options_suggestions %}{% if source == 'options' %}bg-gray-800 text-emerald-400{% endif %}{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold">{{ page_title | default('Trade Suggestions') }}</h1>
+
+    <!-- Auto-Approve Toggle -->
+    <form method="post" action="/suggestions/toggle-auto-approve">
+        <input type="hidden" name="source" value="{{ source }}">
+        {% if auto_approve %}
+        <button class="flex items-center gap-2 px-4 py-2 rounded-lg font-medium bg-emerald-600 hover:bg-emerald-500 text-white text-sm transition">
+            <span class="inline-block w-3 h-3 rounded-full bg-white animate-pulse"></span>
+            Auto-Execute ON — Click to disable
+        </button>
+        {% else %}
+        <button class="flex items-center gap-2 px-4 py-2 rounded-lg font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm transition">
+            <span class="inline-block w-3 h-3 rounded-full bg-gray-500"></span>
+            Auto-Execute OFF — Manual approval
+        </button>
+        {% endif %}
+    </form>
+</div>
+
+{% if auto_approve %}
+<div class="bg-emerald-900/30 border border-emerald-700/50 rounded-xl p-4 mb-6">
+    <p class="text-emerald-300 text-sm">⚡ <strong>Auto-Execute is ON.</strong> New suggestions are automatically approved and sent to IBKR. Risk limits still apply. Toggle off above to return to manual approval.</p>
+</div>
+{% endif %}
+
+{% if not pending %}
+<div class="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
+    {% if source == 'options' %}
+    <p class="text-gray-400">No pending options suggestions. The scanner is monitoring your watchlist for put-selling opportunities.</p>
+    {% else %}
+    <p class="text-gray-400">No pending portfolio suggestions. The system is monitoring your watchlist and will suggest trades when buy signals appear.</p>
+    {% endif %}
+</div>
+{% endif %}
+
+<!-- ══ PENDING SUGGESTIONS ══════════════════════════════════ -->
+{% for s in pending %}
+<div class="bg-gray-900 border {{ 'border-blue-500/50' if s.status == 'submitted' else 'border-yellow-600/50' }} rounded-xl p-5 mb-4">
+    <div class="flex items-start justify-between">
+        <div class="flex-1">
+            <div class="flex items-center gap-3 mb-2">
+                {% if s.rank and s.rank > 0 %}
+                <span class="flex items-center justify-center w-8 h-8 rounded-full
+                    {% if s.rank == 1 %}bg-amber-600 text-white
+                    {% elif s.rank == 2 %}bg-gray-400 text-gray-900
+                    {% elif s.rank == 3 %}bg-amber-800 text-amber-200
+                    {% else %}bg-gray-700 text-gray-300{% endif %}
+                    text-sm font-bold">#{{ s.rank }}</span>
+                {% endif %}
+                <span class="text-xl font-bold text-white">{{ s.symbol }}</span>
+                <span class="px-2 py-0.5 rounded text-xs font-medium
+                    {% if s.action == 'buy_stock' %}bg-emerald-900 text-emerald-300
+                    {% elif s.action == 'sell_put' %}bg-blue-900 text-blue-300
+                    {% elif s.action == 'sell_covered_call' %}bg-purple-900 text-purple-300
+                    {% elif 'review' in s.action %}bg-amber-900 text-amber-300
+                    {% else %}bg-gray-700 text-gray-300{% endif %}">
+                    {{ s.action | replace('_', ' ') | upper }}
+                </span>
+                <span class="px-2 py-0.5 rounded text-xs bg-gray-800 text-gray-400">{{ s.tier }}</span>
+                <span class="px-2 py-0.5 rounded text-xs bg-gray-800 text-gray-500">{{ s.source }}</span>
+                {% if s.rank_score %}
+                <span class="text-xs text-gray-500">score {{ "%.0f" | format(s.rank_score) }}</span>
+                {% endif %}
+                {% if s.funding_source and s.funding_source not in ('cash', 'n/a') %}
+                <span class="px-2 py-0.5 rounded text-xs bg-red-900/50 text-red-300">{{ s.funding_source | replace('_', ' ') }}</span>
+                {% endif %}
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mb-3">
+                <div>
+                    <span class="text-gray-500">Qty:</span>
+                    <span class="text-gray-200 ml-1">{{ s.quantity }}</span>
+                </div>
+                {% if s.limit_price %}
+                <div>
+                    <span class="text-gray-500">Price:</span>
+                    <span class="text-gray-200 ml-1">${{ "%.2f" | format(s.limit_price) }}</span>
+                </div>
+                {% endif %}
+                {% if s.strike %}
+                <div>
+                    <span class="text-gray-500">Strike:</span>
+                    <span class="text-gray-200 ml-1">${{ "%.2f" | format(s.strike) }}</span>
+                </div>
+                {% endif %}
+                {% if s.expiry %}
+                <div>
+                    <span class="text-gray-500">Expiry:</span>
+                    <span class="text-gray-200 ml-1">{{ s.expiry }}</span>
+                </div>
+                {% endif %}
+                {% if s.current_price %}
+                <div>
+                    <span class="text-gray-500">Current:</span>
+                    <span class="text-gray-200 ml-1">${{ "%.2f" | format(s.current_price) }}</span>
+                </div>
+                {% endif %}
+                {% if s.rsi_14 %}
+                <div>
+                    <span class="text-gray-500">RSI:</span>
+                    <span class="{% if s.rsi_14 < 30 %}text-red-400{% else %}text-gray-200{% endif %} ml-1">{{ "%.1f" | format(s.rsi_14) }}</span>
+                </div>
+                {% endif %}
+                {% if s.est_cost %}
+                <div>
+                    <span class="text-gray-500">Est. Cost:</span>
+                    <span class="text-gray-200 ml-1">${{ "{:,.0f}".format(s.est_cost) }}</span>
+                </div>
+                {% endif %}
+                {% if s.margin_util_after %}
+                <div>
+                    <span class="text-gray-500">Margin after:</span>
+                    <span class="{% if s.margin_util_after > 0.6 %}text-yellow-400{% else %}text-gray-200{% endif %} ml-1">
+                        {{ "%.0f" | format(s.margin_util_after * 100) }}%
+                    </span>
+                </div>
+                {% endif %}
+            </div>
+
+            {% if s.rationale %}
+            <p class="text-sm text-gray-400 mb-2">{{ s.rationale }}</p>
+            {% endif %}
+
+            <p class="text-xs text-gray-600">Signal: {{ s.signal or 'manual' }} · Created: {{ s.created_at.strftime('%b %d %H:%M') }}</p>
+        </div>
+
+        <!-- Approve / Reject buttons (or status badge for submitted) -->
+        <div class="flex flex-col gap-2 ml-4">
+            {% if s.status == 'submitted' %}
+            <div class="w-24 px-3 py-2 rounded-lg text-center bg-blue-900/50 border border-blue-600/50">
+                <span class="text-blue-300 text-xs font-medium">📤 Sent to<br>IBKR</span>
+            </div>
+            {% else %}
+            <form method="post" action="/suggestions/approve/{{ s.id }}">
+                <input type="hidden" name="source" value="{{ source }}">
+                <button class="w-24 px-4 py-2 rounded-lg font-medium bg-emerald-600 hover:bg-emerald-500 text-white text-sm transition">
+                    ✅ Approve
+                </button>
+            </form>
+            <form method="post" action="/suggestions/reject/{{ s.id }}">
+                <input type="hidden" name="source" value="{{ source }}">
+                <button class="w-24 px-4 py-2 rounded-lg font-medium bg-red-700 hover:bg-red-600 text-white text-sm transition">
+                    ❌ Reject
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endfor %}
+
+<!-- ══ RECENT HISTORY ═══════════════════════════════════════ -->
+{% if recent %}
+<h2 class="text-lg font-semibold mt-8 mb-4 text-gray-400">Recent Decisions</h2>
+<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+    <table class="w-full text-sm">
+        <thead class="text-gray-500 border-b border-gray-800">
+            <tr>
+                <th class="px-4 py-2 text-left">Rank</th>
+                <th class="px-4 py-2 text-left">Symbol</th>
+                <th class="px-4 py-2 text-left">Action</th>
+                <th class="px-4 py-2 text-left">Qty</th>
+                <th class="px-4 py-2 text-left">Price</th>
+                <th class="px-4 py-2 text-left">Status</th>
+                <th class="px-4 py-2 text-left">Reviewed</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in recent %}
+            <tr class="border-b border-gray-800/50">
+                <td class="px-4 py-2 text-gray-400 font-mono">{{ '#' ~ s.rank if s.rank and s.rank > 0 else '—' }}</td>
+                <td class="px-4 py-2 font-medium text-gray-200">{{ s.symbol }}</td>
+                <td class="px-4 py-2 text-gray-400">{{ s.action | replace('_', ' ') }}</td>
+                <td class="px-4 py-2 text-gray-400">{{ s.quantity }}</td>
+                <td class="px-4 py-2 text-gray-400">{{ "$%.2f" | format(s.limit_price) if s.limit_price else '—' }}</td>
+                <td class="px-4 py-2">
+                    <span class="px-2 py-0.5 rounded text-xs
+                        {% if s.status == 'approved' %}bg-emerald-900/50 text-emerald-400
+                        {% elif s.status == 'rejected' %}bg-red-900/50 text-red-400
+                        {% else %}bg-gray-800 text-gray-500{% endif %}">
+                        {{ s.status }}
+                    </span>
+                </td>
+                <td class="px-4 py-2 text-gray-500 text-xs">{{ s.reviewed_at.strftime('%b %d %H:%M') if s.reviewed_at else '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}
