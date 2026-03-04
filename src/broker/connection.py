@@ -40,9 +40,10 @@ def is_port_open(host: str, port: int, timeout: float = 2.0) -> bool:
 def get_ib() -> IB:
     """Return the singleton IB connection, connecting if necessary."""
     global _ib
-    if _ib is None or not _ib.isConnected():
-        _ib = _connect()
-    return _ib
+    with _ib_lock:
+        if _ib is None or not _ib.isConnected():
+            _ib = _connect()
+        return _ib
 
 
 def get_ib_lock() -> threading.Lock:
