@@ -14,7 +14,7 @@ import uvicorn
 from src.core.config import get_settings
 from src.core.database import init_db
 from src.core.logger import setup_logging, get_logger
-from src.broker.connection import get_ib, disconnect
+from src.broker.connection import get_ib, initial_connect, disconnect
 from src.scheduler.jobs import create_scheduler
 from src.web.app import create_app
 
@@ -618,7 +618,7 @@ def main():
     from src.broker.connection import is_port_open
     if is_port_open(settings.ibkr.host, settings.ibkr.port):
         try:
-            ib = get_ib()
+            ib = initial_connect()
             log.info("ibkr_ready", accounts=ib.managedAccounts())
         except Exception as e:
             log.error("ibkr_connection_failed", error=str(e))

@@ -1,6 +1,13 @@
 """
 IBKR connection manager — connect, reconnect, health checks.
 Uses ib_insync for all broker communication.
+
+Connection strategy:
+- get_ib() returns the existing connection or raises ConnectionError.
+  It NEVER attempts to reconnect — this prevents multiple jobs from
+  fighting over the same client ID simultaneously.
+- Only the health check job calls reconnect() to restore connectivity.
+- Scanners and trade_sync use their own dedicated client IDs.
 """
 from __future__ import annotations
 
@@ -38,12 +45,17 @@ def is_port_open(host: str, port: int, timeout: float = 2.0) -> bool:
 
 
 def get_ib() -> IB:
-    """Return the singleton IB connection, connecting if necessary."""
+    """Return the singleton IB connection if connected, otherwise raise.
+
+    This function NEVER reconnects. If the connection is down, it raises
+    ConnectionError immediately. The health check job is responsible for
+    calling reconnect() to restore the connection. This prevents multiple
+    jobs from simultaneously trying to reconnect with the same client ID.
+    """
     global _ib
-    with _ib_lock:
-        if _ib is None or not _ib.isConnected():
-            _ib = _connect()
+    if _ib is not None and _ib.isConnected():
         return _ib
+    raise ConnectionError("IBKR not connected — waiting for health check to reconnect")
 
 
 def get_ib_lock() -> threading.Lock:
@@ -51,12 +63,19 @@ def get_ib_lock() -> threading.Lock:
     return _ib_lock
 
 
-def _connect(max_retries: int = 5) -> IB:
+def initial_connect() -> IB:
+    """Connect at startup. Only called once from main.py."""
+    global _ib
+    _ib = _connect(max_retries=5)
+    return _ib
+
+
+def _connect(max_retries: int = 3) -> IB:
     """
     Establish connection to IBKR TWS / Gateway.
 
     Does a quick TCP port check first — if TWS isn't running at all,
-    fails immediately instead of burning through 5 retries (~155 seconds).
+    fails immediately instead of burning through retries.
     Retries with exponential backoff only if TWS seems to be starting up.
     """
     cfg = get_settings().ibkr
@@ -103,8 +122,8 @@ def _connect(max_retries: int = 5) -> IB:
                      readonly=cfg.readonly)
             return ib
         except Exception as e:
-            # Exponential backoff: 5, 10, 20, 40, 80 seconds
-            wait = min(5 * (2 ** (attempt - 1)), 120)
+            # Exponential backoff: 5, 10, 20 seconds
+            wait = min(5 * (2 ** (attempt - 1)), 30)
             log.warning("ibkr_connect_failed",
                         attempt=attempt, max=max_retries,
                         error=str(e), retry_in=wait)
@@ -136,9 +155,18 @@ def is_connected() -> bool:
 
 
 def reconnect() -> IB:
-    """Force a fresh reconnection."""
-    disconnect()
-    return get_ib()
+    """Force a fresh reconnection. Only called by health check job."""
+    global _ib
+    # Disconnect existing
+    if _ib:
+        try:
+            _ib.disconnect()
+        except Exception:
+            pass
+    _ib = None
+
+    _ib = _connect(max_retries=3)
+    return _ib
 
 
 def _on_error(reqId: int, errorCode: int, errorString: str, contract) -> None:
