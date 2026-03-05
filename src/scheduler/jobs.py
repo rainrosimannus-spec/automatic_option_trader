@@ -746,6 +746,8 @@ def create_scheduler() -> BackgroundScheduler:
             id=f"scan_{exchange}",
             name=f"Scan {exchange} ({stock_count} stocks)",
             max_instances=1,
+            misfire_grace_time=1800,
+            coalesce=True,
             replace_existing=True,
         )
 
@@ -767,6 +769,8 @@ def create_scheduler() -> BackgroundScheduler:
                 id=f"scan_{exchange}_startup",
                 name=f"Startup Scan {exchange}",
                 max_instances=1,
+            misfire_grace_time=1800,
+            coalesce=True,
             )
 
         log.info(
@@ -900,6 +904,8 @@ def create_scheduler() -> BackgroundScheduler:
             id="portfolio_scan",
             name="Portfolio Buy Scan (24/7)",
             max_instances=1,
+            misfire_grace_time=1800,
+            coalesce=True,
             next_run_time=scan_first_run,
         )
 
@@ -910,6 +916,8 @@ def create_scheduler() -> BackgroundScheduler:
             id="portfolio_prices",
             name="Portfolio Price Update",
             max_instances=1,
+            misfire_grace_time=1800,
+            coalesce=True,
             next_run_time=prices_first_run,
         )
 
@@ -920,6 +928,8 @@ def create_scheduler() -> BackgroundScheduler:
             id="portfolio_trade_sync",
             name="Portfolio Trade Sync (IBKR)",
             max_instances=1,
+            misfire_grace_time=1800,
+            coalesce=True,
             next_run_time=trade_sync_first_run,
         )
 
@@ -931,6 +941,8 @@ def create_scheduler() -> BackgroundScheduler:
             id="portfolio_metrics",
             name="Portfolio Watchlist Metrics",
             max_instances=1,
+            misfire_grace_time=1800,
+            coalesce=True,
             next_run_time=metrics_first_run,
         )
 
@@ -947,6 +959,8 @@ def create_scheduler() -> BackgroundScheduler:
             id="portfolio_rescreen",
             name="Portfolio Annual Rescreen",
             max_instances=1,
+            misfire_grace_time=1800,
+            coalesce=True,
         )
 
         log.info("portfolio_scheduler_enabled",
