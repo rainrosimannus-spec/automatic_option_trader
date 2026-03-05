@@ -3,13 +3,11 @@ IBKR connection manager — connect, reconnect, health checks.
 Uses ib_insync for all broker communication.
 
 Connection strategy:
-- get_ib() returns the current thread's IB connection.
-  Main thread uses the singleton _ib. Scan threads use thread-local storage.
-  This prevents scans from corrupting the main connection.
-- get_ib() NEVER attempts to reconnect — this prevents multiple jobs from
+- get_ib() returns the existing connection or raises ConnectionError.
+  It NEVER attempts to reconnect — this prevents multiple jobs from
   fighting over the same client ID simultaneously.
-- Only the health check job calls reconnect() to restore main connectivity.
-- Scanners use their own dedicated client IDs via set_thread_ib().
+- Only the health check job calls reconnect() to restore connectivity.
+- Scanners and trade_sync use their own dedicated client IDs.
 """
 from __future__ import annotations
 
@@ -27,9 +25,6 @@ log = get_logger(__name__)
 
 _ib: Optional[IB] = None
 _ib_lock = threading.Lock()
-
-# Thread-local storage for per-thread IB connections (used by scans)
-_thread_local = threading.local()
 
 # IBKR info codes that are NOT errors (farm status notifications)
 _INFO_CODES = {
@@ -49,31 +44,14 @@ def is_port_open(host: str, port: int, timeout: float = 2.0) -> bool:
         return False
 
 
-def set_thread_ib(ib: Optional[IB]) -> None:
-    """Set a thread-local IB connection. Used by scan jobs to give their
-    thread a dedicated connection without touching the main singleton."""
-    _thread_local.ib = ib
-
-
-def get_thread_ib() -> Optional[IB]:
-    """Get the thread-local IB connection, if any."""
-    return getattr(_thread_local, 'ib', None)
-
-
 def get_ib() -> IB:
-    """Return the IB connection for the current thread.
+    """Return the singleton IB connection if connected, otherwise raise.
 
-    Scan threads get their own dedicated connection (set via set_thread_ib).
-    Main thread and other threads get the singleton _ib.
     This function NEVER reconnects. If the connection is down, it raises
-    ConnectionError immediately.
+    ConnectionError immediately. The health check job is responsible for
+    calling reconnect() to restore the connection. This prevents multiple
+    jobs from simultaneously trying to reconnect with the same client ID.
     """
-    # First check thread-local (scan connections)
-    thread_ib = get_thread_ib()
-    if thread_ib is not None and thread_ib.isConnected():
-        return thread_ib
-
-    # Fall back to main singleton
     global _ib
     if _ib is not None and _ib.isConnected():
         return _ib
