@@ -31,6 +31,11 @@ def list_positions(request: Request):
 @router.post("/sync")
 def sync_positions():
     """Manually trigger IBKR position sync."""
+    import asyncio
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
     try:
         from src.broker.trade_sync import sync_ibkr_trades, sync_ibkr_positions
         sync_ibkr_trades()

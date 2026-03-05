@@ -1,0 +1,404 @@
+"""
+Option contract screener — selects the best put or call to trade.
+Exchange and currency-aware for global stocks.
+
+Uses Black-Scholes theoretical pricing computed from historical IV data.
+No streaming market data subscriptions required — works on all markets.
+"""
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
+
+from ib_insync import Option as IBOption
+
+from src.broker.market_data import get_put_contracts, get_call_contracts, get_stock_price
+from src.broker.greeks import compute_put_greeks, compute_call_greeks, get_current_iv
+from src.broker.connection import get_ib
+from src.core.config import get_settings
+from src.core.logger import get_logger
+
+log = get_logger(__name__)
+
+
+# ── Fee floor helpers ───────────────────────────────────────
+_ESTIMATED_FEES = {
+    "USD": 1.30, "AUD": 2.00, "GBP": 1.80, "EUR": 1.80,
+    "CHF": 2.00, "JPY": 200.0, "NOK": 15.0, "DKK": 15.0, "CAD": 1.80,
+}
+
+def _passes_fee_floor(premium, contract_size, currency, contracts=1):
+    cfg = get_settings().strategy
+    gross = premium * contract_size * contracts
+    minimum = _ESTIMATED_FEES.get(currency, 2.0) * contracts * cfg.min_net_premium_multiplier
+    if gross < minimum:
+        log.info("premium_below_fee_floor", premium=round(premium, 4),
+                 gross=round(gross, 2), min_required=round(minimum, 2), currency=currency)
+        return False
+    return True
+
+def _passes_min_price(stock_price, currency):
+    floor = get_settings().strategy.min_stock_price.get(currency, 2.0)
+    if stock_price < floor:
+        log.info("stock_price_below_minimum", price=round(stock_price, 2), floor=floor, currency=currency)
+        return False
+    return True
+
+
+@dataclass
+class ScoredContract:
+    contract: IBOption
+    strike: float
+    expiry: str
+    delta: float
+    bid: float
+    ask: float
+    mid: float
+    iv: float
+    open_interest: int
+    score: float
+
+
+def screen_puts(
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    delta_override: tuple[float, float] | None = None,
+    stock_exchange: str | None = None,
+) -> Optional[ScoredContract]:
+    """
+    Screen and rank put contracts for a symbol.
+    delta_override: (min, max) to use instead of config defaults (for dynamic delta).
+    Uses Black-Scholes theoretical pricing from historical IV data.
+    Returns the best candidate or None.
+    exchange: used for option chain queries (DTB, ICEEU, etc.)
+    stock_exchange: used for stock price/IV lookups (defaults to exchange if not set)
+    """
+    cfg = get_settings().strategy
+    stk_exchange = stock_exchange or exchange
+
+    contracts = get_put_contracts(
+        symbol,
+        exchange=exchange,
+        currency=currency,
+        max_dte=cfg.dte_max,
+        min_dte=cfg.dte_min,
+    )
+
+    if not contracts:
+        log.info("no_put_contracts", symbol=symbol, exchange=exchange)
+        return None
+
+    # Get stock price and IV from historical data (no subscription needed)
+    stock_price = get_stock_price(symbol, exchange=stk_exchange, currency=currency)
+    if not stock_price or stock_price <= 0:
+        log.info("no_stock_price_for_screening", symbol=symbol)
+        return None
+
+    if not _passes_min_price(stock_price, currency):
+        return None
+
+    ib = get_ib()
+    iv = get_current_iv(ib, symbol, exchange=stk_exchange, currency=currency)
+    if not iv or iv <= 0:
+        log.info("no_iv_for_screening", symbol=symbol)
+        return None
+
+    log.info("bs_screening_puts", symbol=symbol, price=round(stock_price, 2),
+             iv=round(iv, 3), contracts=len(contracts))
+
+    candidates: list[ScoredContract] = []
+
+    # Use dynamic delta if provided, else fall back to config
+    delta_min = delta_override[0] if delta_override else cfg.delta_min
+    delta_max = delta_override[1] if delta_override else cfg.delta_max
+
+    today = datetime.now().date()
+
+    for contract in contracts:
+        exp_date = datetime.strptime(contract.lastTradeDateOrContractMonth, "%Y%m%d").date()
+        dte = (exp_date - today).days
+        if dte < 0:
+            continue  # only skip expired options, not same-day
+
+        # For DTE 0, use a small T so BS doesn't divide by zero
+        T = max(dte, 0.25) / 365.0  # minimum ~6 hours of time value
+
+        greeks = compute_put_greeks(stock_price, contract.strike, T, iv)
+        if not greeks:
+            continue
+
+        delta = abs(greeks.delta)
+        bid = greeks.bid
+        ask = greeks.ask
+        mid = greeks.mid
+
+        # ── 0-3 DTE: use strike distance instead of delta ──────────
+        # BS delta is unreliable near expiry (gamma extremes).
+        # Instead, filter by how far OTM the strike is as % of stock price.
+        # Target: 3-10% OTM (e.g., stock at $186 → strikes $167-$180)
+        if dte <= 3:
+            otm_pct = (stock_price - contract.strike) / stock_price
+            if otm_pct < 0.02 or otm_pct > 0.12:
+                continue  # skip <2% OTM (too risky) or >12% OTM (no premium)
+            eff_min_premium = max(getattr(cfg, 'min_premium_put', cfg.min_premium), 0.05)
+            eff_min_bid = max(cfg.min_bid, 0.03)
+
+            if mid < eff_min_premium:
+                continue
+            if bid < eff_min_bid:
+                continue
+
+            # ── Scoring components ──
+            # 1. OTM distance: closer to 5% OTM = better (0-1)
+            otm_target = 0.05
+            otm_score = 1 - abs(otm_pct - otm_target) / otm_target
+            otm_score = max(0, min(1, otm_score))
+
+            # 2. Return on margin: premium relative to capital at risk (0-1)
+            # Margin ~= 20% of strike * 100 (IBKR standard for short puts)
+            margin_required = contract.strike * 100 * 0.20
+            if margin_required > 0:
+                rom = (mid * 100) / margin_required  # e.g. $0.50 premium / $3600 margin = 0.014
+                # Normalize: 0.5% return = 0, 3%+ return = 1
+                rom_score = min(1.0, max(0, (rom - 0.005) / 0.025))
+            else:
+                rom_score = 0
+
+            # 3. Premium relative to stock price (0-1)
+            # Normalizes across different price levels
+            # 0.1% of stock price = 0, 1%+ = 1
+            prem_pct = mid / stock_price if stock_price > 0 else 0
+            premium_score = min(1.0, max(0, prem_pct / 0.01))
+
+            # Final score: capital efficiency matters most
+            # 35% OTM distance + 35% return-on-margin + 25% premium + 5% base
+            score = (otm_score * 0.35) + (rom_score * 0.35) + (premium_score * 0.25) + 0.05
+
+            candidates.append(ScoredContract(
+                contract=contract,
+                strike=contract.strike,
+                expiry=contract.lastTradeDateOrContractMonth,
+                delta=delta,  # keep BS delta for display even if unreliable
+                bid=bid,
+                ask=ask,
+                mid=mid,
+                iv=iv,
+                open_interest=0,
+                score=score,
+            ))
+            continue
+
+        # ── 4+ DTE: fallback (not used with current 0-3 DTE config) ──
+        # Kept for flexibility if DTE range is ever expanded
+        if delta < delta_min or delta > delta_max:
+            continue
+        if mid < getattr(cfg, 'min_premium_put', cfg.min_premium):
+            continue
+        if bid < cfg.min_bid:
+            continue
+
+        target_delta = (delta_min + delta_max) / 2
+        delta_score = 1 - abs(delta - target_delta) / target_delta
+        margin_required = contract.strike * 100 * 0.20
+        rom = (mid * 100) / margin_required if margin_required > 0 else 0
+        rom_score = min(1.0, max(0, (rom - 0.005) / 0.025))
+        prem_pct = mid / stock_price if stock_price > 0 else 0
+        premium_score = min(1.0, max(0, prem_pct / 0.01))
+
+        score = (delta_score * 0.30) + (rom_score * 0.30) + (premium_score * 0.30) + 0.10
+
+        candidates.append(ScoredContract(
+            contract=contract,
+            strike=contract.strike,
+            expiry=contract.lastTradeDateOrContractMonth,
+            delta=delta,
+            bid=bid,
+            ask=ask,
+            mid=mid,
+            iv=iv,
+            open_interest=0,
+            score=score,
+        ))
+
+    if not candidates:
+        log.info("no_qualifying_puts", symbol=symbol,
+                 total_contracts=len(contracts),
+                 delta_range=(round(delta_min, 2), round(delta_max, 2)),
+                 min_premium=cfg.min_premium, min_bid=cfg.min_bid)
+        return None
+
+    best = max(candidates, key=lambda c: c.score)
+
+    # For short-DTE options, fetch real market quote instead of BS theoretical
+    # BS pricing is unreliable near expiry — actual market bid can differ 50%+
+    exp_date = datetime.strptime(best.expiry, "%Y%m%d").date()
+    best_dte = (exp_date - today).days
+    if best_dte <= 3:
+        try:
+            ib = get_ib()
+            ticker = ib.reqMktData(best.contract, "", True, False)  # snapshot
+            ib.sleep(2)
+            ib.cancelMktData(best.contract)
+
+            real_bid = ticker.bid
+            real_ask = ticker.ask
+
+            if real_bid and real_bid > 0 and real_bid != float('inf') and real_bid != -1.0:
+                real_mid = round((real_bid + real_ask) / 2, 2) if (real_ask and real_ask > 0 and real_ask != float('inf') and real_ask != -1.0) else real_bid
+                log.info("market_quote_fetched", symbol=symbol, strike=best.strike,
+                         bs_bid=round(best.bid, 2), real_bid=round(real_bid, 2),
+                         real_ask=round(real_ask, 2) if real_ask and real_ask > 0 else None)
+                # Update the candidate with real market prices
+                best = ScoredContract(
+                    contract=best.contract,
+                    strike=best.strike,
+                    expiry=best.expiry,
+                    delta=best.delta,
+                    bid=round(real_bid, 2),
+                    ask=round(real_ask, 2) if (real_ask and real_ask > 0 and real_ask != float('inf') and real_ask != -1.0) else best.ask,
+                    mid=real_mid,
+                    iv=best.iv,
+                    open_interest=best.open_interest,
+                    score=best.score,
+                )
+            else:
+                log.info("market_quote_unavailable_using_bs", symbol=symbol,
+                         strike=best.strike, bs_bid=round(best.bid, 2))
+        except Exception as e:
+            log.warning("market_quote_fetch_failed", symbol=symbol, error=str(e))
+
+    log.info(
+        "put_screened",
+        symbol=symbol,
+        exchange=exchange,
+        strike=best.strike,
+        expiry=best.expiry,
+        delta=round(best.delta, 3),
+        mid=round(best.mid, 2),
+        iv=round(best.iv, 3),
+    )
+
+    if not _passes_fee_floor(best.bid, 100, currency, cfg.contracts_per_stock):
+        return None
+
+    return best
+
+
+def screen_calls(
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    min_strike: Optional[float] = None,
+    delta_min_override: float | None = None,
+    delta_max_override: float | None = None,
+    stock_exchange: str | None = None,
+) -> Optional[ScoredContract]:
+    """
+    Screen and rank call contracts for covered call writing.
+    delta_min/max_override: for progressive strike management.
+    Uses Black-Scholes theoretical pricing from historical IV data.
+    """
+    cfg = get_settings().strategy
+    stk_exchange = stock_exchange or exchange
+
+    contracts = get_call_contracts(
+        symbol,
+        exchange=exchange,
+        currency=currency,
+        min_dte=cfg.cc_dte_min,
+        max_dte=cfg.cc_dte_max,
+        min_strike=min_strike,
+    )
+
+    if not contracts:
+        log.debug("no_call_contracts", symbol=symbol)
+        return None
+
+    stock_price = get_stock_price(symbol, exchange=stk_exchange, currency=currency)
+    if not stock_price or stock_price <= 0:
+        log.debug("no_stock_price_for_call_screening", symbol=symbol)
+        return None
+
+    if not _passes_min_price(stock_price, currency):
+        return None
+
+    ib = get_ib()
+    iv = get_current_iv(ib, symbol, exchange=stk_exchange, currency=currency)
+    if not iv or iv <= 0:
+        log.debug("no_iv_for_call_screening", symbol=symbol)
+        return None
+
+    log.info("bs_screening_calls", symbol=symbol, price=round(stock_price, 2),
+             iv=round(iv, 3), contracts=len(contracts))
+
+    candidates: list[ScoredContract] = []
+    cc_delta_min = delta_min_override if delta_min_override is not None else cfg.cc_delta_min
+    cc_delta_max = delta_max_override if delta_max_override is not None else cfg.cc_delta_max
+
+    today = datetime.now().date()
+
+    for contract in contracts:
+        exp_date = datetime.strptime(contract.lastTradeDateOrContractMonth, "%Y%m%d").date()
+        dte = (exp_date - today).days
+        if dte <= 0:
+            continue
+
+        T = dte / 365.0
+
+        greeks = compute_call_greeks(stock_price, contract.strike, T, iv)
+        if not greeks:
+            continue
+
+        delta = abs(greeks.delta)
+        bid = greeks.bid
+        ask = greeks.ask
+        mid = greeks.mid
+
+        if delta < cc_delta_min or delta > cc_delta_max:
+            continue
+        if mid < cfg.min_premium:
+            continue
+        if bid < cfg.min_bid:
+            continue
+
+        target_delta = (cc_delta_min + cc_delta_max) / 2
+        delta_score = 1 - abs(delta - target_delta) / target_delta
+        premium_score = mid
+        score = (delta_score * 0.4) + (premium_score * 0.6)
+
+        candidates.append(ScoredContract(
+            contract=contract,
+            strike=contract.strike,
+            expiry=contract.lastTradeDateOrContractMonth,
+            delta=delta,
+            bid=bid,
+            ask=ask,
+            mid=mid,
+            iv=iv,
+            open_interest=0,
+            score=score,
+        ))
+
+    if not candidates:
+        log.debug("no_qualifying_calls", symbol=symbol)
+        return None
+
+    best = max(candidates, key=lambda c: c.score)
+    log.info(
+        "call_screened",
+        symbol=symbol,
+        exchange=exchange,
+        strike=best.strike,
+        expiry=best.expiry,
+        delta=round(best.delta, 3),
+        mid=round(best.mid, 2),
+        iv=round(best.iv, 3),
+    )
+
+    if not _passes_fee_floor(best.bid, 100, currency, 1):
+        return None
+
+    return best

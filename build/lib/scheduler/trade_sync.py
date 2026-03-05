@@ -50,7 +50,6 @@ def sync_ibkr_trades() -> int:
     Pull recent executions from IBKR and insert missing ones into Trade table.
     Returns number of new trades imported.
     """
-    # Use the main connection — creating a separate connection corrupts the event loop
     if not is_connected():
         log.warning("trade_sync_not_connected")
         return 0
@@ -78,9 +77,15 @@ def sync_ibkr_trades() -> int:
             if account_id:
                 exec_filter.acctCode = account_id
 
-            executions = ib.reqExecutions(exec_filter)
-            ib.sleep(15)
-            fills = ib.fills()
+            # Save and temporarily increase timeout for execution request
+            original_timeout = ib.RequestTimeout
+            ib.RequestTimeout = 30
+            try:
+                executions = ib.reqExecutions(exec_filter)
+                ib.sleep(5)
+                fills = ib.fills()
+            finally:
+                ib.RequestTimeout = original_timeout
 
         # Filter to our account only (TWS may return fills from other accounts)
         if fills and account_id:
@@ -191,7 +196,6 @@ def sync_ibkr_trades() -> int:
 
     if imported:
         log.info("trade_sync_complete", imported=imported, total_fills=len(fills))
-        _mark_submitted_suggestions_executed(fills)
     else:
         log.debug("trade_sync_no_new", total_fills=len(fills))
 
@@ -201,59 +205,6 @@ def sync_ibkr_trades() -> int:
         log.info("portfolio_trade_sync", imported=stock_imported)
 
     return imported
-
-
-def _mark_submitted_suggestions_executed(fills):
-    """When fills arrive, update matching 'submitted' suggestions to 'executed'."""
-    try:
-        from src.core.suggestions import TradeSuggestion
-        from datetime import datetime
-
-        # Map trade types to suggestion actions
-        type_to_action = {
-            "sell_put": "sell_put",
-            "sell_call": "sell_covered_call",
-            "buy_put": "buy_put",
-            "buy_call": "buy_call",
-        }
-
-        with get_db() as db:
-            submitted = db.query(TradeSuggestion).filter(
-                TradeSuggestion.status == "submitted"
-            ).all()
-            if not submitted:
-                return
-
-            updated = 0
-            for s in submitted:
-                for fill in fills:
-                    contract = fill.contract
-                    execution = fill.execution
-                    is_option = contract.secType in ("OPT", "FOP")
-                    if not is_option:
-                        continue
-
-                    strike = getattr(contract, 'strike', 0.0) or 0.0
-                    expiry = getattr(contract, 'lastTradeDateOrContractMonth', '') or ''
-
-                    # Match by symbol, strike, expiry
-                    if (contract.symbol == s.symbol
-                            and abs((strike or 0) - (s.strike or 0)) < 0.01
-                            and expiry == (s.expiry or '')):
-                        s.status = "executed"
-                        s.reviewed_at = datetime.utcnow()
-                        s.review_note = (s.review_note or "") + " | Filled via trade sync"
-                        updated += 1
-                        log.info("suggestion_marked_executed",
-                                 id=s.id, symbol=s.symbol,
-                                 strike=s.strike, expiry=s.expiry)
-                        break
-
-            if updated:
-                db.commit()
-                log.info("suggestions_updated_from_fills", count=updated)
-    except Exception as e:
-        log.warning("suggestion_fill_match_error", error=str(e))
 
 
 def _sync_stock_to_portfolio(fills) -> int:
@@ -434,26 +385,9 @@ def sync_ibkr_positions() -> int:
             if key not in ibkr_positions:
                 pos.status = PositionStatus.EXPIRED
                 pos.closed_at = datetime.utcnow()
-
-                # Calculate realized PnL from trades for this position
-                pos_trades = db.query(Trade).filter(
-                    Trade.symbol == pos.symbol,
-                    Trade.strike == pos.strike,
-                    Trade.expiry == pos.expiry,
-                    Trade.order_status == OrderStatus.FILLED,
-                ).all()
-                realized = 0.0
-                for t in pos_trades:
-                    if t.trade_type in (TradeType.SELL_PUT, TradeType.SELL_CALL):
-                        realized += (t.premium or 0) * (t.quantity or 1) * 100 - (t.commission or 0)
-                    elif t.trade_type in (TradeType.BUY_PUT, TradeType.BUY_CALL):
-                        realized -= (t.premium or 0) * (t.quantity or 1) * 100 + (t.commission or 0)
-                pos.realized_pnl = round(realized, 2)
-
                 changes += 1
                 log.info("position_expired_by_sync",
-                         symbol=pos.symbol, strike=pos.strike,
-                         expiry=pos.expiry, realized_pnl=pos.realized_pnl)
+                         symbol=pos.symbol, strike=pos.strike, expiry=pos.expiry)
 
         for key, data in ibkr_positions.items():
             if key in tracked_keys:

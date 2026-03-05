@@ -1,0 +1,156 @@
+"""
+Trading controls — halt/resume, bridge settings, force close.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+
+from fastapi import APIRouter, Request, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+from src.web.template_engine import templates
+from src.core.config import get_settings
+from src.core.database import get_db
+from src.core.models import SystemState, Position, PositionStatus
+from src.core.logger import get_logger
+from src.broker.connection import is_connected
+
+router = APIRouter()
+log = get_logger(__name__)
+
+
+def _get_state(key: str) -> str | None:
+    with get_db() as db:
+        state = db.query(SystemState).filter(SystemState.key == key).first()
+        return state.value if state else None
+
+
+def _set_state(key: str, value: str):
+    with get_db() as db:
+        state = db.query(SystemState).filter(SystemState.key == key).first()
+        if state:
+            state.value = value
+            state.updated_at = datetime.utcnow()
+        else:
+            db.add(SystemState(key=key, value=value))
+
+
+@router.get("/", response_class=HTMLResponse)
+def controls_page(request: Request):
+    cfg = get_settings()
+
+    halted = _get_state("halted") == "true"
+    halt_reason = _get_state("halt_reason") or ""
+
+    # Bridge settings from state (overrides config if set)
+    bridge_enabled = _get_state("bridge_enabled")
+    bridge_pct = _get_state("bridge_transfer_pct")
+    bridge_min = _get_state("bridge_min_value")
+    bridge_month = _get_state("bridge_month")
+    bridge_day = _get_state("bridge_day")
+    bridge_dry_run = _get_state("bridge_dry_run")
+
+    return templates.TemplateResponse("controls.html", {
+        "request": request,
+        "halted": halted,
+        "halt_reason": halt_reason,
+        "ibkr_connected": is_connected(),
+        "account": cfg.ibkr.account or "auto-detect",
+        "mode": cfg.app.mode,
+        "auto_restart": True,  # supervisor is always recommended
+        "bridge_enabled": (bridge_enabled == "true") if bridge_enabled else False,
+        "bridge_transfer_pct": int(float(bridge_pct)) if bridge_pct else 10,
+        "bridge_min_value": int(float(bridge_min)) if bridge_min else 1000000,
+        "bridge_month": int(bridge_month) if bridge_month else 7,
+        "bridge_day": int(bridge_day) if bridge_day else 31,
+        "bridge_dry_run": (bridge_dry_run != "false") if bridge_dry_run else True,
+        "bridge_last_check": _get_state("bridge_last_check_date"),
+        "bridge_last_net_liq": _get_state("bridge_last_check_net_liq"),
+    })
+
+
+@router.post("/halt")
+def halt_trading():
+    """Immediately halt all new trades."""
+    _set_state("halted", "true")
+    _set_state("halt_reason", "manual")
+    _set_state("halt_time", datetime.utcnow().isoformat())
+    log.warning("TRADING_HALTED", reason="manual")
+    return RedirectResponse(url="/controls", status_code=303)
+
+
+@router.post("/resume")
+def resume_trading():
+    """Resume normal trading."""
+    _set_state("halted", "false")
+    _set_state("halt_reason", "")
+    log.info("TRADING_RESUMED")
+    return RedirectResponse(url="/controls", status_code=303)
+
+
+@router.post("/close-all")
+def close_all_positions():
+    """Mark all open positions as closed (user must handle broker side)."""
+    with get_db() as db:
+        open_positions = db.query(Position).filter(
+            Position.status == PositionStatus.OPEN
+        ).all()
+        count = 0
+        for pos in open_positions:
+            pos.status = PositionStatus.CLOSED
+            pos.closed_at = datetime.utcnow()
+            count += 1
+
+    log.warning("ALL_POSITIONS_CLOSED", count=count)
+    return RedirectResponse(url="/controls", status_code=303)
+
+
+@router.post("/pause")
+def toggle_pause():
+    """Legacy pause toggle — maps to halt/resume."""
+    halted = _get_state("halted") == "true"
+    if halted:
+        return resume_trading()
+    else:
+        return halt_trading()
+
+
+@router.post("/bridge")
+def save_bridge_settings(
+    transfer_pct: int = Form(10),
+    min_portfolio_value: int = Form(1000000),
+    transfer_month: int = Form(7),
+    transfer_day: int = Form(31),
+    enabled: bool = Form(False),
+    dry_run: bool = Form(False),
+):
+    """Save bridge settings to database state."""
+    _set_state("bridge_enabled", "true" if enabled else "false")
+    _set_state("bridge_transfer_pct", str(transfer_pct))
+    _set_state("bridge_min_value", str(min_portfolio_value))
+    _set_state("bridge_month", str(transfer_month))
+    _set_state("bridge_day", str(transfer_day))
+    _set_state("bridge_dry_run", "true" if dry_run else "false")
+
+    log.info("bridge_settings_updated",
+             enabled=enabled,
+             transfer_pct=transfer_pct,
+             min_value=min_portfolio_value,
+             month=transfer_month,
+             day=transfer_day,
+             dry_run=dry_run)
+
+    return RedirectResponse(url="/controls", status_code=303)
+
+
+@router.post("/force-close/{position_id}")
+def force_close_position(position_id: int):
+    """Force close a single position."""
+    with get_db() as db:
+        pos = db.query(Position).filter(Position.id == position_id).first()
+        if pos and pos.status == PositionStatus.OPEN:
+            pos.status = PositionStatus.CLOSED
+            pos.closed_at = datetime.utcnow()
+            log.info("force_closed", position_id=position_id, symbol=pos.symbol)
+
+    return RedirectResponse(url="/positions", status_code=303)

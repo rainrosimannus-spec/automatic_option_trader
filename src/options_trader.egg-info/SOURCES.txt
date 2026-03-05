@@ -41,6 +41,7 @@ src/portfolio/ranker.py
 src/portfolio/scheduler.py
 src/scheduler/__init__.py
 src/scheduler/jobs.py
+src/scheduler/trade_sync.py
 src/strategy/__init__.py
 src/strategy/hedge.py
 src/strategy/profit_taker.py

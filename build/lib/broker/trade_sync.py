@@ -50,12 +50,30 @@ def sync_ibkr_trades() -> int:
     Pull recent executions from IBKR and insert missing ones into Trade table.
     Returns number of new trades imported.
     """
-    # Use the main connection — creating a separate connection corrupts the event loop
-    if not is_connected():
+    # Use dedicated connection (client 14) to avoid blocking main connection
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("closed")
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    from ib_insync import IB
+    from src.broker.connection import is_port_open
+    from src.core.config import get_settings
+    cfg = get_settings().ibkr
+    if not is_port_open(cfg.host, cfg.port):
         log.warning("trade_sync_not_connected")
         return 0
 
-    ib = get_ib()
+    ib = IB()
+    try:
+        ib.connect(host=cfg.host, port=cfg.port, clientId=14, timeout=15, readonly=True)
+    except Exception as e:
+        log.warning("trade_sync_connect_failed", error=str(e))
+        return 0
 
     # Get account ID for filtering
     account_id = ""
@@ -94,10 +112,18 @@ def sync_ibkr_trades() -> int:
         log.info("trade_sync_query_done", fills_count=len(fills) if fills else 0)
     except Exception as e:
         log.error("trade_sync_fetch_error", error=str(e) or repr(e), type=type(e).__name__)
+        try:
+            ib.disconnect()
+        except Exception:
+            pass
         return 0
 
     if not fills:
         log.info("trade_sync_no_fills")
+        try:
+            ib.disconnect()
+        except Exception:
+            pass
         return 0
 
     log.info("trade_sync_fills_found", count=len(fills))
@@ -434,26 +460,9 @@ def sync_ibkr_positions() -> int:
             if key not in ibkr_positions:
                 pos.status = PositionStatus.EXPIRED
                 pos.closed_at = datetime.utcnow()
-
-                # Calculate realized PnL from trades for this position
-                pos_trades = db.query(Trade).filter(
-                    Trade.symbol == pos.symbol,
-                    Trade.strike == pos.strike,
-                    Trade.expiry == pos.expiry,
-                    Trade.order_status == OrderStatus.FILLED,
-                ).all()
-                realized = 0.0
-                for t in pos_trades:
-                    if t.trade_type in (TradeType.SELL_PUT, TradeType.SELL_CALL):
-                        realized += (t.premium or 0) * (t.quantity or 1) * 100 - (t.commission or 0)
-                    elif t.trade_type in (TradeType.BUY_PUT, TradeType.BUY_CALL):
-                        realized -= (t.premium or 0) * (t.quantity or 1) * 100 + (t.commission or 0)
-                pos.realized_pnl = round(realized, 2)
-
                 changes += 1
                 log.info("position_expired_by_sync",
-                         symbol=pos.symbol, strike=pos.strike,
-                         expiry=pos.expiry, realized_pnl=pos.realized_pnl)
+                         symbol=pos.symbol, strike=pos.strike, expiry=pos.expiry)
 
         for key, data in ibkr_positions.items():
             if key in tracked_keys:
@@ -592,4 +601,8 @@ def sync_ibkr_positions() -> int:
     except Exception as e:
         log.debug("snapshot_on_sync_failed", error=str(e))
 
+    try:
+        ib.disconnect()
+    except Exception:
+        pass
     return changes

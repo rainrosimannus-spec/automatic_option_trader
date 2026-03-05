@@ -1,0 +1,395 @@
+"""
+Wheel strategy — detect put assignments and write covered calls.
+
+Flow:
+1. Detect expired/assigned puts (new stock position appears)
+2. Update position records
+3. Write covered calls on assigned stock
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from src.broker.account import get_stock_positions
+from src.broker.orders import sell_covered_call
+from src.core.config import get_settings
+from src.core.database import get_db
+from src.core.models import (
+    Position, Trade, PositionStatus, TradeType, OrderStatus,
+)
+from src.core.logger import get_logger
+from src.strategy.screener import screen_calls
+from src.strategy.risk import RiskManager
+from src.strategy.universe import UniverseManager
+
+log = get_logger(__name__)
+
+
+class WheelManager:
+    """Manages the wheel: assignment detection → covered call writing."""
+
+    def __init__(self, risk: RiskManager, universe: UniverseManager | None = None):
+        self.risk = risk
+        self.universe = universe or UniverseManager()
+        self.cfg = get_settings().strategy
+
+    def check_assignments(self) -> list[str]:
+        """
+        Detect put assignments by comparing IBKR stock positions
+        against our tracked short puts that have expired.
+        Returns list of newly assigned symbols.
+        """
+        log.info("checking_assignments")
+        assigned_symbols: list[str] = []
+
+        # Get current stock positions from broker
+        stock_positions = get_stock_positions()
+
+        with get_db() as db:
+            # Find short puts that should have expired
+            expired_puts = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "short_put",
+                )
+                .all()
+            )
+
+            today = datetime.now().strftime("%Y%m%d")
+
+            for put_pos in expired_puts:
+                # Check if expiry has passed
+                if put_pos.expiry and put_pos.expiry <= today:
+                    symbol = put_pos.symbol
+                    shares = stock_positions.get(symbol, 0)
+
+                    if shares >= 100 * put_pos.quantity:
+                        # Assignment detected!
+                        self._handle_assignment(db, put_pos, symbol)
+                        assigned_symbols.append(symbol)
+                    else:
+                        # Expired worthless (OTM) — profit!
+                        self._handle_expiry_worthless(db, put_pos)
+
+        log.info("assignment_check_done", assigned=assigned_symbols)
+        return assigned_symbols
+
+    def _handle_assignment(self, db, put_pos: Position, symbol: str) -> None:
+        """Process a put assignment — close put position, open stock position."""
+        log.info(
+            "put_assigned",
+            symbol=symbol,
+            strike=put_pos.strike,
+            premium=put_pos.entry_premium,
+        )
+
+        # Close the put position
+        put_pos.status = PositionStatus.ASSIGNED
+        put_pos.closed_at = datetime.utcnow()
+
+        # Record assignment trade
+        trade = Trade(
+            position_id=put_pos.id,
+            symbol=symbol,
+            trade_type=TradeType.ASSIGNMENT,
+            strike=put_pos.strike or 0,
+            expiry=put_pos.expiry or "",
+            premium=0,
+            quantity=put_pos.quantity,
+            fill_price=put_pos.strike or 0,
+            order_status=OrderStatus.FILLED,
+            notes="Put assigned — received 100 shares",
+        )
+        db.add(trade)
+
+        # Create stock position (cost basis = strike - premium received)
+        cost_basis = (put_pos.strike or 0) - put_pos.entry_premium
+        stock_pos = Position(
+            symbol=symbol,
+            status=PositionStatus.OPEN,
+            position_type="stock",
+            cost_basis=cost_basis,
+            quantity=100 * put_pos.quantity,
+            total_premium_collected=put_pos.total_premium_collected,
+            is_wheel=True,
+        )
+        db.add(stock_pos)
+
+    def _handle_expiry_worthless(self, db, put_pos: Position) -> None:
+        """Put expired worthless — full premium is profit."""
+        log.info(
+            "put_expired_worthless",
+            symbol=put_pos.symbol,
+            strike=put_pos.strike,
+            premium=put_pos.entry_premium,
+        )
+        put_pos.status = PositionStatus.EXPIRED
+        put_pos.closed_at = datetime.utcnow()
+        put_pos.realized_pnl = put_pos.total_premium_collected
+
+    def write_covered_calls(self) -> list[str]:
+        """
+        For all stock positions from assignments, write covered calls.
+        Returns list of symbols where calls were written.
+        """
+        if not self.cfg.wheel_enabled:
+            return []
+
+        log.info("scanning_for_covered_calls")
+        written: list[str] = []
+
+        with get_db() as db:
+            stock_positions = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "stock",
+                    Position.is_wheel == True,
+                )
+                .all()
+            )
+
+            for stock_pos in stock_positions:
+                # Check we don't already have an open call on this stock
+                existing_call = (
+                    db.query(Position)
+                    .filter(
+                        Position.symbol == stock_pos.symbol,
+                        Position.status == PositionStatus.OPEN,
+                        Position.position_type == "covered_call",
+                    )
+                    .first()
+                )
+                if existing_call:
+                    continue
+
+                try:
+                    result = self._write_call(db, stock_pos)
+                    if result:
+                        written.append(stock_pos.symbol)
+                except Exception as e:
+                    log.error("covered_call_error", symbol=stock_pos.symbol, error=str(e))
+
+        log.info("covered_calls_written", symbols=written)
+        return written
+
+    def _write_call(self, db, stock_pos: Position) -> bool:
+        """
+        Screen and sell a covered call on an assigned stock position.
+        Smart strike management:
+        - Always sell above cost basis
+        - If stock has recovered significantly, use lower delta (protect upside)
+        - Progressive: as stock price rises above cost basis, widen the gap
+        """
+        symbol = stock_pos.symbol
+        cost_basis = stock_pos.cost_basis
+        exchange = self.universe.get_exchange(symbol)
+        currency = self.universe.get_currency(symbol)
+        contract_size = self.universe.get_contract_size(symbol)
+
+        # Get current stock price to determine recovery level
+        from src.broker.market_data import get_stock_price
+        current_price = get_stock_price(symbol, exchange, currency)
+
+        # Determine minimum strike and delta range based on recovery
+        min_strike = cost_basis if self.cfg.cc_above_cost_basis and cost_basis else None
+
+        # Smart strike: adjust delta based on how far stock is above cost basis
+        cc_delta_min = self.cfg.cc_delta_min
+        cc_delta_max = self.cfg.cc_delta_max
+
+        if self.cfg.cc_progressive_strikes and cost_basis and current_price:
+            recovery_pct = (current_price - cost_basis) / cost_basis if cost_basis > 0 else 0
+
+            if recovery_pct > 0.10:
+                # Stock is >10% above cost basis — strong recovery
+                # Use very low delta (0.15-0.20) to protect upside
+                cc_delta_min = 0.12
+                cc_delta_max = 0.20
+                # Set min strike higher — at least 5% above current price
+                min_strike = max(min_strike or 0, current_price * 1.05)
+                log.info(
+                    "progressive_strike_wide",
+                    symbol=symbol,
+                    recovery=f"{recovery_pct:.1%}",
+                    delta_range=(cc_delta_min, cc_delta_max),
+                    min_strike=round(min_strike, 2),
+                )
+            elif recovery_pct > 0.03:
+                # Stock is 3-10% above cost basis — moderate recovery
+                # Use moderate delta (0.18-0.25)
+                cc_delta_min = 0.18
+                cc_delta_max = 0.25
+                # Set min strike above cost basis + some buffer
+                min_strike = max(min_strike or 0, cost_basis * 1.02)
+                log.info(
+                    "progressive_strike_moderate",
+                    symbol=symbol,
+                    recovery=f"{recovery_pct:.1%}",
+                    delta_range=(cc_delta_min, cc_delta_max),
+                )
+            # else: stock at or below cost basis — use default delta range
+
+        # Screen for the best call with adjusted parameters
+        candidate = screen_calls(
+            symbol,
+            exchange=exchange,
+            currency=currency,
+            min_strike=min_strike,
+            delta_min_override=cc_delta_min,
+            delta_max_override=cc_delta_max,
+        )
+
+        if not candidate:
+            log.debug("no_call_candidate", symbol=symbol)
+            return False
+
+        # Place the order
+        contracts = stock_pos.quantity // contract_size
+        trade = sell_covered_call(
+            symbol=symbol,
+            expiry=candidate.expiry,
+            strike=candidate.strike,
+            quantity=contracts,
+            limit_price=round(candidate.bid, 2),
+            exchange=exchange,
+            currency=currency,
+        )
+
+        if not trade:
+            return False
+
+        # Record position and trade
+        call_pos = Position(
+            symbol=symbol,
+            status=PositionStatus.OPEN,
+            position_type="covered_call",
+            strike=candidate.strike,
+            expiry=candidate.expiry,
+            entry_premium=candidate.bid,
+            quantity=contracts,
+            total_premium_collected=candidate.bid * contract_size * contracts,
+            is_wheel=True,
+        )
+        db.add(call_pos)
+        db.flush()
+
+        trade_record = Trade(
+            position_id=call_pos.id,
+            symbol=symbol,
+            trade_type=TradeType.SELL_CALL,
+            strike=candidate.strike,
+            expiry=candidate.expiry,
+            premium=candidate.bid,
+            quantity=contracts,
+            fill_price=candidate.bid,
+            order_id=trade.order.orderId,
+            order_status=OrderStatus.SUBMITTED,
+            delta_at_entry=candidate.delta,
+            iv_at_entry=candidate.iv,
+        )
+        db.add(trade_record)
+
+        # Update stock position's total premium
+        stock_pos.total_premium_collected += candidate.bid * contract_size * contracts
+
+        log.info(
+            "covered_call_sold",
+            symbol=symbol,
+            strike=candidate.strike,
+            expiry=candidate.expiry,
+            premium=round(candidate.bid, 2),
+            cost_basis=round(cost_basis, 2) if cost_basis else None,
+            current_price=round(current_price, 2) if current_price else None,
+        )
+        return True
+
+    def check_called_away(self) -> list[str]:
+        """
+        Detect covered calls that were assigned (stock called away).
+        Closes both the call and stock positions.
+        """
+        called: list[str] = []
+        stock_positions = get_stock_positions()
+
+        with get_db() as db:
+            open_calls = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "covered_call",
+                )
+                .all()
+            )
+
+            today = datetime.now().strftime("%Y%m%d")
+
+            for call_pos in open_calls:
+                if call_pos.expiry and call_pos.expiry <= today:
+                    symbol = call_pos.symbol
+                    shares = stock_positions.get(symbol, 0)
+
+                    if shares < 100:
+                        # Stock was called away
+                        self._handle_called_away(db, call_pos, symbol)
+                        called.append(symbol)
+                    else:
+                        # Call expired worthless, keep stock
+                        call_pos.status = PositionStatus.EXPIRED
+                        call_pos.closed_at = datetime.utcnow()
+                        call_pos.realized_pnl = call_pos.total_premium_collected
+
+        return called
+
+    def _handle_called_away(self, db, call_pos: Position, symbol: str) -> None:
+        """Process covered call assignment — stock sold at strike."""
+        log.info("stock_called_away", symbol=symbol, strike=call_pos.strike)
+
+        # Close the call position
+        call_pos.status = PositionStatus.ASSIGNED
+        call_pos.closed_at = datetime.utcnow()
+
+        # Close the stock position
+        stock_pos = (
+            db.query(Position)
+            .filter(
+                Position.symbol == symbol,
+                Position.status == PositionStatus.OPEN,
+                Position.position_type == "stock",
+            )
+            .first()
+        )
+        if stock_pos:
+            # Calculate total P&L for the wheel cycle
+            sale_proceeds = (call_pos.strike or 0) * stock_pos.quantity
+            cost = (stock_pos.cost_basis or 0) * stock_pos.quantity
+            total_premium = stock_pos.total_premium_collected
+            realized = sale_proceeds - cost + total_premium
+
+            stock_pos.status = PositionStatus.CLOSED
+            stock_pos.closed_at = datetime.utcnow()
+            stock_pos.realized_pnl = realized
+
+            log.info(
+                "wheel_cycle_complete",
+                symbol=symbol,
+                realized_pnl=round(realized, 2),
+                total_premium=round(total_premium, 2),
+            )
+
+        # Record the trade
+        trade = Trade(
+            position_id=call_pos.id,
+            symbol=symbol,
+            trade_type=TradeType.CALLED_AWAY,
+            strike=call_pos.strike or 0,
+            expiry=call_pos.expiry or "",
+            premium=0,
+            quantity=call_pos.quantity,
+            fill_price=call_pos.strike or 0,
+            order_status=OrderStatus.FILLED,
+            notes="Covered call assigned — stock called away",
+        )
+        db.add(trade)
