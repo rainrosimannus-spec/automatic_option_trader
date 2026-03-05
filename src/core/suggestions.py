@@ -296,8 +296,14 @@ def create_suggestion(
                              rejection_count=_margin_rejected_this_cycle,
                              msg="Not enough buying power — skipping this suggestion")
                 else:
-                    log.info("auto_approving_suggestion", id=suggestion_id, symbol=symbol, source=source)
-                    approve_suggestion(suggestion_id, note="auto-approved")
+                    # Only auto-approve top 3 ranked suggestions
+                    if rank and rank > 3:
+                        log.info("auto_approve_skipped_rank_limit",
+                                 id=suggestion_id, symbol=symbol, rank=rank,
+                                 msg="Only top 3 ranks auto-approved")
+                    else:
+                        log.info("auto_approving_suggestion", id=suggestion_id, symbol=symbol, source=source, rank=rank)
+                        approve_suggestion(suggestion_id, note=f"auto-approved (rank #{rank})")
                     # Subtract estimated margin so next suggestion sees reduced buying power
                     if est_margin > 0:
                         _buying_power_remaining -= est_margin
