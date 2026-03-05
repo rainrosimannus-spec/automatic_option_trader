@@ -189,12 +189,10 @@ def job_scan_market(market: str):
 
         log.info("market_scan_starting", market=market, stocks=len(symbols))
         scan_start = _time.time()
-
-        # Swap the global IB connection to use scan_ib during the scan
-        # This way all get_ib() calls inside the scan use the dedicated connection
-        from src.broker import connection as _conn
-        original_ib = _conn._ib
-        _conn._ib = scan_ib
+        # Set thread-local IB connection so all get_ib() calls in this
+        # scan thread use the dedicated scan connection, not the main one.
+        from src.broker.connection import set_thread_ib
+        set_thread_ib(scan_ib)
         try:
             risk = RiskManager(universe)
             seller = PutSeller(universe, risk)
@@ -204,17 +202,15 @@ def job_scan_market(market: str):
             global _last_successful_scan
             _last_successful_scan = _time.time()
         finally:
-            _conn._ib = original_ib
+            # Clear thread-local connection
+            set_thread_ib(None)
 
             # Always disconnect scan connection after each scan.
-            # This prevents zombie connections that block future scans.
-            # Next scan will create a fresh connection.
             try:
                 scan_ib.disconnect()
             except Exception:
                 pass
             _scan_connections.pop(market, None)
-
 
 def job_check_assignments():
     """Check for put assignments and write covered calls."""
