@@ -321,24 +321,12 @@ def dashboard(request: Request):
             "target": [0, 0],
         }
 
-    # Fetch open orders from IBKR
+    # Open orders — use cached data to prevent dashboard freeze
+    # The cache is updated by the health check job every 5 minutes
     open_orders = []
     try:
-        if is_connected():
-            from src.broker.orders import get_open_orders
-            for oo in get_open_orders():
-                c = oo.contract
-                open_orders.append({
-                    "order_id": oo.order.orderId,
-                    "symbol": getattr(c, 'symbol', '?'),
-                    "action": oo.order.action,
-                    "qty": int(oo.order.totalQuantity),
-                    "limit": oo.order.lmtPrice if hasattr(oo.order, 'lmtPrice') else None,
-                    "strike": getattr(c, 'strike', None),
-                    "expiry": getattr(c, 'lastTradeDateOrContractMonth', None),
-                    "right": getattr(c, 'right', None),
-                    "status": oo.orderStatus.status,
-                })
+        from src.broker.orders import get_cached_open_orders
+        open_orders = get_cached_open_orders()
     except Exception:
         pass
 

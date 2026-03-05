@@ -363,6 +363,14 @@ def job_health_check():
     if is_connected():
         _detect_stale_connection()
 
+    # Refresh open orders cache for dashboard (non-blocking)
+    if is_connected():
+        try:
+            from src.broker.orders import refresh_open_orders_cache
+            refresh_open_orders_cache()
+        except Exception:
+            pass
+
     # Check scan connections — disconnect zombie scan connections so they reconnect
     # on the next scan cycle
     for market, scan_ib in list(_scan_connections.items()):
