@@ -380,19 +380,13 @@ def approve_suggestion(suggestion_id: int, note: str = "") -> bool:
                         id=suggestion_id, symbol=s.symbol)
             return True
 
-        # Auto-approve (scheduler thread) -> execute directly
-        # Manual approve (web thread) -> queue for 30s scheduler pickup
-        import threading
-        thread_name = threading.current_thread().name
-        is_scheduler = "APScheduler" in thread_name or "ThreadPool" in thread_name
-        if is_scheduler:
-            db.commit()
-            _execute_approved_order(suggestion_id)
-        else:
-            s.status = "queued"
-            s.review_note = "Queued for execution by scheduler"
-            db.commit()
-            log.info("suggestion_queued_for_execution", id=suggestion_id, symbol=s.symbol)
+        # Always queue for execution — never execute inline during scans.
+        # The "Execute Queued Suggestions" job runs every 30 seconds and
+        # picks up queued orders. This prevents scan hangs from order timeouts.
+        s.status = "queued"
+        s.review_note = "Queued for execution by scheduler"
+        db.commit()
+        log.info("suggestion_queued_for_execution", id=suggestion_id, symbol=s.symbol)
 
     return True
 
