@@ -294,6 +294,52 @@ document.addEventListener('DOMContentLoaded', function() {
 <!-- ═══ Two-column: Positions + Trades ═══ -->
 <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
 
+    <!-- Open Orders on IBKR -->
+    {% if open_orders %}
+    <div class="bg-gray-900 border border-amber-800/50 rounded-lg mb-4">
+        <div class="px-4 py-3 border-b border-amber-800/50 flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-amber-400">Pending Orders on IBKR</h2>
+            <span class="text-xs text-amber-500">{{ open_orders|length }} waiting</span>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+                <thead>
+                    <tr class="text-gray-500 border-b border-gray-800">
+                        <th class="text-left py-2 px-3">Symbol</th>
+                        <th class="text-left py-2 px-3">Action</th>
+                        <th class="text-right py-2 px-3">Strike</th>
+                        <th class="text-left py-2 px-3">Exp</th>
+                        <th class="text-right py-2 px-3">Limit</th>
+                        <th class="text-left py-2 px-3">Status</th>
+                        <th class="text-left py-2 px-3"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for o in open_orders %}
+                    <tr class="border-b border-gray-800/30 hover:bg-gray-800/20">
+                        <td class="py-2 px-3 font-medium font-mono">{{ o.symbol }}</td>
+                        <td class="py-2 px-3">
+                            <span class="{{ 'text-red-400' if o.action == 'SELL' else 'text-emerald-400' }}">{{ o.action }}</span>
+                            <span class="text-gray-500">{{ o.right or '' }}</span>
+                        </td>
+                        <td class="py-2 px-3 text-right font-mono">${{ "%.0f"|format(o.strike) if o.strike else '' }}</td>
+                        <td class="py-2 px-3 text-gray-400">{{ o.expiry[4:6] + '/' + o.expiry[6:8] if o.expiry and o.expiry|length >= 8 else '' }}</td>
+                        <td class="py-2 px-3 text-right font-mono">${{ "%.2f"|format(o.limit) if o.limit else 'MKT' }}</td>
+                        <td class="py-2 px-3 text-amber-400">{{ o.status }}</td>
+                        <td class="py-2 px-3">
+                            <form method="post" action="/controls/cancel-order/{{ o.order_id }}"
+                                  onsubmit="return confirm('Cancel {{ o.symbol }} order?')">
+                                <button class="text-red-500/60 hover:text-red-400 transition">✕</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Open Positions -->
     <div class="bg-gray-900 border border-gray-800 rounded-lg">
         <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">

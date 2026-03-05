@@ -321,6 +321,27 @@ def dashboard(request: Request):
             "target": [0, 0],
         }
 
+    # Fetch open orders from IBKR
+    open_orders = []
+    try:
+        if is_connected():
+            from src.broker.orders import get_open_orders
+            for oo in get_open_orders():
+                c = oo.contract
+                open_orders.append({
+                    "order_id": oo.order.orderId,
+                    "symbol": getattr(c, 'symbol', '?'),
+                    "action": oo.order.action,
+                    "qty": int(oo.order.totalQuantity),
+                    "limit": oo.order.lmtPrice if hasattr(oo.order, 'lmtPrice') else None,
+                    "strike": getattr(c, 'strike', None),
+                    "expiry": getattr(c, 'lastTradeDateOrContractMonth', None),
+                    "right": getattr(c, 'right', None),
+                    "status": oo.orderStatus.status,
+                })
+    except Exception:
+        pass
+
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "connected": is_connected(),
@@ -346,6 +367,7 @@ def dashboard(request: Request):
         "pending_options": pending_options,
         "pending_portfolio": pending_portfolio,
         "ipo_confirmed": ipo_confirmed,
+        "open_orders": open_orders,
         # Account
         "net_liquidation": account["net_liquidation"],
         "buying_power": account["buying_power"],

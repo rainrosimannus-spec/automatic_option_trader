@@ -406,6 +406,47 @@ def _execute_approved_order(suggestion_id: int):
         if not s or s.status != "approved":
             return
 
+        # SAFEGUARD: Check IBKR open orders before placing new ones
+        # Prevents overselling when duplicate suggestions slip through
+        try:
+            from src.broker.orders import get_open_orders
+            open_orders = get_open_orders()
+            # Check if we already have an open order for this exact contract
+            for oo in open_orders:
+                c = oo.contract
+                if (hasattr(c, 'symbol') and c.symbol == s.symbol
+                        and hasattr(c, 'strike') and c.strike == s.strike
+                        and hasattr(c, 'lastTradeDateOrContractMonth')
+                        and c.lastTradeDateOrContractMonth == s.expiry):
+                    s.status = "expired"
+                    s.review_note = "Duplicate — open order already exists on IBKR"
+                    log.warning("safeguard_duplicate_order_blocked",
+                                id=suggestion_id, symbol=s.symbol,
+                                strike=s.strike, expiry=s.expiry)
+                    return
+
+            # Check total margin of open orders + this new order
+            from src.broker.account import get_account_summary
+            acct = get_account_summary()
+            if acct:
+                total_open_margin = 0.0
+                for oo in open_orders:
+                    c = oo.contract
+                    if hasattr(c, 'strike') and c.strike:
+                        total_open_margin += c.strike * 100 * 0.20
+                new_order_margin = (s.strike or 0) * 100 * (s.quantity or 1) * 0.20
+                available = acct.buying_power - total_open_margin
+                if new_order_margin > 0 and available < new_order_margin:
+                    s.status = "expired"
+                    s.review_note = f"Margin safeguard — only ${available:,.0f} available after open orders"
+                    log.warning("safeguard_margin_blocked",
+                                id=suggestion_id, symbol=s.symbol,
+                                available=f"${available:,.0f}",
+                                needed=f"${new_order_margin:,.0f}")
+                    return
+        except Exception as e:
+            log.debug("safeguard_check_failed", error=str(e))
+
         # Look up exchange/currency — prefer stored options exchange, fall back to watchlist
         from src.core.config import get_watchlist
         exchange = "SMART"

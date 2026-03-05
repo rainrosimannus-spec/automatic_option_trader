@@ -154,3 +154,21 @@ def force_close_position(position_id: int):
             log.info("force_closed", position_id=position_id, symbol=pos.symbol)
 
     return RedirectResponse(url="/positions", status_code=303)
+
+
+@router.post("/cancel-order/{order_id}")
+def cancel_ibkr_order(order_id: int):
+    """Cancel an open order on IBKR."""
+    try:
+        from src.broker.orders import get_open_orders, _get_order_connection, _order_lock
+        with _order_lock:
+            ib = _get_order_connection()
+            for trade in ib.openTrades():
+                if trade.order.orderId == order_id:
+                    ib.cancelOrder(trade.order)
+                    ib.sleep(1)
+                    log.info("order_cancelled_from_dashboard", order_id=order_id)
+                    break
+    except Exception as e:
+        log.warning("cancel_order_failed", order_id=order_id, error=str(e))
+    return RedirectResponse(url="/", status_code=303)
