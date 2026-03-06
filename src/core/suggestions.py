@@ -333,7 +333,7 @@ def get_pending_suggestions() -> list[TradeSuggestion]:
         now = datetime.utcnow()
         # Expire old suggestions past their expiry time
         expired = db.query(TradeSuggestion).filter(
-            TradeSuggestion.status.in_(["pending", "submitted", "approved"]),
+            TradeSuggestion.status.in_(["pending", "submitted", "approved", "queued"]),
             TradeSuggestion.expires_at < now,
         ).all()
         for s in expired:
@@ -342,7 +342,7 @@ def get_pending_suggestions() -> list[TradeSuggestion]:
             s.review_note = "Expired (time limit)"
 
         return db.query(TradeSuggestion).filter(
-            TradeSuggestion.status.in_(["pending", "submitted", "approved"]),
+            TradeSuggestion.status.in_(["pending", "submitted", "approved", "queued"]),
         ).order_by(
             TradeSuggestion.rank.asc(),              # rank 1 first, 2 second, etc.
             TradeSuggestion.created_at.desc(),        # within same rank, newest first
