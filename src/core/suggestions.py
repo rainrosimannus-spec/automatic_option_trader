@@ -398,7 +398,27 @@ def approve_suggestion(suggestion_id: int, note: str = "") -> bool:
 
 
 def _execute_approved_order(suggestion_id: int):
-    """Execute an approved suggestion's order via IBKR. Runs in its own thread."""
+    """Execute an approved suggestion's order via IBKR.
+    Wrapped with a 30-second timeout to prevent hanging forever."""
+    import concurrent.futures
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_execute_approved_order_inner, suggestion_id)
+            future.result(timeout=30)
+    except concurrent.futures.TimeoutError:
+        log.warning("order_execution_timeout", id=suggestion_id,
+                    msg="Order execution timed out after 30s — marking as expired")
+        with get_db() as db:
+            s = db.query(TradeSuggestion).filter(TradeSuggestion.id == suggestion_id).first()
+            if s and s.status == "approved":
+                s.status = "expired"
+                s.review_note = "Execution timed out after 30s"
+    except Exception as e:
+        log.warning("order_execution_error", id=suggestion_id, error=str(e))
+
+
+def _execute_approved_order_inner(suggestion_id: int):
+    """Inner execution logic with no timeout protection."""
     with get_db() as db:
         s = db.query(TradeSuggestion).filter(
             TradeSuggestion.id == suggestion_id
