@@ -260,14 +260,16 @@ def job_execute_queued():
         from src.core.suggestions import TradeSuggestion, _execute_approved_order
         from src.core.database import get_db
         with get_db() as db:
-            queued = db.query(TradeSuggestion).filter(TradeSuggestion.status == "queued").all()
-            if not queued:
+            # Execute ONE suggestion per cycle to prevent hangs from blocking others
+            s = db.query(TradeSuggestion).filter(
+                TradeSuggestion.status == "queued"
+            ).order_by(TradeSuggestion.rank.asc()).first()
+            if not s:
                 return
-            for s in queued:
-                log.info("executing_queued_suggestion", id=s.id, symbol=s.symbol)
-                s.status = "approved"
-                db.commit()
-                _execute_approved_order(s.id)
+            log.info("executing_queued_suggestion", id=s.id, symbol=s.symbol, rank=s.rank)
+            s.status = "approved"
+            db.commit()
+            _execute_approved_order(s.id)
     except Exception as e:
         log.warning("queued_suggestion_error", error=str(e))
 
