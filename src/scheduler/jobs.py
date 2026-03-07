@@ -138,6 +138,30 @@ def job_scan_market(market: str):
 
 
 
+def job_expire_market_suggestions(market: str):
+    """Expire all active option suggestions for a market when it closes.
+    Fresh suggestions will be created on next trading day's first scan."""
+    _ensure_event_loop()
+    from src.core.suggestions import TradeSuggestion
+    from src.core.database import get_db
+
+    universe = UniverseManager()
+    market_symbols = [s.upper() for s in universe.symbols_for_market(market)]
+
+    with get_db() as db:
+        active = db.query(TradeSuggestion).filter(
+            TradeSuggestion.status.in_(["pending", "submitted", "approved", "queued"]),
+            TradeSuggestion.source == "options",
+            TradeSuggestion.symbol.in_(market_symbols),
+        ).all()
+        for s in active:
+            s.status = "expired"
+            s.review_note = f"Expired at {market} market close"
+        if active:
+            log.info("market_close_suggestions_expired",
+                     market=market, count=len(active))
+
+
 def job_check_assignments():
     """Check for put assignments and write covered calls."""
     _ensure_event_loop()
@@ -698,6 +722,21 @@ def create_scheduler() -> BackgroundScheduler:
             timezone=tz_name,
             hours=f"{open_h:02d}:{open_m:02d}–{close_h:02d}:{close_m:02d}",
             stocks=stock_count,
+        )
+
+
+        # Expire suggestions at market close
+        scheduler.add_job(
+            partial(job_expire_market_suggestions, exchange),
+            CronTrigger(
+                hour=close_h,
+                minute=0,
+                day_of_week="mon-fri",
+                timezone=tz,
+            ),
+            id=f"expire_{exchange}",
+            name=f"Expire {exchange} suggestions",
+            max_instances=1,
         )
 
     # ── Assignment checks — run twice daily at fixed US times ──
