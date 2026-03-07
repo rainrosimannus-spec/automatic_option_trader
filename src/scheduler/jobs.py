@@ -83,20 +83,8 @@ def _ensure_connected() -> bool:
         return False
 
 
-_scan_connections: dict[str, "IB"] = {}  # market -> IB connection
-_scan_locks: dict[str, threading.Lock] = {
-    "SMART": threading.Lock(),
-    "SMART_EU": threading.Lock(),
-    "SMART_ASIA": threading.Lock(),
-}
-
-# Per-market client IDs — each market gets its own IBKR connection
-# so one market's pacing violations don't block others
-_SCAN_CLIENT_IDS = {
-    "SMART": 50,
-    "SMART_EU": 51,
-    "SMART_ASIA": 52,
-}
+# Single scan lock — only one scan runs at a time through the main connection
+_scan_lock = threading.Lock()
 
 # ── Resilience tracking ────────────────────────────────────
 import time as _time_mod
@@ -106,80 +94,25 @@ _consecutive_disconnect_checks: int = 0  # how many health checks found TWS down
 _tws_unreachable_alerted: bool = False   # avoid spamming TWS-down alerts
 
 
-def _get_scan_connection(market: str = "SMART"):
-    """Get or create a dedicated IB connection for a specific market's scanner.
-    
-    Does a quick TCP port check first — if Options Trader TWS isn't running,
-    fails immediately instead of retrying for ~100 seconds.
-    """
-    from ib_insync import IB
-    from src.core.config import get_settings
-    from src.broker.connection import is_port_open
-
-    existing = _scan_connections.get(market)
-    if existing is not None and existing.isConnected():
-        return existing
-
-    # Clean up dead/disconnected connection before creating a new one
-    if existing is not None:
-        try:
-            existing.disconnect()
-        except Exception:
-            pass
-        _scan_connections.pop(market, None)
-
-    cfg = get_settings().ibkr
-
-    # Quick check: is the port even open?
-    if not is_port_open(cfg.host, cfg.port):
-        raise ConnectionError(
-            f"Options Trader TWS not reachable on {cfg.host}:{cfg.port}"
-        )
-
-    ib = IB()
-    client_id = _SCAN_CLIENT_IDS.get(market, 50)
-
-    import time as _time
-    for attempt in range(1, 4):
-        try:
-            ib.connect(
-                host=cfg.host,
-                port=cfg.port,
-                clientId=client_id,
-                timeout=30,
-                readonly=True,
-            )
-            ib.RequestTimeout = 15
-            ib.reqMarketDataType(4)
-            _scan_connections[market] = ib
-            log.info("scan_connection_established", clientId=client_id, market=market)
-            return ib
-        except Exception as e:
-            log.warning("scan_connect_retry", attempt=attempt, error=str(e), market=market)
-            if attempt < 3:
-                _time.sleep(35)
-
-    raise ConnectionError(f"Failed to connect scanner for {market}")
 
 
 def job_scan_market(market: str):
-    """Scan a specific market's stocks using a dedicated per-market connection."""
+    """Scan a specific market's stocks using the main IBKR connection.
+    Only one scan runs at a time — serialized through _scan_lock."""
     _ensure_event_loop()
     if _is_paused():
         log.info("trading_paused_skipping_scan", market=market)
         return
 
-    # Each market has its own lock — EU scan cannot block US scan
-    lock = _scan_locks.get(market, threading.Lock())
+    if not _scan_lock.acquire(blocking=False):
+        log.info("scan_skipped_another_running", market=market)
+        return
 
-    with lock:
-        try:
-            scan_ib = _get_scan_connection(market)
-        except Exception as e:
-            log.error("scan_connection_failed", error=str(e), market=market)
+    try:
+        if not _ensure_connected():
+            log.error("scan_connection_failed", error="IBKR not connected", market=market)
             return
 
-        from ib_insync import Stock, Index
         import time as _time
 
         universe = UniverseManager()
@@ -188,35 +121,20 @@ def job_scan_market(market: str):
             return
 
         log.info("market_scan_starting", market=market, stocks=len(symbols))
-        scan_start = _time.time()
-        # Swap the global IB connection for scan duration.
-        # Save the main connection and restore it after scan completes.
-        from src.broker import connection as _conn
-        original_ib = _conn._ib
-        _conn._ib = scan_ib
-        try:
-            risk = RiskManager(universe)
-            seller = PutSeller(universe, risk)
-            seller.run_scan(market=market)
 
-            # Track successful scan for heartbeat
-            global _last_successful_scan
-            _last_successful_scan = _time.time()
-        finally:
-            # Always restore main connection, even if scan crashed
-            _conn._ib = original_ib
+        risk = RiskManager(universe)
+        seller = PutSeller(universe, risk)
+        seller.run_scan(market=market)
 
-            # Always disconnect scan connection after each scan.
-            try:
-                scan_ib.disconnect()
-            except Exception:
-                pass
-            _scan_connections.pop(market, None)
+        # Track successful scan for heartbeat
+        global _last_successful_scan
+        _last_successful_scan = _time.time()
+    except Exception as e:
+        log.error("scan_error", market=market, error=str(e))
+    finally:
+        _scan_lock.release()
 
-            # Verify main connection survived — if not, health check will fix it
-            if original_ib and not original_ib.isConnected():
-                log.warning('main_connection_lost_during_scan', market=market)
-                _conn._ib = None
+
 
 def job_check_assignments():
     """Check for put assignments and write covered calls."""
@@ -373,24 +291,11 @@ def job_health_check():
         except Exception:
             pass
 
-    # Check scan connections — disconnect zombie scan connections so they reconnect
-    # on the next scan cycle
-    for market, scan_ib in list(_scan_connections.items()):
-        if scan_ib is not None and scan_ib.isConnected():
-            try:
-                # Quick liveness test: request current time from TWS
-                scan_ib.reqCurrentTime()
-            except Exception:
-                log.warning("scan_connection_zombie_detected", market=market)
-                try:
-                    scan_ib.disconnect()
-                except Exception:
-                    pass
-                _scan_connections.pop(market, None)
+    # Scan zombie check removed — single connection, no zombies possible
 
     # Refresh VIX and SPY for dashboard display — only every 5 minutes
     # Skip if a scan is currently running to avoid pacing violations
-    if is_connected() and not any(lk.locked() for lk in _scan_locks.values()):
+    if is_connected() and not _scan_lock.locked():
         import time
         _last_regime = getattr(job_health_check, '_last_regime', 0)
         if time.time() - _last_regime > 300:  # 5 minutes

@@ -65,12 +65,10 @@ def _run_screen(regions: list[str] | None, min_mcap: float, top_n: int):
         total = sum(len(p["symbols"]) for p in pools_to_scan.values())
         _screen_state["total"] = total
 
-        # Connect with different client ID — use options trader's TWS
-        from src.core.config import get_settings
-        cfg = get_settings().ibkr
-        ib = IB()
-        ib.connect(cfg.host, cfg.port, clientId=3)
-        log.info("screener_connected", accounts=ib.managedAccounts())
+        # Use the main IBKR connection
+        from src.broker.connection import get_ib
+        ib = get_ib()
+        log.info("screener_using_main_connection")
 
         screener = UniverseScreener(ib)
         all_scores = []

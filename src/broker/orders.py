@@ -1,13 +1,11 @@
 """
 Order management — place, modify, cancel orders via IBKR.
 
-Uses a DEDICATED IBKR connection (client ID 13) for order execution,
-separate from the scanner connections (50/51/52) and the main connection (12).
-This prevents conflicts when auto-approve executes during an active scan.
+Uses the MAIN IBKR connection (same as scans and market data).
+All access serialized through get_ib_lock() to prevent conflicts.
 """
 from __future__ import annotations
 
-import asyncio
 import threading
 from typing import Optional
 
@@ -15,50 +13,10 @@ from ib_insync import (
     IB, LimitOrder, MarketOrder, Option, Stock, Trade as IBTrade,
 )
 
-from src.core.config import get_settings
-from src.broker.connection import is_port_open
+from src.broker.connection import get_ib, get_ib_lock, is_connected
 from src.core.logger import get_logger
 
 log = get_logger(__name__)
-
-_order_ib: Optional[IB] = None
-_order_lock = threading.Lock()
-ORDER_CLIENT_ID = 13  # Dedicated client ID for order execution
-
-
-def _get_order_connection() -> IB:
-    """Get or create a dedicated IB connection for order execution.
-    Separate from scanner and main connections to avoid conflicts."""
-    global _order_ib
-
-    # Ensure event loop exists in this thread (AnyIO/uvicorn compatible)
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError("closed")
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    if _order_ib is not None and _order_ib.isConnected():
-        return _order_ib
-
-    cfg = get_settings().ibkr
-    if not is_port_open(cfg.host, cfg.port):
-        raise ConnectionError(f"TWS not reachable on {cfg.host}:{cfg.port}")
-
-    _order_ib = IB()
-    _order_ib.connect(
-        host=cfg.host,
-        port=cfg.port,
-        clientId=ORDER_CLIENT_ID,
-        timeout=cfg.timeout,
-        readonly=cfg.readonly,
-        account=cfg.account or "",
-    )
-    _order_ib.reqMarketDataType(4)
-    log.info("order_connection_established", clientId=ORDER_CLIENT_ID)
-    return _order_ib
 
 
 def sell_put(
@@ -70,12 +28,9 @@ def sell_put(
     exchange: str = "SMART",
     currency: str = "USD",
 ) -> Optional[IBTrade]:
-    """
-    Sell to open a put option.
-    Uses limit order if limit_price is provided, else market order.
-    """
-    with _order_lock:
-        ib = _get_order_connection()
+    """Sell to open a put option."""
+    with get_ib_lock():
+        ib = get_ib()
         contract = Option(symbol, expiry, strike, "P", exchange, currency=currency)
         ib.qualifyContracts(contract)
 
@@ -87,21 +42,14 @@ def sell_put(
         order.tif = "DAY"
         order.outsideRth = False
 
-        log.info(
-            "placing_sell_put",
-            symbol=symbol,
-            strike=strike,
-            expiry=expiry,
-            qty=quantity,
-            limit=limit_price,
-            exchange=exchange,
-            currency=currency,
-        )
+        log.info("placing_sell_put",
+                 symbol=symbol, strike=strike, expiry=expiry,
+                 qty=quantity, limit=limit_price,
+                 exchange=exchange, currency=currency)
 
         trade = ib.placeOrder(contract, order)
-        ib.sleep(2)  # wait for order status to update
+        ib.sleep(2)
 
-        # Check order status
         status = trade.orderStatus.status
         log_msg = ""
         if trade.log:
@@ -110,19 +58,14 @@ def sell_put(
         log.info("order_status_after_place", symbol=symbol, strike=strike,
                  expiry=expiry, status=status, message=log_msg[:200])
 
-        # Reject: Cancelled, Inactive, or any warning about exchange not open
         if status in ("Cancelled", "Inactive"):
             log.error("order_rejected", symbol=symbol, strike=strike,
                       expiry=expiry, status=status, reason=log_msg[:200])
             return None
 
-        # If order is just "PreSubmitted" and we're outside market hours,
-        # it may never execute. Cancel it to be safe.
         if status == "PreSubmitted":
             log.warning("order_presubmitted_may_not_execute", symbol=symbol,
                         strike=strike, status=status, message=log_msg[:200])
-            # Don't cancel — let it ride. But the caller (suggestions.py)
-            # will mark it as "submitted" so we track it.
 
         return trade
 
@@ -137,8 +80,8 @@ def buy_to_close_put(
     currency: str = "USD",
 ) -> Optional[IBTrade]:
     """Buy to close a short put position."""
-    with _order_lock:
-        ib = _get_order_connection()
+    with get_ib_lock():
+        ib = get_ib()
         contract = Option(symbol, expiry, strike, "P", exchange, currency=currency)
         ib.qualifyContracts(contract)
 
@@ -149,14 +92,9 @@ def buy_to_close_put(
 
         order.tif = "DAY"
 
-        log.info(
-            "placing_buy_put_close",
-            symbol=symbol,
-            strike=strike,
-            expiry=expiry,
-            qty=quantity,
-            exchange=exchange,
-        )
+        log.info("placing_buy_put_close",
+                 symbol=symbol, strike=strike, expiry=expiry,
+                 qty=quantity, exchange=exchange)
 
         trade = ib.placeOrder(contract, order)
         ib.sleep(2)
@@ -187,8 +125,8 @@ def sell_covered_call(
     currency: str = "USD",
 ) -> Optional[IBTrade]:
     """Sell to open a covered call."""
-    with _order_lock:
-        ib = _get_order_connection()
+    with get_ib_lock():
+        ib = get_ib()
         contract = Option(symbol, expiry, strike, "C", exchange, currency=currency)
         ib.qualifyContracts(contract)
 
@@ -200,16 +138,10 @@ def sell_covered_call(
         order.tif = "DAY"
         order.outsideRth = False
 
-        log.info(
-            "placing_sell_call",
-            symbol=symbol,
-            strike=strike,
-            expiry=expiry,
-            qty=quantity,
-            limit=limit_price,
-            exchange=exchange,
-            currency=currency,
-        )
+        log.info("placing_sell_call",
+                 symbol=symbol, strike=strike, expiry=expiry,
+                 qty=quantity, limit=limit_price,
+                 exchange=exchange, currency=currency)
 
         trade = ib.placeOrder(contract, order)
         ib.sleep(2)
@@ -232,14 +164,57 @@ def sell_covered_call(
 
 def cancel_order(trade: IBTrade) -> None:
     """Cancel an open order."""
-    with _order_lock:
-        ib = _get_order_connection()
+    with get_ib_lock():
+        ib = get_ib()
         ib.cancelOrder(trade.order)
         log.info("order_cancelled", order_id=trade.order.orderId)
 
 
 def get_open_orders() -> list[IBTrade]:
     """Get all open/pending orders."""
-    with _order_lock:
-        ib = _get_order_connection()
+    with get_ib_lock():
+        ib = get_ib()
         return ib.openTrades()
+
+
+# ── Cached open orders for dashboard (non-blocking) ──
+_cached_orders: list = []
+_cache_lock = threading.Lock()
+
+
+def refresh_open_orders_cache() -> None:
+    """Refresh the open orders cache. Called by health check job.
+    Uses the main connection."""
+    global _cached_orders
+    try:
+        if not is_connected():
+            return
+        with get_ib_lock():
+            ib = get_ib()
+            ib.reqAllOpenOrders()
+            ib.sleep(2)
+            trades = ib.openTrades()
+            new_cache = []
+            for oo in trades:
+                c = oo.contract
+                new_cache.append({
+                    "order_id": oo.order.orderId,
+                    "symbol": getattr(c, 'symbol', '?'),
+                    "action": oo.order.action,
+                    "qty": int(oo.order.totalQuantity),
+                    "limit": oo.order.lmtPrice if hasattr(oo.order, 'lmtPrice') else None,
+                    "strike": getattr(c, 'strike', None),
+                    "expiry": getattr(c, 'lastTradeDateOrContractMonth', None),
+                    "right": getattr(c, 'right', None),
+                    "status": oo.orderStatus.status,
+                })
+            with _cache_lock:
+                _cached_orders = new_cache
+    except Exception:
+        pass
+
+
+def get_cached_open_orders() -> list:
+    """Return cached open orders (non-blocking, for dashboard)."""
+    with _cache_lock:
+        return list(_cached_orders)
