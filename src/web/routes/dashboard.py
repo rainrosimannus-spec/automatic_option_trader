@@ -286,11 +286,11 @@ def dashboard(request: Request):
         # Pending suggestions count — split by source
         from src.core.suggestions import TradeSuggestion
         pending_options = db.query(TradeSuggestion).filter(
-            TradeSuggestion.status.in_(["pending", "submitted"]),
+            TradeSuggestion.status.in_(["pending", "submitted", "approved", "queued"]),
             TradeSuggestion.source == "options",
         ).count()
         pending_portfolio = db.query(TradeSuggestion).filter(
-            TradeSuggestion.status.in_(["pending", "submitted"]),
+            TradeSuggestion.status.in_(["pending", "submitted", "approved", "queued"]),
             TradeSuggestion.source == "portfolio",
         ).count()
 
