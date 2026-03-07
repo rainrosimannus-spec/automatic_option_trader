@@ -104,8 +104,10 @@ def job_scan_market(market: str):
         log.info("trading_paused_skipping_scan", market=market)
         return
 
-    if not _scan_lock.acquire(blocking=False):
-        log.info("scan_skipped_another_running", market=market)
+    # Wait up to 5 minutes for other scan to finish, then give up
+    acquired = _scan_lock.acquire(timeout=300)
+    if not acquired:
+        log.warning("scan_skipped_waited_5min", market=market)
         return
 
     try:
