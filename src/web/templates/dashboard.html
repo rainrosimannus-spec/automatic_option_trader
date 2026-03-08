@@ -186,15 +186,15 @@
     </div>
 </div>
 
-<!-- ═══ Performance Chart: Actual P&L vs 24% Target ═══ -->
+<!-- ═══ Performance Chart: NLV Return vs 24% Target ═══ -->
 {% if perf_labels and perf_labels|length > 1 %}
 <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
     <div class="flex items-center justify-between mb-4">
-        <h2 class="text-sm font-semibold text-gray-200">Options Return % vs 24% Annual Target</h2>
+        <h2 class="text-sm font-semibold text-gray-200">Portfolio Return % vs 24% Annual Target</h2>
         <div class="flex items-center gap-4 text-xs">
             <span class="flex items-center gap-1.5">
                 <span class="w-3 h-0.5 bg-emerald-400 rounded"></span>
-                Actual P&L
+                NLV Return
             </span>
             <span class="flex items-center gap-1.5">
                 <span class="w-3 h-0.5 bg-amber-400 rounded"></span>
@@ -227,7 +227,7 @@ document.addEventListener('DOMContentLoaded', function() {
             labels: fmtLabels,
             datasets: [
                 {
-                    label: 'Actual P&L',
+                    label: 'NLV Return',
                     data: actualData,
                     borderColor: '#34d399',
                     backgroundColor: 'rgba(52, 211, 153, 0.08)',

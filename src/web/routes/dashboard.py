@@ -89,7 +89,6 @@ def _get_performance_data() -> dict:
         target_line = []
 
         first_nlv = snapshots[0].net_liquidation
-        first_premium = snapshots[0].options_premium_collected
 
         # Always start from inception date, even if first snapshot is later
         if snapshots[0].date > start_date_str:
@@ -100,9 +99,9 @@ def _get_performance_data() -> dict:
         for snap in snapshots:
             labels.append(snap.date)
 
-            premium_gain = snap.options_premium_collected - first_premium
-            actual_pct = (premium_gain / first_nlv) * 100 if first_nlv > 0 else 0
-            actual_line.append(round(actual_pct, 2))
+            # NLV-based return — the true portfolio performance
+            nlv_return = ((snap.net_liquidation - first_nlv) / first_nlv) * 100 if first_nlv > 0 else 0
+            actual_line.append(round(nlv_return, 2))
 
             snap_date = datetime.strptime(snap.date, "%Y-%m-%d")
             days = max((snap_date - start_date).days, 0)
