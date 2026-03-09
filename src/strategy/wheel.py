@@ -292,6 +292,37 @@ class WheelManager:
         )
         db.add(trade_record)
 
+        # Create a TradeSuggestion entry so the covered call appears on the Suggestions page
+        from src.core.suggestions import TradeSuggestion
+        from datetime import timedelta
+        suggestion = TradeSuggestion(
+            symbol=symbol,
+            action="sell_covered_call",
+            order_type="sell_covered_call",
+            quantity=contracts,
+            limit_price=round(candidate.bid, 2),
+            strike=candidate.strike,
+            expiry=candidate.expiry,
+            right="C",
+            source="wheel",
+            tier="wheel",
+            signal=f"delta={round(candidate.delta, 3)} wheel",
+            rationale=f"Wheel: sell covered call {candidate.expiry} ${candidate.strike}C @ ${round(candidate.bid, 2)} (delta {round(candidate.delta, 3)}, IV {round(candidate.iv * 100, 1)}%)",
+            current_price=round(current_price, 2) if current_price else None,
+            iv_rank=round(candidate.iv * 100, 1),
+            est_cost=round(candidate.bid * contract_size * contracts, 2),
+            status="executed",
+            reviewed_at=datetime.utcnow(),
+            review_note="Auto-executed by wheel strategy",
+            rank=1,
+            rank_score=1.0,
+            funding_source="wheel",
+            opt_exchange=exchange,
+            opt_currency=currency,
+            expires_at=datetime.utcnow() + timedelta(days=30),
+        )
+        db.add(suggestion)
+
         # Update stock position's total premium
         stock_pos.total_premium_collected += candidate.bid * contract_size * contracts
 
