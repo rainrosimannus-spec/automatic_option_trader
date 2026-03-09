@@ -208,13 +208,15 @@ async def portfolio_page(request: Request):
     tiers = _build_tier_breakdown(holdings)
     performers = _build_top_performers(holdings)
 
-    # Get portfolio account margin directly from live connection
+    # Get portfolio account margin — live connection with cache fallback
     portfolio_margin_pct = 0.0
     portfolio_maintenance_margin = 0.0
     portfolio_nlv = 0.0
     portfolio_buying_power = 0.0
     try:
         from src.portfolio.scheduler import _portfolio_ib
+        from src.portfolio.connection import get_cached_portfolio_account
+        got_live = False
         if _portfolio_ib and _portfolio_ib.isConnected():
             values = _portfolio_ib.accountValues()
             for v in values:
@@ -226,6 +228,13 @@ async def portfolio_page(request: Request):
                     portfolio_buying_power = float(v.value)
             if portfolio_nlv > 0:
                 portfolio_margin_pct = (portfolio_maintenance_margin / portfolio_nlv) * 100
+                got_live = True
+        if not got_live:
+            cached = get_cached_portfolio_account()
+            portfolio_nlv = cached.get("nlv", 0.0)
+            portfolio_maintenance_margin = cached.get("margin", 0.0)
+            portfolio_buying_power = cached.get("buying_power", 0.0)
+            portfolio_margin_pct = cached.get("margin_pct", 0.0)
     except Exception:
         pass
 
