@@ -208,6 +208,31 @@ async def portfolio_page(request: Request):
     tiers = _build_tier_breakdown(holdings)
     performers = _build_top_performers(holdings)
 
+    # Fetch portfolio account margin from IBKR
+    portfolio_margin_pct = 0.0
+    portfolio_maintenance_margin = 0.0
+    portfolio_nlv = 0.0
+    portfolio_buying_power = 0.0
+    try:
+        from src.portfolio.connection import get_portfolio_ib, is_portfolio_connected
+        from src.core.config import get_settings
+        pcfg = get_settings().portfolio
+        if is_portfolio_connected():
+            pib = get_portfolio_ib(pcfg.ibkr_host, pcfg.ibkr_port, pcfg.ibkr_client_id,
+                                   pcfg.ibkr_account, readonly=True)
+            pvalues = pib.accountValues()
+            for v in pvalues:
+                if v.tag == "NetLiquidation" and v.currency == "BASE":
+                    portfolio_nlv = float(v.value)
+                elif v.tag == "MaintMarginReq" and v.currency == "BASE":
+                    portfolio_maintenance_margin = float(v.value)
+                elif v.tag == "BuyingPower" and v.currency == "BASE":
+                    portfolio_buying_power = float(v.value)
+            if portfolio_nlv > 0:
+                portfolio_margin_pct = (portfolio_maintenance_margin / portfolio_nlv) * 100
+    except Exception:
+        pass
+
     return templates.TemplateResponse("portfolio.html", {
         "request": request,
         "holdings": holdings,
@@ -220,6 +245,10 @@ async def portfolio_page(request: Request):
         "total_pnl_pct": total_pnl_pct,
         "total_dividends": total_dividends,
         "num_holdings": len(holdings),
+        "portfolio_margin_pct": portfolio_margin_pct,
+        "portfolio_maintenance_margin": portfolio_maintenance_margin,
+        "portfolio_nlv": portfolio_nlv,
+        "portfolio_buying_power": portfolio_buying_power,
         "market_status": market_status,
         "market_pct": market_pct,
         # Performance chart
