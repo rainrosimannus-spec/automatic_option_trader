@@ -208,18 +208,24 @@ async def portfolio_page(request: Request):
     tiers = _build_tier_breakdown(holdings)
     performers = _build_top_performers(holdings)
 
-    # Get portfolio account margin from cache (refreshed by portfolio scheduler)
+    # Get portfolio account margin directly from live connection
     portfolio_margin_pct = 0.0
     portfolio_maintenance_margin = 0.0
     portfolio_nlv = 0.0
     portfolio_buying_power = 0.0
     try:
-        from src.portfolio.connection import get_cached_portfolio_account
-        pacct = get_cached_portfolio_account()
-        portfolio_margin_pct = pacct.get("margin_pct", 0)
-        portfolio_maintenance_margin = pacct.get("margin", 0)
-        portfolio_nlv = pacct.get("nlv", 0)
-        portfolio_buying_power = pacct.get("buying_power", 0)
+        from src.portfolio.scheduler import _portfolio_ib
+        if _portfolio_ib and _portfolio_ib.isConnected():
+            values = _portfolio_ib.accountValues()
+            for v in values:
+                if v.tag == "NetLiquidation" and v.currency in ("BASE", "USD"):
+                    portfolio_nlv = float(v.value)
+                elif v.tag == "MaintMarginReq" and v.currency in ("BASE", "USD"):
+                    portfolio_maintenance_margin = float(v.value)
+                elif v.tag == "BuyingPower" and v.currency in ("BASE", "USD"):
+                    portfolio_buying_power = float(v.value)
+            if portfolio_nlv > 0:
+                portfolio_margin_pct = (portfolio_maintenance_margin / portfolio_nlv) * 100
     except Exception:
         pass
 
