@@ -175,8 +175,7 @@ def job_check_assignments():
     assigned = wheel.check_assignments()
     called = wheel.check_called_away()
 
-    if assigned:
-        wheel.write_covered_calls()
+    wheel.write_covered_calls()
 
 
 def job_check_profit():
