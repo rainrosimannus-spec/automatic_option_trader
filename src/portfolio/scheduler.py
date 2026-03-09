@@ -557,6 +557,11 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                 if symbol not in watchlist_symbols:
                     continue
 
+                # Only sync trades from the portfolio account
+                trade_account = getattr(execution, 'acctNumber', '')
+                if trade_account and cfg.ibkr_account and trade_account != cfg.ibkr_account:
+                    continue
+
                 wl = watchlist_symbols[symbol]
 
                 # Parse execution time
