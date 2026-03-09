@@ -145,10 +145,53 @@ def save_bridge_settings(
 
 @router.post("/force-close/{position_id}")
 def force_close_position(position_id: int):
-    """Force close a single position."""
+    """Force close a single position — sends market order to IBKR then marks DB closed."""
     with get_db() as db:
         pos = db.query(Position).filter(Position.id == position_id).first()
         if pos and pos.status == PositionStatus.OPEN:
+            try:
+                from src.broker.connection import get_ib, get_ib_lock, is_connected
+                from src.broker.orders import _get_order_connection, _order_lock
+                from ib_insync import Option, Stock, Order
+
+                if is_connected():
+                    with _order_lock:
+                        ib = _get_order_connection()
+
+                        # Build the contract
+                        if pos.position_type in ("short_put", "covered_call", "short_call"):
+                            right = "P" if pos.position_type == "short_put" else "C"
+                            contract = Option(
+                                symbol=pos.symbol,
+                                lastTradeDateOrContractMonth=pos.expiry,
+                                strike=pos.strike,
+                                right=right,
+                                exchange="SMART",
+                            )
+                            action = "BUY"  # buy to close a short option
+                        elif pos.position_type == "stock":
+                            contract = Stock(pos.symbol, "SMART", "USD")
+                            action = "SELL"  # sell to close stock
+                        else:
+                            contract = None
+
+                        if contract:
+                            ib.qualifyContracts(contract)
+                            order = Order(
+                                action=action,
+                                totalQuantity=pos.quantity if pos.position_type == "stock" else 1,
+                                orderType="MKT",
+                            )
+                            trade = ib.placeOrder(contract, order)
+                            ib.sleep(1)
+                            log.info("force_close_order_sent",
+                                     position_id=position_id,
+                                     symbol=pos.symbol,
+                                     action=action,
+                                     status=trade.orderStatus.status)
+            except Exception as e:
+                log.error("force_close_ibkr_error", position_id=position_id, error=str(e))
+
             pos.status = PositionStatus.CLOSED
             pos.closed_at = datetime.utcnow()
             log.info("force_closed", position_id=position_id, symbol=pos.symbol)
