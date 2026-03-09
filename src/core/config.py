@@ -62,7 +62,7 @@ class StrategyConfig(BaseModel):
     # Wheel
     wheel_enabled: bool = True
     cc_dte_min: int = 1
-    cc_dte_max: int = 7
+    cc_dte_max: int = 30
     cc_delta_min: float = 0.15
     cc_delta_max: float = 0.35
     cc_above_cost_basis: bool = True
