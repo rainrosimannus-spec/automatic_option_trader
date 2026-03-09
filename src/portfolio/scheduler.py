@@ -114,6 +114,12 @@ def job_portfolio_update_prices(cfg: PortfolioConfig):
             buyer = PortfolioBuyer(ib, cfg)
             buyer.update_holdings_prices()
             log.info("portfolio_prices_updated")
+            # Refresh cached account data for dashboard
+            try:
+                from src.portfolio.connection import refresh_portfolio_account_cache
+                refresh_portfolio_account_cache()
+            except Exception:
+                pass
         except Exception as e:
             log.error("portfolio_price_update_error", error=str(e))
 

@@ -106,3 +106,44 @@ def disconnect_portfolio():
 
 def is_portfolio_connected() -> bool:
     return _portfolio_ib is not None and _portfolio_ib.isConnected()
+
+
+# ── Cached portfolio account data for dashboard ──
+import threading as _threading
+_cached_portfolio_account: dict = {}
+_portfolio_cache_lock = _threading.Lock()
+
+
+def refresh_portfolio_account_cache():
+    """Refresh cached portfolio account data. Called by portfolio scheduler."""
+    global _cached_portfolio_account
+    global _portfolio_ib
+    try:
+        if _portfolio_ib is None or not _portfolio_ib.isConnected():
+            return
+        values = _portfolio_ib.accountValues()
+        if not values:
+            return
+        data = {}
+        for v in values:
+            if v.currency in ("BASE", "EUR", "USD"):
+                if v.tag == "NetLiquidation" and v.currency == "BASE":
+                    data["nlv"] = float(v.value)
+                elif v.tag == "MaintMarginReq" and v.currency == "BASE":
+                    data["margin"] = float(v.value)
+                elif v.tag == "BuyingPower" and v.currency == "BASE":
+                    data["buying_power"] = float(v.value)
+        if data.get("nlv", 0) > 0:
+            data["margin_pct"] = (data.get("margin", 0) / data["nlv"]) * 100
+        else:
+            data["margin_pct"] = 0
+        with _portfolio_cache_lock:
+            _cached_portfolio_account = data
+    except Exception:
+        pass
+
+
+def get_cached_portfolio_account() -> dict:
+    """Return cached portfolio account data (non-blocking, for dashboard)."""
+    with _portfolio_cache_lock:
+        return dict(_cached_portfolio_account)
