@@ -128,7 +128,15 @@ class RiskManager:
     def _store_regime(self, regime: MarketRegime) -> None:
         """Persist regime data to SystemState for dashboard display."""
         with get_db() as db:
+            if regime.vix is not None and regime.vix > self.cfg.vix_pause_threshold:
+                regime_label = "halt"
+            elif regime.spy_bullish is False:
+                regime_label = "bear"
+            else:
+                regime_label = "normal"
+
             pairs = {
+                "market_regime": regime_label,
                 "current_vix": str(regime.vix) if regime.vix else "",
                 "spy_bullish": str(regime.spy_bullish).lower() if regime.spy_bullish is not None else "",
                 "spy_fast_ma": str(regime.spy_fast_ma) if regime.spy_fast_ma else "",
