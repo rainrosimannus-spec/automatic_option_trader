@@ -79,6 +79,8 @@
             {% if market_regime == 'capitulation' %}text-red-400
             {% elif market_regime == 'stabilization' %}text-amber-400
             {% elif market_regime == 'elevated_fear' %}text-orange-400
+            {% elif market_regime == 'halt' %}text-red-400
+            {% elif market_regime == 'bear' %}text-amber-400
             {% else %}text-emerald-400{% endif %}">
             {{ market_regime | upper }}
         </div>
@@ -104,6 +106,8 @@
         <div class="text-3xl font-mono font-bold
             {% if current_vix and current_vix > 30 %}text-red-400
             {% elif current_vix and current_vix > 20 %}text-amber-400
+            {% elif market_regime == 'halt' %}text-red-400
+            {% elif market_regime == 'bear' %}text-amber-400
             {% else %}text-emerald-400{% endif %}">
             {{ "%.1f"|format(current_vix) if current_vix else '—' }}
         </div>
