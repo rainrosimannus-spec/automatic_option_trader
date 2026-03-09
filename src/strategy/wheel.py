@@ -227,45 +227,20 @@ class WheelManager:
         from src.broker.market_data import get_stock_price
         current_price = get_stock_price(symbol, exchange, currency)
 
-        # Determine minimum strike and delta range based on recovery
-        min_strike = cost_basis if self.cfg.cc_above_cost_basis and cost_basis else None
+        # Net cost basis = true breakeven including all premiums collected
+        net_cost_basis = (cost_basis or 0) - (stock_pos.total_premium_collected / max(stock_pos.quantity, 1))
+        min_strike = net_cost_basis if self.cfg.cc_above_cost_basis and net_cost_basis > 0 else None
 
-        # Smart strike: adjust delta based on how far stock is above cost basis
+        # Target ATM delta for maximum premium
         cc_delta_min = self.cfg.cc_delta_min
         cc_delta_max = self.cfg.cc_delta_max
 
-        if self.cfg.cc_progressive_strikes and cost_basis and current_price:
-            recovery_pct = (current_price - cost_basis) / cost_basis if cost_basis > 0 else 0
-
-            if recovery_pct > 0.10:
-                # Stock is >10% above cost basis — strong recovery
-                # Use very low delta (0.15-0.20) to protect upside
-                cc_delta_min = 0.12
-                cc_delta_max = 0.20
-                # Set min strike higher — at least 5% above current price
-                min_strike = max(min_strike or 0, current_price * 1.05)
-                log.info(
-                    "progressive_strike_wide",
-                    symbol=symbol,
-                    recovery=f"{recovery_pct:.1%}",
-                    delta_range=(cc_delta_min, cc_delta_max),
-                    min_strike=round(min_strike, 2),
-                )
-            elif recovery_pct > 0.03:
-                # Stock is 3-10% above cost basis — moderate recovery
-                # Use moderate delta (0.18-0.25)
-                cc_delta_min = 0.18
-                cc_delta_max = 0.25
-                # Set min strike above cost basis + some buffer
-                min_strike = max(min_strike or 0, cost_basis * 1.02)
-                log.info(
-                    "progressive_strike_moderate",
-                    symbol=symbol,
-                    recovery=f"{recovery_pct:.1%}",
-                    delta_range=(cc_delta_min, cc_delta_max),
-                )
-            # else: stock at or below cost basis — use default delta range
-
+        log.info("covered_call_params", symbol=symbol,
+                 cost_basis=round(cost_basis, 2) if cost_basis else None,
+                 net_cost_basis=round(net_cost_basis, 2),
+                 min_strike=round(min_strike, 2) if min_strike else None,
+                 current_price=round(current_price, 2) if current_price else None,
+                 delta_range=(cc_delta_min, cc_delta_max))
         # Screen for the best call with adjusted parameters
         candidate = screen_calls(
             symbol,
