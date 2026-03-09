@@ -477,7 +477,16 @@ def sync_ibkr_positions() -> int:
 
             # Check for any existing position with same symbol+strike+expiry
             # (could be already created by suggestion execution or a previous sync)
-            pos_type = "short_put" if data["right"] == "P" else "short_call"
+            if data["right"] == "P":
+                pos_type = "short_put"
+            else:
+                # Use covered_call if we have an open stock position for this symbol
+                has_stock = db.query(Position).filter(
+                    Position.symbol == data["symbol"],
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "stock",
+                ).first()
+                pos_type = "covered_call" if has_stock else "short_call"
             existing = db.query(Position).filter(
                 Position.symbol == data["symbol"],
                 Position.strike == data["strike"],

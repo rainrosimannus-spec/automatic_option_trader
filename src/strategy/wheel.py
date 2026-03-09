@@ -325,7 +325,7 @@ class WheelManager:
             strike=candidate.strike,
             expiry=candidate.expiry,
             right="C",
-            source="wheel",
+            source="options",
             tier="wheel",
             signal=f"delta={round(candidate.delta, 3)} wheel",
             rationale=f"Wheel: sell covered call {candidate.expiry} ${candidate.strike}C @ ${round(candidate.bid, 2)} (delta {round(candidate.delta, 3)}, IV {round(candidate.iv * 100, 1)}%)",
