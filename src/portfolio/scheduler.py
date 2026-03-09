@@ -116,8 +116,8 @@ def job_portfolio_update_prices(cfg: PortfolioConfig):
             log.info("portfolio_prices_updated")
             # Refresh cached account data for dashboard
             try:
-                from src.portfolio.connection import refresh_portfolio_account_cache
-                refresh_portfolio_account_cache()
+                from src.portfolio.connection import refresh_portfolio_account_cache_from
+                refresh_portfolio_account_cache_from(ib)
             except Exception:
                 pass
         except Exception as e:

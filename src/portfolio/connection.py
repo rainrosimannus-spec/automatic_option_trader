@@ -115,13 +115,19 @@ _portfolio_cache_lock = _threading.Lock()
 
 
 def refresh_portfolio_account_cache():
-    """Refresh cached portfolio account data. Called by portfolio scheduler."""
-    global _cached_portfolio_account
+    """Refresh using module-level connection."""
     global _portfolio_ib
+    if _portfolio_ib and _portfolio_ib.isConnected():
+        refresh_portfolio_account_cache_from(_portfolio_ib)
+
+
+def refresh_portfolio_account_cache_from(ib):
+    """Refresh cached portfolio account data from a given IB connection."""
+    global _cached_portfolio_account
     try:
-        if _portfolio_ib is None or not _portfolio_ib.isConnected():
+        if ib is None or not ib.isConnected():
             return
-        values = _portfolio_ib.accountValues()
+        values = ib.accountValues()
         if not values:
             return
         data = {}
