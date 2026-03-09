@@ -432,6 +432,20 @@ def sync_ibkr_positions() -> int:
             tracked_keys.add(key)
 
             if key not in ibkr_positions:
+                # Skip if there is a live open order at IBKR for this position
+                from src.broker.orders import get_cached_open_orders
+                open_orders = get_cached_open_orders()
+                has_open_order = any(
+                    o.get("symbol") == pos.symbol and
+                    o.get("strike") == pos.strike and
+                    o.get("expiry") == pos.expiry
+                    for o in open_orders
+                )
+                if has_open_order:
+                    log.info("position_sync_skipped_open_order",
+                             symbol=pos.symbol, strike=pos.strike, expiry=pos.expiry)
+                    tracked_keys.add(key)
+                    continue
                 pos.status = PositionStatus.EXPIRED
                 pos.closed_at = datetime.utcnow()
 

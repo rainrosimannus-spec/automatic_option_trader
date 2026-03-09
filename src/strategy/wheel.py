@@ -151,31 +151,65 @@ class WheelManager:
                 .all()
             )
 
+            from src.broker.orders import get_cached_open_orders
+            open_orders = get_cached_open_orders()
+
+            # Group stock positions by symbol to handle multiple lots
+            symbols_seen = set()
             for stock_pos in stock_positions:
-                # Check we don't already have an open call on this stock
-                existing_call = (
-                    db.query(Position)
-                    .filter(
-                        Position.symbol == stock_pos.symbol,
-                        Position.status == PositionStatus.OPEN,
-                        Position.position_type == "covered_call",
-                    )
-                    .first()
+                symbol = stock_pos.symbol
+                if symbol in symbols_seen:
+                    continue
+                symbols_seen.add(symbol)
+
+                # Count total stock shares for this symbol
+                all_stock = db.query(Position).filter(
+                    Position.symbol == symbol,
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "stock",
+                    Position.is_wheel == True,
+                ).all()
+                total_shares = sum(p.quantity for p in all_stock)
+                lots_needed = total_shares // 100
+
+                # Count open covered call contracts
+                open_calls = db.query(Position).filter(
+                    Position.symbol == symbol,
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "covered_call",
+                ).all()
+                covered_contracts = sum(p.quantity for p in open_calls)
+
+                # Count pending IBKR call orders
+                pending_contracts = sum(
+                    o.get("qty", 0) for o in open_orders
+                    if o.get("symbol") == symbol and o.get("right") == "C"
                 )
-                if existing_call:
+
+                lots_to_cover = lots_needed - covered_contracts - pending_contracts
+
+                if lots_to_cover <= 0:
+                    log.info("covered_call_fully_covered",
+                             symbol=symbol, lots=lots_needed,
+                             covered=covered_contracts, pending=pending_contracts)
                     continue
 
+                log.info("covered_call_lots_to_cover",
+                         symbol=symbol, lots_needed=lots_needed,
+                         covered=covered_contracts, pending=pending_contracts,
+                         to_cover=lots_to_cover)
+
                 try:
-                    result = self._write_call(db, stock_pos)
+                    result = self._write_call(db, stock_pos, contracts=lots_to_cover)
                     if result:
-                        written.append(stock_pos.symbol)
+                        written.append(symbol)
                 except Exception as e:
-                    log.error("covered_call_error", symbol=stock_pos.symbol, error=str(e))
+                    log.error("covered_call_error", symbol=symbol, error=str(e))
 
         log.info("covered_calls_written", symbols=written)
         return written
 
-    def _write_call(self, db, stock_pos: Position) -> bool:
+    def _write_call(self, db, stock_pos: Position, contracts: int = 0) -> bool:
         """
         Screen and sell a covered call on an assigned stock position.
         Smart strike management:
@@ -247,7 +281,8 @@ class WheelManager:
             return False
 
         # Place the order
-        contracts = stock_pos.quantity // contract_size
+        if not contracts:
+            contracts = stock_pos.quantity // contract_size
         trade = sell_covered_call(
             symbol=symbol,
             expiry=candidate.expiry,
@@ -261,23 +296,9 @@ class WheelManager:
         if not trade:
             return False
 
-        # Record position and trade
-        call_pos = Position(
-            symbol=symbol,
-            status=PositionStatus.OPEN,
-            position_type="covered_call",
-            strike=candidate.strike,
-            expiry=candidate.expiry,
-            entry_premium=candidate.bid,
-            quantity=contracts,
-            total_premium_collected=candidate.bid * contract_size * contracts,
-            is_wheel=True,
-        )
-        db.add(call_pos)
-        db.flush()
-
+        # Record trade only — Position will be created by trade_sync after fill
         trade_record = Trade(
-            position_id=call_pos.id,
+            position_id=None,
             symbol=symbol,
             trade_type=TradeType.SELL_CALL,
             strike=candidate.strike,
