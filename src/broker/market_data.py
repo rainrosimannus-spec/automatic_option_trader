@@ -21,8 +21,8 @@ log = get_logger(__name__)
 # to avoid IBKR pacing violations (60 historical data requests / 10 min)
 _price_fail_counts: dict[str, int] = {}
 _price_fail_until: dict[str, datetime] = {}
-_PRICE_FAIL_THRESHOLD = 2       # failures before temporary skip
-_PRICE_FAIL_COOLDOWN_MIN = 10   # minutes to skip after threshold reached
+_PRICE_FAIL_THRESHOLD = 5       # failures before temporary skip
+_PRICE_FAIL_COOLDOWN_MIN = 5   # minutes to skip after threshold reached
 
 
 def _is_symbol_blocked(symbol: str) -> bool:
@@ -120,8 +120,8 @@ def get_stock_price(
                         except Exception:
                             pass
                         return float(bars[-1].close)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("price_request_failed", symbol=symbol, what=what, error=str(e) or repr(e))
                 ib.sleep(0.5)  # brief pause before retry
 
         log.warning("no_price_data", symbol=symbol, exchange=exchange)
