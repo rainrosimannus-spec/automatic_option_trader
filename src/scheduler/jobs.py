@@ -39,13 +39,11 @@ _scheduler: BackgroundScheduler | None = None
 
 
 def _ensure_event_loop():
-    """Ensure there's an asyncio event loop in the current thread.
-    ib_insync requires this when running in APScheduler's thread pool."""
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    """Set this thread's event loop to the main IB connection's loop.
+    ib_insync processes all responses via the event loop, so every thread
+    must use the same loop as the connection — otherwise requests time out."""
+    from src.broker.connection import ensure_main_event_loop
+    ensure_main_event_loop()
 
 
 def _is_paused() -> bool:

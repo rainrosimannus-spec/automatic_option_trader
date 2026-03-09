@@ -24,6 +24,7 @@ log = get_logger(__name__)
 
 _ib: Optional[IB] = None
 _ib_lock = threading.RLock()  # RLock allows nested locking from same thread
+_main_loop = None  # Store the event loop used by the main IB connection
 
 # IBKR info codes that are NOT errors (farm status notifications)
 _INFO_CODES = {
@@ -52,6 +53,22 @@ def get_ib() -> IB:
 def get_ib_lock() -> threading.RLock:
     """Return the IB connection lock for serializing requests."""
     return _ib_lock
+
+
+def ensure_main_event_loop():
+    """Set the current thread's event loop to the main IB connection's loop.
+    This is critical — ib_insync processes responses via the event loop,
+    so ALL threads must use the same loop as the connection."""
+    import asyncio
+    global _main_loop
+    if _main_loop is not None:
+        asyncio.set_event_loop(_main_loop)
+    else:
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
 
 def initial_connect() -> IB:
@@ -90,6 +107,11 @@ def _connect(max_retries: int = 3) -> IB:
             ib.RequestTimeout = 15
             ib.reqMarketDataType(4)
             ib.sleep(2)
+
+            # Store the event loop so other threads can use it
+            global _main_loop
+            import asyncio
+            _main_loop = asyncio.get_event_loop()
 
             log.info("ibkr_connected",
                      account=ib.managedAccounts(),
