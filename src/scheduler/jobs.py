@@ -737,22 +737,16 @@ def create_scheduler() -> BackgroundScheduler:
             max_instances=1,
         )
 
-    # ── Assignment checks — run twice daily at fixed US times ──
+    # ── Assignment checks — every 30 min during US market hours ──
+    # Starts 1 hour before market open (8:30 AM ET) to catch overnight assignments
+    # Runs until calls are written or market closes (4 PM ET)
     us_tz = pytz.timezone("US/Eastern")
 
     scheduler.add_job(
         job_check_assignments,
-        CronTrigger(hour=10, minute=0, day_of_week="mon-fri", timezone=us_tz),
+        CronTrigger(hour="8-15", minute="0,30", day_of_week="mon-fri", timezone=us_tz),
         id="check_assignments",
-        name="Check Assignments (AM)",
-        max_instances=1,
-    )
-
-    scheduler.add_job(
-        job_check_assignments,
-        CronTrigger(hour=15, minute=30, day_of_week="mon-fri", timezone=us_tz),
-        id="check_assignments_eod",
-        name="Check Assignments (EOD)",
+        name="Check Assignments",
         max_instances=1,
     )
 
