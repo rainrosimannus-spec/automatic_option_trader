@@ -133,11 +133,11 @@ def refresh_portfolio_account_cache_from(ib):
         data = {}
         for v in values:
             if v.currency in ("BASE", "EUR", "USD"):
-                if v.tag == "NetLiquidation" and v.currency == "BASE":
+                if v.tag == "NetLiquidation" and v.currency in ("BASE", "USD"):
                     data["nlv"] = float(v.value)
-                elif v.tag == "MaintMarginReq" and v.currency == "BASE":
+                elif v.tag == "MaintMarginReq" and v.currency in ("BASE", "USD"):
                     data["margin"] = float(v.value)
-                elif v.tag == "BuyingPower" and v.currency == "BASE":
+                elif v.tag == "BuyingPower" and v.currency in ("BASE", "USD"):
                     data["buying_power"] = float(v.value)
         if data.get("nlv", 0) > 0:
             data["margin_pct"] = (data.get("margin", 0) / data["nlv"]) * 100
