@@ -216,7 +216,7 @@ def job_execute_queued():
             if not s:
                 return
             log.info("executing_queued_suggestion", id=s.id, symbol=s.symbol, rank=s.rank)
-            s.status = "approved"
+            s.status = "executing"
             db.commit()
             _execute_approved_order(s.id)
     except Exception as e:

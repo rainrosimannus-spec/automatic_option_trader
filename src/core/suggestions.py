@@ -410,7 +410,7 @@ def _execute_approved_order(suggestion_id: int):
                     msg="Order execution timed out after 30s — marking as expired")
         with get_db() as db:
             s = db.query(TradeSuggestion).filter(TradeSuggestion.id == suggestion_id).first()
-            if s and s.status == "approved":
+            if s and s.status in ("approved", "executing"):
                 s.status = "expired"
                 s.review_note = "Execution timed out after 30s"
     except Exception as e:
@@ -428,8 +428,12 @@ def _execute_approved_order_inner(suggestion_id: int):
         s = db.query(TradeSuggestion).filter(
             TradeSuggestion.id == suggestion_id
         ).first()
-        if not s or s.status != "approved":
+        if not s or s.status not in ("approved", "executing"):
             return
+        # Mark as executing immediately to prevent duplicate runs
+        if s.status != "executing":
+            s.status = "executing"
+            db.commit()
 
         # SAFEGUARD: Check IBKR open orders before placing new ones
         # Prevents overselling when duplicate suggestions slip through
