@@ -248,7 +248,9 @@ def dashboard(request: Request):
         spy_slow_ma = _get_state_val(db, "spy_slow_ma")
         spy_price = _get_state_val(db, "spy_price")
         eu_bullish = _get_state_val(db, "eu_bullish")
+        eu_price = _get_state_val(db, "eu_price")
         asia_bullish = _get_state_val(db, "asia_bullish")
+        asia_price = _get_state_val(db, "asia_price")
         market_regime = _get_state_val(db, "market_regime") or "normal"
 
         # Daily trade count
@@ -341,7 +343,9 @@ def dashboard(request: Request):
         "spy_slow_ma": float(spy_slow_ma) if spy_slow_ma else None,
         "spy_price": float(spy_price) if spy_price else None,
         "eu_bullish": eu_bullish == "true" if eu_bullish else None,
+        "eu_price": float(eu_price) if eu_price else None,
         "asia_bullish": asia_bullish == "true" if asia_bullish else None,
+        "asia_price": float(asia_price) if asia_price else None,
         "market_regime": market_regime,
         "daily_count": daily_count,
         "daily_limit": 10,
