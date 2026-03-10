@@ -483,8 +483,28 @@ def sync_ibkr_positions() -> int:
             if pos.symbol not in ibkr_stock_positions or ibkr_stock_positions[pos.symbol] == 0:
                 pos.status = PositionStatus.CLOSED
                 pos.closed_at = datetime.utcnow()
+                # Calculate realized PnL from stock trades
+                stock_trades = db.query(Trade).filter(
+                    Trade.symbol == pos.symbol,
+                    Trade.order_status == OrderStatus.FILLED,
+                    Trade.trade_type.in_([
+                        TradeType.BUY_STOCK, TradeType.SELL_STOCK,
+                        TradeType.ASSIGNMENT, TradeType.CALLED_AWAY,
+                    ]),
+                ).all()
+                realized = 0.0
+                for t in stock_trades:
+                    qty = t.quantity or 1
+                    price = t.fill_price or t.premium or 0
+                    commission = t.commission or 0
+                    if t.trade_type in (TradeType.SELL_STOCK, TradeType.CALLED_AWAY):
+                        realized += price * qty - commission
+                    elif t.trade_type in (TradeType.BUY_STOCK, TradeType.ASSIGNMENT):
+                        realized -= price * qty + commission
+                pos.realized_pnl = round(realized, 2)
                 changes += 1
-                log.info("stock_position_closed_by_sync", symbol=pos.symbol)
+                log.info("stock_position_closed_by_sync",
+                         symbol=pos.symbol, realized_pnl=pos.realized_pnl)
 
         for key, data in ibkr_positions.items():
             if key in tracked_keys:
