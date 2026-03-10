@@ -238,7 +238,7 @@ def job_execute_queued():
                         symbol=s.symbol,
                         expiry=s.expiry or "",
                         strike=s.strike or 0,
-                        right="C" if "call" in (s.action or "") else "P",
+                        right="C" if (s.action or "").endswith("call") else "P",
                         quantity=s.quantity or 1,
                         limit_price=s.limit_price or 0.0,
                         exchange=s.opt_exchange or "SMART",
