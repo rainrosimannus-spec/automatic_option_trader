@@ -198,7 +198,6 @@ def job_execute_queued():
     if not is_connected():
         return
     # Wait for the IB lock to be free before attempting execution
-    # This prevents timeout conflicts when a scan is holding the connection
     from src.broker.connection import get_ib_lock
     acquired = get_ib_lock().acquire(timeout=10)
     if not acquired:
@@ -208,17 +207,51 @@ def job_execute_queued():
     try:
         from src.core.suggestions import TradeSuggestion, _execute_approved_order
         from src.core.database import get_db
+        from src.broker.account import get_account_summary
+        from src.core.config import get_settings
+        import time as _time
+
+        cfg = get_settings()
+
         with get_db() as db:
-            # Execute ONE suggestion per cycle to prevent hangs from blocking others
             s = db.query(TradeSuggestion).filter(
                 TradeSuggestion.status == "queued"
             ).order_by(TradeSuggestion.rank.asc()).first()
             if not s:
                 return
+
+            # Re-check margin before executing
+            try:
+                acct = get_account_summary()
+                if acct and acct.net_liquidation > 0:
+                    margin_pct = acct.maintenance_margin / acct.net_liquidation
+                    if margin_pct >= cfg.risk.max_margin_usage:
+                        log.info("execute_queued_margin_blocked",
+                                 symbol=s.symbol, margin_pct=f"{margin_pct:.1%}")
+                        s.status = "expired"
+                        s.review_note = f"Margin {margin_pct:.0%} at execution time — skipped"
+                        return
+                    est_margin = (s.strike or 0) * 100 * (s.quantity or 1) * 0.20
+                    headroom = acct.net_liquidation * (cfg.risk.max_margin_usage - margin_pct)
+                    if est_margin > headroom:
+                        log.info("execute_queued_insufficient_headroom",
+                                 symbol=s.symbol,
+                                 est_margin=f"${est_margin:,.0f}",
+                                 headroom=f"${headroom:,.0f}")
+                        s.status = "expired"
+                        s.review_note = f"Insufficient margin headroom at execution — skipped"
+                        return
+            except Exception as e:
+                log.warning("execute_queued_margin_check_failed", error=str(e))
+
             log.info("executing_queued_suggestion", id=s.id, symbol=s.symbol, rank=s.rank)
             s.status = "executing"
             db.commit()
-            _execute_approved_order(s.id)
+
+        # Small delay to let previous order settle before placing next
+        _time.sleep(5)
+        _execute_approved_order(s.id)
+
     except Exception as e:
         log.warning("queued_suggestion_error", error=str(e))
 
