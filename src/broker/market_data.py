@@ -403,6 +403,69 @@ def get_spy_moving_averages(
         log.warning("spy_ma_fetch_error", error=str(e))
         return None
 
+def get_regional_moving_averages(
+    ticker: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    fast_period: int = 10,
+    slow_period: int = 20,
+) -> Optional[dict]:
+    """
+    Fetch daily bars for a regional ETF and compute simple moving averages.
+    Used for EU (FEZ) and Asia (EWJ) regime detection.
+    Returns {"fast_ma": float, "slow_ma": float, "price": float, "is_bullish": bool}
+    or None if data unavailable.
+    """
+    try:
+        with get_ib_lock():
+            _ensure_market_data_type()
+            ib = get_ib()
+            contract = Stock(ticker, exchange, currency)
+            ib.qualifyContracts(contract)
+
+            duration = f"{slow_period + 5} D"
+            bars = ib.reqHistoricalData(
+                contract,
+                endDateTime="",
+                durationStr=duration,
+                barSizeSetting="1 day",
+                whatToShow="TRADES",
+                useRTH=False,
+                formatDate=1,
+                timeout=10,
+            )
+
+            if not bars or len(bars) < slow_period:
+                log.warning("insufficient_regional_bars", ticker=ticker, count=len(bars) if bars else 0, need=slow_period)
+                return None
+
+            closes = [bar.close for bar in bars]
+
+        fast_ma = sum(closes[-fast_period:]) / fast_period
+        slow_ma = sum(closes[-slow_period:]) / slow_period
+        price = closes[-1]
+        is_bullish = fast_ma > slow_ma
+
+        log.info(
+            "regional_ma_calculated",
+            ticker=ticker,
+            price=round(price, 2),
+            fast_ma=round(fast_ma, 2),
+            slow_ma=round(slow_ma, 2),
+            trend="bullish" if is_bullish else "bearish",
+        )
+
+        return {
+            "fast_ma": round(fast_ma, 2),
+            "slow_ma": round(slow_ma, 2),
+            "price": round(price, 2),
+            "is_bullish": is_bullish,
+        }
+
+    except Exception as e:
+        log.warning("regional_ma_fetch_error", ticker=ticker, error=str(e))
+        return None
+
 
 # ── IV Rank ─────────────────────────────────────────────────
 def get_iv_rank(

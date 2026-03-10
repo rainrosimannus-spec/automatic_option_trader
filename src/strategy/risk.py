@@ -54,6 +54,8 @@ class MarketRegime:
     spy_fast_ma: float | None = None
     spy_slow_ma: float | None = None
     spy_price: float | None = None
+    eu_bullish: bool | None = None   # FEZ (Euro Stoxx 50 ETF)
+    asia_bullish: bool | None = None  # EWJ (MSCI Japan ETF)
 
 
 class RiskManager:
@@ -107,6 +109,36 @@ class RiskManager:
                     regime.spy_bullish = cached_bullish == "true"
                     log.info("spy_ma_using_cached", bullish=regime.spy_bullish)
 
+        # Fetch regional proxies (use cached if unavailable)
+        if self.cfg.spy_ma_enabled:
+            try:
+                from src.broker.market_data import get_regional_moving_averages
+                eu_data = get_regional_moving_averages("FEZ", "SMART", "USD",
+                    fast_period=self.cfg.spy_ma_fast, slow_period=self.cfg.spy_ma_slow)
+                if eu_data:
+                    regime.eu_bullish = eu_data["is_bullish"]
+                else:
+                    cached = self._get_last_known("eu_bullish")
+                    if cached is not None:
+                        regime.eu_bullish = cached == "true"
+                        log.info("eu_ma_using_cached", bullish=regime.eu_bullish)
+            except Exception as e:
+                log.warning("eu_ma_fetch_error", error=str(e))
+
+            try:
+                from src.broker.market_data import get_regional_moving_averages
+                asia_data = get_regional_moving_averages("EWJ", "SMART", "USD",
+                    fast_period=self.cfg.spy_ma_fast, slow_period=self.cfg.spy_ma_slow)
+                if asia_data:
+                    regime.asia_bullish = asia_data["is_bullish"]
+                else:
+                    cached = self._get_last_known("asia_bullish")
+                    if cached is not None:
+                        regime.asia_bullish = cached == "true"
+                        log.info("asia_ma_using_cached", bullish=regime.asia_bullish)
+            except Exception as e:
+                log.warning("asia_ma_fetch_error", error=str(e))
+
         self._regime = regime
         self._store_regime(regime)
         return regime
@@ -142,6 +174,8 @@ class RiskManager:
                 "spy_fast_ma": str(regime.spy_fast_ma) if regime.spy_fast_ma else "",
                 "spy_slow_ma": str(regime.spy_slow_ma) if regime.spy_slow_ma else "",
                 "spy_price": str(regime.spy_price) if regime.spy_price else "",
+                "eu_bullish": str(regime.eu_bullish).lower() if regime.eu_bullish is not None else "",
+                "asia_bullish": str(regime.asia_bullish).lower() if regime.asia_bullish is not None else "",
             }
             for key, value in pairs.items():
                 if not value:
@@ -165,9 +199,9 @@ class RiskManager:
             return RiskCheck(False, f"VIX at {regime.vix:.1f} > {self.cfg.vix_pause_threshold} threshold")
         return RiskCheck(True)
 
-    def check_spy_ma_gate(self) -> RiskCheck:
+    def check_spy_ma_gate(self, market: str | None = None) -> RiskCheck:
         """
-        SPY 10/20 MA crossover gate.
+        MA crossover gate — uses regional proxy when market is EU or ASIA.
         When bearish (fast < slow), reduce new entries by configured percentage.
         Does NOT fully block — returns a reduction signal.
         """
@@ -175,21 +209,33 @@ class RiskManager:
             return RiskCheck(True)
 
         regime = self.get_regime()
-        if regime.spy_bullish is None:
-            log.warning("spy_ma_data_unavailable")
+
+        # Pick the right bullish flag for this market
+        if market == "SMART_EU":
+            is_bullish = regime.eu_bullish
+            label = "FEZ (EU)"
+        elif market == "SMART_ASIA":
+            is_bullish = regime.asia_bullish
+            label = "EWJ (Asia)"
+        else:
+            is_bullish = regime.spy_bullish
+            label = "SPY (US)"
+
+        if is_bullish is None:
+            log.warning("ma_data_unavailable", market=market or "US")
             return RiskCheck(True)  # fail open — don't block if data unavailable
 
-        if not regime.spy_bullish:
+        if not is_bullish:
             reduction = self.cfg.spy_bearish_reduction
             log.info(
-                "spy_bearish_gate",
-                fast_ma=regime.spy_fast_ma,
-                slow_ma=regime.spy_slow_ma,
+                "regional_bearish_gate",
+                proxy=label,
+                market=market or "SMART",
                 reduction=f"{reduction:.0%}",
             )
             return RiskCheck(
                 True,  # allowed but reduced
-                reason=f"SPY bearish (MA{self.cfg.spy_ma_fast} < MA{self.cfg.spy_ma_slow}) — reducing entries to {reduction:.0%}",
+                reason=f"{label} bearish (MA{self.cfg.spy_ma_fast} < MA{self.cfg.spy_ma_slow}) — reducing entries to {reduction:.0%}",
                 reduce_pct=reduction,
             )
         return RiskCheck(True)
@@ -617,7 +663,7 @@ class RiskManager:
         return delta_range
 
     # ── Master check ────────────────────────────────────────
-    def can_open_put(self, symbol: str) -> RiskCheck:
+    def can_open_put(self, symbol: str, market: str | None = None) -> RiskCheck:
         """Run all pre-trade checks for selling a put."""
         checks = [
             self.check_vix_gate(),
@@ -637,7 +683,7 @@ class RiskManager:
                 return check
 
         # SPY MA gate — doesn't block, but signals reduction
-        spy_check = self.check_spy_ma_gate()
+        spy_check = self.check_spy_ma_gate(market=market)
         if spy_check.reduce_pct < 1.0:
             return RiskCheck(True, reason=spy_check.reason, reduce_pct=spy_check.reduce_pct)
 

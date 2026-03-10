@@ -101,7 +101,7 @@ class PutSeller:
             for symbol in symbols:
                 sym_start = _time.time()
                 try:
-                    result = self._evaluate_symbol(symbol, current_vix)
+                    result = self._evaluate_symbol(symbol, current_vix, market=market)
                     if result:
                         candidates.append(result)
                         consecutive_failures = 0
@@ -137,7 +137,7 @@ class PutSeller:
         # Live mode: trade one-by-one
         for symbol in symbols:
             try:
-                result = self._process_symbol(symbol, current_vix)
+                result = self._process_symbol(symbol, current_vix, market=market)
                 if result:
                     traded.append(symbol)
                     self.risk.increment_daily_count()
@@ -147,11 +147,11 @@ class PutSeller:
         log.info("put_scan_completed", market=market_label, trades=len(traded), symbols=traded)
         return traded
 
-    def _evaluate_symbol(self, symbol: str, current_vix: float | None) -> dict | None:
+    def _evaluate_symbol(self, symbol: str, current_vix: float | None, market: str | None = None) -> dict | None:
         """Evaluate a symbol for put-selling. Returns candidate dict or None."""
         log.info("scanning_symbol", symbol=symbol)
 
-        risk_check = self.risk.can_open_put(symbol)
+        risk_check = self.risk.can_open_put(symbol, market=market)
         if not risk_check.allowed:
             log.info("risk_blocked", symbol=symbol, reason=risk_check.reason)
             return None
@@ -228,11 +228,11 @@ class PutSeller:
                  strike=candidate.strike, expiry=candidate.expiry,
                  premium=premium, score=round(cand["score"], 1))
 
-    def _process_symbol(self, symbol: str, current_vix: float | None) -> bool:
+    def _process_symbol(self, symbol: str, current_vix: float | None, market: str | None = None) -> bool:
         """Evaluate and potentially trade a single symbol. Returns True if traded."""
         log.info("scanning_symbol", symbol=symbol)
         # Risk check
-        risk_check = self.risk.can_open_put(symbol)
+        risk_check = self.risk.can_open_put(symbol, market=market)
         if not risk_check.allowed:
             log.info("risk_blocked", symbol=symbol, reason=risk_check.reason)
             return False
