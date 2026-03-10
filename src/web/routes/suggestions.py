@@ -44,10 +44,15 @@ def _get_suggestions_by_source(source: str):
         # Prepend submitted orders to pending list so they show at top
         pending = submitted + pending
 
+        from sqlalchemy import or_
         recent = db.query(TradeSuggestion).filter(
-            TradeSuggestion.status.in_(["approved", "rejected", "expired", "executed"]),
             TradeSuggestion.source == source,
-        ).order_by(TradeSuggestion.reviewed_at.desc()).limit(20).all()
+            or_(
+                TradeSuggestion.status.in_(["approved", "rejected", "expired", "executed"]),
+                # Pending with a review_note = margin-attempted, show in decisions
+                (TradeSuggestion.status == "pending") & (TradeSuggestion.review_note.isnot(None)),
+            )
+        ).order_by(TradeSuggestion.created_at.desc()).limit(20).all()
 
     return pending, recent
 
