@@ -392,8 +392,9 @@ def sync_ibkr_positions() -> int:
 
     changes = 0
 
-    # Collect IBKR option positions
+    # Collect IBKR option and stock positions
     ibkr_positions = {}
+    ibkr_stock_positions = {}
     for item in portfolio_items:
         contract = item.contract
         if account_id and hasattr(item, 'account') and item.account != account_id:
@@ -418,6 +419,10 @@ def sync_ibkr_positions() -> int:
                 "position_size": item.position,
                 "market_value": item.marketValue,
             }
+        elif contract.secType == "STK":
+            symbol = contract.symbol
+            qty = int(item.position)
+            ibkr_stock_positions[symbol] = qty
 
     with get_db() as db:
         open_positions = db.query(Position).filter(
@@ -468,6 +473,18 @@ def sync_ibkr_positions() -> int:
                 log.info("position_expired_by_sync",
                          symbol=pos.symbol, strike=pos.strike,
                          expiry=pos.expiry, realized_pnl=pos.realized_pnl)
+
+        # Close stock positions no longer in IBKR
+        open_stock_positions = db.query(Position).filter(
+            Position.status == PositionStatus.OPEN,
+            Position.position_type == "stock",
+        ).all()
+        for pos in open_stock_positions:
+            if pos.symbol not in ibkr_stock_positions or ibkr_stock_positions[pos.symbol] == 0:
+                pos.status = PositionStatus.CLOSED
+                pos.closed_at = datetime.utcnow()
+                changes += 1
+                log.info("stock_position_closed_by_sync", symbol=pos.symbol)
 
         for key, data in ibkr_positions.items():
             if key in tracked_keys:
