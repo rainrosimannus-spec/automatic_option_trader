@@ -274,10 +274,18 @@ def _sync_stock_to_portfolio(fills) -> int:
             execution = fill.execution
             exec_id = execution.execId
 
-            # Only stock trades
+            # Only stock trades from the portfolio account
             if contract.secType != "STK" or not exec_id:
                 continue
             if exec_id in existing_ids:
+                continue
+            # Skip fills from options account — only portfolio account stocks here
+            from src.core.config import get_settings as _gs
+            try:
+                _pa = _gs().portfolio.account
+            except Exception:
+                _pa = ""
+            if _pa and hasattr(execution, "acctNumber") and execution.acctNumber != _pa:
                 continue
 
             side = execution.side  # "BOT" or "SLD"
