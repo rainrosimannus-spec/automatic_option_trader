@@ -296,11 +296,12 @@ def create_suggestion(
                              rejection_count=_margin_rejected_this_cycle,
                              msg="Not enough buying power — skipping this suggestion")
                 else:
-                    # Only auto-approve top 3 ranked suggestions
-                    if rank and rank > 3:
+                    # Only auto-approve rank 1 — one order at a time
+                    # Rank 2+ stays pending; next scan will promote if margin allows
+                    if rank and rank > 1:
                         log.info("auto_approve_skipped_rank_limit",
                                  id=suggestion_id, symbol=symbol, rank=rank,
-                                 msg="Only top 3 ranks auto-approved")
+                                 msg="Only rank 1 auto-approved — others pending")
                     else:
                         log.info("auto_approving_suggestion", id=suggestion_id, symbol=symbol, source=source, rank=rank)
                         approve_suggestion(suggestion_id, note=f"auto-approved (rank #{rank})")
