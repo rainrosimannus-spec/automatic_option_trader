@@ -573,10 +573,12 @@ def _execute_approved_order_inner(suggestion_id: int):
                             id=suggestion_id, action=s.action)
 
         except Exception as e:
+            err_msg = str(e) or repr(e) or type(e).__name__
             log.error("suggestion_execution_failed",
-                      id=suggestion_id, symbol=s.symbol, error=str(e))
+                      id=suggestion_id, symbol=s.symbol,
+                      error=err_msg, exc_type=type(e).__name__)
             s.status = "approved"  # keep as approved so user knows it didn't execute
-            s.review_note = f"Execution failed: {e}"
+            s.review_note = f"Execution failed: {err_msg}"
 
 
 def _record_trade(db, suggestion, trade_type_str: str):

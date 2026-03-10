@@ -31,8 +31,19 @@ def sell_put(
     """Sell to open a put option."""
     with get_ib_lock():
         ib = get_ib()
-        contract = Option(symbol, expiry, strike, "P", exchange, currency=currency)
-        ib.qualifyContracts(contract)
+        prev_timeout = ib.RequestTimeout
+        ib.RequestTimeout = 30
+        try:
+            contract = Option(symbol, expiry, strike, "P", exchange, currency=currency)
+            qualified = ib.qualifyContracts(contract)
+            if not qualified:
+                log.error("qualify_failed", symbol=symbol, strike=strike, expiry=expiry)
+                return None
+        except Exception as e:
+            log.error("qualify_error", symbol=symbol, error=str(e) or repr(e) or type(e).__name__)
+            return None
+        finally:
+            ib.RequestTimeout = prev_timeout
 
         if limit_price:
             order = LimitOrder("SELL", quantity, limit_price)
