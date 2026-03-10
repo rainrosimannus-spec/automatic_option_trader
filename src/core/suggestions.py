@@ -191,7 +191,19 @@ def create_suggestion(
         return None
 
     from datetime import timedelta
-    expires_at = datetime.utcnow() + timedelta(hours=expires_hours)
+    import pytz
+    # Expire at end of current trading session (15:30 ET), not +24h
+    # This clears suggestions overnight so dashboard is clean at next open
+    try:
+        et = pytz.timezone("America/New_York")
+        now_et = datetime.now(et)
+        close_et = now_et.replace(hour=15, minute=30, second=0, microsecond=0)
+        if now_et >= close_et:
+            # Already past close — expire at tomorrow's close
+            close_et = close_et + timedelta(days=1)
+        expires_at = close_et.astimezone(pytz.utc).replace(tzinfo=None)
+    except Exception:
+        expires_at = datetime.utcnow() + timedelta(hours=expires_hours)
 
     suggestion = TradeSuggestion(
         symbol=symbol,
