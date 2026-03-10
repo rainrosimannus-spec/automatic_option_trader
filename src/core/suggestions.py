@@ -419,6 +419,8 @@ def _execute_approved_order(suggestion_id: int):
 
 def _execute_approved_order_inner(suggestion_id: int):
     """Inner execution logic with no timeout protection."""
+    from src.broker.connection import ensure_main_event_loop
+    ensure_main_event_loop()
     with get_db() as db:
         s = db.query(TradeSuggestion).filter(
             TradeSuggestion.id == suggestion_id
