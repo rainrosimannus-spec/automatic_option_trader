@@ -19,6 +19,40 @@ from src.core.logger import get_logger
 log = get_logger(__name__)
 
 
+def get_whatif_margin(
+    symbol: str,
+    expiry: str,
+    strike: float,
+    right: str = "P",
+    quantity: int = 1,
+    limit_price: float = 0.0,
+    exchange: str = "SMART",
+    currency: str = "USD",
+) -> float | None:
+    """
+    Use IBKR whatIfOrder to get actual initial margin for a short option.
+    Returns initial margin change (absolute), or None if unavailable.
+    Does NOT place an order.
+    """
+    try:
+        with get_ib_lock():
+            ib = get_ib()
+            contract = Option(symbol, expiry, strike, right, exchange, currency=currency)
+            contract.multiplier = "100"
+            order = LimitOrder("SELL", quantity, limit_price or 0.01)
+            order_state = ib.whatIfOrder(contract, order)
+            if order_state and hasattr(order_state, "initMarginChange"):
+                val = order_state.initMarginChange
+                if val and str(val) not in ("", "1.7976931348623157E308"):
+                    margin = abs(float(val))
+                    log.info("whatif_margin", symbol=symbol, strike=strike,
+                             margin=round(margin, 0))
+                    return margin
+    except Exception as e:
+        log.warning("whatif_margin_error", symbol=symbol, error=str(e) or repr(e))
+    return None
+
+
 def sell_put(
     symbol: str,
     expiry: str,

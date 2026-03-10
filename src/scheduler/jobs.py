@@ -220,8 +220,10 @@ def job_execute_queued():
             if not s:
                 return
 
-            # Re-check margin before executing
+            # Re-check margin before executing using real IBKR whatIf
             try:
+                from src.broker.orders import get_whatif_margin
+                from src.broker.account import get_account_summary
                 acct = get_account_summary()
                 if acct and acct.net_liquidation > 0:
                     margin_pct = acct.maintenance_margin / acct.net_liquidation
@@ -231,15 +233,31 @@ def job_execute_queued():
                         s.status = "expired"
                         s.review_note = f"Margin {margin_pct:.0%} at execution time — skipped"
                         return
-                    est_margin = (s.strike or 0) * 100 * (s.quantity or 1) * 0.20
+                    # Try real whatIf margin, fall back to 20% estimate
+                    real_margin = get_whatif_margin(
+                        symbol=s.symbol,
+                        expiry=s.expiry or "",
+                        strike=s.strike or 0,
+                        right="C" if "call" in (s.action or "") else "P",
+                        quantity=s.quantity or 1,
+                        limit_price=s.limit_price or 0.0,
+                        exchange=s.opt_exchange or "SMART",
+                        currency=s.opt_currency or "USD",
+                    )
+                    est_margin = real_margin if real_margin else (s.strike or 0) * 100 * (s.quantity or 1) * 0.20
                     headroom = acct.net_liquidation * (cfg.risk.max_margin_usage - margin_pct)
+                    log.info("execute_queued_margin_check",
+                             symbol=s.symbol,
+                             est_margin=f"${est_margin:,.0f}",
+                             headroom=f"${headroom:,.0f}",
+                             source="whatif" if real_margin else "estimate")
                     if est_margin > headroom:
                         log.info("execute_queued_insufficient_headroom",
                                  symbol=s.symbol,
                                  est_margin=f"${est_margin:,.0f}",
                                  headroom=f"${headroom:,.0f}")
                         s.status = "expired"
-                        s.review_note = f"Insufficient margin headroom at execution — skipped"
+                        s.review_note = f"Insufficient margin headroom (${est_margin:,.0f} needed, ${headroom:,.0f} available)"
                         return
             except Exception as e:
                 log.warning("execute_queued_margin_check_failed", error=str(e))
