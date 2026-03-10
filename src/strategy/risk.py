@@ -55,7 +55,9 @@ class MarketRegime:
     spy_slow_ma: float | None = None
     spy_price: float | None = None
     eu_bullish: bool | None = None   # FEZ (Euro Stoxx 50 ETF)
+    eu_price: float | None = None
     asia_bullish: bool | None = None  # EWJ (MSCI Japan ETF)
+    asia_price: float | None = None
 
 
 class RiskManager:
@@ -117,6 +119,7 @@ class RiskManager:
                     fast_period=self.cfg.spy_ma_fast, slow_period=self.cfg.spy_ma_slow)
                 if eu_data:
                     regime.eu_bullish = eu_data["is_bullish"]
+                    regime.eu_price = eu_data["price"]
                 else:
                     cached = self._get_last_known("eu_bullish")
                     if cached is not None:
@@ -131,6 +134,7 @@ class RiskManager:
                     fast_period=self.cfg.spy_ma_fast, slow_period=self.cfg.spy_ma_slow)
                 if asia_data:
                     regime.asia_bullish = asia_data["is_bullish"]
+                    regime.asia_price = asia_data["price"]
                 else:
                     cached = self._get_last_known("asia_bullish")
                     if cached is not None:
@@ -175,7 +179,9 @@ class RiskManager:
                 "spy_slow_ma": str(regime.spy_slow_ma) if regime.spy_slow_ma else "",
                 "spy_price": str(regime.spy_price) if regime.spy_price else "",
                 "eu_bullish": str(regime.eu_bullish).lower() if regime.eu_bullish is not None else "",
+                "eu_price": str(regime.eu_price) if regime.eu_price else "",
                 "asia_bullish": str(regime.asia_bullish).lower() if regime.asia_bullish is not None else "",
+                "asia_price": str(regime.asia_price) if regime.asia_price else "",
             }
             for key, value in pairs.items():
                 if not value:

@@ -141,6 +141,45 @@
         </div>
     </div>
 
+
+    <!-- EU Trend (FEZ) -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">EU Trend</span>
+            {% if eu_bullish is not none %}
+            <span class="text-xs px-2 py-0.5 rounded-full
+                {% if eu_bullish %}bg-emerald-900/60 text-emerald-300{% else %}bg-orange-900/60 text-orange-300{% endif %}">
+                {% if eu_bullish %}BULLISH{% else %}BEARISH{% endif %}
+            </span>
+            {% else %}
+            <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-500">NO DATA</span>
+            {% endif %}
+        </div>
+        <div class="text-lg font-mono font-bold {% if eu_bullish %}text-emerald-400{% elif eu_bullish is not none %}text-orange-400{% else %}text-gray-500{% endif %}">
+            {% if eu_bullish %}▲ FEZ{% elif eu_bullish is not none %}▼ FEZ{% else %}—{% endif %}
+        </div>
+        <div class="text-xs text-gray-500 mt-1">Euro Stoxx 50 ETF proxy</div>
+    </div>
+
+    <!-- Asia Trend (EWJ) -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Asia Trend</span>
+            {% if asia_bullish is not none %}
+            <span class="text-xs px-2 py-0.5 rounded-full
+                {% if asia_bullish %}bg-emerald-900/60 text-emerald-300{% else %}bg-orange-900/60 text-orange-300{% endif %}">
+                {% if asia_bullish %}BULLISH{% else %}BEARISH{% endif %}
+            </span>
+            {% else %}
+            <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-500">NO DATA</span>
+            {% endif %}
+        </div>
+        <div class="text-lg font-mono font-bold {% if asia_bullish %}text-emerald-400{% elif asia_bullish is not none %}text-orange-400{% else %}text-gray-500{% endif %}">
+            {% if asia_bullish %}▲ EWJ{% elif asia_bullish is not none %}▼ EWJ{% else %}—{% endif %}
+        </div>
+        <div class="text-xs text-gray-500 mt-1">MSCI Japan ETF proxy</div>
+    </div>
+
     <!-- Daily Limit -->
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="flex items-center justify-between mb-2">
