@@ -197,6 +197,14 @@ def job_execute_queued():
         return
     if not is_connected():
         return
+    # Wait for the IB lock to be free before attempting execution
+    # This prevents timeout conflicts when a scan is holding the connection
+    from src.broker.connection import get_ib_lock
+    acquired = get_ib_lock().acquire(timeout=10)
+    if not acquired:
+        log.info("execute_queued_skipped_lock_busy")
+        return
+    get_ib_lock().release()
     try:
         from src.core.suggestions import TradeSuggestion, _execute_approved_order
         from src.core.database import get_db
