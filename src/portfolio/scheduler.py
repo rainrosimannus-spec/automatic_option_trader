@@ -55,6 +55,14 @@ def _get_portfolio_connection(cfg: PortfolioConfig) -> IB:
     if _portfolio_ib is not None and _portfolio_ib.isConnected():
         return _portfolio_ib
 
+    # Clear dead connection before attempting reconnect
+    if _portfolio_ib is not None and not _portfolio_ib.isConnected():
+        try:
+            _portfolio_ib.disconnect()
+        except Exception:
+            pass
+        _portfolio_ib = None
+
     # Quick check: is the port even open?
     if not _is_port_open(cfg.ibkr_host, cfg.ibkr_port):
         raise ConnectionError(
