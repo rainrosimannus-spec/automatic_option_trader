@@ -45,6 +45,11 @@ class PortfolioHolding(Base):
 
     first_bought: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_bought: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Pending removal flag — set when stock drops off screened universe but has open position
+    # Cleared automatically when position is closed or stock re-qualifies
+    pending_removal: Mapped[bool] = mapped_column(Boolean, default=False)
+    pending_removal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -127,6 +132,11 @@ class PortfolioWatchlist(Base):
     risk_profitability: Mapped[str] = mapped_column(String(10), default="none")
     risk_total_penalty: Mapped[float] = mapped_column(Float, default=0.0)  # sum of all penalties
 
+    # Pending removal flag — set when stock drops off screened universe but has open position
+    # Cleared automatically when position is closed or stock re-qualifies
+    pending_removal: Mapped[bool] = mapped_column(Boolean, default=False)
+    pending_removal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -156,6 +166,11 @@ class PortfolioPutEntry(Base):
 
     opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Pending removal flag — set when stock drops off screened universe but has open position
+    # Cleared automatically when position is closed or stock re-qualifies
+    pending_removal: Mapped[bool] = mapped_column(Boolean, default=False)
+    pending_removal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -165,4 +180,9 @@ class PortfolioState(Base):
 
     key: Mapped[str] = mapped_column(String(50), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
+    # Pending removal flag — set when stock drops off screened universe but has open position
+    # Cleared automatically when position is closed or stock re-qualifies
+    pending_removal: Mapped[bool] = mapped_column(Boolean, default=False)
+    pending_removal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -249,9 +249,12 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                     ).all()
                 }
 
+                reclassified = []
+
                 # Add new stocks from screener
                 for score in portfolio_universe:
                     sym = score.symbol
+                    new_category = score.tier if score.tier != "breakthrough" else "growth"
                     if sym not in current_watchlist:
                         db.add(PortfolioWatchlist(
                             symbol=sym,
@@ -259,24 +262,36 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                             exchange=score.exchange,
                             currency=score.currency,
                             sector=score.sector,
+                            tier=score.tier,
                             composite_score=score.portfolio_score,
                             growth_score=score.growth_score,
                             valuation_score=score.valuation_score,
                             quality_score=score.quality_score,
-                            category=score.tier if score.tier != "breakthrough" else "growth",
+                            category=new_category,
                             screened_at=datetime.utcnow(),
                         ))
                         added.append(sym)
                     else:
                         # Update scores for existing watchlist entries
                         w = current_watchlist[sym]
+                        # Detect reclassification
+                        old_tier = w.tier or w.category or "growth"
+                        if old_tier != score.tier:
+                            reclassified.append({
+                                "symbol": sym,
+                                "from_tier": old_tier,
+                                "to_tier": score.tier,
+                                "reason": f"Screener reclassified from {old_tier} to {score.tier}",
+                            })
+                            w.tier = score.tier
+                            w.category = new_category
                         w.composite_score = score.portfolio_score
                         w.growth_score = score.growth_score
                         w.valuation_score = score.valuation_score
                         w.quality_score = score.quality_score
                         w.screened_at = datetime.utcnow()
                         # Clear pending_removal if stock re-qualifies
-                        if hasattr(w, "pending_removal") and w.pending_removal:
+                        if w.pending_removal:
                             w.pending_removal = False
                             w.pending_removal_reason = None
 
@@ -348,7 +363,7 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                         __import__("src.portfolio.models", fromlist=["PortfolioHolding"]).PortfolioHolding.__table__.c]
                 ],
                 "flagged_removal": flagged_removal,
-                "reclassified": [],  # populated when reclassification logic added
+                "reclassified": reclassified,
                 "suggestions_created": review_suggestions,
             }, indent=2))
 
@@ -733,6 +748,75 @@ def _review_existing_holdings_monthly(
         if tier == "breakthrough":
             continue
 
+        # ── 1b. Dividend disqualification ──────────────────
+        # Primary: dividend cut OR payout >90% OR revenue declining 2yr
+        # Secondary (2+ triggers): dividend growth stopped 3yr, FCF negative 2yr, D/E deteriorating
+        if tier == "dividend":
+            try:
+                fmp = get_full_fundamentals(symbol)
+                if fmp:
+                    payout = fmp.get("payout_ratio", 0)
+                    div_cut = fmp.get("dividend_cut", False)
+                    rev_yoy = fmp.get("revenue_yoy_pct", 0)
+                    rev_avg = fmp.get("revenue_avg_pct", 0)
+                    fcf_neg = fmp.get("fcf_negative_years", 0)
+                    de = fmp.get("debt_to_equity", 0)
+
+                    # Primary disqualifiers
+                    primary_fail = (
+                        div_cut
+                        or payout > 90
+                        or (rev_yoy < 0 and rev_avg < 0)  # declining 2+ years
+                    )
+
+                    # Secondary disqualifiers
+                    secondary_count = sum([
+                        fcf_neg >= 2,          # FCF negative 2+ years
+                        de > 2.0,              # high and rising debt
+                    ])
+
+                    if primary_fail or secondary_count >= 2:
+                        reason_parts = []
+                        if div_cut:
+                            reason_parts.append("dividend cut detected")
+                        if payout > 90:
+                            reason_parts.append(f"payout ratio {payout:.0f}%")
+                        if rev_yoy < 0 and rev_avg < 0:
+                            reason_parts.append(f"revenue declining YoY {rev_yoy:+.1f}%")
+                        if fcf_neg >= 2:
+                            reason_parts.append(f"FCF negative {fcf_neg} years")
+                        if de > 2.0:
+                            reason_parts.append(f"D/E ratio {de:.1f}")
+
+                        rationale = (
+                            f"MONTHLY REVIEW: {symbol} (dividend) failing health check. "
+                            f"{', '.join(reason_parts)}. "
+                            f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}. "
+                            f"P&L: {pnl_pct:+.1f}%."
+                        )
+                        create_suggestion(
+                            symbol=symbol,
+                            action="sell_stock_review",
+                            quantity=shares,
+                            limit_price=round(current_price * 0.998, 2),
+                            source="rescreen",
+                            tier=tier,
+                            signal="monthly_dividend_disqualified",
+                            rationale=rationale,
+                            current_price=current_price,
+                            sma_200=sma_200,
+                            rank=0,
+                            funding_source="n/a",
+                            expires_hours=720,
+                        )
+                        suggestions.append({
+                            "symbol": symbol, "action": "SELL",
+                            "reason": f"Dividend disqualified: {', '.join(reason_parts)}",
+                        })
+                        continue
+            except Exception:
+                pass
+
         # ── 2. SELL: dropped off + losing + below SMA ──────
         if dropped_off and pnl_pct < -10 and pct_vs_sma < -10:
             rationale = (
@@ -797,14 +881,28 @@ def _review_existing_holdings_monthly(
 
         # ── 4. SELL COVERED CALL ────────────────────────────
         # Dividend tier: above SMA + profitable + no open CC + enough shares
-        # Growth tier: TODO — add when FMP revenue growth data available
-        if (
-            tier == "dividend"
-            and pct_vs_sma > 15
+        # Growth tier: above SMA + profitable + revenue growth slowing (<15% YoY)
+        growth_slowing = False
+        if tier == "growth":
+            try:
+                fmp = get_full_fundamentals(symbol)
+                if fmp:
+                    rev_yoy = fmp.get("revenue_yoy_pct", 999)
+                    growth_slowing = rev_yoy < 15
+            except Exception:
+                pass
+
+        cc_trigger = (
+            pct_vs_sma > 15
             and pnl_pct > 20
             and shares >= 100
             and symbol not in open_cc_symbols
-        ):
+            and (
+                tier == "dividend"
+                or (tier == "growth" and growth_slowing)
+            )
+        )
+        if cc_trigger:
             # Calculate strike: 5% OTM from current price
             strike = round(current_price * 1.05, 0)
             # Target ~30 DTE: find nearest monthly expiry
