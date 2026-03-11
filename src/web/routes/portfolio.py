@@ -284,11 +284,13 @@ async def portfolio_trades_page(request: Request):
         sells = [t for t in transactions if t.action == "sell"]
         dividends = [t for t in transactions if t.action == "dividend"]
         put_entries = [t for t in transactions if t.action in ("sell_put", "buy_put", "put_assigned", "put_expired")]
+        call_entries = [t for t in transactions if t.action in ("sell_call", "buy_call", "call_expired", "call_assigned")]
+        option_entries = put_entries + call_entries
 
         total_bought = sum(t.amount for t in buys)
         total_sold = sum(t.amount for t in sells)
         total_dividends = sum(t.amount for t in dividends)
-        total_premium = sum(t.premium_collected or 0 for t in put_entries)
+        total_premium = sum(t.premium_collected or 0 for t in option_entries)
 
         # Per-symbol summary
         from collections import defaultdict
