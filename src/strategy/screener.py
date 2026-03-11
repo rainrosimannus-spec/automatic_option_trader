@@ -175,7 +175,8 @@ def screen_puts(
 
             # Final score: capital efficiency matters most
             # 35% OTM distance + 35% return-on-margin + 25% premium + 5% base
-            score = (otm_score * 0.35) + (rom_score * 0.35) + (premium_score * 0.25) + 0.05
+            dte_score = (3 - dte) / 3  # 0DTE=1.0, 1DTE=0.67, 2DTE=0.33, 3DTE=0.0
+            score = (otm_score * 0.30) + (rom_score * 0.30) + (premium_score * 0.25) + (dte_score * 0.10) + 0.05
 
             candidates.append(ScoredContract(
                 contract=contract,
