@@ -321,6 +321,37 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                 review_suggestions,
             )
 
+            # ══════════════════════════════════════════════════════
+            # Write run log for Screener page
+            # ══════════════════════════════════════════════════════
+            import json as _json
+            from pathlib import Path as _Path
+            _log_path = _Path("data/screener_last_run.json")
+            _log_path.parent.mkdir(parents=True, exist_ok=True)
+            _log_path.write_text(_json.dumps({
+                "status": "success",
+                "run_date": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                "stocks_screened": len(portfolio_universe),
+                "added": [
+                    {
+                        "symbol": s.symbol,
+                        "name": s.name,
+                        "tier": s.tier,
+                        "megatrend": s.megatrend if s.tier == "breakthrough" else "",
+                        "rationale": s.rationale if s.tier == "breakthrough" else "",
+                    }
+                    for s in portfolio_universe if s.symbol in added
+                ],
+                "removed": [
+                    sym for sym in flagged_removal
+                    if sym not in [h.symbol for h in
+                        __import__("src.portfolio.models", fromlist=["PortfolioHolding"]).PortfolioHolding.__table__.c]
+                ],
+                "flagged_removal": flagged_removal,
+                "reclassified": [],  # populated when reclassification logic added
+                "suggestions_created": review_suggestions,
+            }, indent=2))
+
             log.info("portfolio_monthly_screen_done",
                      screened=len(portfolio_universe),
                      added=len(added),
@@ -329,6 +360,15 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
 
         except Exception as e:
             log.error("portfolio_monthly_screen_error", error=str(e))
+            import json as _json
+            from pathlib import Path as _Path
+            _log_path = _Path("data/screener_last_run.json")
+            _log_path.parent.mkdir(parents=True, exist_ok=True)
+            _log_path.write_text(_json.dumps({
+                "status": "error",
+                "run_date": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                "error": str(e),
+            }, indent=2))
             try:
                 from src.core.alerts import get_alert_manager
                 get_alert_manager().critical(
