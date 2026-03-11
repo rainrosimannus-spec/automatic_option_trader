@@ -120,6 +120,8 @@
                             {% elif t.action == 'sell_put' %}bg-purple-900/50 text-purple-300
                             {% elif t.action == 'buy_put' %}bg-purple-700/50 text-purple-200
                             {% elif t.action == 'put_assigned' %}bg-amber-900/50 text-amber-300
+                            {% elif t.action == 'sell_call' %}bg-orange-900/50 text-orange-300
+                            {% elif t.action == 'buy_call' %}bg-orange-700/50 text-orange-200
                             {% elif t.action == 'put_expired' %}bg-gray-700 text-gray-400
                             {% else %}bg-gray-800 text-gray-400{% endif %}">
                             {{ t.action | replace('_', ' ') | upper }}

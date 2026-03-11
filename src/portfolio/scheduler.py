@@ -637,8 +637,17 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                             action = "buy_put"
                             amount = price * qty * 100
 
+                elif sec_type in ("OPT", "FOP") and right == "C":
+                    if side == "SLD":
+                        action = "sell_call"
+                        premium_collected = price * qty * 100
+                        amount = premium_collected
+                    else:
+                        # Buying back a call
+                        action = "buy_call"
+                        amount = price * qty * 100
                 else:
-                    # Call options or other — skip for portfolio history
+                    # Other instrument types — skip
                     continue
 
                 if action is None:
