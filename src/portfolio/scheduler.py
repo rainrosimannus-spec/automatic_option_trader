@@ -83,6 +83,12 @@ def _get_portfolio_connection(cfg: PortfolioConfig) -> IB:
             _portfolio_ib.RequestTimeout = 15
             _portfolio_ib.reqMarketDataType(4)
             log.info("portfolio_connection_established", clientId=99)
+            # Immediately populate cache so dashboard shows margin without waiting for hourly scan
+            try:
+                from src.portfolio.connection import refresh_portfolio_account_cache_from
+                refresh_portfolio_account_cache_from(_portfolio_ib)
+            except Exception:
+                pass
             return _portfolio_ib
         except Exception as e:
             log.warning("portfolio_connect_retry", attempt=attempt, error=str(e))
