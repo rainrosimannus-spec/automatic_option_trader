@@ -254,7 +254,9 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                 # Add new stocks from screener
                 for score in portfolio_universe:
                     sym = score.symbol
-                    new_category = score.tier if score.tier != "breakthrough" else "growth"
+                    # breakthrough stored as tier="breakthrough", category="growth"
+                    # (category only has growth/dividend for legacy compat)
+                    new_category = "dividend" if score.tier == "dividend" else "growth"
                     if sym not in current_watchlist:
                         db.add(PortfolioWatchlist(
                             symbol=sym,
@@ -263,6 +265,7 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                             currency=score.currency,
                             sector=score.sector,
                             tier=score.tier,
+                            rationale=score.rationale if score.tier == "breakthrough" else None,
                             composite_score=score.portfolio_score,
                             growth_score=score.growth_score,
                             valuation_score=score.valuation_score,
@@ -285,6 +288,9 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                             })
                             w.tier = score.tier
                             w.category = new_category
+                        # Update rationale for breakthrough stocks
+                        if score.tier == "breakthrough" and score.rationale:
+                            w.rationale = score.rationale
                         w.composite_score = score.portfolio_score
                         w.growth_score = score.growth_score
                         w.valuation_score = score.valuation_score
@@ -814,6 +820,81 @@ def _review_existing_holdings_monthly(
                             "reason": f"Dividend disqualified: {', '.join(reason_parts)}",
                         })
                         continue
+            except Exception:
+                pass
+
+        # ── 1c. Growth reclassification check ─────────────
+        # Growth → Dividend: revenue slowing (<15% YoY) + dividend started (yield >2.5%)
+        # Growth → Exit suggestion: revenue slowing + NO dividend after holding 6+ months
+        if tier == "growth":
+            try:
+                fmp = get_full_fundamentals(symbol)
+                if fmp:
+                    rev_yoy = fmp.get("revenue_yoy_pct", 999)
+                    div_yield = fmp.get("dividend_yield", 0)
+                    growth_slowing = rev_yoy < 15
+
+                    if growth_slowing:
+                        if div_yield > 2.5:
+                            # Reclassify to dividend — update DB directly
+                            from src.core.database import get_db as _get_db
+                            from src.portfolio.models import PortfolioWatchlist as _PWL
+                            with _get_db() as _db:
+                                _w = _db.query(_PWL).filter(_PWL.symbol == symbol).first()
+                                if _w and _w.tier == "growth":
+                                    _w.tier = "dividend"
+                                    _w.category = "dividend"
+                                    _db.commit()
+                            suggestions.append({
+                                "symbol": symbol, "action": "RECLASSIFIED",
+                                "reason": f"Growth→Dividend: rev growth {rev_yoy:+.1f}%, div yield {div_yield:.1f}%",
+                            })
+                        else:
+                            # Growth slowing, no dividend — check how long held
+                            # Use earliest buy transaction for this symbol
+                            held_days = 999
+                            try:
+                                from src.core.database import get_db as _get_db2
+                                from src.portfolio.models import PortfolioTransaction as _PTX
+                                from datetime import date as _date
+                                from sqlalchemy import func as _func
+                                with _get_db2() as _db2:
+                                    first_tx = _db2.query(_func.min(_PTX.created_at)).filter(
+                                        _PTX.symbol == symbol,
+                                        _PTX.action.in_(["buy_stock", "put_assigned"]),
+                                    ).scalar()
+                                    if first_tx:
+                                        held_days = (_date.today() - first_tx.date()).days
+                            except Exception:
+                                pass
+                            if held_days > 180:  # held 6+ months with slowing growth, no dividend
+                                rationale = (
+                                    f"MONTHLY REVIEW: {symbol} (growth) revenue growth slowing "
+                                    f"({rev_yoy:+.1f}% YoY, below 15% threshold). "
+                                    f"No dividend started after {held_days} days. "
+                                    f"Consider exiting — growth thesis weakening. "
+                                    f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}. "
+                                    f"P&L: {pnl_pct:+.1f}%."
+                                )
+                                create_suggestion(
+                                    symbol=symbol,
+                                    action="sell_stock_review",
+                                    quantity=shares,
+                                    limit_price=round(current_price * 0.998, 2),
+                                    source="rescreen",
+                                    tier=tier,
+                                    signal="monthly_growth_thesis_weak",
+                                    rationale=rationale,
+                                    current_price=current_price,
+                                    sma_200=sma_200,
+                                    rank=0,
+                                    funding_source="n/a",
+                                    expires_hours=720,
+                                )
+                                suggestions.append({
+                                    "symbol": symbol, "action": "CONSIDER SELL",
+                                    "reason": f"Growth slowing {rev_yoy:+.1f}% YoY, no dividend after {held_days}d",
+                                })
             except Exception:
                 pass
 
