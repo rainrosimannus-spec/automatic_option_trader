@@ -904,7 +904,7 @@ def create_scheduler() -> BackgroundScheduler:
         from datetime import datetime as dt, timedelta
         from src.portfolio.scheduler import (
             job_portfolio_scan, job_portfolio_update_prices,
-            job_portfolio_update_metrics, job_portfolio_annual_rescreen,
+            job_portfolio_update_metrics, job_portfolio_monthly_screen,
             job_portfolio_sync_trades,
         )
 
@@ -963,20 +963,21 @@ def create_scheduler() -> BackgroundScheduler:
             next_run_time=metrics_first_run,
         )
 
-        # Annual rescreen — once a year
+        # Monthly screener — first Monday of each month, 2 AM ET
+        # Screens global universe, updates watchlist, CC suggestions, reclassifications
         scheduler.add_job(
-            partial(job_portfolio_annual_rescreen, portfolio_cfg),
+            partial(job_portfolio_monthly_screen, portfolio_cfg),
             CronTrigger(
-                month=portfolio_cfg.rescreen_month,
-                day=portfolio_cfg.rescreen_day,
-                hour=10,
+                day_of_week="mon",
+                day="1-7",      # first Monday of month (day 1-7 that falls on Monday)
+                hour=2,
                 minute=0,
                 timezone=us_tz,
             ),
             id="portfolio_rescreen",
-            name="Portfolio Annual Rescreen",
+            name="Portfolio Monthly Screen",
             max_instances=1,
-            misfire_grace_time=1800,
+            misfire_grace_time=3600,
             coalesce=True,
         )
 

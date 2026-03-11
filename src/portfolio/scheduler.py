@@ -157,17 +157,20 @@ def job_portfolio_update_metrics(cfg: PortfolioConfig):
             log.error("portfolio_metrics_update_error", error=str(e))
 
 
-def job_portfolio_annual_rescreen(cfg: PortfolioConfig):
+def job_portfolio_monthly_screen(cfg: PortfolioConfig):
     """
-    Annual rescreen — December 1st.
+    Monthly screener — first Monday of each month, 2 AM ET.
 
-    Three phases:
-      1. Screen universe ($1B+ market cap) → refresh watchlist
-      2. Review existing holdings → suggest sell/reduce/sell-call for underperformers
-      3. Send alert with summary + all pending suggestions needing approval
+    Four phases:
+      1. Screen global universe → update screened_universe.yaml + options_universe.yaml
+      2. Diff against current watchlist → add new stocks, flag removals
+         (never remove stocks with open positions — mark as pending_removal instead)
+      3. Review existing holdings → CC suggestions, sell suggestions, reclassification
+      4. Send alert with summary
 
-    CRITICAL: sell/reduce suggestions are NEVER auto-executed.
+    CRITICAL: sell/reduce/CC suggestions are NEVER auto-executed.
     They always require manual approval via dashboard.
+    Breakthrough tier: always manual regardless of auto mode setting.
     """
     _ensure_event_loop()
 
@@ -175,92 +178,169 @@ def job_portfolio_annual_rescreen(cfg: PortfolioConfig):
         return
 
     with _portfolio_lock:
-        log.info("portfolio_annual_rescreen_started", date=f"Dec {cfg.rescreen_day}")
+        log.info("portfolio_monthly_screen_started",
+                 date=datetime.utcnow().strftime("%Y-%m-%d"))
 
         try:
             ib = _get_portfolio_connection(cfg)
 
             # ══════════════════════════════════════════════════════
-            # PHASE 1: Screen universe for new watchlist
+            # PHASE 1: Screen universe
             # ══════════════════════════════════════════════════════
-            from tools.screen_universe import UniverseScreener
+            from tools.screen_universe import (
+                UniverseScreener, write_screened_universe, write_options_universe
+            )
+            from pathlib import Path
 
             regions = [r.strip() for r in cfg.rescreen_regions.split(",") if r.strip()] or None
 
             screener = UniverseScreener(ib)
-            results = screener.screen_all(
+            portfolio_universe, options_universe = screener.screen_all(
                 regions=regions,
                 min_market_cap=cfg.rescreen_min_market_cap,
-                top_n=cfg.rescreen_top_n,
-                growth_count=40,
-                dividend_count=10,
+                growth_count=50,
+                dividend_count=25,
+                breakthrough_count=25,
+                options_count=50,
             )
 
-            # Update portfolio watchlist in DB
+            # Write output files
+            write_screened_universe(
+                portfolio_universe,
+                Path("config/screened_universe.yaml"),
+            )
+            write_options_universe(
+                options_universe,
+                Path("config/options_universe.yaml"),
+            )
+
+            # Invalidate options universe cache so trader picks up new universe
+            from src.core.config import get_options_universe
+            get_options_universe.cache_clear()
+
+            new_symbols = {s.symbol for s in portfolio_universe}
+            new_tiers = {s.symbol: s.tier for s in portfolio_universe}
+
+            log.info("portfolio_monthly_screen_phase1_done",
+                     portfolio=len(portfolio_universe),
+                     options=len(options_universe))
+
+            # ══════════════════════════════════════════════════════
+            # PHASE 2: Diff watchlist — add new, flag removals
+            # ══════════════════════════════════════════════════════
             from src.core.database import get_db
             from src.portfolio.models import PortfolioWatchlist, PortfolioHolding
 
-            new_symbols = set()
-            with get_db() as db:
-                for score in results:
-                    new_symbols.add(score.symbol)
-                    existing = db.query(PortfolioWatchlist).filter(
-                        PortfolioWatchlist.symbol == score.symbol
-                    ).first()
+            added = []
+            flagged_removal = []
 
-                    if existing:
-                        existing.composite_score = score.composite_score
-                        existing.growth_score = score.growth_score
-                        existing.valuation_score = score.valuation_score
-                        existing.quality_score = score.quality_score
-                        existing.category = score.category
-                        existing.screened_at = datetime.utcnow()
-                    else:
+            with get_db() as db:
+                # Get current watchlist symbols
+                current_watchlist = {
+                    w.symbol: w
+                    for w in db.query(PortfolioWatchlist).all()
+                }
+
+                # Get symbols with open positions
+                open_positions = {
+                    h.symbol
+                    for h in db.query(PortfolioHolding).filter(
+                        PortfolioHolding.shares > 0
+                    ).all()
+                }
+
+                # Add new stocks from screener
+                for score in portfolio_universe:
+                    sym = score.symbol
+                    if sym not in current_watchlist:
                         db.add(PortfolioWatchlist(
-                            symbol=score.symbol,
+                            symbol=sym,
                             name=score.name,
                             exchange=score.exchange,
                             currency=score.currency,
                             sector=score.sector,
-                            composite_score=score.composite_score,
+                            composite_score=score.portfolio_score,
                             growth_score=score.growth_score,
                             valuation_score=score.valuation_score,
                             quality_score=score.quality_score,
-                            category=score.category,
+                            category=score.tier if score.tier != "breakthrough" else "growth",
+                            screened_at=datetime.utcnow(),
                         ))
+                        added.append(sym)
+                    else:
+                        # Update scores for existing watchlist entries
+                        w = current_watchlist[sym]
+                        w.composite_score = score.portfolio_score
+                        w.growth_score = score.growth_score
+                        w.valuation_score = score.valuation_score
+                        w.quality_score = score.quality_score
+                        w.screened_at = datetime.utcnow()
+                        # Clear pending_removal if stock re-qualifies
+                        if hasattr(w, "pending_removal") and w.pending_removal:
+                            w.pending_removal = False
+                            w.pending_removal_reason = None
 
-            log.info("portfolio_rescreen_phase1_done",
-                     screened=len(results),
-                     new_symbols=len(new_symbols))
+                # Flag stocks no longer in screener results
+                for sym, wl_entry in current_watchlist.items():
+                    if sym not in new_symbols:
+                        if sym in open_positions:
+                            # Cannot remove — open position exists
+                            if hasattr(wl_entry, "pending_removal"):
+                                wl_entry.pending_removal = True
+                                wl_entry.pending_removal_reason = (
+                                    "No longer in screened universe. "
+                                    "Pending removal — open position exists."
+                                )
+                            flagged_removal.append(sym)
+                        else:
+                            # Safe to remove — no open position
+                            db.delete(wl_entry)
+                            flagged_removal.append(sym)
+
+            log.info("portfolio_monthly_screen_phase2_done",
+                     added=len(added),
+                     flagged_removal=len(flagged_removal))
 
             # ══════════════════════════════════════════════════════
-            # PHASE 2: Review existing holdings
+            # PHASE 3: Review existing holdings
             # ══════════════════════════════════════════════════════
-            review_suggestions = _review_existing_holdings(ib, cfg, new_symbols)
+            review_suggestions = _review_existing_holdings_monthly(
+                ib, cfg, new_symbols, new_tiers
+            )
 
-            log.info("portfolio_rescreen_phase2_done",
+            log.info("portfolio_monthly_screen_phase3_done",
                      review_suggestions=len(review_suggestions))
 
             # ══════════════════════════════════════════════════════
-            # PHASE 3: Alert with summary
+            # PHASE 4: Alert
             # ══════════════════════════════════════════════════════
-            _send_rescreen_alert(len(results), review_suggestions)
+            _send_monthly_screen_alert(
+                len(portfolio_universe),
+                added,
+                flagged_removal,
+                review_suggestions,
+            )
 
-            log.info("portfolio_annual_rescreen_done",
-                     stocks_screened=len(results),
-                     sell_suggestions=len(review_suggestions))
+            log.info("portfolio_monthly_screen_done",
+                     screened=len(portfolio_universe),
+                     added=len(added),
+                     flagged=len(flagged_removal),
+                     suggestions=len(review_suggestions))
 
         except Exception as e:
-            log.error("portfolio_rescreen_error", error=str(e))
-            # Alert on failure too
+            log.error("portfolio_monthly_screen_error", error=str(e))
             try:
                 from src.core.alerts import get_alert_manager
                 get_alert_manager().critical(
-                    "Annual Rescreen FAILED",
+                    "Monthly Screener FAILED",
                     f"Error: {str(e)}\nManual intervention required."
                 )
             except Exception:
                 pass
+
+
+# Keep old name as alias for backward compatibility during transition
+job_portfolio_annual_rescreen = job_portfolio_monthly_screen
 
 
 def _review_existing_holdings(
@@ -502,6 +582,319 @@ def _send_rescreen_alert(stocks_screened: int, review_suggestions: list[dict]):
         lines.append(f"")
         lines.append(f"🔔 {pending_count} total suggestions awaiting approval")
         lines.append(f"Review on dashboard → Approve or Reject each one")
+    else:
+        lines.append(f"")
+        lines.append(f"✅ No actions needed — portfolio looks healthy")
+
+    alert._send("\n".join(lines), priority="high", tags="clipboard")
+
+
+def _review_existing_holdings_monthly(
+    ib: IB,
+    cfg: PortfolioConfig,
+    new_watchlist_symbols: set[str],
+    new_tiers: dict[str, str],
+) -> list[dict]:
+    """
+    Monthly review of existing holdings. Creates suggestions for:
+      - SELL: dropped off watchlist + losing money + below SMA
+      - SELL (profit): dropped off watchlist but still profitable
+      - REDUCE: overweight position (>12% of portfolio)
+      - SELL COVERED CALL: dividend tier above SMA + profitable
+                           growth tier: only when FMP shows growth slowing (future)
+      - RECLASSIFY: growth→dividend when dividends started
+
+    Rules:
+      - Breakthrough tier: never suggest sell/CC based on price/metrics alone
+      - Growth tier: CC only when revenue growth slows (pending FMP integration)
+      - Dividend tier: CC when above SMA + profitable
+      - Never auto-execute any suggestion here
+      - Skip CC if open covered call already exists on that symbol
+    """
+    from src.core.database import get_db
+    from src.portfolio.models import PortfolioHolding
+    from src.core.suggestions import create_suggestion, TradeSuggestion
+    from src.broker.market_data import get_stock_price
+    from src.portfolio.fmp import get_full_fundamentals
+    from datetime import datetime, timedelta
+
+    suggestions = []
+
+    with get_db() as db:
+        holdings = db.query(PortfolioHolding).filter(
+            PortfolioHolding.shares > 0
+        ).all()
+
+        if not holdings:
+            return suggestions
+
+        total_value = sum(
+            h.market_value or h.total_invested or 0 for h in holdings
+        )
+        if total_value <= 0:
+            return suggestions
+
+        # Check which symbols already have open covered call suggestions
+        open_cc_symbols = {
+            s.symbol for s in db.query(TradeSuggestion).filter(
+                TradeSuggestion.action == "sell_covered_call_review",
+                TradeSuggestion.status == "pending",
+            ).all()
+        }
+
+    for holding in holdings:
+        symbol = holding.symbol
+        shares = holding.shares
+        avg_cost = holding.avg_cost
+        market_value = holding.market_value or (
+            shares * (holding.current_price or avg_cost)
+        )
+        position_pct = market_value / total_value if total_value > 0 else 0
+        pnl_pct = holding.unrealized_pnl_pct or 0
+
+        # Use tier from new screener results if available, else from holding
+        tier = new_tiers.get(symbol, holding.tier or "growth")
+
+        try:
+            current_price = get_stock_price(
+                symbol,
+                exchange=holding.exchange or "SMART",
+                currency=holding.currency or "USD",
+            )
+        except Exception:
+            current_price = holding.current_price
+
+        if not current_price or current_price <= 0:
+            continue
+
+        # SMA analysis
+        sma_200 = None
+        try:
+            from src.portfolio.analyzer import PortfolioAnalyzer
+            analyzer = PortfolioAnalyzer(ib)
+            analysis = analyzer.analyze_stock(
+                symbol,
+                holding.exchange or "SMART",
+                holding.currency or "USD",
+                tier=tier,
+            )
+            if analysis:
+                sma_200 = analysis.sma_200
+        except Exception:
+            pass
+
+        pct_vs_sma = 0
+        if sma_200 and sma_200 > 0:
+            pct_vs_sma = ((current_price - sma_200) / sma_200) * 100
+
+        dropped_off = symbol not in new_watchlist_symbols
+
+        # ── 1. Breakthrough: never touch based on metrics ──
+        if tier == "breakthrough":
+            continue
+
+        # ── 2. SELL: dropped off + losing + below SMA ──────
+        if dropped_off and pnl_pct < -10 and pct_vs_sma < -10:
+            rationale = (
+                f"MONTHLY REVIEW: {symbol} dropped off screened universe. "
+                f"P&L: {pnl_pct:+.1f}%, price {pct_vs_sma:+.1f}% vs 200d SMA. "
+                f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}. "
+                f"Consider selling — fundamentals no longer qualify."
+            )
+            create_suggestion(
+                symbol=symbol,
+                action="sell_stock_review",
+                quantity=shares,
+                limit_price=round(current_price * 0.998, 2),
+                source="rescreen",
+                tier=tier,
+                signal="monthly_review_sell",
+                rationale=rationale,
+                current_price=current_price,
+                sma_200=sma_200,
+                rank=0,
+                funding_source="n/a",
+                expires_hours=720,
+            )
+            suggestions.append({
+                "symbol": symbol, "action": "SELL",
+                "reason": f"Off watchlist, P&L {pnl_pct:+.1f}%, below SMA",
+            })
+            continue
+
+        # ── 3. REDUCE: overconcentrated (>12%) ─────────────
+        if position_pct > 0.12:
+            target_value = total_value * 0.08
+            reduce_value = market_value - target_value
+            reduce_shares = int(reduce_value / current_price)
+            if reduce_shares > 0:
+                rationale = (
+                    f"MONTHLY REVIEW: {symbol} is {position_pct:.1%} of portfolio "
+                    f"(above 12% concentration limit). "
+                    f"Suggest reducing by {reduce_shares} shares to ~8%. "
+                    f"P&L: {pnl_pct:+.1f}%, current ${current_price:.2f}."
+                )
+                create_suggestion(
+                    symbol=symbol,
+                    action="reduce_position_review",
+                    quantity=reduce_shares,
+                    limit_price=round(current_price * 0.998, 2),
+                    source="rescreen",
+                    tier=tier,
+                    signal="monthly_review_reduce",
+                    rationale=rationale,
+                    current_price=current_price,
+                    sma_200=sma_200,
+                    rank=0,
+                    funding_source="n/a",
+                    expires_hours=720,
+                )
+                suggestions.append({
+                    "symbol": symbol, "action": "REDUCE",
+                    "reason": f"Position {position_pct:.0%} > 12% limit",
+                })
+                continue
+
+        # ── 4. SELL COVERED CALL ────────────────────────────
+        # Dividend tier: above SMA + profitable + no open CC + enough shares
+        # Growth tier: TODO — add when FMP revenue growth data available
+        if (
+            tier == "dividend"
+            and pct_vs_sma > 15
+            and pnl_pct > 20
+            and shares >= 100
+            and symbol not in open_cc_symbols
+        ):
+            # Calculate strike: 5% OTM from current price
+            strike = round(current_price * 1.05, 0)
+            # Target ~30 DTE: find nearest monthly expiry
+            from datetime import date
+            import calendar
+            today = date.today()
+            # Third Friday of next month as target expiry
+            next_month = today.replace(day=1)
+            if today.day > 15:
+                # If past mid-month, target month after next
+                if next_month.month == 12:
+                    next_month = next_month.replace(year=next_month.year + 1, month=1)
+                else:
+                    next_month = next_month.replace(month=next_month.month + 1)
+            if next_month.month == 12:
+                month_after = next_month.replace(year=next_month.year + 1, month=1)
+            else:
+                month_after = next_month.replace(month=next_month.month + 1)
+            # Find third Friday of target month
+            target_month = month_after
+            first_day = target_month.replace(day=1)
+            first_friday = first_day + timedelta(days=(4 - first_day.weekday()) % 7)
+            third_friday = first_friday + timedelta(weeks=2)
+            expiry_str = third_friday.strftime("%Y%m%d")
+
+            rationale = (
+                f"MONTHLY REVIEW: {symbol} ({tier}) is {pct_vs_sma:+.1f}% above "
+                f"200d SMA and up {pnl_pct:+.1f}%. "
+                f"Suggest selling covered call to harvest premium. "
+                f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}. "
+                f"Suggested: {shares // 100} contract(s), strike ${strike:.0f}, "
+                f"expiry {third_friday.strftime('%b %d %Y')} (~30 DTE)."
+            )
+            create_suggestion(
+                symbol=symbol,
+                action="sell_covered_call_review",
+                quantity=shares // 100,
+                source="rescreen",
+                tier=tier,
+                signal="monthly_cc_review",
+                rationale=rationale,
+                current_price=current_price,
+                sma_200=sma_200,
+                strike=strike,
+                expiry=expiry_str,
+                right="C",
+                rank=0,
+                funding_source="n/a",
+                expires_hours=720,
+            )
+            suggestions.append({
+                "symbol": symbol, "action": "SELL CC",
+                "reason": f"+{pct_vs_sma:.0f}% above SMA, P&L +{pnl_pct:.0f}%, strike ${strike:.0f} exp {third_friday.strftime('%b %d')}",
+            })
+            open_cc_symbols.add(symbol)  # prevent duplicate within same run
+            continue
+
+        # ── 5. SELL: dropped off but profitable ────────────
+        if dropped_off and pnl_pct > 5:
+            rationale = (
+                f"MONTHLY REVIEW: {symbol} no longer in screened universe "
+                f"but still profitable ({pnl_pct:+.1f}%). "
+                f"Consider trimming or selling while in profit. "
+                f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}."
+            )
+            create_suggestion(
+                symbol=symbol,
+                action="sell_stock_review",
+                quantity=shares,
+                limit_price=round(current_price * 0.998, 2),
+                source="rescreen",
+                tier=tier,
+                signal="monthly_review_trim_profit",
+                rationale=rationale,
+                current_price=current_price,
+                sma_200=sma_200,
+                rank=0,
+                funding_source="n/a",
+                expires_hours=720,
+            )
+            suggestions.append({
+                "symbol": symbol, "action": "CONSIDER SELL",
+                "reason": f"Off watchlist but profitable ({pnl_pct:+.1f}%)",
+            })
+
+    return suggestions
+
+
+def _send_monthly_screen_alert(
+    stocks_screened: int,
+    added: list[str],
+    flagged_removal: list[str],
+    review_suggestions: list[dict],
+):
+    """Send alert summarizing monthly screen results."""
+    from src.core.alerts import get_alert_manager
+    from src.core.suggestions import get_pending_suggestions
+
+    alert = get_alert_manager()
+    pending_count = len(get_pending_suggestions())
+
+    lines = [
+        f"📋 Monthly Portfolio Screen Complete",
+        f"Date: {datetime.utcnow().strftime('%Y-%m-%d')}",
+        f"Screened: {stocks_screened} stocks globally",
+    ]
+
+    if added:
+        lines.append(f"")
+        lines.append(f"✅ {len(added)} new stocks added to watchlist:")
+        lines.append(f"  {', '.join(added[:10])}")
+        if len(added) > 10:
+            lines.append(f"  ... and {len(added) - 10} more")
+
+    if flagged_removal:
+        lines.append(f"")
+        lines.append(f"⚠️ {len(flagged_removal)} stocks flagged for removal:")
+        lines.append(f"  {', '.join(flagged_removal[:10])}")
+
+    if review_suggestions:
+        lines.append(f"")
+        lines.append(f"⚠️ {len(review_suggestions)} holding review suggestions:")
+        for s in review_suggestions[:10]:
+            lines.append(f"  • {s['symbol']}: {s['action']} — {s['reason']}")
+        if len(review_suggestions) > 10:
+            lines.append(f"  ... and {len(review_suggestions) - 10} more")
+
+    if pending_count > 0:
+        lines.append(f"")
+        lines.append(f"🔔 {pending_count} total suggestions awaiting approval on dashboard")
     else:
         lines.append(f"")
         lines.append(f"✅ No actions needed — portfolio looks healthy")
