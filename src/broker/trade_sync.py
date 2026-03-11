@@ -282,7 +282,7 @@ def _sync_stock_to_portfolio(fills) -> int:
             # Skip fills from options account — only portfolio account stocks here
             from src.core.config import get_settings as _gs
             try:
-                _pa = _gs().portfolio.account
+                _pa = _gs().portfolio.ibkr_account
             except Exception:
                 _pa = ""
             if _pa and hasattr(execution, "acctNumber") and execution.acctNumber != _pa:

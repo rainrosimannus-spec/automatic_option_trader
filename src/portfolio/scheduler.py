@@ -616,7 +616,9 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                         if price <= 0.01:
                             # Price ~0 means assignment or expiry, not a buyback
                             action = "put_assigned"
-                            amount = strike * qty * 100  # notional value
+                            shares = qty
+                            price = strike
+                            amount = strike * qty  # cost basis for assigned shares
                         else:
                             action = "buy_put"
                             amount = price * qty * 100
