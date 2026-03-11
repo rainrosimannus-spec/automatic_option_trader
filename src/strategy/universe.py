@@ -3,7 +3,7 @@ Stock universe manager — loads and manages the 50-stock watchlist.
 """
 from __future__ import annotations
 
-from src.core.config import get_watchlist, StockEntry
+from src.core.config import get_options_universe, StockEntry
 from src.core.logger import get_logger
 
 log = get_logger(__name__)
@@ -55,7 +55,9 @@ class UniverseManager:
     }
 
     def __init__(self):
-        self._stocks = get_watchlist()
+        # Options trader reads from options_universe.yaml (top 50 by options_score)
+        # Falls back to watchlist.yaml until first monthly screener run
+        self._stocks = get_options_universe()
         log.info(
             "universe_loaded",
             total=len(self._stocks),

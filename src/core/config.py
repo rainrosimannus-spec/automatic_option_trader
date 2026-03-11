@@ -198,13 +198,47 @@ class StockEntry(BaseModel):
 
 @lru_cache(maxsize=1)
 def get_watchlist() -> list[StockEntry]:
-    """Load the global stock watchlist."""
+    """Load the portfolio watchlist (watchlist.yaml)."""
     raw = _load_yaml(_CONFIG_DIR / "watchlist.yaml")
     stocks: list[StockEntry] = []
     for item in raw.get("growth", []):
-        item["symbol"] = str(item["symbol"])  # handle numeric JP tickers
+        item["symbol"] = str(item["symbol"])
         stocks.append(StockEntry(**item, category="growth"))
     for item in raw.get("dividend", []):
         item["symbol"] = str(item["symbol"])
         stocks.append(StockEntry(**item, category="dividend"))
+    return stocks
+
+
+@lru_cache(maxsize=1)
+def get_options_universe() -> list[StockEntry]:
+    """
+    Load the options trading universe (options_universe.yaml).
+    This is the top 50 stocks ranked by options_score (fundamentals + liquidity).
+    Generated monthly by the screener job running on portfolio port 7496.
+    Falls back to watchlist.yaml if options_universe.yaml does not exist yet.
+    """
+    options_path = _CONFIG_DIR / "options_universe.yaml"
+    if not options_path.exists():
+        import logging
+        logging.getLogger(__name__).warning(
+            "options_universe.yaml not found — falling back to watchlist.yaml. "
+            "Run the monthly screener to generate it."
+        )
+        return get_watchlist()
+
+    raw = _load_yaml(options_path)
+    stocks: list[StockEntry] = []
+    for item in raw.get("stocks", []):
+        item["symbol"] = str(item["symbol"])
+        # tier field in options_universe maps to category for StockEntry
+        tier = item.pop("tier", "growth")
+        category = "dividend" if tier == "dividend" else "growth"
+        # Remove options-specific fields not in StockEntry
+        for key in ["options_score", "options_liquidity", "rank"]:
+            item.pop(key, None)
+        try:
+            stocks.append(StockEntry(**item, category=category))
+        except Exception:
+            pass
     return stocks
