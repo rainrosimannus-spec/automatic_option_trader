@@ -151,7 +151,7 @@
         <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
             <div class="flex items-center justify-between mb-3">
                 <div class="flex items-center gap-3">
-                    <span class="text-lg font-bold text-amber-300">{{ ipo.expected_ticker }}</span>
+                    <span class="text-lg font-bold {{ 'text-emerald-400' if ipo.expected_date else 'text-amber-300' }}">{{ ipo.expected_ticker }}</span>
                     <span class="text-sm text-gray-300">{{ ipo.company_name }}</span>
 
                     <!-- Status badge -->
