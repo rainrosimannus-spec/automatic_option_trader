@@ -228,6 +228,41 @@ async def portfolio_page(request: Request):
                     portfolio_maintenance_margin = float(v.value)
                 elif v.tag == "BuyingPower" and v.currency in ("BASE", "USD"):
                     portfolio_buying_power = float(v.value)
+            # Loans: negative cash balances per currency, converted to USD
+            # DEBUG: log all cash/accrued tags so we can verify tag names
+            import logging as _log
+            for _v in values:
+                if any(x in _v.tag.lower() for x in ['cash', 'interest', 'loan', 'accrued', 'borrow']):
+                    _log.getLogger(__name__).info(f"[LOANS_DEBUG] tag={_v.tag} currency={_v.currency} value={_v.value}")
+            try:
+                import requests
+                from src.core.config import load_config
+                cfg = load_config()
+                fmp_key = cfg.get("fmp", {}).get("api_key", "")
+                def _fx_to_usd(amount, currency):
+                    if currency in ("USD", "BASE") or not fmp_key:
+                        return amount
+                    try:
+                        pair = f"{currency}USD"
+                        r = requests.get(
+                            f"https://financialmodelingprep.com/stable/quote?symbol={pair}&apikey={fmp_key}",
+                            timeout=5)
+                        d = r.json()
+                        if d and isinstance(d, list) and "price" in d[0]:
+                            return amount * float(d[0]["price"])
+                    except Exception:
+                        pass
+                    return amount
+                for v in values:
+                    if v.tag == "CashBalance" and v.currency not in ("BASE",):
+                        val = float(v.value)
+                        if val < 0:
+                            portfolio_loans += _fx_to_usd(val, v.currency)
+                    elif v.tag == "AccruedInterest" and v.currency not in ("BASE",):
+                        val = float(v.value)
+                        portfolio_accrued_interest += _fx_to_usd(val, v.currency)
+            except Exception:
+                pass
             if portfolio_nlv > 0:
                 portfolio_margin_pct = (portfolio_maintenance_margin / portfolio_nlv) * 100
                 got_live = True
