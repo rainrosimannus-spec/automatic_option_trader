@@ -143,8 +143,29 @@ def get_stock_price(
         return None
 
 
+def _get_vix_from_fmp() -> Optional[float]:
+    """Fallback: get VIX from FMP API."""
+    try:
+        import requests
+        from src.core.config import load_config
+        cfg = load_config()
+        api_key = cfg.get("fmp", {}).get("api_key", "")
+        if not api_key:
+            return None
+        url = f"https://financialmodelingprep.com/stable/quote?symbol=%5EVIX&apikey={api_key}"
+        resp = requests.get(url, timeout=5)
+        data = resp.json()
+        if data and isinstance(data, list) and "price" in data[0]:
+            vix = float(data[0]["price"])
+            log.info("vix_fetched_fmp", vix=vix)
+            return vix
+    except Exception as e:
+        log.warning("vix_fmp_error", error=str(e))
+    return None
+
+
 def get_vix() -> Optional[float]:
-    """Get the current VIX level using historical data."""
+    """Get the current VIX level. Tries IBKR first, falls back to FMP."""
     try:
         with get_ib_lock():
             _ensure_market_data_type()
@@ -167,11 +188,12 @@ def get_vix() -> Optional[float]:
                 log.info("vix_fetched", vix=vix)
                 return vix
 
-        log.warning("no_vix_data")
-        return None
+        log.warning("no_vix_data_ibkr_trying_fmp")
     except Exception as e:
-        log.warning("vix_fetch_error", error=str(e))
-        return None
+        log.warning("vix_ibkr_error", error=str(e))
+
+    # Fallback to FMP
+    return _get_vix_from_fmp()
 
 
 # ── Option chains ───────────────────────────────────────────

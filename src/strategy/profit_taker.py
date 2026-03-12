@@ -69,8 +69,8 @@ class ProfitTaker:
         """
         Check if position should be closed.
         Two triggers:
-        1. DTE == 1 — always close to avoid Friday pin risk (regardless of profit)
-        2. Profit target hit — close when profit_take_pct of premium captured
+        Profit target hit — close when dynamic % of premium captured.
+        DTE<=3: let expire or assign naturally (no close).
         """
         if not pos.strike or not pos.expiry:
             return False
@@ -84,28 +84,6 @@ class ProfitTaker:
         dte = (exp_date - datetime.now().date()).days
         if dte <= 0:
             return False
-
-        # ── Pin risk protection: always close at DTE=1 ──
-        # At 1 DTE gamma is extreme — a small move can cause assignment.
-        # Wait until 10:00 AM ET — spreads are tightest after open settles.
-        if dte == 1:
-            import pytz
-            et = pytz.timezone("US/Eastern")
-            now_et = datetime.now(et)
-            if now_et.hour < 10:
-                log.info("dte1_close_waiting_for_10am", symbol=pos.symbol,
-                         current_et=now_et.strftime("%H:%M"))
-                return False
-            # Only force-close if OTM — ITM means assignment is desired (wheel strategy)
-            stock_price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
-            if stock_price and pos.strike and stock_price < pos.strike:
-                log.info("dte1_itm_let_assign", symbol=pos.symbol,
-                         stock_price=stock_price, strike=pos.strike,
-                         reason="ITM at DTE=1 — letting assign for wheel strategy")
-                return False
-            log.info("dte1_forced_close", symbol=pos.symbol,
-                     expiry=pos.expiry, reason="Pin risk protection — DTE=1 OTM, after 10am ET")
-            return True
 
         # Get current stock price and IV for theoretical option pricing
         stock_price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
@@ -131,9 +109,22 @@ class ProfitTaker:
         # Profit % = (entry - current) / entry
         profit_pct = (entry_premium - current_ask) / entry_premium
 
-        if profit_pct >= self.cfg.profit_take_pct:
+        # Dynamic target: 75% early, 65% mid, 50% near, expire at DTE<=3
+        if dte > 14:
+            target = 0.75
+        elif dte > 7:
+            target = 0.65
+        elif dte > 3:
+            target = 0.50
+        else:
+            log.debug("dte_too_close_letting_expire", symbol=pos.symbol, dte=dte)
+            return False
+
+        if profit_pct >= target:
             log.info(
                 "profit_target_hit",
+                dte=dte,
+                target_pct=f"{target:.0%}",
                 symbol=pos.symbol,
                 entry=round(entry_premium, 2),
                 current=round(current_ask, 2),
@@ -155,26 +146,16 @@ class ProfitTaker:
         ib = get_ib()
         iv = get_current_iv(ib, pos.symbol, exchange=exchange, currency=currency)
 
-        # Check DTE — use market order at DTE=1 to guarantee fill
-        dte_now = 0
+        # Compute BS limit price
+        ask_price = 0.01
         if pos.expiry:
             exp_date = datetime.strptime(pos.expiry, "%Y%m%d").date()
             dte_now = (exp_date - datetime.now().date()).days
-
-        ask_price = None  # None = market order
-        if dte_now > 1:
-            # DTE > 1: use BS-computed limit price
-            ask_price = 0.01  # fallback minimum
-            if stock_price and iv and iv > 0 and pos.expiry:
-                if dte_now > 0:
-                    T = dte_now / 365.0
-                    greeks = compute_put_greeks(stock_price, pos.strike or 0, T, iv)
-                    if greeks:
-                        ask_price = greeks.ask
-
-        if dte_now == 1:
-            log.info("dte1_market_order", symbol=pos.symbol,
-                     reason="Market order guarantees fill at DTE=1")
+            if stock_price and iv and iv > 0 and dte_now > 0:
+                T = dte_now / 365.0
+                greeks = compute_put_greeks(stock_price, pos.strike or 0, T, iv)
+                if greeks:
+                    ask_price = greeks.ask
 
         trade = buy_to_close_put(
             symbol=pos.symbol,
