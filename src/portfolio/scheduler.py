@@ -1238,15 +1238,32 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                         premium_collected = price * qty * 100
                         amount = premium_collected
                     else:
-                        # Buying back a put — check if it's a close or assignment
+                        # Buying back a put — check if it's a close, assignment, or expiry
                         if price <= 0.01:
-                            # Price ~0 means assignment or expiry, not a buyback
-                            action = "put_assigned"
-                            price = strike
-                            # Use watchlist contract_size if available (UK=1000, US/JP=100)
-                            contract_size = getattr(wl, 'contract_size', None) or 100
-                            shares = qty * contract_size
-                            amount = strike * shares  # total cost basis
+                            # Price ~0 means either assigned (ITM) or expired (OTM)
+                            # Check current stock price vs strike to distinguish
+                            try:
+                                stock_contract = Stock(symbol, wl.exchange or "SMART", wl.currency or "USD")
+                                self.ib.qualifyContracts(stock_contract)
+                                ticker = self.ib.reqMktData(stock_contract, "", False, False)
+                                self.ib.sleep(2)
+                                stock_price = ticker.last or ticker.close or 0
+                                self.ib.cancelMktData(stock_contract)
+                            except Exception:
+                                stock_price = 0
+
+                            if stock_price > 0 and stock_price > strike:
+                                # Stock is above strike — put expired worthless OTM
+                                action = "expired"
+                                price = 0.0
+                                amount = 0.0
+                            else:
+                                # Stock at or below strike — put was assigned ITM
+                                action = "put_assigned"
+                                price = strike
+                                contract_size = getattr(wl, 'contract_size', None) or 100
+                                shares = qty * contract_size
+                                amount = strike * shares
                         else:
                             action = "buy_put"
                             amount = price * qty * 100
