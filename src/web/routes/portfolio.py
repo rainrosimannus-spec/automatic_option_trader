@@ -237,27 +237,6 @@ async def portfolio_page(request: Request):
     try:
         from src.portfolio.scheduler import _portfolio_ib
         from src.portfolio.connection import get_cached_portfolio_account
-
-def _to_usd(amount: float, currency: str) -> float:
-    """Convert an amount in the given currency to USD using FMP FX rates."""
-    if not amount or currency in ("USD", None):
-        return amount or 0.0
-    try:
-        import requests
-        from src.core.config import load_config
-        cfg = load_config()
-        api_key = cfg.get("fmp", {}).get("api_key", "")
-        if not api_key:
-            return amount
-        pair = f"{currency}USD"
-        url = f"https://financialmodelingprep.com/stable/quote?symbol={pair}&apikey={api_key}"
-        r = requests.get(url, timeout=5)
-        d = r.json()
-        if d and isinstance(d, list) and "price" in d[0]:
-            return amount * float(d[0]["price"])
-    except Exception:
-        pass
-    return amount
         got_live = False
         if _portfolio_ib and _portfolio_ib.isConnected():
             values = _portfolio_ib.accountValues()

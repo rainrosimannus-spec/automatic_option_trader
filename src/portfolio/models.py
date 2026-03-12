@@ -192,12 +192,12 @@ class PortfolioCapitalInjection(Base):
     """Tracks every cash injection (deposit) into the portfolio account in USD."""
     __tablename__ = "portfolio_capital_injections"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    date = Column(String, nullable=False)
-    amount_original = Column(Float, nullable=False)
-    currency = Column(String, nullable=False)
-    eur_usd_rate = Column(Float, nullable=True)
-    amount_usd = Column(Float, nullable=False)
-    notes = Column(String, nullable=True)
-    source = Column(String, default="manual")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[str] = mapped_column(String(20), nullable=False)
+    amount_original: Mapped[float] = mapped_column(Float, nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), nullable=False)
+    eur_usd_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    amount_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(20), default="manual")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
