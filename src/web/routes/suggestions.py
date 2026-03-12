@@ -54,6 +54,9 @@ def _get_suggestions_by_source(source: str):
                 (TradeSuggestion.status == "pending") & (TradeSuggestion.review_note.isnot(None)),
             )
         ).order_by(TradeSuggestion.created_at.desc()).limit(20).all()
+        # Force-load all attributes before session closes
+        for r in recent:
+            _ = r.symbol, r.status, r.action, r.rank, r.quantity, r.limit_price, r.strike, r.expiry, r.review_note, r.reviewed_at, r.source
 
     return pending, recent
 
