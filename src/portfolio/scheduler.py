@@ -1242,9 +1242,11 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                         if price <= 0.01:
                             # Price ~0 means assignment or expiry, not a buyback
                             action = "put_assigned"
-                            shares = qty
                             price = strike
-                            amount = strike * qty  # cost basis for assigned shares
+                            # Use watchlist contract_size if available (UK=1000, US/JP=100)
+                            contract_size = getattr(wl, 'contract_size', None) or 100
+                            shares = qty * contract_size
+                            amount = strike * shares  # total cost basis
                         else:
                             action = "buy_put"
                             amount = price * qty * 100
@@ -1294,6 +1296,51 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                     ))
                     existing_ids.add(exec_id)
                     imported += 1
+
+                    # If put was assigned, create/update portfolio holding
+                    if action == "put_assigned":
+                        try:
+                            from src.portfolio.models import PortfolioHolding
+                            from datetime import datetime as dt
+                            contract_size = getattr(wl, 'contract_size', None) or 100
+                            assigned_shares = qty * contract_size
+                            with get_db() as hdb:
+                                h = hdb.query(PortfolioHolding).filter(
+                                    PortfolioHolding.symbol == symbol
+                                ).first()
+                                if h:
+                                    total_cost = h.avg_cost * h.shares + strike * assigned_shares
+                                    h.shares += assigned_shares
+                                    h.avg_cost = total_cost / h.shares
+                                    h.total_invested += strike * assigned_shares
+                                    h.last_bought = exec_time
+                                    h.updated_at = dt.utcnow()
+                                else:
+                                    hdb.add(PortfolioHolding(
+                                        symbol=symbol,
+                                        name=wl.name if hasattr(wl, 'name') else symbol,
+                                        exchange=wl.exchange or "SMART",
+                                        currency=wl.currency or "USD",
+                                        sector=wl.sector if hasattr(wl, 'sector') else "Unknown",
+                                        shares=assigned_shares,
+                                        avg_cost=strike,
+                                        total_invested=strike * assigned_shares,
+                                        current_price=strike,
+                                        market_value=strike * assigned_shares,
+                                        unrealized_pnl=0.0,
+                                        unrealized_pnl_pct=0.0,
+                                        total_dividends=0.0,
+                                        first_bought=exec_time,
+                                        last_bought=exec_time,
+                                        updated_at=dt.utcnow(),
+                                        tier=wl.tier or "growth",
+                                        entry_method="put_entry",
+                                        target_price=strike,
+                                    ))
+                            log.info("put_assigned_holding_created", symbol=symbol,
+                                     shares=assigned_shares, strike=strike)
+                        except Exception as he:
+                            log.warning("put_assigned_holding_error", symbol=symbol, error=str(he))
 
                     log.info("portfolio_trade_synced",
                              symbol=symbol, action=action,
