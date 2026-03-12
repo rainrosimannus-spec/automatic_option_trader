@@ -597,14 +597,12 @@ def job_premarket_regime_check():
         eu_status = "bullish" if regime.eu_bullish else ("bearish" if regime.eu_bullish is False else "unknown")
         asia_status = "bullish" if regime.asia_bullish else ("bearish" if regime.asia_bullish is False else "unknown")
 
+        spy_action = "Sell puts normally" if verdict == "GREEN" else ("Reduce size or skip" if verdict == "YELLOW" else "Sit in cash")
         message = (
-            f"🌅 Pre-Market Regime: {verdict}
-"
-            f"{detail}
-"
-            f"SPY trend: {spy_status} | EU: {eu_status} | Asia: {asia_status}
-"
-            f"Strategy: {'Sell puts normally' if verdict == 'GREEN' else 'Reduce size or skip' if verdict == 'YELLOW' else 'Sit in cash'}"
+            "🌅 Pre-Market Regime: " + verdict + "\n"
+            + detail + "\n"
+            + "SPY trend: " + spy_status + " | EU: " + eu_status + " | Asia: " + asia_status + "\n"
+            + "Strategy: " + spy_action
         )
 
         log.info("premarket_regime", verdict=verdict, vix=vix,
