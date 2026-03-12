@@ -555,6 +555,65 @@ def job_daily_summary():
         log.error("daily_summary_error", error=str(e))
 
 
+
+def job_premarket_regime_check():
+    """🌅 Pre-market regime check — runs at 9:00 AM ET before first scan.
+    Classifies market conditions and sends an alert so you know what to expect.
+    GREEN = sell premium normally, YELLOW = be selective, RED = sit out."""
+    _ensure_event_loop()
+
+    try:
+        from src.core.alerts import get_alert_manager
+        from src.strategy.universe import UniverseManager
+        from src.strategy.risk import RiskManager
+
+        alerts = get_alert_manager()
+        universe = UniverseManager()
+        risk = RiskManager(universe)
+
+        # Refresh regime data
+        regime = risk.get_regime(force_refresh=True)
+        vix = regime.vix
+
+        # Classify regime
+        if vix is None:
+            verdict = "UNKNOWN"
+            detail = "VIX data unavailable — proceed with caution"
+        elif vix > 30:
+            verdict = "RED"
+            detail = f"VIX {vix:.1f} — crisis level, sit out or go very wide OTM"
+        elif vix > 20:
+            verdict = "YELLOW"
+            detail = f"VIX {vix:.1f} — elevated, sell conservatively with wider strikes"
+        elif vix > 15:
+            verdict = "GREEN"
+            detail = f"VIX {vix:.1f} — normal, sell premium at standard delta range"
+        else:
+            verdict = "GREEN"
+            detail = f"VIX {vix:.1f} — low vol, use tighter delta range (0.15-0.25)"
+
+        # SPY MA assessment
+        spy_status = "bullish" if regime.spy_bullish else ("bearish" if regime.spy_bullish is False else "unknown")
+        eu_status = "bullish" if regime.eu_bullish else ("bearish" if regime.eu_bullish is False else "unknown")
+        asia_status = "bullish" if regime.asia_bullish else ("bearish" if regime.asia_bullish is False else "unknown")
+
+        message = (
+            f"🌅 Pre-Market Regime: {verdict}
+"
+            f"{detail}
+"
+            f"SPY trend: {spy_status} | EU: {eu_status} | Asia: {asia_status}
+"
+            f"Strategy: {'Sell puts normally' if verdict == 'GREEN' else 'Reduce size or skip' if verdict == 'YELLOW' else 'Sit in cash'}"
+        )
+
+        log.info("premarket_regime", verdict=verdict, vix=vix,
+                 spy=spy_status, eu=eu_status, asia=asia_status)
+        alerts._send(message, priority="default", tags="regime,premarket")
+
+    except Exception as e:
+        log.error("premarket_regime_error", error=str(e))
+
 def job_heartbeat():
     """💚 Daily heartbeat — proof of life sent every morning.
     If you stop receiving this, something is wrong."""
@@ -877,6 +936,15 @@ def create_scheduler() -> BackgroundScheduler:
         CronTrigger(hour=8, minute=0, timezone=us_tz),
         id="heartbeat",
         name="Daily Heartbeat",
+        max_instances=1,
+    )
+
+    # ── Pre-market regime check — 9:00 AM ET weekdays ──
+    scheduler.add_job(
+        job_premarket_regime_check,
+        CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone=us_tz),
+        id="premarket_regime",
+        name="Pre-Market Regime Check",
         max_instances=1,
     )
 

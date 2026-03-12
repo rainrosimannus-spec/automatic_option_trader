@@ -66,7 +66,12 @@ class ProfitTaker:
         return closed
 
     def _should_close(self, pos: Position) -> bool:
-        """Check if position has hit profit target using Black-Scholes pricing."""
+        """
+        Check if position should be closed.
+        Two triggers:
+        1. DTE == 1 — always close to avoid Friday pin risk (regardless of profit)
+        2. Profit target hit — close when profit_take_pct of premium captured
+        """
         if not pos.strike or not pos.expiry:
             return False
 
@@ -74,6 +79,19 @@ class ProfitTaker:
         stock = self.universe.get_stock(pos.symbol)
         exchange = stock.exchange if stock else "SMART"
         currency = stock.currency if stock else "USD"
+
+        exp_date = datetime.strptime(pos.expiry, "%Y%m%d").date()
+        dte = (exp_date - datetime.now().date()).days
+        if dte <= 0:
+            return False
+
+        # ── Pin risk protection: always close at DTE=1 ──
+        # At 1 DTE gamma is extreme — a small move can cause assignment.
+        # Better to close for whatever profit remains than risk a bad fill.
+        if dte == 1:
+            log.info("dte1_forced_close", symbol=pos.symbol,
+                     expiry=pos.expiry, reason="Pin risk protection — DTE=1")
+            return True
 
         # Get current stock price and IV for theoretical option pricing
         stock_price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
@@ -84,11 +102,6 @@ class ProfitTaker:
         ib = get_ib()
         iv = get_current_iv(ib, pos.symbol, exchange=exchange, currency=currency)
         if not iv or iv <= 0:
-            return False
-
-        exp_date = datetime.strptime(pos.expiry, "%Y%m%d").date()
-        dte = (exp_date - datetime.now().date()).days
-        if dte <= 0:
             return False
 
         T = max(dte, 1) / 365.0

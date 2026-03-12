@@ -279,6 +279,26 @@ def dashboard(request: Request):
         open_stock = [p for p in open_positions if p.position_type == "stock"]
         open_calls = [p for p in open_positions if p.position_type == "covered_call"]
 
+        # Daily theta estimate — sum across all open short positions
+        # Approximation: premium / DTE remaining gives daily decay rate
+        # This is conservative (actual theta accelerates as DTE shrinks)
+        from datetime import datetime as _dt
+        daily_theta = 0.0
+        for p in open_puts + open_calls:
+            try:
+                if p.expiry and p.entry_premium and p.quantity:
+                    exp_date = _dt.strptime(p.expiry, "%Y%m%d").date()
+                    dte = (exp_date - _dt.utcnow().date()).days
+                    if dte > 0:
+                        contract_size = 100
+                        # Daily theta = remaining premium value / DTE
+                        # Use 50% of entry premium as proxy for current value
+                        # (assumes we're roughly at midpoint of the trade)
+                        remaining = p.entry_premium * 0.5
+                        daily_theta += (remaining / dte) * contract_size * p.quantity
+            except Exception:
+                pass
+
         recent_trades = (
             db.query(Trade)
             .order_by(Trade.created_at.desc())
@@ -356,6 +376,7 @@ def dashboard(request: Request):
         "total_closed": len(closed_positions),
         "total_realized": total_realized,
         "total_premium": total_premium,
+        "daily_theta": round(daily_theta, 2),
         "open_positions": open_positions,
         "recent_trades": recent_trades,
         "pending_count": pending_options + pending_portfolio,
