@@ -32,55 +32,16 @@ def _get_state(key: str) -> str:
 
 def _build_portfolio_performance() -> dict:
     """
-    Build portfolio NLV return % vs BRK-B benchmark % using daily snapshots.
-    Both lines start at 0% from a fixed inception date.
+    Portfolio return % = (NLV / total_invested_usd - 1) * 100
 
-    - Portfolio line: NLV % change from first snapshot's NLV
-    - BRK-B line: actual BRK-B price % change from inception (fetched live),
-      falls back to ~15% annualized estimate if price unavailable
+    Anchored so the most recent snapshot = 0% (today is day 0).
+    Earlier dates show what the return was then, relative to today's capital base.
+    BRK-B benchmark uses the same anchor.
     """
-    from src.core.models import AccountSnapshot, SystemState
-    from datetime import datetime
+    from src.core.models import AccountSnapshot
+    from src.portfolio.capital_injections import get_total_invested_usd
 
-    INCEPTION_DATE = "2026-02-21"  # portfolio system went live
-
-    with get_db() as db:
-        # Get or set permanent start date
-        start_row = db.query(SystemState).filter(
-            SystemState.key == "portfolio_start_date"
-        ).first()
-        if start_row:
-            start_date_str = start_row.value
-        else:
-            start_date_str = INCEPTION_DATE
-            db.add(SystemState(key="portfolio_start_date", value=start_date_str))
-
-        # Get or set BRK-B starting price (anchored at inception)
-        brkb_start_row = db.query(SystemState).filter(
-            SystemState.key == "brkb_start_price"
-        ).first()
-        brkb_start_price = float(brkb_start_row.value) if brkb_start_row else None
-
-    start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
-    daily_brkb_estimate = (1.15 ** (1 / 365)) - 1  # fallback: 15% annual
-
-    # Try to fetch and anchor BRK-B price if not yet set
-    # Note: if not yet anchored, it will be set by the next Portfolio Price Update job.
-    # We don't fetch live here because web threads can't call IBKR (event loop conflict).
-    if brkb_start_price is None:
-        pass  # will use estimated benchmark until background job sets it
-
-    # Get current BRK-B price from DB (saved by background Portfolio Price Update job)
-    brkb_current_price = None
-    try:
-        with get_db() as db:
-            cached = db.query(SystemState).filter(
-                SystemState.key == "brkb_current_price"
-            ).first()
-            if cached:
-                brkb_current_price = float(cached.value)
-    except Exception:
-        pass
+    total_invested_usd = get_total_invested_usd()
 
     with get_db() as db:
         snapshots = (
@@ -89,56 +50,93 @@ def _build_portfolio_performance() -> dict:
             .all()
         )
 
-    # Find snapshots with portfolio market value data (NOT options NLV)
-    port_snaps = [s for s in snapshots if s.portfolio_market_value and s.portfolio_market_value > 0]
+    if not snapshots:
+        return {
+            "labels": [],
+            "portfolio_data": [],
+            "brkb_data": [],
+            "total_invested_usd": total_invested_usd,
+            "current_return_pct": 0.0,
+        }
 
-    if port_snaps:
-        first_mv = port_snaps[0].portfolio_market_value
+    labels = []
+    raw_returns = []
 
-        labels = []
-        portfolio_line = []
-        brkb_line = []
+    for snap in snapshots:
+        nlv = getattr(snap, "portfolio_market_value", None) or getattr(snap, "port_value", None)
+        if not nlv or nlv <= 0:
+            continue
+        labels.append(str(snap.date)[:10])
+        raw_returns.append((nlv / total_invested_usd - 1.0) * 100.0)
 
-        # Always start from inception
-        if port_snaps[0].date > start_date_str:
-            labels.append(start_date_str)
-            portfolio_line.append(0)
-            brkb_line.append(0)
+    if not raw_returns:
+        return {
+            "labels": [],
+            "portfolio_data": [],
+            "brkb_data": [],
+            "total_invested_usd": total_invested_usd,
+            "current_return_pct": 0.0,
+        }
 
-        for snap in port_snaps:
-            labels.append(snap.date)
+    # Shift so most recent point = 0%
+    anchor = raw_returns[-1]
+    portfolio_data = [round(r - anchor, 4) for r in raw_returns]
+    current_return_pct = round(anchor, 2)
 
-            # Portfolio return % based on market value
-            mv_pct = ((snap.portfolio_market_value - first_mv) / first_mv) * 100
-            portfolio_line.append(round(mv_pct, 2))
-
-            # BRK-B return %
-            snap_date = datetime.strptime(snap.date, "%Y-%m-%d")
-            days = max((snap_date - start_date).days, 0)
-
-            if brkb_start_price and brkb_current_price and snap == port_snaps[-1]:
-                # Use real BRK-B price for latest point
-                brkb_pct = ((brkb_current_price - brkb_start_price) / brkb_start_price) * 100
-            else:
-                # Estimated for historical points
-                brkb_pct = ((1 + daily_brkb_estimate) ** days - 1) * 100
-            brkb_line.append(round(brkb_pct, 2))
-
-        return {"labels": labels, "portfolio": portfolio_line, "brkb": brkb_line}
-
-    # ── No snapshots: show empty chart from inception ──
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    days = max((datetime.utcnow() - start_date).days, 0)
-    brkb_pct = ((1 + daily_brkb_estimate) ** days - 1) * 100
-
-    if brkb_start_price and brkb_current_price:
-        brkb_pct = ((brkb_current_price - brkb_start_price) / brkb_start_price) * 100
+    brkb_data = _build_brkb_series(labels)
 
     return {
-        "labels": [start_date_str, today],
-        "portfolio": [0, 0],
-        "brkb": [0, round(brkb_pct, 2)],
+        "labels": labels,
+        "portfolio_data": portfolio_data,
+        "brkb_data": brkb_data,
+        "total_invested_usd": total_invested_usd,
+        "current_return_pct": current_return_pct,
     }
+
+
+def _build_brkb_series(labels: list) -> list:
+    """BRK-B % change series, anchored so most recent date = 0%."""
+    if not labels:
+        return []
+    try:
+        from src.core.config import get_settings
+        import requests
+
+        api_key = get_settings().fmp_api_key
+        url = (
+            f"https://financialmodelingprep.com/stable/historical-price-eod/full"
+            f"?symbol=BRK-B&from={labels[0]}&to={labels[-1]}&apikey={api_key}"
+        )
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        hist = r.json()
+        if not hist or not isinstance(hist, list):
+            return []
+
+        price_map = {row["date"]: row["close"] for row in hist if "date" in row and "close" in row}
+
+        prices = []
+        for label in labels:
+            p = price_map.get(label)
+            if p is None:
+                for row in sorted(hist, key=lambda x: x["date"], reverse=True):
+                    if row["date"] <= label:
+                        p = row["close"]
+                        break
+            prices.append(p)
+
+        if not prices or prices[-1] is None:
+            return []
+
+        anchor_price = prices[-1]
+        return [
+            round((p / anchor_price - 1.0) * 100.0, 4) if p is not None else None
+            for p in prices
+        ]
+    except Exception as e:
+        from src.core.logger import get_logger
+        get_logger(__name__).warning("brkb_series_failed", error=str(e))
+        return []
 
 
 def _build_tier_breakdown(holdings) -> dict:
@@ -146,7 +144,7 @@ def _build_tier_breakdown(holdings) -> dict:
     tiers = {"dividend": 0, "growth": 0, "breakthrough": 0}
     for h in holdings:
         tier = h.tier or "growth"
-        tiers[tier] = tiers.get(tier, 0) + (h.market_value or 0)
+        tiers[tier] = tiers.get(tier, 0) + _to_usd(h.market_value or 0, h.currency)
     return tiers
 
 
@@ -188,8 +186,29 @@ async def portfolio_page(request: Request):
             PortfolioPutEntry.status == "open"
         ).order_by(PortfolioPutEntry.expiry.asc()).all()
 
-    total_invested = sum(h.total_invested for h in holdings)
-    total_value = sum(h.market_value or 0 for h in holdings)
+    # FX conversion: convert non-USD holdings to USD for display
+    def _to_usd(amount, currency):
+        if not amount or currency in ("USD", None):
+            return amount or 0.0
+        try:
+            import requests
+            from src.core.config import load_config
+            cfg = load_config()
+            api_key = cfg.get("fmp", {}).get("api_key", "")
+            if not api_key:
+                return amount
+            pair = f"{currency}USD"
+            url = f"https://financialmodelingprep.com/stable/quote?symbol={pair}&apikey={api_key}"
+            r = requests.get(url, timeout=5)
+            d = r.json()
+            if d and isinstance(d, list) and "price" in d[0]:
+                return amount * float(d[0]["price"])
+        except Exception:
+            pass
+        return amount
+
+    total_invested = sum(_to_usd(h.total_invested, h.currency) for h in holdings)
+    total_value = sum(_to_usd(h.market_value or 0, h.currency) for h in holdings)
     total_pnl = total_value - total_invested
     total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
 
@@ -218,6 +237,27 @@ async def portfolio_page(request: Request):
     try:
         from src.portfolio.scheduler import _portfolio_ib
         from src.portfolio.connection import get_cached_portfolio_account
+
+def _to_usd(amount: float, currency: str) -> float:
+    """Convert an amount in the given currency to USD using FMP FX rates."""
+    if not amount or currency in ("USD", None):
+        return amount or 0.0
+    try:
+        import requests
+        from src.core.config import load_config
+        cfg = load_config()
+        api_key = cfg.get("fmp", {}).get("api_key", "")
+        if not api_key:
+            return amount
+        pair = f"{currency}USD"
+        url = f"https://financialmodelingprep.com/stable/quote?symbol={pair}&apikey={api_key}"
+        r = requests.get(url, timeout=5)
+        d = r.json()
+        if d and isinstance(d, list) and "price" in d[0]:
+            return amount * float(d[0]["price"])
+    except Exception:
+        pass
+    return amount
         got_live = False
         if _portfolio_ib and _portfolio_ib.isConnected():
             values = _portfolio_ib.accountValues()
@@ -394,3 +434,18 @@ def sync_portfolio_trades():
         traceback.print_exc()
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/portfolio/trades", status_code=303)
+
+
+@router.post("/api/portfolio/sync-injections")
+async def sync_capital_injections():
+    """Sync deposit history from IBKR Flex Web Service."""
+    try:
+        from src.portfolio.capital_injections import sync_injections_from_ibkr
+        added = sync_injections_from_ibkr()
+        return {"status": "ok", "added": added,
+                "message": f"Synced {added} new deposit row(s) from IBKR"}
+    except ValueError as e:
+        return {"status": "setup_needed", "message": str(e)}
+    except Exception as e:
+        log.error("sync_injections_error", error=str(e))
+        return {"status": "error", "message": str(e)}

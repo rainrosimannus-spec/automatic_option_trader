@@ -186,3 +186,18 @@ class PortfolioState(Base):
     pending_removal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PortfolioCapitalInjection(Base):
+    """Tracks every cash injection (deposit) into the portfolio account in USD."""
+    __tablename__ = "portfolio_capital_injections"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String, nullable=False)
+    amount_original = Column(Float, nullable=False)
+    currency = Column(String, nullable=False)
+    eur_usd_rate = Column(Float, nullable=True)
+    amount_usd = Column(Float, nullable=False)
+    notes = Column(String, nullable=True)
+    source = Column(String, default="manual")
+    created_at = Column(DateTime, default=datetime.utcnow)
