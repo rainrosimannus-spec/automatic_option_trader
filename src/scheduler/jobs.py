@@ -228,7 +228,7 @@ def job_execute_queued():
                 rm = RiskManager(cfg.risk)
                 dynamic_ceiling = rm.dynamic_margin_ceiling()
                 headroom = acct.net_liquidation * (dynamic_ceiling - margin_pct)
-                per_position_cap = acct.net_liquidation * 0.25
+                per_position_cap = acct.net_liquidation * 0.60
         except Exception as e:
             log.warning("execute_queued_acct_failed", error=str(e))
 
