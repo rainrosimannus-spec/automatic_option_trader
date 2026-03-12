@@ -213,6 +213,8 @@ async def portfolio_page(request: Request):
     portfolio_maintenance_margin = 0.0
     portfolio_nlv = 0.0
     portfolio_buying_power = 0.0
+    portfolio_loans = 0.0
+    portfolio_accrued_interest = 0.0
     try:
         from src.portfolio.scheduler import _portfolio_ib
         from src.portfolio.connection import get_cached_portfolio_account
@@ -254,6 +256,8 @@ async def portfolio_page(request: Request):
         "portfolio_maintenance_margin": portfolio_maintenance_margin,
         "portfolio_nlv": portfolio_nlv,
         "portfolio_buying_power": portfolio_buying_power,
+        "portfolio_loans": portfolio_loans,
+        "portfolio_accrued_interest": portfolio_accrued_interest,
         "market_status": market_status,
         "market_pct": market_pct,
         # Performance chart

@@ -63,6 +63,20 @@
             <div class="text-2xl font-bold text-cyan-400 mt-1">${{"{:,.0f}".format(portfolio_buying_power)}}</div>
             <div class="text-xs text-gray-500 mt-1">Available in account</div>
         </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Net Liquidation</div>
+            <div class="text-2xl font-bold text-white mt-1">${{"{:,.0f}".format(portfolio_nlv)}}</div>
+            <div class="text-xs text-gray-500 mt-1">Total account value</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Loans / Interest</div>
+            <div class="text-2xl font-bold mt-1 {% if portfolio_loans < 0 %}text-red-400{% else %}text-gray-400{% endif %}">
+                ${{"{:,.0f}".format(portfolio_loans)}}
+            </div>
+            <div class="text-xs text-gray-500 mt-1">
+                Accrued: ${{"{:,.0f}".format(portfolio_accrued_interest)}}
+            </div>
+        </div>
     </div>
 
     <!-- ═══ Performance Chart + Tier Breakdown ═══ -->

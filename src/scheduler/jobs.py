@@ -1121,8 +1121,27 @@ def create_scheduler() -> BackgroundScheduler:
                     PortfolioHolding.shares > 0
                 ).all()
 
-            port_invested = sum(h.total_invested or 0 for h in holdings)
-            port_value = sum(h.market_value or 0 for h in holdings)
+            # Convert non-USD holdings to USD using FMP FX rates
+            def _to_usd(amount, currency):
+                if not amount or currency in ("USD", None):
+                    return amount or 0.0
+                try:
+                    import requests
+                    from src.core.config import load_config
+                    cfg = load_config()
+                    api_key = cfg.get("fmp", {}).get("api_key", "")
+                    pair = f"{currency}USD"
+                    url = f"https://financialmodelingprep.com/stable/quote?symbol={pair}&apikey={api_key}"
+                    r = requests.get(url, timeout=5)
+                    d = r.json()
+                    if d and isinstance(d, list) and "price" in d[0]:
+                        return amount * float(d[0]["price"])
+                except Exception:
+                    pass
+                return amount  # fallback: no conversion
+
+            port_invested = sum(_to_usd(h.total_invested or 0, h.currency) for h in holdings)
+            port_value = sum(_to_usd(h.market_value or 0, h.currency) for h in holdings)
 
             # Upsert today's snapshot
             with get_db() as db:
