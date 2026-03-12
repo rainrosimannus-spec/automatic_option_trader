@@ -260,7 +260,9 @@ def job_execute_queued():
                                      symbol=s.symbol, rank=s.rank,
                                      est_margin=f"${est_margin:,.0f}")
                             s.review_note = f"Insufficient margin (${est_margin:,.0f} needed, ${headroom:,.0f} available)"
-                            # Leave as pending — next scan will refresh or retry
+                            s.status = "expired"
+                            log.info("execute_queued_expired_no_margin",
+                                     symbol=s.symbol, rank=s.rank)
                             continue
                     except Exception as e:
                         log.warning("execute_queued_whatif_failed", symbol=s.symbol, error=str(e))
