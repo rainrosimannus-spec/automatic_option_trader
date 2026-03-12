@@ -19,14 +19,24 @@
 
         <!-- Row 1: Company info -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
-            <div class="col-span-2">
+            <div class="col-span-2 relative">
                 <label class="block text-xs text-gray-400 mb-1">Company Name</label>
-                <input name="company_name" type="text" required placeholder="e.g. SpaceX"
+                <input id="company_name_input" name="company_name" type="text" required
+                       placeholder="Type company name to search..."
+                       autocomplete="off"
                        class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-amber-500">
+                <div id="ticker_search_status" class="text-xs text-gray-500 mt-1 h-4"></div>
+                <!-- Dropdown results -->
+                <div id="ticker_dropdown" class="hidden absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-xl max-h-48 overflow-y-auto">
+                </div>
             </div>
             <div>
-                <label class="block text-xs text-gray-400 mb-1">Expected Ticker</label>
-                <input name="expected_ticker" type="text" required placeholder="e.g. SPACEX"
+                <label class="block text-xs text-gray-400 mb-1">Ticker
+                    <span id="ticker_confirmed_badge" class="hidden ml-1 text-emerald-400">✓ confirmed</span>
+                    <span id="ticker_unknown_badge" class="hidden ml-1 text-amber-400">? will monitor</span>
+                </label>
+                <input id="expected_ticker_input" name="expected_ticker" type="text"
+                       placeholder="Auto-filled or leave blank"
                        class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-amber-500 uppercase">
             </div>
             <div>
@@ -439,4 +449,174 @@
 {% endif %}
 
 </div>
+
+<script>
+(function() {
+    const nameInput = document.getElementById('company_name_input');
+    const tickerInput = document.getElementById('expected_ticker_input');
+    const dropdown = document.getElementById('ticker_dropdown');
+    const status = document.getElementById('ticker_search_status');
+    const confirmedBadge = document.getElementById('ticker_confirmed_badge');
+    const unknownBadge = document.getElementById('ticker_unknown_badge');
+
+    let searchTimeout = null;
+    let tickerIsConfirmed = false;
+
+    nameInput.addEventListener('input', function() {
+        const q = this.value.trim();
+        clearTimeout(searchTimeout);
+        dropdown.classList.add('hidden');
+        dropdown.innerHTML = '';
+
+        if (q.length < 2) {
+            status.textContent = '';
+            return;
+        }
+
+        status.textContent = 'Searching...';
+        searchTimeout = setTimeout(() => doSearch(q), 400);
+    });
+
+    nameInput.addEventListener('blur', function() {
+        // Small delay so click on dropdown registers first
+        setTimeout(() => dropdown.classList.add('hidden'), 200);
+    });
+
+    nameInput.addEventListener('focus', function() {
+        if (dropdown.innerHTML) dropdown.classList.remove('hidden');
+    });
+
+    function doSearch(q) {
+        fetch('/ipo/search-ticker?q=' + encodeURIComponent(q))
+            .then(r => r.json())
+            .then(data => {
+                dropdown.innerHTML = '';
+                const results = data.results || [];
+
+                if (results.length === 0) {
+                    status.textContent = 'No ticker found — will monitor monthly for listing';
+                    showUnknown();
+                    dropdown.classList.add('hidden');
+                    return;
+                }
+
+                status.textContent = results.length + ' match' + (results.length > 1 ? 'es' : '') + ' found';
+
+                results.forEach(r => {
+                    const div = document.createElement('div');
+                    div.className = 'px-3 py-2 hover:bg-gray-700 cursor-pointer flex items-center gap-3 text-sm';
+                    const ipoTag = r.ipo_date ? '<span class="text-xs text-amber-400 ml-auto">IPO ' + r.ipo_date + '</span>' : '';
+                    div.innerHTML = '<span class="font-mono text-emerald-400 w-20 shrink-0">' + r.symbol + '</span>'
+                        + '<span class="text-gray-300 truncate">' + r.description + '</span>'
+                        + ipoTag;
+                    div.addEventListener('mousedown', function() {
+                        tickerInput.value = r.symbol;
+                        nameInput.value = r.description || nameInput.value;
+                        dropdown.classList.add('hidden');
+                        showConfirmed();
+                        status.textContent = '✓ ' + r.symbol + ' selected';
+                    });
+                    dropdown.appendChild(div);
+                });
+
+                dropdown.classList.remove('hidden');
+            })
+            .catch(() => {
+                status.textContent = 'Search failed — enter ticker manually';
+                dropdown.classList.add('hidden');
+            });
+    }
+
+    function showConfirmed() {
+        tickerIsConfirmed = true;
+        confirmedBadge.classList.remove('hidden');
+        unknownBadge.classList.add('hidden');
+    }
+
+    function showUnknown() {
+        tickerIsConfirmed = false;
+        confirmedBadge.classList.add('hidden');
+        unknownBadge.classList.remove('hidden');
+    }
+
+    // If user manually types a ticker, clear confirmed state
+    tickerInput.addEventListener('input', function() {
+        confirmedBadge.classList.add('hidden');
+        unknownBadge.classList.add('hidden');
+    });
+})();
+</script>
+
+<script>
+(function() {
+    const nameInput = document.getElementById('company_name_input');
+    const tickerInput = document.getElementById('expected_ticker_input');
+    const dropdown = document.getElementById('ticker_dropdown');
+    const status = document.getElementById('ticker_search_status');
+    const confirmedBadge = document.getElementById('ticker_confirmed_badge');
+    const unknownBadge = document.getElementById('ticker_unknown_badge');
+    let searchTimeout = null;
+
+    nameInput.addEventListener('input', function() {
+        const q = this.value.trim();
+        clearTimeout(searchTimeout);
+        dropdown.classList.add('hidden');
+        dropdown.innerHTML = '';
+        if (q.length < 2) { status.textContent = ''; return; }
+        status.textContent = 'Searching...';
+        searchTimeout = setTimeout(() => doSearch(q), 400);
+    });
+
+    nameInput.addEventListener('blur', function() {
+        setTimeout(() => dropdown.classList.add('hidden'), 200);
+    });
+
+    nameInput.addEventListener('focus', function() {
+        if (dropdown.innerHTML) dropdown.classList.remove('hidden');
+    });
+
+    function doSearch(q) {
+        fetch('/ipo/search-ticker?q=' + encodeURIComponent(q))
+            .then(r => r.json())
+            .then(data => {
+                dropdown.innerHTML = '';
+                const results = data.results || [];
+                if (results.length === 0) {
+                    status.textContent = 'No ticker found — will monitor monthly';
+                    confirmedBadge.classList.add('hidden');
+                    unknownBadge.classList.remove('hidden');
+                    dropdown.classList.add('hidden');
+                    return;
+                }
+                status.textContent = results.length + ' match' + (results.length > 1 ? 'es' : '') + ' found';
+                results.forEach(r => {
+                    const div = document.createElement('div');
+                    div.className = 'px-3 py-2 hover:bg-gray-700 cursor-pointer flex items-center gap-3 text-sm';
+                    const ipoTag = r.ipo_date ? '<span class="text-xs text-amber-400 ml-auto">IPO ' + r.ipo_date + '</span>' : '';
+                    div.innerHTML = '<span class="font-mono text-emerald-400 w-20 shrink-0">' + r.symbol + '</span>'
+                        + '<span class="text-gray-300 truncate">' + r.description + '</span>' + ipoTag;
+                    div.addEventListener('mousedown', function() {
+                        tickerInput.value = r.symbol;
+                        nameInput.value = r.description || nameInput.value;
+                        dropdown.classList.add('hidden');
+                        confirmedBadge.classList.remove('hidden');
+                        unknownBadge.classList.add('hidden');
+                        status.textContent = '✓ ' + r.symbol + ' selected';
+                    });
+                    dropdown.appendChild(div);
+                });
+                dropdown.classList.remove('hidden');
+            })
+            .catch(() => {
+                status.textContent = 'Search failed — enter ticker manually';
+                dropdown.classList.add('hidden');
+            });
+    }
+
+    tickerInput.addEventListener('input', function() {
+        confirmedBadge.classList.add('hidden');
+        unknownBadge.classList.add('hidden');
+    });
+})();
+</script>
 {% endblock %}

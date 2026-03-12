@@ -72,6 +72,7 @@ class IpoWatchlist(Base):
     lockup_entry_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     lockup_order_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # IBKR trailing stop buy order
 
+    ticker_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Request, Form, Query
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
 from src.web.template_engine import templates
 from src.core.database import get_db
@@ -38,11 +38,60 @@ def ipo_page(request: Request):
     })
 
 
+@router.get("/search-ticker")
+def search_ticker(q: str = Query(..., min_length=2)):
+    """Search Finnhub for a ticker by company name."""
+    import requests
+    from src.core.config import get_settings
+    from datetime import date, timedelta
+
+    settings = get_settings()
+    api_key = settings.raw.get("finnhub", {}).get("api_key", "")
+    results = []
+
+    try:
+        url = f"https://finnhub.io/api/v1/search?q={q}&token={api_key}"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get("result", [])[:8]:
+                symbol = item.get("symbol", "")
+                description = item.get("description", "")
+                type_ = item.get("type", "")
+                if type_ in ("Common Stock", "EQS", "") and symbol:
+                    results.append({"symbol": symbol, "description": description, "confirmed": True})
+    except Exception as e:
+        log.warning("ticker_search_failed", query=q, error=str(e))
+
+    try:
+        today = date.today().isoformat()
+        future = (date.today() + timedelta(days=180)).isoformat()
+        url2 = f"https://finnhub.io/api/v1/calendar/ipo?from={today}&to={future}&token={api_key}"
+        resp2 = requests.get(url2, timeout=5)
+        if resp2.status_code == 200:
+            data2 = resp2.json()
+            for item in data2.get("ipoCalendar", []):
+                name = item.get("name", "").lower()
+                symbol = item.get("symbol", "")
+                if q.lower() in name and symbol:
+                    if not any(r["symbol"] == symbol for r in results):
+                        results.append({
+                            "symbol": symbol,
+                            "description": item.get("name", ""),
+                            "confirmed": True,
+                            "ipo_date": item.get("date", ""),
+                        })
+    except Exception as e:
+        log.warning("ipo_calendar_search_failed", query=q, error=str(e))
+
+    return JSONResponse({"results": results, "query": q})
+
+
 @router.post("/add")
 def add_ipo(
     request: Request,
     company_name: str = Form(...),
-    expected_ticker: str = Form(...),
+    expected_ticker: str = Form(""),
     exchange: str = Form("SMART"),
     currency: str = Form("USD"),
     expected_date: str = Form(""),
@@ -60,9 +109,11 @@ def add_ipo(
 ):
     """Add a new IPO to the watchlist."""
     with get_db() as db:
+        ticker = expected_ticker.strip().upper()
         ipo = IpoWatchlist(
             company_name=company_name.strip(),
-            expected_ticker=expected_ticker.strip().upper(),
+            expected_ticker=ticker or "TBD",
+            ticker_confirmed=bool(ticker and ticker != "TBD"),
             exchange=exchange.strip() or "SMART",
             currency=currency.strip() or "USD",
             expected_date=expected_date.strip() or None,
@@ -88,7 +139,7 @@ def add_ipo(
 def edit_ipo(
     ipo_id: int,
     company_name: str = Form(...),
-    expected_ticker: str = Form(...),
+    expected_ticker: str = Form(""),
     exchange: str = Form("SMART"),
     currency: str = Form("USD"),
     expected_date: str = Form(""),
