@@ -32,36 +32,38 @@ def _get_state(key: str) -> str:
 
 def _build_portfolio_performance() -> dict:
     """
-    Portfolio return % = (NLV / total_invested_usd - 1) * 100
-
-    Anchored so the most recent snapshot = 0% (today is day 0).
-    Earlier dates show what the return was then, relative to today's capital base.
-    BRK-B benchmark uses the same anchor.
+    Graph starts today at 0% and grows forward from there.
+    Formula: (NLV / total_invested_usd - 1) * 100, anchored to first point = 0%.
+    BRK-B benchmark anchored the same way.
     """
-    from src.core.models import AccountSnapshot
+    from src.core.models import AccountSnapshot, SystemState
     from src.portfolio.capital_injections import get_total_invested_usd
+    from datetime import date as date_type
 
     total_invested_usd = get_total_invested_usd()
+    today_str = str(date_type.today())
 
     with get_db() as db:
+        # Store today as graph start date if not already set
+        start_row = db.query(SystemState).filter(
+            SystemState.key == "graph_start_date"
+        ).first()
+        if not start_row:
+            db.add(SystemState(key="graph_start_date", value=today_str))
+            db.commit()
+            start_date = today_str
+        else:
+            start_date = start_row.value
+
         snapshots = (
             db.query(AccountSnapshot)
+            .filter(AccountSnapshot.date >= start_date)
             .order_by(AccountSnapshot.date.asc())
             .all()
         )
 
-    if not snapshots:
-        return {
-            "labels": [],
-            "portfolio_data": [],
-            "brkb_data": [],
-            "total_invested_usd": total_invested_usd,
-            "current_return_pct": 0.0,
-        }
-
     labels = []
     raw_returns = []
-
     for snap in snapshots:
         nlv = getattr(snap, "portfolio_market_value", None) or getattr(snap, "port_value", None)
         if not nlv or nlv <= 0:
@@ -71,17 +73,17 @@ def _build_portfolio_performance() -> dict:
 
     if not raw_returns:
         return {
-            "labels": [],
-            "portfolio_data": [],
-            "brkb_data": [],
+            "labels": [today_str],
+            "portfolio_data": [0.0],
+            "brkb_data": [0.0],
             "total_invested_usd": total_invested_usd,
             "current_return_pct": 0.0,
         }
 
-    # Shift so most recent point = 0%
-    anchor = raw_returns[-1]
+    # Anchor first point to 0% — graph grows forward from today
+    anchor = raw_returns[0]
     portfolio_data = [round(r - anchor, 4) for r in raw_returns]
-    current_return_pct = round(anchor, 2)
+    current_return_pct = round(raw_returns[-1], 2)
 
     brkb_data = _build_brkb_series(labels)
 
