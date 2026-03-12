@@ -513,10 +513,12 @@ class RiskManager:
                 f"Buying power usage {used_pct:.0%} >= {self.cfg.max_buying_power_usage:.0%} limit",
             )
 
-        if summary.cash_balance < self.cfg.min_cash_reserve:
+        effective_reserve = max(self.cfg.min_cash_reserve, summary.net_liquidation * 0.15)
+        if summary.cash_balance < effective_reserve:
             return RiskCheck(
                 False,
-                f"Cash ${summary.cash_balance:,.0f} < ${self.cfg.min_cash_reserve:,.0f} reserve",
+                f"Cash ${summary.cash_balance:,.0f} < ${effective_reserve:,.0f} reserve "
+                f"(max of ${self.cfg.min_cash_reserve:,.0f} floor or 15% of NLV)",
             )
         return RiskCheck(True)
 

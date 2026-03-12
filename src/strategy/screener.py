@@ -135,7 +135,7 @@ def screen_puts(
         ask = greeks.ask
         mid = greeks.mid
 
-        # ── 0-3 DTE: use strike distance instead of delta ──────────
+        # ── 0-4 DTE: fallback path — use strike distance instead of delta ──
         # BS delta is unreliable near expiry (gamma extremes).
         # Instead, filter by how far OTM the strike is as % of stock price.
         # Target: 3-10% OTM (e.g., stock at $186 → strikes $167-$180)
@@ -192,8 +192,10 @@ def screen_puts(
             ))
             continue
 
-        # ── 4+ DTE: fallback (not used with current 0-3 DTE config) ──
-        # Kept for flexibility if DTE range is ever expanded
+        # ── 5-14 DTE: primary path (7 DTE target strategy) ──
+        # Delta is reliable here — use it as the main filter.
+        # Scoring prefers contracts closest to 7 DTE, good delta placement,
+        # capital efficiency (ROM), and reasonable premium.
         if delta < delta_min or delta > delta_max:
             continue
         if mid < getattr(cfg, 'min_premium_put', cfg.min_premium):
@@ -201,15 +203,31 @@ def screen_puts(
         if bid < cfg.min_bid:
             continue
 
+        # 1. DTE score — prefer 7 DTE, penalise both shorter and longer
+        #    7 DTE → 1.0, 5 DTE → 0.71, 10 DTE → 0.57, 14 DTE → 0.0
+        dte_target = 7
+        dte_score = 1 - abs(dte - dte_target) / dte_target
+        dte_score = max(0.0, min(1.0, dte_score))
+
+        # 2. Delta score — prefer centre of allowed range (~0.20-0.25)
         target_delta = (delta_min + delta_max) / 2
         delta_score = 1 - abs(delta - target_delta) / target_delta
+        delta_score = max(0.0, min(1.0, delta_score))
+
+        # 3. Return on margin — premium / capital at risk
+        #    Normalised: 0.5% = 0, 3%+ = 1
         margin_required = contract.strike * 100 * 0.20
         rom = (mid * 100) / margin_required if margin_required > 0 else 0
-        rom_score = min(1.0, max(0, (rom - 0.005) / 0.025))
-        prem_pct = mid / stock_price if stock_price > 0 else 0
-        premium_score = min(1.0, max(0, prem_pct / 0.01))
+        rom_score = min(1.0, max(0.0, (rom - 0.005) / 0.025))
 
-        score = (delta_score * 0.30) + (rom_score * 0.30) + (premium_score * 0.30) + 0.10
+        # 4. Premium as % of stock price — reduced weight vs 0-3 DTE
+        #    Avoids chasing high premium from risky near-ATM strikes
+        #    Normalised: 0.1% = 0, 1%+ = 1
+        prem_pct = mid / stock_price if stock_price > 0 else 0
+        premium_score = min(1.0, max(0.0, prem_pct / 0.01))
+
+        # Final score: DTE proximity + delta quality + capital efficiency + premium
+        score = (dte_score * 0.25) + (delta_score * 0.30) + (rom_score * 0.30) + (premium_score * 0.15)
 
         candidates.append(ScoredContract(
             contract=contract,
@@ -237,7 +255,7 @@ def screen_puts(
     # BS pricing is unreliable near expiry — actual market bid can differ 50%+
     exp_date = datetime.strptime(best.expiry, "%Y%m%d").date()
     best_dte = (exp_date - today).days
-    if best_dte <= 3:
+    if best_dte >= 0:  # always fetch real market quote — more accurate than Black-Scholes
         try:
             ib = get_ib()
             ticker = ib.reqMktData(best.contract, "", True, False)  # snapshot

@@ -26,8 +26,8 @@ class IBKRConfig(BaseModel):
 
 
 class StrategyConfig(BaseModel):
-    dte_min: int = 0
-    dte_max: int = 2
+    dte_min: int = 5
+    dte_max: int = 14
     delta_min: float = 0.20
     delta_max: float = 0.30
     contracts_per_stock: int = 1
