@@ -163,6 +163,18 @@ def scan_ipo_calendar():
                 # Update ticker if Finnhub provides one
                 if match["cal_symbol"]:
                     entry.expected_ticker = match["cal_symbol"]
+                # Auto-set lockup date = IPO date + 180 days if not already set
+                if match.get("cal_date") and not entry.lockup_date:
+                    from datetime import timedelta
+                    try:
+                        ipo_dt = datetime.strptime(match["cal_date"], "%Y-%m-%d")
+                        entry.lockup_date = (ipo_dt + timedelta(days=180)).strftime("%Y-%m-%d")
+                        entry.lockup_enabled = True
+                        log.info("ipo_lockup_date_auto_set",
+                                 ticker=entry.expected_ticker,
+                                 lockup_date=entry.lockup_date)
+                    except Exception as e:
+                        log.warning("ipo_lockup_date_calc_failed", error=str(e))
                 entry.updated_at = datetime.utcnow()
                 if entry.notes:
                     entry.notes += f" | Finnhub: {match['cal_name']}, {match['cal_price_range']}"

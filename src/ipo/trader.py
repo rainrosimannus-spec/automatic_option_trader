@@ -77,15 +77,16 @@ class IpoTrader:
             try:
                 ipo_date = datetime.strptime(ipo.expected_date, "%Y-%m-%d")
                 days_until = (ipo_date - datetime.utcnow()).days
-                if days_until > 7:
+                if days_until > 1:
                     continue  # too early to scan
             except ValueError:
                 continue  # invalid date format
 
             try:
-                if self._is_ticker_tradeable(ipo.expected_ticker, ipo.exchange, ipo.currency):
+                tradeable, open_price = self._is_ticker_tradeable(ipo.expected_ticker, ipo.exchange, ipo.currency)
+                if tradeable:
                     log.info("ipo_ticker_found", ticker=ipo.expected_ticker, company=ipo.company_name)
-                    self._execute_day_one_buy(ipo)
+                    self._execute_day_one_buy(ipo, open_price)
             except Exception as e:
                 log.debug("ipo_scan_check", ticker=ipo.expected_ticker, error=str(e))
 
@@ -124,12 +125,34 @@ class IpoTrader:
         self.ib.cancelMktData(contract)
 
         if last and not math.isnan(last) and last > 0:
-            return True
+            return True, last
 
-        return False
+        return False, None
 
-    def _execute_day_one_buy(self, ipo: IpoWatchlist):
-        """Buy shares and set up trailing stop + hard stop-loss."""
+    def _execute_day_one_buy(self, ipo: IpoWatchlist, open_price: float = None):
+        """Buy shares and set up trailing stop + hard stop-loss.
+
+        open_price: the price at first detection (opening print).
+        We wait at least 20 minutes after market open AND verify price
+        hasn't already run more than 8% above the opening print.
+        """
+        from datetime import datetime as dt
+        import pytz
+
+        # ── Cooldown gate ──────────────────────────────────────────────
+        et = pytz.timezone("America/New_York")
+        now_et = dt.now(et)
+        market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+        minutes_since_open = (now_et - market_open).total_seconds() / 60
+
+        cooldown_minutes = 20  # minimum wait after open
+        if minutes_since_open < cooldown_minutes:
+            log.info("ipo_cooldown_waiting",
+                     ticker=ipo.expected_ticker,
+                     minutes_since_open=round(minutes_since_open, 1),
+                     cooldown=cooldown_minutes)
+            return  # scheduler will retry on next 30s scan
+
         contract = Stock(ipo.expected_ticker, ipo.exchange, ipo.currency)
         self.ib.qualifyContracts(contract)
 
@@ -146,6 +169,19 @@ class IpoTrader:
             return
 
         self.ib.cancelMktData(contract)
+
+        # ── Price gate: don't buy if already up >8% from opening print ──
+        max_premium_pct = 8.0
+        if open_price and open_price > 0 and price > 0:
+            run_pct = ((price - open_price) / open_price) * 100
+            if run_pct > max_premium_pct:
+                log.warning("ipo_price_already_ran",
+                            ticker=ipo.expected_ticker,
+                            open=round(open_price, 2),
+                            current=round(price, 2),
+                            run_pct=round(run_pct, 1),
+                            max_pct=max_premium_pct)
+                return  # missed the entry, don't chase
 
         # Calculate shares based on configured amount
         shares = int(ipo.flip_amount / price)
