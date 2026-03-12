@@ -33,7 +33,8 @@ def _get_auto_approve_state(source: str) -> bool:
 def _get_suggestions_by_source(source: str):
     """Get pending and recent suggestions filtered by source."""
     all_pending = get_pending_suggestions()
-    pending = [s for s in all_pending if s.source == source]
+    # Exclude submitted — they are fetched separately and prepended below
+    pending = [s for s in all_pending if s.source == source and s.status != "submitted"]
 
     # Also include "submitted" orders (sent to IBKR but not yet filled)
     with get_db() as db:

@@ -205,6 +205,22 @@ def create_suggestion(
     except Exception:
         expires_at = datetime.utcnow() + timedelta(hours=expires_hours)
 
+    # Dedup check: block if identical pending/queued suggestion already exists
+    with get_db() as db:
+        existing = db.query(TradeSuggestion).filter(
+            TradeSuggestion.symbol == symbol,
+            TradeSuggestion.action == action,
+            TradeSuggestion.strike == strike,
+            TradeSuggestion.expiry == expiry,
+            TradeSuggestion.status.in_(["pending", "queued", "submitted", "approved"]),
+        ).first()
+        if existing:
+            log.debug("suggestion_dedup_blocked",
+                      symbol=symbol, action=action,
+                      strike=strike, expiry=expiry,
+                      existing_id=existing.id)
+            return None
+
     suggestion = TradeSuggestion(
         symbol=symbol,
         action=action,
