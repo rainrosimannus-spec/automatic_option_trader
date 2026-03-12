@@ -210,7 +210,9 @@ async def portfolio_page(request: Request):
     # FX conversion: convert non-USD holdings to USD for display
 
 
-    total_invested = sum(_to_usd(h.total_invested, h.currency) for h in holdings)
+    # Total invested = capital deposited (from injections table, not cost basis)
+    from src.portfolio.capital_injections import get_total_invested_usd
+    total_invested = get_total_invested_usd()
     total_value = sum(_to_usd(h.market_value or 0, h.currency) for h in holdings)
     total_pnl = total_value - total_invested
     total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
