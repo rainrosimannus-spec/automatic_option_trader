@@ -96,8 +96,15 @@ class ProfitTaker:
                 log.info("dte1_close_waiting_for_10am", symbol=pos.symbol,
                          current_et=now_et.strftime("%H:%M"))
                 return False
+            # Only force-close if OTM — ITM means assignment is desired (wheel strategy)
+            stock_price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
+            if stock_price and pos.strike and stock_price < pos.strike:
+                log.info("dte1_itm_let_assign", symbol=pos.symbol,
+                         stock_price=stock_price, strike=pos.strike,
+                         reason="ITM at DTE=1 — letting assign for wheel strategy")
+                return False
             log.info("dte1_forced_close", symbol=pos.symbol,
-                     expiry=pos.expiry, reason="Pin risk protection — DTE=1, after 10am ET")
+                     expiry=pos.expiry, reason="Pin risk protection — DTE=1 OTM, after 10am ET")
             return True
 
         # Get current stock price and IV for theoretical option pricing
