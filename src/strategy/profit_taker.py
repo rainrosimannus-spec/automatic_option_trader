@@ -87,10 +87,17 @@ class ProfitTaker:
 
         # ── Pin risk protection: always close at DTE=1 ──
         # At 1 DTE gamma is extreme — a small move can cause assignment.
-        # Better to close for whatever profit remains than risk a bad fill.
+        # Wait until 10:00 AM ET — spreads are tightest after open settles.
         if dte == 1:
+            import pytz
+            et = pytz.timezone("US/Eastern")
+            now_et = datetime.now(et)
+            if now_et.hour < 10:
+                log.info("dte1_close_waiting_for_10am", symbol=pos.symbol,
+                         current_et=now_et.strftime("%H:%M"))
+                return False
             log.info("dte1_forced_close", symbol=pos.symbol,
-                     expiry=pos.expiry, reason="Pin risk protection — DTE=1")
+                     expiry=pos.expiry, reason="Pin risk protection — DTE=1, after 10am ET")
             return True
 
         # Get current stock price and IV for theoretical option pricing
@@ -141,22 +148,33 @@ class ProfitTaker:
         ib = get_ib()
         iv = get_current_iv(ib, pos.symbol, exchange=exchange, currency=currency)
 
-        ask_price = 0.01  # default minimum
-        if stock_price and iv and iv > 0 and pos.expiry:
+        # Check DTE — use market order at DTE=1 to guarantee fill
+        dte_now = 0
+        if pos.expiry:
             exp_date = datetime.strptime(pos.expiry, "%Y%m%d").date()
-            dte = (exp_date - datetime.now().date()).days
-            if dte > 0:
-                T = dte / 365.0
-                greeks = compute_put_greeks(stock_price, pos.strike or 0, T, iv)
-                if greeks:
-                    ask_price = greeks.ask
+            dte_now = (exp_date - datetime.now().date()).days
+
+        ask_price = None  # None = market order
+        if dte_now > 1:
+            # DTE > 1: use BS-computed limit price
+            ask_price = 0.01  # fallback minimum
+            if stock_price and iv and iv > 0 and pos.expiry:
+                if dte_now > 0:
+                    T = dte_now / 365.0
+                    greeks = compute_put_greeks(stock_price, pos.strike or 0, T, iv)
+                    if greeks:
+                        ask_price = greeks.ask
+
+        if dte_now == 1:
+            log.info("dte1_market_order", symbol=pos.symbol,
+                     reason="Market order guarantees fill at DTE=1")
 
         trade = buy_to_close_put(
             symbol=pos.symbol,
             expiry=pos.expiry or "",
             strike=pos.strike or 0,
             quantity=pos.quantity,
-            limit_price=round(ask_price, 2),
+            limit_price=round(ask_price, 2) if ask_price is not None else None,
             exchange=exchange,
             currency=currency,
         )
