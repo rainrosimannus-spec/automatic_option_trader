@@ -139,6 +139,27 @@ def _build_brkb_series(labels: list) -> list:
         return []
 
 
+def _to_usd(amount: float, currency: str) -> float:
+    """Convert an amount in the given currency to USD using FMP FX rates."""
+    if not amount or currency in ("USD", None):
+        return amount or 0.0
+    try:
+        import requests
+        from src.core.config import load_config
+        cfg = load_config()
+        api_key = cfg.get("fmp", {}).get("api_key", "")
+        if not api_key:
+            return amount
+        pair = f"{currency}USD"
+        url = f"https://financialmodelingprep.com/stable/quote?symbol={pair}&apikey={api_key}"
+        r = requests.get(url, timeout=5)
+        d = r.json()
+        if d and isinstance(d, list) and "price" in d[0]:
+            return amount * float(d[0]["price"])
+    except Exception:
+        pass
+    return amount
+
 def _build_tier_breakdown(holdings) -> dict:
     """Build tier allocation data for pie/bar chart."""
     tiers = {"dividend": 0, "growth": 0, "breakthrough": 0}
@@ -187,25 +208,7 @@ async def portfolio_page(request: Request):
         ).order_by(PortfolioPutEntry.expiry.asc()).all()
 
     # FX conversion: convert non-USD holdings to USD for display
-    def _to_usd(amount, currency):
-        if not amount or currency in ("USD", None):
-            return amount or 0.0
-        try:
-            import requests
-            from src.core.config import load_config
-            cfg = load_config()
-            api_key = cfg.get("fmp", {}).get("api_key", "")
-            if not api_key:
-                return amount
-            pair = f"{currency}USD"
-            url = f"https://financialmodelingprep.com/stable/quote?symbol={pair}&apikey={api_key}"
-            r = requests.get(url, timeout=5)
-            d = r.json()
-            if d and isinstance(d, list) and "price" in d[0]:
-                return amount * float(d[0]["price"])
-        except Exception:
-            pass
-        return amount
+
 
     total_invested = sum(_to_usd(h.total_invested, h.currency) for h in holdings)
     total_value = sum(_to_usd(h.market_value or 0, h.currency) for h in holdings)
