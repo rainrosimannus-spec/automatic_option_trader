@@ -1190,9 +1190,26 @@ def create_scheduler() -> BackgroundScheduler:
             ib = get_ib()
             trader = IpoTrader(ib)
             trader.check_flip_exits()
-            trader.check_lockup_entries()
         except Exception as e:
             log.error("ipo_exit_check_error", error=str(e))
+
+    def _job_ipo_check_lockups():
+        """Phase 2 lockup re-entries on portfolio account (port 7496)."""
+        _ensure_event_loop()
+        try:
+            from src.portfolio.connection import get_portfolio_ib
+            from src.core.config import get_settings
+            cfg = get_settings().portfolio
+            ib = get_portfolio_ib(
+                host=getattr(cfg, 'ibkr_host', '127.0.0.1'),
+                port=cfg.ibkr_port,
+                client_id=cfg.ibkr_client_id,
+                account=cfg.ibkr_account,
+            )
+            trader = IpoTrader(ib)
+            trader.check_lockup_entries()
+        except Exception as e:
+            log.error("ipo_lockup_check_error", error=str(e))
 
     def _job_ipo_date_scan():
         """Check Finnhub for upcoming IPO dates."""
@@ -1217,6 +1234,13 @@ def create_scheduler() -> BackgroundScheduler:
         IntervalTrigger(minutes=5),
         id="ipo_exits",
         name="IPO Exit & Lockup Check",
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _job_ipo_check_lockups,
+        IntervalTrigger(minutes=5),
+        id="ipo_lockups",
+        name="IPO Phase 2 Lockup Check",
         max_instances=1,
     )
 
