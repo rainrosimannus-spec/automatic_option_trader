@@ -319,8 +319,10 @@ async def portfolio_page(request: Request):
         "market_pct": market_pct,
         # Performance chart
         "perf_labels": perf["labels"],
-        "perf_portfolio": perf["portfolio"],
-        "perf_brkb": perf["brkb"],
+        "perf_portfolio": perf["portfolio_data"],
+        "perf_brkb": perf["brkb_data"],
+        "current_return_pct": perf.get("current_return_pct", 0.0),
+        "total_invested_usd": perf.get("total_invested_usd", 0.0),
         # Tier breakdown
         "tier_dividend": tiers.get("dividend", 0),
         "tier_growth": tiers.get("growth", 0),
