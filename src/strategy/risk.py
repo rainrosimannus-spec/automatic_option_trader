@@ -522,6 +522,45 @@ class RiskManager:
             )
         return RiskCheck(True)
 
+    def dynamic_margin_ceiling(self, open_position_count: int = None) -> float:
+        """
+        Dynamic margin ceiling: 0.90 - (positions * 0.03), floor 0.60.
+        VIX: GREEN=no change, YELLOW=*0.95, RED=*0.90
+        """
+        if open_position_count is None:
+            try:
+                from src.core.database import get_db
+                from src.core.models import Position, PositionStatus
+                with get_db() as db:
+                    open_position_count = db.query(Position).filter(
+                        Position.status == PositionStatus.OPEN
+                    ).count()
+            except Exception:
+                open_position_count = 3
+
+        base_ceiling = max(0.60, 0.90 - (open_position_count * 0.03))
+
+        try:
+            vix = self._get_vix()
+            if vix is None:
+                vix_factor = 1.0
+            elif vix >= 30:
+                vix_factor = 0.90
+            elif vix >= 20:
+                vix_factor = 0.95
+            else:
+                vix_factor = 1.0
+        except Exception:
+            vix_factor = 1.0
+
+        ceiling = base_ceiling * vix_factor
+        log.debug("dynamic_margin_ceiling",
+                  positions=open_position_count,
+                  base=f"{base_ceiling:.0%}",
+                  vix_factor=vix_factor,
+                  ceiling=f"{ceiling:.0%}")
+        return ceiling
+
     def check_margin_usage(self) -> RiskCheck:
         """Block trading when maintenance margin exceeds threshold of NLV."""
         try:
@@ -533,17 +572,18 @@ class RiskManager:
         if summary.net_liquidation <= 0:
             return RiskCheck(False, "Net liquidation is zero — blocking for safety")
 
+        ceiling = self.dynamic_margin_ceiling()
         margin_pct = summary.maintenance_margin / summary.net_liquidation
         log.info("margin_check",
                  margin=round(summary.maintenance_margin, 0),
                  nlv=round(summary.net_liquidation, 0),
                  margin_pct=f"{margin_pct:.1%}",
-                 limit=f"{self.cfg.max_margin_usage:.0%}")
+                 dynamic_ceiling=f"{ceiling:.0%}")
 
-        if margin_pct >= self.cfg.max_margin_usage:
+        if margin_pct >= ceiling:
             return RiskCheck(
                 False,
-                f"Margin usage {margin_pct:.0%} >= {self.cfg.max_margin_usage:.0%} limit",
+                f"Margin usage {margin_pct:.0%} >= dynamic ceiling {ceiling:.0%}",
             )
         return RiskCheck(True)
 

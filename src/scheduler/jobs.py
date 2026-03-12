@@ -224,7 +224,11 @@ def job_execute_queued():
                 if margin_pct >= cfg.risk.max_margin_usage:
                     log.info("execute_queued_margin_blocked", margin_pct=f"{margin_pct:.1%}")
                     return
-                headroom = acct.net_liquidation * (cfg.risk.max_margin_usage - margin_pct)
+                from src.strategy.risk import RiskManager
+                rm = RiskManager(cfg.risk)
+                dynamic_ceiling = rm.dynamic_margin_ceiling()
+                headroom = acct.net_liquidation * (dynamic_ceiling - margin_pct)
+                per_position_cap = acct.net_liquidation * 0.25
         except Exception as e:
             log.warning("execute_queued_acct_failed", error=str(e))
 
