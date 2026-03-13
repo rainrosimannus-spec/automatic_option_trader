@@ -106,6 +106,10 @@ class PortfolioConfig(BaseModel):
     ipo_watchlist: list[str] = []
     ipo_settling_days: int = 60
 
+    # Flex Query (for deposit sync and interest data)
+    flex_token: str = ""
+    flex_query_id: str = ""
+
     # Schedule
     check_interval_hours: int = 4
     scan_hour: int = 10

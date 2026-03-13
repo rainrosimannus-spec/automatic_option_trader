@@ -216,3 +216,26 @@ def get_total_invested_usd() -> float:
         log.warning("get_total_invested_usd_failed", error=str(e))
 
     return SEED_USD
+
+
+def fetch_accrued_interest_usd() -> float:
+    """
+    Fetch today's accrued interest from IBKR Flex Query.
+    Returns the BASE_SUMMARY value (already in USD).
+    """
+    try:
+        from src.core.config import get_settings
+        cfg = get_settings()
+        token = cfg.portfolio.flex_token
+        qid = cfg.portfolio.flex_query_id
+        if not token or not qid:
+            return 0.0
+        import xml.etree.ElementTree as ET
+        xml_content = fetch_flex_statement(token, qid)
+        root = ET.fromstring(xml_content)
+        for el in root.iter("InterestAccrualsCurrency"):
+            if el.attrib.get("currency") == "BASE_SUMMARY":
+                return float(el.attrib.get("interestAccrued", 0))
+    except Exception as e:
+        log.warning("fetch_accrued_interest_failed", error=str(e))
+    return 0.0

@@ -112,6 +112,7 @@ def is_portfolio_connected() -> bool:
 import threading as _threading
 _cached_portfolio_account: dict = {}
 _portfolio_cache_lock = _threading.Lock()
+_CACHE_FILE = "data/portfolio_account_cache.json"
 
 
 def refresh_portfolio_account_cache():
@@ -139,12 +140,52 @@ def refresh_portfolio_account_cache_from(ib):
                     data["margin"] = float(v.value)
                 elif v.tag == "BuyingPower" and v.currency in ("BASE", "USD"):
                     data["buying_power"] = float(v.value)
+        # Loans: sum negative TotalCashBalance per currency, converted to USD
+        try:
+            import requests
+            from src.core.config import get_settings
+            cfg = get_settings()
+            fmp_key = cfg.raw.get("fmp", {}).get("api_key", "")
+            def _fx(amount, currency):
+                if currency in ("USD", "BASE") or not fmp_key:
+                    return amount
+                try:
+                    r = requests.get(f"https://financialmodelingprep.com/stable/quote?symbol={currency}USD&apikey={fmp_key}", timeout=5)
+                    d = r.json()
+                    if d and isinstance(d, list) and "price" in d[0]:
+                        return amount * float(d[0]["price"])
+                except Exception:
+                    pass
+                return amount
+            loans = 0.0
+            for v in values:
+                if v.tag == "TotalCashBalance" and v.currency not in ("BASE",):
+                    val = float(v.value)
+                    if val < 0:
+                        loans += _fx(val, v.currency)
+            data["loans"] = loans
+            # Accrued interest from Flex Query
+            try:
+                from src.portfolio.capital_injections import fetch_accrued_interest_usd
+                data["accrued_interest"] = fetch_accrued_interest_usd()
+            except Exception:
+                data["accrued_interest"] = 0.0
+        except Exception:
+            data["loans"] = 0.0
+            data["accrued_interest"] = 0.0
         if data.get("nlv", 0) > 0:
             data["margin_pct"] = (data.get("margin", 0) / data["nlv"]) * 100
         else:
             data["margin_pct"] = 0
         with _portfolio_cache_lock:
             _cached_portfolio_account = data
+        try:
+            import json, os
+            os.makedirs(os.path.dirname(_CACHE_FILE), exist_ok=True)
+            with open(_CACHE_FILE, "w") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -152,4 +193,15 @@ def refresh_portfolio_account_cache_from(ib):
 def get_cached_portfolio_account() -> dict:
     """Return cached portfolio account data (non-blocking, for dashboard)."""
     with _portfolio_cache_lock:
-        return dict(_cached_portfolio_account)
+        if _cached_portfolio_account:
+            return dict(_cached_portfolio_account)
+    try:
+        import json
+        with open(_CACHE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+
+
