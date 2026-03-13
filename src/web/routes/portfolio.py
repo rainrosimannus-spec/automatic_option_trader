@@ -131,7 +131,7 @@ def _build_brkb_series(labels: list) -> list:
         if not prices or prices[-1] is None:
             return []
 
-        anchor_price = prices[-1]
+        anchor_price = prices[0]
         return [
             round((p / anchor_price - 1.0) * 100.0, 4) if p is not None else None
             for p in prices
