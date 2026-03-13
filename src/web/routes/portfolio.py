@@ -170,8 +170,8 @@ async def brkb_data_endpoint(request: Request):
                         p = brkb_history[d]
                         break
             prices.append(p)
-        if prices and prices[-1]:
-            anchor = prices[-1]
+        if prices and prices[0]:
+            anchor = prices[0]
             brkb = [round((p / anchor - 1.0) * 100.0, 4) if p else None for p in prices]
         else:
             brkb = []
