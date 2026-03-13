@@ -153,33 +153,58 @@ async def brkb_data_endpoint(request: Request):
     brkb = _build_brkb_series(labels)
     return JSONResponse({"labels": labels, "brkb": brkb})
 
-def _to_usd(amount: float, currency: str) -> float:
-    """Convert an amount in the given currency to USD using FMP FX rates."""
+# FX rate cache — refreshed once per page load
+_fx_cache: dict = {}
+_fx_cache_time: float = 0.0
+_FX_CACHE_TTL = 300  # seconds
+
+def _get_fx_rates(currencies: list) -> dict:
+    """Fetch FX rates for a list of currencies in one batch, cached for 5 minutes."""
+    import time, requests
+    global _fx_cache, _fx_cache_time
+    now = time.time()
+    if _fx_cache and (now - _fx_cache_time) < _FX_CACHE_TTL:
+        return _fx_cache
+    try:
+        from src.core.config import get_settings
+        api_key = get_settings().raw.get("fmp", {}).get("api_key", "")
+        if not api_key:
+            return {}
+        pairs = ",".join(f"{c}USD" for c in set(currencies) if c not in ("USD", "BASE"))
+        if not pairs:
+            return {}
+        url = f"https://financialmodelingprep.com/stable/quote?symbol={pairs}&apikey={api_key}"
+        r = requests.get(url, timeout=8)
+        data = r.json()
+        rates = {}
+        if isinstance(data, list):
+            for item in data:
+                sym = item.get("symbol", "")
+                if sym.endswith("USD") and "price" in item:
+                    ccy = sym[:-3]
+                    rates[ccy] = float(item["price"])
+        _fx_cache = rates
+        _fx_cache_time = now
+        return rates
+    except Exception:
+        return _fx_cache  # return stale on error
+
+def _to_usd(amount: float, currency: str, fx_rates: dict = None) -> float:
+    """Convert an amount in the given currency to USD."""
     if not amount or currency in ("USD", None):
         return amount or 0.0
-    try:
-        import requests
-        from src.core.config import get_settings
-        cfg = get_settings()
-        api_key = cfg.raw.get("fmp", {}).get("api_key", "")
-        if not api_key:
-            return amount
-        pair = f"{currency}USD"
-        url = f"https://financialmodelingprep.com/stable/quote?symbol={pair}&apikey={api_key}"
-        r = requests.get(url, timeout=5)
-        d = r.json()
-        if d and isinstance(d, list) and "price" in d[0]:
-            return amount * float(d[0]["price"])
-    except Exception:
-        pass
+    rates = fx_rates if fx_rates is not None else _fx_cache
+    rate = rates.get(currency)
+    if rate:
+        return amount * rate
     return amount
 
-def _build_tier_breakdown(holdings) -> dict:
+def _build_tier_breakdown(holdings, fx_rates=None) -> dict:
     """Build tier allocation data for pie/bar chart."""
     tiers = {"dividend": 0, "growth": 0, "breakthrough": 0}
     for h in holdings:
         tier = h.tier or "growth"
-        tiers[tier] = tiers.get(tier, 0) + _to_usd(h.market_value or 0, h.currency)
+        tiers[tier] = tiers.get(tier, 0) + _to_usd(h.market_value or 0, h.currency, fx_rates)
     return tiers
 
 
@@ -226,8 +251,11 @@ async def portfolio_page(request: Request):
 
     # Total invested = capital deposited (from injections table, not cost basis)
     from src.portfolio.capital_injections import get_total_invested_usd
+    # Pre-fetch all FX rates in one API call
+    currencies = list(set(h.currency for h in holdings if h.currency not in ("USD", None)))
+    fx_rates = _get_fx_rates(currencies)
     total_invested = get_total_invested_usd()
-    total_value = sum(_to_usd(h.market_value or 0, h.currency) for h in holdings)
+    total_value = sum(_to_usd(h.market_value or 0, h.currency, fx_rates) for h in holdings)
     total_pnl = total_value - total_invested
     total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
 
@@ -243,7 +271,7 @@ async def portfolio_page(request: Request):
 
     # Performance data
     perf = _build_portfolio_performance()
-    tiers = _build_tier_breakdown(holdings)
+    tiers = _build_tier_breakdown(holdings, fx_rates)
     performers = _build_top_performers(holdings)
 
     # Get portfolio account margin — live connection with cache fallback
