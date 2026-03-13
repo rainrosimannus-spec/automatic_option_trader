@@ -147,8 +147,7 @@ def _build_brkb_series(labels: list) -> list:
 async def brkb_data_endpoint(request: Request):
     """Return BRK-B benchmark series as JSON for async chart loading."""
     from fastapi.responses import JSONResponse
-    from src.portfolio.performance import get_performance_series
-    perf = get_performance_series()
+    perf = _build_portfolio_performance()
     labels = perf.get("labels", [])
     brkb = _build_brkb_series(labels)
     return JSONResponse({"labels": labels, "brkb": brkb})
@@ -159,30 +158,26 @@ _fx_cache_time: float = 0.0
 _FX_CACHE_TTL = 300  # seconds
 
 def _get_fx_rates(currencies: list) -> dict:
-    """Fetch FX rates for a list of currencies in one batch, cached for 5 minutes."""
+    """Fetch FX rates for a list of currencies via Yahoo Finance, cached for 5 minutes."""
     import time, requests
     global _fx_cache, _fx_cache_time
     now = time.time()
     if _fx_cache and (now - _fx_cache_time) < _FX_CACHE_TTL:
         return _fx_cache
     try:
-        from src.core.config import get_settings
-        api_key = get_settings().raw.get("fmp", {}).get("api_key", "")
-        if not api_key:
+        ccys = [c for c in set(currencies) if c not in ("USD", "BASE", None)]
+        if not ccys:
             return {}
-        pairs = ",".join(f"{c}USD" for c in set(currencies) if c not in ("USD", "BASE"))
-        if not pairs:
-            return {}
-        url = f"https://financialmodelingprep.com/stable/quote?symbol={pairs}&apikey={api_key}"
-        r = requests.get(url, timeout=8)
-        data = r.json()
         rates = {}
-        if isinstance(data, list):
-            for item in data:
-                sym = item.get("symbol", "")
-                if sym.endswith("USD") and "price" in item:
-                    ccy = sym[:-3]
-                    rates[ccy] = float(item["price"])
+        for ccy in ccys:
+            try:
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ccy}USD=X?interval=1d&range=1d"
+                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+                data = r.json()
+                price = data["chart"]["result"][0]["meta"]["regularMarketPrice"]
+                rates[ccy] = float(price)
+            except Exception:
+                pass
         _fx_cache = rates
         _fx_cache_time = now
         return rates
