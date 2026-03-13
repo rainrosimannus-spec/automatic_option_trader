@@ -101,29 +101,30 @@ def _build_brkb_series(labels: list) -> list:
     if not labels:
         return []
     try:
-        from src.core.config import get_settings
         import requests
-
-        api_key = get_settings().raw.get("fmp", {}).get("api_key", "")
-        url = (
-            f"https://financialmodelingprep.com/stable/historical-price-eod/full"
-            f"?symbol=BRK-B&from={labels[0]}&to={labels[-1]}&apikey={api_key}"
-        )
-        r = requests.get(url, timeout=10)
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/BRK-B?interval=1d&range=1y"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         r.raise_for_status()
-        hist = r.json()
-        if not hist or not isinstance(hist, list):
-            return []
+        data = r.json()
+        result = data["chart"]["result"][0]
+        timestamps = result["timestamp"]
+        closes = result["indicators"]["quote"][0]["close"]
 
-        price_map = {row["date"]: row["close"] for row in hist if "date" in row and "close" in row}
+        from datetime import datetime, timezone
+        price_map = {}
+        for ts, close in zip(timestamps, closes):
+            if close is not None:
+                date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                price_map[date_str] = close
 
+        sorted_dates = sorted(price_map.keys())
         prices = []
         for label in labels:
             p = price_map.get(label)
             if p is None:
-                for row in sorted(hist, key=lambda x: x["date"], reverse=True):
-                    if row["date"] <= label:
-                        p = row["close"]
+                for d in reversed(sorted_dates):
+                    if d <= label:
+                        p = price_map[d]
                         break
             prices.append(p)
 
