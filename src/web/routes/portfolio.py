@@ -147,9 +147,36 @@ def _build_brkb_series(labels: list) -> list:
 async def brkb_data_endpoint(request: Request):
     """Return BRK-B benchmark series as JSON for async chart loading."""
     from fastapi.responses import JSONResponse
+    from src.portfolio.connection import get_cached_portfolio_account
+    import json, os
+    # Read from cache file directly (populated hourly by scheduler)
+    try:
+        cache_file = "data/portfolio_account_cache.json"
+        with open(cache_file) as f:
+            cache = json.load(f)
+        brkb_history = cache.get("brkb_history", {})
+    except Exception:
+        brkb_history = {}
     perf = _build_portfolio_performance()
     labels = perf.get("labels", [])
-    brkb = _build_brkb_series(labels)
+    if brkb_history and labels:
+        sorted_dates = sorted(brkb_history.keys())
+        prices = []
+        for label in labels:
+            p = brkb_history.get(label)
+            if p is None:
+                for d in reversed(sorted_dates):
+                    if d <= label:
+                        p = brkb_history[d]
+                        break
+            prices.append(p)
+        if prices and prices[-1]:
+            anchor = prices[-1]
+            brkb = [round((p / anchor - 1.0) * 100.0, 4) if p else None for p in prices]
+        else:
+            brkb = []
+    else:
+        brkb = []
     return JSONResponse({"labels": labels, "brkb": brkb})
 
 # FX rate cache — refreshed once per page load
@@ -158,31 +185,23 @@ _fx_cache_time: float = 0.0
 _FX_CACHE_TTL = 300  # seconds
 
 def _get_fx_rates(currencies: list) -> dict:
-    """Fetch FX rates for a list of currencies via Yahoo Finance, cached for 5 minutes."""
-    import time, requests
+    """Get FX rates from IBKR cache file (populated hourly by scheduler)."""
+    import json
     global _fx_cache, _fx_cache_time
+    import time
     now = time.time()
     if _fx_cache and (now - _fx_cache_time) < _FX_CACHE_TTL:
         return _fx_cache
     try:
-        ccys = [c for c in set(currencies) if c not in ("USD", "BASE", None)]
-        if not ccys:
-            return {}
-        rates = {}
-        for ccy in ccys:
-            try:
-                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ccy}USD=X?interval=1d&range=1d"
-                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-                data = r.json()
-                price = data["chart"]["result"][0]["meta"]["regularMarketPrice"]
-                rates[ccy] = float(price)
-            except Exception:
-                pass
-        _fx_cache = rates
-        _fx_cache_time = now
+        with open("data/portfolio_account_cache.json") as f:
+            cache = json.load(f)
+        rates = cache.get("fx_rates", {})
+        if rates:
+            _fx_cache = rates
+            _fx_cache_time = now
         return rates
     except Exception:
-        return _fx_cache  # return stale on error
+        return _fx_cache
 
 def _to_usd(amount: float, currency: str, fx_rates: dict = None) -> float:
     """Convert an amount in the given currency to USD."""

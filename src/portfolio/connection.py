@@ -140,23 +140,23 @@ def refresh_portfolio_account_cache_from(ib):
                     data["margin"] = float(v.value)
                 elif v.tag == "BuyingPower" and v.currency in ("BASE", "USD"):
                     data["buying_power"] = float(v.value)
-        # Loans: sum negative TotalCashBalance per currency, converted to USD
-        try:
-            import requests
-            from src.core.config import get_settings
-            cfg = get_settings()
-            fmp_key = cfg.raw.get("fmp", {}).get("api_key", "")
-            def _fx(amount, currency):
-                if currency in ("USD", "BASE") or not fmp_key:
-                    return amount
+        # FX rates from IBKR ExchangeRate tags
+        fx_rates = {}
+        for v in values:
+            if v.tag == "ExchangeRate" and v.currency not in ("BASE",):
                 try:
-                    r = requests.get(f"https://financialmodelingprep.com/stable/quote?symbol={currency}USD&apikey={fmp_key}", timeout=5)
-                    d = r.json()
-                    if d and isinstance(d, list) and "price" in d[0]:
-                        return amount * float(d[0]["price"])
+                    fx_rates[v.currency] = float(v.value)
                 except Exception:
                     pass
-                return amount
+        data["fx_rates"] = fx_rates
+
+        # Loans: sum negative TotalCashBalance per currency, converted to USD
+        try:
+            def _fx(amount, currency):
+                if currency in ("USD", "BASE"):
+                    return amount
+                rate = fx_rates.get(currency)
+                return amount * rate if rate else amount
             loans = 0.0
             for v in values:
                 if v.tag == "TotalCashBalance" and v.currency not in ("BASE",):
@@ -177,6 +177,24 @@ def refresh_portfolio_account_cache_from(ib):
             data["margin_pct"] = (data.get("margin", 0) / data["nlv"]) * 100
         else:
             data["margin_pct"] = 0
+        # Fetch BRK-B price history from IBKR
+        try:
+            from ib_insync import Stock as _Stock
+            _brkb = _Stock("BRK B", "SMART", "USD")
+            ib.qualifyContracts(_brkb)
+            _bars = ib.reqHistoricalData(
+                _brkb, endDateTime="",
+                durationStr="365 D", barSizeSetting="1 day",
+                whatToShow="TRADES", useRTH=True,
+                formatDate=1, timeout=15,
+            )
+            if _bars:
+                data["brkb_history"] = {
+                    str(b.date): float(b.close) for b in _bars
+                }
+        except Exception as e:
+            log.warning("brkb_cache_fetch_failed", error=str(e))
+
         with _portfolio_cache_lock:
             _cached_portfolio_account = data
         try:
