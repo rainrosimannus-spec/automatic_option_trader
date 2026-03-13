@@ -178,6 +178,46 @@ def job_check_assignments():
     wheel.write_covered_calls()
 
 
+
+def job_check_assignments_if_expiring(currencies: list):
+    """
+    Run assignment check only if there are open positions expiring today
+    in the given currencies. Used for non-US market close triggers.
+    """
+    from src.core.database import get_db
+    from src.core.models import Position, PositionStatus
+    from src.strategy.universe import UniverseManager
+    from datetime import datetime
+
+    today = datetime.now().strftime("%Y%m%d")
+    universe = UniverseManager()
+
+    with get_db() as db:
+        open_puts = (
+            db.query(Position)
+            .filter(
+                Position.status == PositionStatus.OPEN,
+                Position.position_type == "short_put",
+                Position.expiry <= today,
+            )
+            .all()
+        )
+        # Filter by currency
+        relevant = []
+        for p in open_puts:
+            stock = universe.get_stock(p.symbol)
+            if stock and stock.currency in currencies:
+                relevant.append(p)
+
+    if not relevant:
+        log.info("no_expiring_positions_skipping", currencies=currencies)
+        return
+
+    log.info("expiring_positions_found", currencies=currencies,
+             symbols=[p.symbol for p in relevant])
+    job_check_assignments()
+
+
 def job_check_profit():
     """Check open positions for profit-taking opportunities."""
     _ensure_event_loop()
@@ -877,6 +917,37 @@ def create_scheduler() -> BackgroundScheduler:
         CronTrigger(hour="8-15", minute="0,30", day_of_week="mon-fri", timezone=us_tz),
         id="check_assignments",
         name="Check Assignments",
+        max_instances=1,
+    )
+
+    # ── Non-US market close assignment checks ──
+    utc_tz = pytz.timezone("UTC")
+    from functools import partial
+
+    # Japan/Australia close ~06:00 UTC
+    scheduler.add_job(
+        partial(job_check_assignments_if_expiring, ["JPY", "AUD"]),
+        CronTrigger(hour="6", minute="15", day_of_week="mon-fri", timezone=utc_tz),
+        id="check_assignments_apac",
+        name="Check Assignments APAC",
+        max_instances=1,
+    )
+
+    # Europe (Eurex: EUR, CHF, NOK) close ~13:00 UTC
+    scheduler.add_job(
+        partial(job_check_assignments_if_expiring, ["EUR", "CHF", "NOK"]),
+        CronTrigger(hour="13", minute="15", day_of_week="mon-fri", timezone=utc_tz),
+        id="check_assignments_europe",
+        name="Check Assignments Europe",
+        max_instances=1,
+    )
+
+    # UK (LSE: GBP) close ~15:30 UTC
+    scheduler.add_job(
+        partial(job_check_assignments_if_expiring, ["GBP"]),
+        CronTrigger(hour="15", minute="45", day_of_week="mon-fri", timezone=utc_tz),
+        id="check_assignments_uk",
+        name="Check Assignments UK",
         max_instances=1,
     )
 
