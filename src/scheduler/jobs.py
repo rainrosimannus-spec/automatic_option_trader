@@ -907,21 +907,47 @@ def create_scheduler() -> BackgroundScheduler:
             max_instances=1,
         )
 
-    # ── Assignment checks — every 30 min during US market hours ──
-    # Starts 1 hour before market open (8:30 AM ET) to catch overnight assignments
-    # Runs until calls are written or market closes (4 PM ET)
+    # ── Assignment checks ──
     us_tz = pytz.timezone("US/Eastern")
+    eu_tz = pytz.timezone("Europe/Berlin")
+    asia_tz = pytz.timezone("Asia/Tokyo")
+    utc_tz = pytz.timezone("UTC")
 
+    # US market hours — every 30 min 08:00-16:00 ET
     scheduler.add_job(
         job_check_assignments,
         CronTrigger(hour="8-15", minute="0,30", day_of_week="mon-fri", timezone=us_tz),
         id="check_assignments",
-        name="Check Assignments",
+        name="Check Assignments US",
         max_instances=1,
     )
 
-    # ── Non-US market close assignment checks ──
-    utc_tz = pytz.timezone("UTC")
+    # EU market hours — every 30 min 08:00-22:00 Berlin
+    scheduler.add_job(
+        job_check_assignments,
+        CronTrigger(hour="8-21", minute="10,40", day_of_week="mon-fri", timezone=eu_tz),
+        id="check_assignments_eu",
+        name="Check Assignments EU",
+        max_instances=1,
+    )
+
+    # ASIA market hours — every 30 min 09:00-16:00 Tokyo
+    scheduler.add_job(
+        job_check_assignments,
+        CronTrigger(hour="9-15", minute="20,50", day_of_week="mon-fri", timezone=asia_tz),
+        id="check_assignments_asia",
+        name="Check Assignments ASIA",
+        max_instances=1,
+    )
+
+    # Overnight settlement — 03:00 UTC daily (catches all overnight expiries)
+    scheduler.add_job(
+        job_check_assignments,
+        CronTrigger(hour="3", minute="0", timezone=utc_tz),
+        id="check_assignments_overnight",
+        name="Check Assignments Overnight",
+        max_instances=1,
+    )
 
     # Japan/Australia close ~06:00 UTC
     scheduler.add_job(
