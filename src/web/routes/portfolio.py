@@ -104,7 +104,7 @@ def _build_brkb_series(labels: list) -> list:
         from src.core.config import get_settings
         import requests
 
-        api_key = get_settings().fmp_api_key
+        api_key = get_settings().raw.get("fmp", {}).get("api_key", "")
         url = (
             f"https://financialmodelingprep.com/stable/historical-price-eod/full"
             f"?symbol=BRK-B&from={labels[0]}&to={labels[-1]}&apikey={api_key}"
@@ -147,9 +147,9 @@ def _to_usd(amount: float, currency: str) -> float:
         return amount or 0.0
     try:
         import requests
-        from src.core.config import load_config
-        cfg = load_config()
-        api_key = cfg.get("fmp", {}).get("api_key", "")
+        from src.core.config import get_settings
+        cfg = get_settings()
+        api_key = cfg.raw.get("fmp", {}).get("api_key", "")
         if not api_key:
             return amount
         pair = f"{currency}USD"
