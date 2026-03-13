@@ -922,7 +922,6 @@ def create_scheduler() -> BackgroundScheduler:
 
     # ── Non-US market close assignment checks ──
     utc_tz = pytz.timezone("UTC")
-    from functools import partial
 
     # Japan/Australia close ~06:00 UTC
     scheduler.add_job(
