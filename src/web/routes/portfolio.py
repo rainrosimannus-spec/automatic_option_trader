@@ -288,7 +288,7 @@ async def portfolio_page(request: Request):
     tiers = _build_tier_breakdown(holdings, fx_rates)
     performers = _build_top_performers(holdings)
 
-    # Get portfolio account margin — live connection with cache fallback
+    # Get portfolio account data from cache (populated hourly by scheduler)
     portfolio_margin_pct = 0.0
     portfolio_maintenance_margin = 0.0
     portfolio_nlv = 0.0
@@ -296,69 +296,14 @@ async def portfolio_page(request: Request):
     portfolio_loans = 0.0
     portfolio_accrued_interest = 0.0
     try:
-        from src.portfolio.scheduler import _portfolio_ib
         from src.portfolio.connection import get_cached_portfolio_account
-        got_live = False
-        if _portfolio_ib and _portfolio_ib.isConnected():
-            values = _portfolio_ib.accountValues()
-            for v in values:
-                if v.tag == "NetLiquidation" and v.currency in ("BASE", "USD"):
-                    portfolio_nlv = float(v.value)
-                elif v.tag == "MaintMarginReq" and v.currency in ("BASE", "USD"):
-                    portfolio_maintenance_margin = float(v.value)
-                elif v.tag == "BuyingPower" and v.currency in ("BASE", "USD"):
-                    portfolio_buying_power = float(v.value)
-            # Loans: negative cash balances per currency, converted to USD
-            # DEBUG: log all cash/accrued tags so we can verify tag names
-            import logging as _log
-            for _v in values:
-                if any(x in _v.tag.lower() for x in ['cash', 'interest', 'loan', 'accrued', 'borrow']):
-                    _log.getLogger(__name__).info(f"[LOANS_DEBUG] tag={_v.tag} currency={_v.currency} value={_v.value}")
-            try:
-                import requests
-                from src.core.config import get_settings
-                cfg = get_settings()
-                fmp_key = cfg.raw.get("fmp", {}).get("api_key", "")
-                def _fx_to_usd(amount, currency):
-                    if currency in ("USD", "BASE") or not fmp_key:
-                        return amount
-                    try:
-                        pair = f"{currency}USD"
-                        r = requests.get(
-                            f"https://financialmodelingprep.com/stable/quote?symbol={pair}&apikey={fmp_key}",
-                            timeout=5)
-                        d = r.json()
-                        if d and isinstance(d, list) and "price" in d[0]:
-                            return amount * float(d[0]["price"])
-                    except Exception:
-                        pass
-                    return amount
-                for v in values:
-                    if v.tag == "TotalCashBalance" and v.currency not in ("BASE",):
-                        val = float(v.value)
-                        if val < 0:
-                            portfolio_loans += _fx_to_usd(val, v.currency)
-                    elif v.tag == "AccruedInterest_DISABLED":
-                        val = float(v.value)
-                        portfolio_accrued_interest += _fx_to_usd(val, v.currency)
-            except Exception:
-                pass
-            try:
-                from src.portfolio.capital_injections import fetch_accrued_interest_usd
-                portfolio_accrued_interest = fetch_accrued_interest_usd()
-            except Exception:
-                pass
-            if portfolio_nlv > 0:
-                portfolio_margin_pct = (portfolio_maintenance_margin / portfolio_nlv) * 100
-                got_live = True
-        if not got_live:
-            cached = get_cached_portfolio_account()
-            portfolio_nlv = cached.get("nlv", 0.0)
-            portfolio_maintenance_margin = cached.get("margin", 0.0)
-            portfolio_buying_power = cached.get("buying_power", 0.0)
-            portfolio_margin_pct = cached.get("margin_pct", 0.0)
-            portfolio_loans = cached.get("loans", 0.0)
-            portfolio_accrued_interest = cached.get("accrued_interest", 0.0)
+        cached = get_cached_portfolio_account()
+        portfolio_nlv = cached.get("nlv", 0.0)
+        portfolio_maintenance_margin = cached.get("margin", 0.0)
+        portfolio_buying_power = cached.get("buying_power", 0.0)
+        portfolio_margin_pct = cached.get("margin_pct", 0.0)
+        portfolio_loans = cached.get("loans", 0.0)
+        portfolio_accrued_interest = cached.get("accrued_interest", 0.0)
     except Exception:
         pass
 
