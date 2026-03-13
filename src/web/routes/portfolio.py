@@ -85,7 +85,7 @@ def _build_portfolio_performance() -> dict:
     portfolio_data = [round(r - anchor, 4) for r in raw_returns]
     current_return_pct = round(raw_returns[-1], 2)
 
-    brkb_data = _build_brkb_series(labels)
+    brkb_data = []  # loaded async via /portfolio/brkb-data
 
     return {
         "labels": labels,
@@ -141,6 +141,17 @@ def _build_brkb_series(labels: list) -> list:
         get_logger(__name__).warning("brkb_series_failed", error=str(e))
         return []
 
+
+
+@router.get("/portfolio/brkb-data")
+async def brkb_data_endpoint(request: Request):
+    """Return BRK-B benchmark series as JSON for async chart loading."""
+    from fastapi.responses import JSONResponse
+    from src.portfolio.performance import get_performance_series
+    perf = get_performance_series()
+    labels = perf.get("labels", [])
+    brkb = _build_brkb_series(labels)
+    return JSONResponse({"labels": labels, "brkb": brkb})
 
 def _to_usd(amount: float, currency: str) -> float:
     """Convert an amount in the given currency to USD using FMP FX rates."""

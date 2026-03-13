@@ -196,7 +196,7 @@
             const labels = {{ perf_labels | tojson }};
             const fmtLabels = labels.map(d => { const p = d.split('-'); return p[1]+'/'+p[2]; });
 
-            new Chart(ctx, {
+            const perfChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: fmtLabels,
@@ -211,7 +211,7 @@
                         },
                         {
                             label: 'BRK-B Return %',
-                            data: {{ perf_brkb | tojson }},
+                            data: [],
                             borderColor: '#f59e0b',
                             borderDash: [6, 3],
                             borderWidth: 1.5, tension: 0.3,
@@ -248,6 +248,17 @@
                     },
                 },
             });
+
+            // Fetch BRK-B benchmark asynchronously
+            fetch('/portfolio/brkb-data')
+                .then(r => r.json())
+                .then(d => {
+                    if (d.brkb && d.brkb.length > 0) {
+                        perfChart.data.datasets[1].data = d.brkb;
+                        perfChart.update();
+                    }
+                })
+                .catch(e => console.log('BRK-B fetch failed:', e));
         }
     });
     </script>
