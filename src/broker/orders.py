@@ -246,6 +246,12 @@ def refresh_open_orders_cache() -> None:
                 _cached_orders = new_cache
     except Exception:
         pass
+    finally:
+        # If not connected or failed, clear stale cache so dashboard shows empty
+        if not is_connected():
+            global _cached_orders
+            with _cache_lock:
+                _cached_orders = []
 
 
 def get_cached_open_orders() -> list:
