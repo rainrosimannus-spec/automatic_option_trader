@@ -265,12 +265,15 @@ def job_execute_queued():
                     log.info("execute_queued_margin_blocked", margin_pct=f"{margin_pct:.1%}")
                     return
                 from src.strategy.risk import RiskManager
-                rm = RiskManager(cfg.risk)
+                from src.strategy.universe import UniverseManager
+                rm = RiskManager(UniverseManager())
                 dynamic_ceiling = rm.dynamic_margin_ceiling()
                 headroom = acct.net_liquidation * (dynamic_ceiling - margin_pct)
                 per_position_cap = acct.net_liquidation * 0.60
         except Exception as e:
             log.warning("execute_queued_acct_failed", error=str(e))
+            log.warning("execute_queued_blocking_on_error", msg="headroom unknown — blocking execution for safety")
+            return
 
         # Build candidate list: queued first, then pending — all ordered by rank
         selected = None
@@ -281,6 +284,10 @@ def job_execute_queued():
             ).order_by(TradeSuggestion.rank.asc()).limit(3).all()
 
             for s in candidates:
+                if headroom is None:
+                    log.warning("execute_queued_blocking_no_headroom", symbol=s.symbol,
+                                msg="headroom unknown — blocking execution for safety")
+                    break
                 if headroom is not None:
                     try:
                         real_margin = get_whatif_margin(
