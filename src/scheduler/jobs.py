@@ -122,6 +122,43 @@ def job_scan_market(market: str):
 
         log.info("market_scan_starting", market=market, stocks=len(symbols))
 
+        # Auto-cancel stale orders: cancel any unfilled IBKR orders for this
+        # market's symbols that have been open more than 30 minutes.
+        # Prevents orders from sitting live over weekends or long gaps.
+        try:
+            from src.broker.orders import get_open_orders, cancel_order
+            from datetime import timezone
+            import datetime as _dt
+            stale_cutoff = _dt.datetime.now(timezone.utc) - _dt.timedelta(minutes=30)
+            open_orders = get_open_orders()
+            market_symbols = [s.upper() for s in symbols]
+            for oo in open_orders:
+                sym = getattr(oo.contract, 'symbol', '')
+                if sym.upper() not in market_symbols:
+                    continue
+                # Get order submission time
+                placed_at = None
+                if hasattr(oo, 'log') and oo.log:
+                    for entry in oo.log:
+                        if hasattr(entry, 'time') and entry.time:
+                            placed_at = entry.time
+                            break
+                if placed_at is None:
+                    # Can't determine age — skip, don't cancel blindly
+                    log.debug("stale_order_check_no_time", symbol=sym, order_id=oo.order.orderId)
+                    continue
+                if placed_at.tzinfo is None:
+                    placed_at = placed_at.replace(tzinfo=timezone.utc)
+                if placed_at < stale_cutoff:
+                    log.info("auto_cancelling_stale_order",
+                             symbol=sym,
+                             order_id=oo.order.orderId,
+                             placed_at=str(placed_at),
+                             age_minutes=int(((_dt.datetime.now(timezone.utc) - placed_at).seconds) / 60))
+                    cancel_order(oo)
+        except Exception as e:
+            log.warning("auto_cancel_stale_orders_failed", market=market, error=str(e))
+
         risk = RiskManager(universe)
         seller = PutSeller(universe, risk)
         seller.run_scan(market=market)

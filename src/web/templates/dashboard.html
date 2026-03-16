@@ -349,11 +349,10 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
 
     <!-- Open Orders on IBKR -->
-    {% if open_orders %}
     <div class="bg-gray-900 border border-amber-800/50 rounded-lg mb-4">
         <div class="px-4 py-3 border-b border-amber-800/50 flex items-center justify-between">
             <h2 class="text-sm font-semibold text-amber-400">Pending Orders on IBKR</h2>
-            <span class="text-xs text-amber-500">{{ open_orders|length }} waiting</span>
+            <span class="text-xs {{ 'text-amber-500' if open_orders else 'text-gray-600' }}">{{ open_orders|length if open_orders else 'none' }} waiting</span>
         </div>
         <div class="overflow-x-auto">
             <table class="w-full text-xs">
@@ -369,6 +368,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     </tr>
                 </thead>
                 <tbody>
+                    {% if not open_orders %}
+                    <tr><td colspan="7" class="py-4 px-3 text-center text-gray-600 text-xs">No pending orders on IBKR</td></tr>
+                    {% endif %}
                     {% for o in open_orders %}
                     <tr class="border-b border-gray-800/30 hover:bg-gray-800/20">
                         <td class="py-2 px-3 font-medium font-mono">{{ o.symbol }}</td>
@@ -381,9 +383,8 @@ document.addEventListener('DOMContentLoaded', function() {
                         <td class="py-2 px-3 text-right font-mono">${{ "%.2f"|format(o.limit) if o.limit else 'MKT' }}</td>
                         <td class="py-2 px-3 text-amber-400">{{ o.status }}</td>
                         <td class="py-2 px-3">
-                            <form method="post" action="/controls/cancel-order/{{ o.order_id }}"
-                                  onsubmit="return confirm('Cancel {{ o.symbol }} order?')">
-                                <button class="text-red-500/60 hover:text-red-400 transition">✕</button>
+                            <form method="post" action="/controls/cancel-order/{{ o.order_id }}">
+                                <button class="text-red-500/60 hover:text-red-400 transition font-bold px-2 py-1">✕ Cancel</button>
                             </form>
                         </td>
                     </tr>
@@ -392,7 +393,6 @@ document.addEventListener('DOMContentLoaded', function() {
             </table>
         </div>
     </div>
-    {% endif %}
 
     <!-- Open Positions -->
     <div class="bg-gray-900 border border-gray-800 rounded-lg">

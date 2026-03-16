@@ -163,60 +163,65 @@
 {% endfor %}
 
 <!-- ══ RECENT HISTORY ═══════════════════════════════════════ -->
-{% if recent %}
-<h2 class="text-lg font-semibold mt-8 mb-4 text-gray-400">Recent Decisions</h2>
+<h2 class="text-lg font-semibold mt-8 mb-4 text-gray-400">Recent Scan Activity <span class="text-xs text-gray-600 font-normal">(last 2 scans)</span></h2>
 <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-    <table class="w-full text-sm">
+    <table class="w-full text-xs">
         <thead class="text-gray-500 border-b border-gray-800">
             <tr>
-                <th class="px-4 py-2 text-left">Rank</th>
-                <th class="px-4 py-2 text-left">Symbol</th>
-                <th class="px-4 py-2 text-left">Action</th>
-                <th class="px-4 py-2 text-left">Qty</th>
-                <th class="px-4 py-2 text-left">Price</th>
-                <th class="px-4 py-2 text-left">Status</th>
-                <th class="px-4 py-2 text-left">Reviewed</th>
+                <th class="px-3 py-2 text-left">Rank</th>
+                <th class="px-3 py-2 text-left">Symbol</th>
+                <th class="px-3 py-2 text-left">Strike</th>
+                <th class="px-3 py-2 text-left">Expiry</th>
+                <th class="px-3 py-2 text-left">Price</th>
+                <th class="px-3 py-2 text-left">Status</th>
+                <th class="px-3 py-2 text-left">Outcome / Reason</th>
+                <th class="px-3 py-2 text-left">Created</th>
+                <th class="px-3 py-2 text-left">Resolved</th>
             </tr>
         </thead>
         <tbody>
+            {% if not recent %}
+            <tr><td colspan="9" class="px-3 py-6 text-center text-gray-600">No recent scan activity</td></tr>
+            {% endif %}
             {% for s in recent %}
-            <tr class="border-b border-gray-800/50 cursor-default" data-info="Strike: ${{ '%.1f'|format(s.strike) if s.strike else '—' }}  |  Expiry: {{ s.expiry[:4] ~ '-' ~ s.expiry[4:6] ~ '-' ~ s.expiry[6:] if s.expiry and s.expiry|length >= 8 else '—' }}  |  Qty: {{ s.quantity }}  |  Price: ${{ '%.2f'|format(s.limit_price) if s.limit_price else '—' }}{% if s.review_note %}  |  {{ s.review_note[:60] }}{% endif %}">
-                <td class="px-4 py-2 text-gray-400 font-mono">{{ '#' ~ s.rank if s.rank and s.rank > 0 else '—' }}</td>
-                <td class="px-4 py-2 font-medium text-gray-200">{{ s.symbol }}</td>
-                <td class="px-4 py-2 text-gray-400">{{ s.action | replace('_', ' ') }}</td>
-                <td class="px-4 py-2 text-gray-400">{{ s.quantity }}</td>
-                <td class="px-4 py-2 text-gray-400">{{ "$%.2f" | format(s.limit_price) if s.limit_price else '—' }}</td>
-                <td class="px-4 py-2">
-                    <span class="px-2 py-0.5 rounded text-xs
-                        {% if s.status == 'approved' %}bg-emerald-900/50 text-emerald-400
-                        {% elif s.status == 'rejected' %}bg-red-900/50 text-red-400
-                        {% else %}bg-gray-800 text-gray-500{% endif %}">
-                        {{ s.status }}
-                    </span>
+            <tr class="border-b border-gray-800/40 hover:bg-gray-800/20">
+                <td class="px-3 py-2 text-gray-500 font-mono">{{ '#' ~ s.rank if s.rank and s.rank > 0 else '—' }}</td>
+                <td class="px-3 py-2 font-medium text-gray-200">{{ s.symbol }}</td>
+                <td class="px-3 py-2 text-gray-400 font-mono">{{ '$%.0f'|format(s.strike) if s.strike else '—' }}</td>
+                <td class="px-3 py-2 text-gray-400 font-mono">{{ s.expiry[4:6] ~ '/' ~ s.expiry[6:8] if s.expiry and s.expiry|length >= 8 else '—' }}</td>
+                <td class="px-3 py-2 text-gray-400 font-mono">{{ '$%.2f'|format(s.limit_price) if s.limit_price else '—' }}</td>
+                <td class="px-3 py-2">
+                    {% if s.status == 'executed' %}
+                    <span class="px-2 py-0.5 rounded text-xs bg-emerald-900/60 text-emerald-400">✓ filled</span>
+                    {% elif s.status == 'submitted' %}
+                    <span class="px-2 py-0.5 rounded text-xs bg-blue-900/60 text-blue-400">📤 on IBKR</span>
+                    {% elif s.status == 'rejected' %}
+                    <span class="px-2 py-0.5 rounded text-xs bg-red-900/60 text-red-400">✗ rejected</span>
+                    {% elif s.status == 'approved' %}
+                    <span class="px-2 py-0.5 rounded text-xs bg-yellow-900/60 text-yellow-400">⏳ approved</span>
+                    {% elif s.status == 'expired' %}
+                        {% if s.review_note and 'cancel' in s.review_note|lower %}
+                        <span class="px-2 py-0.5 rounded text-xs bg-orange-900/60 text-orange-400">⊘ cancelled</span>
+                        {% elif s.review_note and 'margin' in s.review_note|lower %}
+                        <span class="px-2 py-0.5 rounded text-xs bg-red-900/40 text-red-300">⊘ margin</span>
+                        {% elif s.review_note and 'duplicate' in s.review_note|lower %}
+                        <span class="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-400">⊘ duplicate</span>
+                        {% else %}
+                        <span class="px-2 py-0.5 rounded text-xs bg-gray-800 text-gray-500">⊘ expired</span>
+                        {% endif %}
+                    {% else %}
+                    <span class="px-2 py-0.5 rounded text-xs bg-gray-800 text-gray-500">{{ s.status }}</span>
+                    {% endif %}
                 </td>
-                <td class="px-4 py-2 text-gray-500 text-xs">{{ s.reviewed_at.strftime('%b %d %H:%M') if s.reviewed_at else '—' }}</td>
+                <td class="px-3 py-2 text-gray-500 max-w-xs truncate" title="{{ s.review_note or '' }}">
+                    {{ s.review_note[:60] ~ '…' if s.review_note and s.review_note|length > 60 else s.review_note or '—' }}
+                </td>
+                <td class="px-3 py-2 text-gray-600 font-mono">{{ s.created_at.strftime('%d %H:%M') if s.created_at else '—' }}</td>
+                <td class="px-3 py-2 text-gray-600 font-mono">{{ s.reviewed_at.strftime('%d %H:%M') if s.reviewed_at else '—' }}</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
 </div>
-{% endif %}
-<script>
-(function(){
-  var d=document.createElement('div');
-  d.id='_tt';
-  d.style.cssText='display:none;position:fixed;background:#fefce8;color:#1a1a1a;border:1px solid #ca8a04;border-radius:8px;padding:10px 14px;font-size:12px;z-index:9999;max-width:320px;white-space:pre-wrap;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,0.5)';
-  document.body.appendChild(d);
-  var rows=document.querySelectorAll('tr[data-info]');
-  for(var i=0;i<rows.length;i++){
-    rows[i].onmouseenter=function(e){
-      d.textContent=this.getAttribute('data-info');
-      d.style.display='block';
-      d.style.left=Math.min(e.clientX+10,window.innerWidth-330)+'px';
-      d.style.top=(e.clientY-60)+'px';
-    };
-    rows[i].onmouseleave=function(){d.style.display='none';};
-  }
-})();
-</script>
+
 {% endblock %}

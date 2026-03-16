@@ -48,15 +48,11 @@ def _get_suggestions_by_source(source: str):
         from sqlalchemy import or_
         recent = db.query(TradeSuggestion).filter(
             TradeSuggestion.source == source,
-            or_(
-                TradeSuggestion.status.in_(["approved", "rejected", "expired", "executed"]),
-                # Pending with a review_note = margin-attempted, show in decisions
-                (TradeSuggestion.status == "pending") & (TradeSuggestion.review_note.isnot(None)),
-            )
-        ).order_by(TradeSuggestion.created_at.desc()).limit(20).all()
+            TradeSuggestion.status.in_(["approved", "rejected", "expired", "executed", "submitted"]),
+        ).order_by(TradeSuggestion.created_at.desc()).limit(40).all()
         # Force-load all attributes before session closes
         for r in recent:
-            _ = r.symbol, r.status, r.action, r.rank, r.quantity, r.limit_price, r.strike, r.expiry, r.review_note, r.reviewed_at, r.source
+            _ = r.symbol, r.status, r.action, r.rank, r.quantity, r.limit_price, r.strike, r.expiry, r.review_note, r.reviewed_at, r.source, r.created_at, r.opt_exchange
 
     return pending, recent
 
