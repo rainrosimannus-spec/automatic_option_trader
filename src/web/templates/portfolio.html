@@ -1,5 +1,17 @@
 {% extends "base.html" %}
-{% block title %}Long-Term Portfolio{% endblock %}
+{% block title %}Long-Term Portfolio
+<script>
+function syncInjections() {
+    const btn = document.getElementById('sync-inj-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Syncing...';
+    fetch('/api/portfolio/sync-injections', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => { window.location.reload(); })
+        .catch(() => { btn.disabled = false; btn.textContent = '⟳ Sync Deposits'; });
+}
+</script>
+{% endblock %}
 {% block nav_portfolio %}text-emerald-400 bg-gray-800{% endblock %}
 {% block m_nav_portfolio %}text-emerald-400 bg-gray-800{% endblock %}
 
@@ -99,7 +111,7 @@
             </div>
             {% if perf_labels and perf_labels|length > 1 %}
             <div style="height: 260px;">
-                <button id="sync-btn" onclick="syncInjections()" style="font-size:11px;padding:3px 10px;cursor:pointer;margin-bottom:6px;">⟳ Sync Deposits</button>
+                <button id="sync-inj-btn" onclick="syncInjections()" style="font-size:11px;padding:3px 10px;cursor:pointer;margin-bottom:6px;">⟳ Sync Deposits</button>
                 <canvas id="portfolioChart"></canvas>
             </div>
             {% else %}

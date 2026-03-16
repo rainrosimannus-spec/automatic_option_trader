@@ -1,16 +1,32 @@
 {% extends "base.html" %}
-{% block title %}Positions — Maggy &amp; Winston{% endblock %}
+{% block title %}Positions — Maggy &amp; Winston
+<script>
+function syncPositions() {
+    const btn = document.getElementById('sync-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Syncing...';
+    fetch('/positions/sync', {method: 'POST'})
+        .then(r => { window.location.reload(); })
+        .catch(() => { btn.disabled = false; btn.textContent = '🔄 Sync IBKR'; });
+}
+
+function forceClose(id, symbol) {
+    if (!window.confirm('Force close ' + symbol + '?')) return;
+    fetch('/controls/force-close/' + id, {method: 'POST'})
+        .then(r => { window.location.reload(); })
+        .catch(e => { alert('Error: ' + e); });
+}
+</script>
+{% endblock %}
 {% block nav_positions %}bg-gray-800 text-emerald-400{% endblock %}
 {% block m_nav_positions %}bg-gray-800 text-emerald-400{% endblock %}
 
 {% block content %}
 <div class="flex items-center justify-between mb-6">
     <h1 class="text-2xl font-bold">Open Positions</h1>
-    <form method="post" action="/positions/sync">
-        <button class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2 rounded">
-            🔄 Sync IBKR
-        </button>
-    </form>
+    <button id="sync-btn" onclick="syncPositions()" class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2 rounded">
+        🔄 Sync IBKR
+    </button>
 </div>
 
 {% if positions %}
@@ -47,10 +63,8 @@
                 <td class="py-3 px-4 text-right">{{ p.quantity }}</td>
                 <td class="py-3 px-4 text-gray-400">{{ p.opened_at.strftime('%m/%d %H:%M') if p.opened_at else '—' }}</td>
                 <td class="py-3 px-4">
-                    <form method="post" action="/controls/force-close/{{ p.id }}"
-                          onsubmit="return confirm('Force close {{ p.symbol }}?')">
-                        <button class="text-red-400 hover:text-red-300 text-xs">Force Close</button>
-                    </form>
+                    <button class="text-red-400 hover:text-red-300 text-xs"
+                            onclick="forceClose({{ p.id }}, '{{ p.symbol }}')">Force Close</button>
                 </td>
             </tr>
             {% endfor %}
