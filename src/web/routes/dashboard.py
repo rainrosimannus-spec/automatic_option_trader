@@ -348,8 +348,7 @@ def dashboard(request: Request):
     # The cache is updated by the health check job every 5 minutes
     open_orders = []
     try:
-        from src.broker.orders import get_cached_open_orders, refresh_open_orders_cache
-        refresh_open_orders_cache()
+        from src.broker.orders import get_cached_open_orders
         open_orders = get_cached_open_orders()
     except Exception:
         pass
