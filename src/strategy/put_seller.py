@@ -251,6 +251,48 @@ class PutSeller:
         if not candidate:
             return False
 
+        # Whatif margin check: ask IBKR exactly how much buying power this contract consumes
+        try:
+            from src.broker.orders import get_whatif_margin
+            from src.broker.account import get_account_summary
+            acct = get_account_summary()
+            if acct and acct.net_liquidation > 0:
+                nlv = acct.net_liquidation
+                buying_power = acct.buying_power
+                maintenance_margin = acct.maintenance_margin
+                if nlv < 100_000:
+                    total_capacity = nlv * 6
+                    max_pct = 0.25
+                else:
+                    total_capacity = buying_power + maintenance_margin
+                    max_pct = 0.15
+                max_per_position = total_capacity * max_pct
+                real_margin = get_whatif_margin(
+                    symbol=symbol,
+                    expiry=candidate.expiry,
+                    strike=candidate.strike,
+                    right="P",
+                    quantity=self.cfg.contracts_per_stock,
+                    limit_price=round(candidate.bid, 2),
+                    exchange=opt_exchange,
+                    currency=currency,
+                )
+                if real_margin and real_margin > max_per_position:
+                    log.info("whatif_margin_blocked",
+                             symbol=symbol,
+                             real_margin=f"${real_margin:,.0f}",
+                             max_per_position=f"${max_per_position:,.0f}",
+                             total_capacity=f"${total_capacity:,.0f}",
+                             max_pct=f"{max_pct:.0%}")
+                    return False
+                log.info("whatif_margin_passed",
+                         symbol=symbol,
+                         real_margin=f"${real_margin:,.0f}" if real_margin else "n/a",
+                         max_per_position=f"${max_per_position:,.0f}")
+        except Exception as e:
+            log.warning("whatif_margin_check_failed", symbol=symbol, error=str(e))
+            # fail open — don't block if whatif unavailable
+
         # Suggestion mode: create suggestion instead of placing order
         cfg = get_settings()
         if cfg.app.suggestion_mode:

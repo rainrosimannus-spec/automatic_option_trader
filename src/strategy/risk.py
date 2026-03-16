@@ -331,55 +331,8 @@ class RiskManager:
             log.warning("net_liq_zero_allowing_trade")
             return RiskCheck(True)  # fail open — account data not loaded yet
 
-        stock = self.universe.get_stock(symbol)
-        exchange = stock.exchange if stock else "SMART"
-        currency = stock.currency if stock else "USD"
-        contract_size = stock.contract_size if stock else 100
-
-        price = get_stock_price(symbol, exchange=exchange, currency=currency)
-        if not price:
-            return RiskCheck(False, f"Cannot get price for {symbol}")
-
-        # Convert to USD for comparison against buying power (which is in USD)
-        price_usd = _convert_to_usd(price, currency)
-
-        # Estimated IBKR margin for a short put = ~20% of notional
-        contracts = get_settings().strategy.contracts_per_stock
-        est_margin = price_usd * contract_size * contracts * 0.20
-
-        # Buying-power-based adaptive per-position limit:
-        #   BP < $100K  → 25% per position (4 positions)
-        #   BP < $500K  → 15% per position (6-7 positions)
-        #   BP < $2M    → 10% per position (10 positions)
-        #   BP >= $2M   →  5% per position (20 positions)
-        buying_power = summary.buying_power
-        if buying_power <= 0:
-            return RiskCheck(True)  # can't calculate, allow
-
-        if buying_power < 100_000:
-            max_pct = 0.25
-        elif buying_power < 500_000:
-            max_pct = 0.15
-        elif buying_power < 2_000_000:
-            max_pct = 0.10
-        else:
-            max_pct = 0.05
-
-        max_margin = buying_power * max_pct
-
-        log.debug("position_size_check",
-                  symbol=symbol,
-                  est_margin=f"${est_margin:,.0f}",
-                  max_margin=f"${max_margin:,.0f}",
-                  buying_power=f"${buying_power:,.0f}",
-                  max_pct=f"{max_pct:.0%}")
-
-        if est_margin > max_margin:
-            return RiskCheck(
-                False,
-                f"{symbol} est. margin ${est_margin:,.0f} > {max_pct:.0%} of buying power "
-                f"${buying_power:,.0f} (max ${max_margin:,.0f})",
-            )
+        # Position size is now checked in put_seller.py using get_whatif_margin
+        # for exact IBKR margin requirements — no estimation needed here.
         return RiskCheck(True)
 
     def _get_adaptive_position_limit(self, net_liq: float) -> float:
