@@ -558,12 +558,20 @@ class IpoTrader:
             log.warning("ipo_lockup_insufficient_funds", ticker=ipo.expected_ticker)
             return
 
-        # Check buying power before placing order
+        # Check buying power before placing order — use self.ib directly
+        # so Phase 2 (portfolio account) reads from the correct connection,
+        # not the singleton options account connection.
         required_amount = current_price * shares
         try:
-            from src.broker.account import get_account_summary
-            summary = get_account_summary()
-            buying_power = summary.get("buying_power", 0)
+            values = self.ib.accountValues()
+            buying_power = 0.0
+            for v in values:
+                if v.tag == "BuyingPower" and v.currency in ("BASE", "USD"):
+                    try:
+                        buying_power = float(v.value)
+                        break
+                    except (ValueError, TypeError):
+                        pass
             if buying_power < required_amount:
                 log.warning("ipo_lockup_insufficient_buying_power",
                             ticker=ipo.expected_ticker,
