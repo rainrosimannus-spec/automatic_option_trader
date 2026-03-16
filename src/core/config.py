@@ -87,6 +87,13 @@ class RiskConfig(BaseModel):
     max_buying_power_usage: float = 0.60
     max_margin_usage: float = 0.80        # block new trades when margin > 80% of NLV
     min_cash_reserve: float = 10000.0
+    # Correlation gate (skip if NLV < 50K or fewer than 3 open positions)
+    max_correlation: float = 0.85        # block if avg pairwise correlation > this
+    correlation_nlv_threshold: float = 50000.0
+    correlation_lookback_days: int = 60
+    # Delta exposure gate (skip if NLV < 50K)
+    max_portfolio_delta: float = 500.0   # total abs delta units across all open puts
+    delta_nlv_threshold: float = 50000.0
     # SPY MA gate
     spy_ma_enabled: bool = True
     spy_ma_fast: int = 10

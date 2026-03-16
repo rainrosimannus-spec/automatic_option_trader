@@ -296,90 +296,259 @@ class RiskManager:
         return RiskCheck(True)
 
     def check_position_limit(self) -> RiskCheck:
-        """Check open options position count.
-        Only counts positions the system created (not imported IBKR positions).
-        Imported positions are covered by the margin/buying power gate."""
+        """
+        Adaptive max open positions based on NLV.
+        Small accounts: 4 positions (concentrated, high conviction).
+        Large accounts: up to 20 positions (diversified).
+
+        Tiers:
+          NLV < $50K   → 4 positions
+          NLV < $200K  → 8 positions
+          NLV < $500K  → 15 positions
+          NLV >= $500K → 20 positions
+        """
+        try:
+            summary = get_account_summary()
+            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+        except Exception as e:
+            log.warning("position_limit_check_skipped", error=str(e))
+            return RiskCheck(True)  # fail open
+
+        if net_liq <= 0:
+            return RiskCheck(True)
+
+        if net_liq < 50_000:
+            max_pos = 4
+        elif net_liq < 200_000:
+            max_pos = 8
+        elif net_liq < 500_000:
+            max_pos = 15
+        else:
+            max_pos = 20
+
         with get_db() as db:
-            # Count only system-created options positions
-            # Imported positions have is_wheel=False and no entry trades
-            # For now, skip this check entirely — the real safety is the
-            # margin gate in buyer.py and IBKR's own margin requirements
-            pass
+            open_count = (
+                db.query(Position)
+                .filter(Position.status == PositionStatus.OPEN)
+                .count()
+            )
+
+        if open_count >= max_pos:
+            return RiskCheck(
+                False,
+                f"Position limit reached: {open_count}/{max_pos} open positions (NLV ${net_liq:,.0f})",
+            )
         return RiskCheck(True)
 
     def check_position_size(self, symbol: str) -> RiskCheck:
         """
-        Ensure no single position exceeds the adaptive limit of portfolio NLV.
+        Adaptive per-position size limit based on NLV.
+        Uses same anchor pattern as sector check — starts permissive,
+        tightens automatically as account grows.
 
-        Adaptive limit: on small accounts, allows larger % positions so we can
-        actually trade. As NLV grows, the limit tightens automatically toward
-        the conservative target (max_single_stock_pct in config, default 5%).
+        Tiers (% of NLV × 6 capacity per position):
+          NLV < $50K   → 25% (4 positions max by capacity)
+          NLV < $200K  → 15%
+          NLV >= $200K → floors at 5% (max_single_stock_pct target)
 
-        Formula:  effective_limit = max(target_pct, anchor_dollars / NLV)
-        - anchor_dollars is frozen at first trade: current NLV * current_limit
-        - As NLV grows, anchor_dollars/NLV shrinks
-        - Floor is target_pct (the original conservative limit)
+        Real margin enforcement is handled by get_whatif_margin in put_seller.py.
+        This check adds a secondary guardrail on position concentration.
         """
         try:
             summary = get_account_summary()
+            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
         except Exception as e:
             log.warning("position_size_check_skipped", error=str(e))
             return RiskCheck(True)  # fail open
 
-        net_liq = summary.net_liquidation
         if net_liq <= 0:
-            log.warning("net_liq_zero_allowing_trade")
-            return RiskCheck(True)  # fail open — account data not loaded yet
+            return RiskCheck(True)
 
-        # Position size is now checked in put_seller.py using get_whatif_margin
-        # for exact IBKR margin requirements — no estimation needed here.
+        effective_limit = self._get_adaptive_position_limit(net_liq)
+
+        # Get current margin used by this symbol if already open
+        # For new positions: estimate using current stock price × 100 multiplier
+        try:
+            price = get_stock_price(symbol)
+            if not price or price <= 0:
+                return RiskCheck(True)  # can't check, allow
+        except Exception:
+            return RiskCheck(True)
+
+        capacity = net_liq * 6  # same formula as put_seller.py
+        max_position_value = capacity * effective_limit
+        estimated_margin = price * 100  # 1 contract = 100 shares
+
+        if estimated_margin > max_position_value:
+            return RiskCheck(
+                False,
+                f"{symbol} estimated margin ${estimated_margin:,.0f} exceeds "
+                f"{effective_limit:.0%} position limit (${max_position_value:,.0f}) at NLV ${net_liq:,.0f}",
+            )
         return RiskCheck(True)
 
     def _get_adaptive_position_limit(self, net_liq: float) -> float:
         """
-        Calculate adaptive position limit based on current NLV.
+        Adaptive per-position size limit as fraction of total capacity.
+        Starts permissive for small accounts, tightens as NLV grows.
 
-        Uses anchor_dollars from SystemState (set once when account is small).
-        As NLV grows, the effective % limit shrinks toward the config target.
-
-        Example with $13,767 NLV and 500% config limit:
-          anchor_dollars = $13,767 * 5.00 = $68,835
-          At $13,767 NLV → $68,835 / $13,767 = 500% (unchanged)
-          At $25,000 NLV → $68,835 / $25,000 = 275%
-          At $50,000 NLV → $68,835 / $50,000 = 138%
-          At $100,000 NLV → $68,835 / $100,000 = 69%
-          At $500,000 NLV → $68,835 / $500,000 = 14%
-          At $1,400,000 NLV → $68,835 / $1,400,000 = 5% → target_pct takes over
+        Tiers:
+          NLV < $50K   → 25% per position
+          NLV < $200K  → 15% per position
+          NLV >= $200K → 5% per position (max_single_stock_pct floor)
         """
-        target_pct = 0.05  # the original conservative 5% limit (hard floor)
-        config_pct = self.cfg.max_single_stock_pct  # current setting (e.g. 5.00 = 500%)
+        target_pct = max(self.cfg.max_single_stock_pct, 0.05)  # floor at 5%
 
-        # If config is already at or below target, no adaptation needed
-        if config_pct <= target_pct:
-            return config_pct
+        if net_liq < 50_000:
+            return 0.25
+        elif net_liq < 200_000:
+            return 0.15
+        else:
+            return target_pct
 
-        # Get or set the anchor dollars (stored once in SystemState)
+    def check_correlation(self, symbol: str) -> RiskCheck:
+        """
+        Block if new symbol is too highly correlated with existing open positions.
+        Uses 60-day price history from FMP.
+        Skipped entirely if NLV < threshold or fewer than 3 open positions.
+        """
+        try:
+            summary = get_account_summary()
+            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+        except Exception:
+            return RiskCheck(True)
+
+        # Skip on small accounts — not enough positions to matter
+        if net_liq < self.cfg.correlation_nlv_threshold:
+            return RiskCheck(True)
+
         with get_db() as db:
-            anchor_row = db.query(SystemState).filter(
-                SystemState.key == "position_limit_anchor_dollars"
-            ).first()
+            open_positions = (
+                db.query(Position)
+                .filter(Position.status == PositionStatus.OPEN)
+                .all()
+            )
 
-            if anchor_row:
-                anchor_dollars = float(anchor_row.value)
+        open_symbols = [p.symbol for p in open_positions if p.symbol != symbol]
+
+        # Need at least 3 existing positions to run correlation check
+        if len(open_symbols) < 3:
+            return RiskCheck(True)
+
+        try:
+            import datetime as dt
+            from src.data.fmp import FMPClient
+            fmp = FMPClient()
+            lookback = self.cfg.correlation_lookback_days
+
+            end = dt.date.today()
+            start = end - dt.timedelta(days=lookback + 10)
+
+            # Fetch price history for new symbol
+            new_prices = fmp.get_price_history(symbol, start.isoformat(), end.isoformat())
+            if not new_prices or len(new_prices) < 20:
+                return RiskCheck(True)  # not enough data, allow
+
+            import statistics
+
+            def pct_returns(prices: list) -> list:
+                return [(prices[i] - prices[i-1]) / prices[i-1]
+                        for i in range(1, len(prices)) if prices[i-1] != 0]
+
+            def pearson(x: list, y: list) -> float:
+                n = min(len(x), len(y))
+                if n < 10:
+                    return 0.0
+                x, y = x[-n:], y[-n:]
+                mx, my = sum(x)/n, sum(y)/n
+                num = sum((x[i]-mx)*(y[i]-my) for i in range(n))
+                den = (sum((v-mx)**2 for v in x) * sum((v-my)**2 for v in y)) ** 0.5
+                return num / den if den != 0 else 0.0
+
+            new_returns = pct_returns(new_prices)
+            correlations = []
+
+            for sym in open_symbols[:10]:  # cap at 10 to limit API calls
+                try:
+                    prices = fmp.get_price_history(sym, start.isoformat(), end.isoformat())
+                    if prices and len(prices) >= 20:
+                        r = pearson(new_returns, pct_returns(prices))
+                        correlations.append(abs(r))
+                except Exception:
+                    continue
+
+            if not correlations:
+                return RiskCheck(True)
+
+            avg_corr = sum(correlations) / len(correlations)
+
+            if avg_corr > self.cfg.max_correlation:
+                return RiskCheck(
+                    False,
+                    f"{symbol} avg correlation {avg_corr:.2f} with open positions "
+                    f"exceeds limit {self.cfg.max_correlation:.2f}",
+                )
+        except Exception as e:
+            log.warning("correlation_check_failed", symbol=symbol, error=str(e))
+            return RiskCheck(True)  # fail open — don't block on data errors
+
+        return RiskCheck(True)
+
+    def check_delta_exposure(self, symbol: str) -> RiskCheck:
+        """
+        Block if total portfolio delta would exceed max_portfolio_delta.
+        Delta units = abs(delta) × contracts × 100 multiplier per position.
+        Skipped entirely if NLV < threshold.
+        """
+        try:
+            summary = get_account_summary()
+            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+        except Exception:
+            return RiskCheck(True)
+
+        # Skip on small accounts
+        if net_liq < self.cfg.delta_nlv_threshold:
+            return RiskCheck(True)
+
+        try:
+            from src.broker.account import get_option_positions
+            positions = get_option_positions()
+
+            total_delta = 0.0
+            for pos in positions:
+                if pos.contract.secType == "OPT":
+                    # modelGreeks gives delta if available, else use marketPrice delta
+                    greeks = getattr(pos, "unrealizedPNL", None)
+                    # Use position delta from portfolio item directly
+                    delta = None
+                    if hasattr(pos, "modelGreeks") and pos.modelGreeks:
+                        delta = pos.modelGreeks.delta
+                    if delta is None and hasattr(pos, "delta"):
+                        delta = pos.delta
+                    if delta is not None:
+                        # pos.position is negative for short puts (e.g. -1 contract)
+                        # abs delta × abs position × 100
+                        total_delta += abs(delta) * abs(pos.position) * 100
+
+            # Scale max delta with NLV — larger accounts can hold more delta
+            if net_liq < 200_000:
+                max_delta = self.cfg.max_portfolio_delta
+            elif net_liq < 500_000:
+                max_delta = self.cfg.max_portfolio_delta * 2
             else:
-                # First time: anchor = current NLV * current config limit
-                anchor_dollars = net_liq * config_pct
-                db.add(SystemState(key="position_limit_anchor_dollars",
-                                   value=str(round(anchor_dollars, 2))))
-                log.info("position_limit_anchor_set",
-                         nlv=net_liq, config_pct=config_pct,
-                         anchor_dollars=round(anchor_dollars, 2))
+                max_delta = self.cfg.max_portfolio_delta * 4
 
-        # Effective limit = anchor_dollars / current NLV, floored at target
-        effective = anchor_dollars / max(net_liq, 1)
-        effective = max(effective, target_pct)
+            if total_delta >= max_delta:
+                return RiskCheck(
+                    False,
+                    f"Portfolio delta {total_delta:.0f} at or above limit {max_delta:.0f} "
+                    f"(NLV ${net_liq:,.0f})",
+                )
+        except Exception as e:
+            log.warning("delta_exposure_check_failed", error=str(e))
+            return RiskCheck(True)  # fail open
 
-        return effective
+        return RiskCheck(True)
 
     def check_sector_exposure(self, symbol: str) -> RiskCheck:
         """Ensure no single sector exceeds adaptive allocation."""
@@ -698,6 +867,8 @@ class RiskManager:
             self.check_position_limit(),
             self.check_position_size(symbol),
             self.check_sector_exposure(symbol),
+            self.check_correlation(symbol),
+            self.check_delta_exposure(symbol),
             self.check_buying_power(),
             self.check_duplicate_position(symbol),
             self.check_earnings(symbol),
