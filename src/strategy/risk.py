@@ -340,20 +340,45 @@ class RiskManager:
         if not price:
             return RiskCheck(False, f"Cannot get price for {symbol}")
 
-        # Convert to USD for comparison against NLV (which is in USD)
+        # Convert to USD for comparison against buying power (which is in USD)
         price_usd = _convert_to_usd(price, currency)
 
-        # Max risk for a short put = strike * contract_size (assigned at strike)
-        position_value = price_usd * contract_size * get_settings().strategy.contracts_per_stock
-        position_pct = position_value / net_liq
+        # Estimated IBKR margin for a short put = ~20% of notional
+        contracts = get_settings().strategy.contracts_per_stock
+        est_margin = price_usd * contract_size * contracts * 0.20
 
-        # Adaptive limit calculation
-        effective_limit = self._get_adaptive_position_limit(net_liq)
+        # Buying-power-based adaptive per-position limit:
+        #   BP < $100K  → 25% per position (4 positions)
+        #   BP < $500K  → 15% per position (6-7 positions)
+        #   BP < $2M    → 10% per position (10 positions)
+        #   BP >= $2M   →  5% per position (20 positions)
+        buying_power = summary.buying_power
+        if buying_power <= 0:
+            return RiskCheck(True)  # can't calculate, allow
 
-        if position_pct > effective_limit:
+        if buying_power < 100_000:
+            max_pct = 0.25
+        elif buying_power < 500_000:
+            max_pct = 0.15
+        elif buying_power < 2_000_000:
+            max_pct = 0.10
+        else:
+            max_pct = 0.05
+
+        max_margin = buying_power * max_pct
+
+        log.debug("position_size_check",
+                  symbol=symbol,
+                  est_margin=f"${est_margin:,.0f}",
+                  max_margin=f"${max_margin:,.0f}",
+                  buying_power=f"${buying_power:,.0f}",
+                  max_pct=f"{max_pct:.0%}")
+
+        if est_margin > max_margin:
             return RiskCheck(
                 False,
-                f"{symbol} position ${position_value:,.0f} = {position_pct:.1%} of portfolio > {effective_limit:.0%} adaptive limit",
+                f"{symbol} est. margin ${est_margin:,.0f} > {max_pct:.0%} of buying power "
+                f"${buying_power:,.0f} (max ${max_margin:,.0f})",
             )
         return RiskCheck(True)
 
