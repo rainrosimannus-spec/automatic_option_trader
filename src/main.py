@@ -363,7 +363,7 @@ def _sync_ibkr_holdings():
             ib.connect(
                 host=pcfg.ibkr_host,
                 port=pcfg.ibkr_port,
-                clientId=pcfg.ibkr_client_id,
+                clientId=98,  # use 98 for startup sync — 99 reserved for portfolio scheduler
                 timeout=30,
                 readonly=True,
             )
