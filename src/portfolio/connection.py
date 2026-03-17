@@ -116,10 +116,31 @@ _CACHE_FILE = "data/portfolio_account_cache.json"
 
 
 def refresh_portfolio_account_cache():
-    """Refresh using module-level connection."""
+    """Refresh using module-level connection.
+    Also refreshes accrued interest from Flex Query even if IB not connected."""
     global _portfolio_ib
     if _portfolio_ib and _portfolio_ib.isConnected():
         refresh_portfolio_account_cache_from(_portfolio_ib)
+    else:
+        # IB not connected — still refresh accrued interest from Flex Query
+        try:
+            from src.portfolio.capital_injections import fetch_accrued_interest_usd
+            interest = fetch_accrued_interest_usd()
+            with _portfolio_cache_lock:
+                _cached_portfolio_account["accrued_interest"] = interest
+            try:
+                import json as _json, os as _os
+                _os.makedirs(_os.path.dirname(_CACHE_FILE), exist_ok=True)
+                with open(_CACHE_FILE, "r") as f:
+                    _data = _json.load(f)
+                _data["accrued_interest"] = interest
+                with open(_CACHE_FILE, "w") as f:
+                    _json.dump(_data, f)
+                log.info("accrued_interest_refreshed", value=round(interest, 2))
+            except Exception as e:
+                log.warning("accrued_interest_file_write_failed", error=str(e))
+        except Exception as e:
+            log.warning("accrued_interest_refresh_failed", error=str(e))
 
 
 def refresh_portfolio_account_cache_from(ib):
