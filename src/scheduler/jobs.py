@@ -1175,6 +1175,19 @@ def create_scheduler() -> BackgroundScheduler:
             coalesce=True,
         )
 
+        # Daily accrued interest refresh — 6 AM ET
+        # Flex Query data is settled by then (IBKR generates overnight statements ~4-5 AM ET)
+        from src.portfolio.connection import refresh_portfolio_account_cache
+        scheduler.add_job(
+            refresh_portfolio_account_cache,
+            CronTrigger(hour=6, minute=0, timezone=us_tz),
+            id="portfolio_interest_refresh",
+            name="Portfolio Accrued Interest Refresh",
+            max_instances=1,
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
+
         log.info("portfolio_scheduler_enabled",
                  account=portfolio_cfg.ibkr_account,
                  scan_interval=f"{portfolio_cfg.check_interval_hours}h",
