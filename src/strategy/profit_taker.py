@@ -137,6 +137,7 @@ class ProfitTaker:
         """Close the position by buying back the put using BS-computed price."""
         stock = self.universe.get_stock(pos.symbol)
         exchange = stock.exchange if stock else "SMART"
+        opt_exchange = stock.opt_exchange if stock else "SMART"  # options exchange (e.g. EUREX for German stocks)
         currency = stock.currency if stock else "USD"
         contract_size = stock.contract_size if stock else 100
 
@@ -163,7 +164,7 @@ class ProfitTaker:
             strike=pos.strike or 0,
             quantity=pos.quantity,
             limit_price=round(ask_price, 2) if ask_price is not None else None,
-            exchange=exchange,
+            exchange=opt_exchange,
             currency=currency,
         )
 
