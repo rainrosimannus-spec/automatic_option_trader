@@ -295,24 +295,6 @@ def create_suggestion(
                     acct = get_account_summary()
                     _buying_power_remaining = acct.buying_power if acct else 0
 
-                    # Subtract estimated margin of orders already sent to IBKR
-                    # (approved/executed today but not yet filled — buying power
-                    #  hasn't changed on IBKR side yet)
-                    cutoff = datetime.utcnow() - timedelta(hours=12)
-                    with get_db() as db:
-                        outstanding = db.query(TradeSuggestion).filter(
-                            TradeSuggestion.status.in_(["approved", "executed"]),
-                            TradeSuggestion.reviewed_at >= cutoff,
-                            TradeSuggestion.strike.isnot(None),
-                        ).all()
-                        for s in outstanding:
-                            est = (s.strike or 0) * 100 * (s.quantity or 1) * 0.20
-                            _buying_power_remaining -= est
-                        if outstanding:
-                            log.info("auto_approve_outstanding_orders",
-                                     count=len(outstanding),
-                                     bp_after_outstanding=f"${_buying_power_remaining:,.0f}")
-
                 # Estimate margin needed: ~20% of notional for naked puts
                 est_margin = (strike or 0) * 100 * (quantity or 1) * 0.20
                 if est_margin > 0 and _buying_power_remaining < est_margin:
