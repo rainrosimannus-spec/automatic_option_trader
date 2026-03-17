@@ -47,13 +47,13 @@ class PutSeller:
             if market:
                 market_symbols = [s.upper() for s in self.universe.symbols_for_market(market)]
                 old_pending = db.query(TradeSuggestion).filter(
-                    TradeSuggestion.status.in_(["pending", "submitted", "approved", "queued"]),
+                    TradeSuggestion.status.in_(["pending", "queued"]),
                     TradeSuggestion.source == "options",
                     TradeSuggestion.symbol.in_(market_symbols) if market_symbols else False,
                 ).all()
             else:
                 old_pending = db.query(TradeSuggestion).filter(
-                    TradeSuggestion.status.in_(["pending", "submitted", "approved", "queued"]),
+                    TradeSuggestion.status.in_(["pending", "queued"]),
                     TradeSuggestion.source == "options",
                 ).all()
             for s in old_pending:
