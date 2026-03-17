@@ -223,20 +223,6 @@ dividend:
     sector: Shipping
     rationale: "Pure-play car carrier, high dividend, EV trade exposure"
 
-  - symbol: SFL
-    name: SFL Corporation
-    exchange: SMART
-    currency: USD
-    sector: Shipping
-    rationale: "Diversified shipping lessor, long-term charters, ~10% yield"
-
-  - symbol: NLY
-    name: Annaly Capital Management
-    exchange: SMART
-    currency: USD
-    sector: REITs/Mortgage
-    rationale: "Largest mortgage REIT, high yield, rate-sensitive"
-
   - symbol: EC
     name: Ecopetrol
     exchange: SMART
