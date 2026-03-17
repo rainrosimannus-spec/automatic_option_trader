@@ -51,6 +51,7 @@ def _get_portfolio_connection(cfg: PortfolioConfig) -> IB:
     fails immediately instead of retrying for ~100 seconds.
     """
     global _portfolio_ib
+    _ensure_event_loop()
 
     if _portfolio_ib is not None and _portfolio_ib.isConnected():
         return _portfolio_ib
