@@ -181,12 +181,8 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
         log.info("portfolio_monthly_screen_started",
                  date=datetime.utcnow().strftime("%Y-%m-%d"))
 
-        if not is_portfolio_connected():
-            log.debug("portfolio_monthly_screen_skipped_not_connected")
-            return
-
         try:
-            ib = _portfolio_ib
+            ib = _get_portfolio_connection(cfg)
 
             # ══════════════════════════════════════════════════════
             # PHASE 1: Screen universe
@@ -1147,10 +1143,10 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
             from datetime import datetime
 
             # Use portfolio connection (port 7496), NOT options connection
-            if not is_portfolio_connected():
+            ib = _get_portfolio_connection(cfg)
+            if ib is None:
                 log.debug("portfolio_trade_sync_not_connected")
                 return
-            ib = _portfolio_ib
 
             # Get fills from IBKR
             try:
