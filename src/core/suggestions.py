@@ -284,63 +284,37 @@ def create_suggestion(
             log.info("auto_approve_skipped_margin_limit",
                      id=suggestion_id, symbol=symbol,
                      rejections=_margin_rejected_this_cycle,
-                     msg="3 margin rejections this cycle - stopping auto-execute")
+                     msg="3 margin rejections this cycle — stopping auto-execute")
         else:
-            # Pre-check: verify buying power covers this trade using real IBKR data
+            # Pre-check: estimate if buying power covers this trade
             # before sending to IBKR (avoids flooding broker with doomed orders)
             try:
-                # Fetch real account data once per cycle
+                # Fetch buying power once per cycle, then track locally
                 if _buying_power_remaining is None:
                     from src.broker.account import get_account_summary
                     acct = get_account_summary()
-                    if acct:
-                        # Use actual buying power from IBKR — already accounts for
-                        # all open positions and pending margin requirements
-                        _buying_power_remaining = acct.buying_power
-                        log.info("auto_approve_bp_initialised",
-                                 buying_power=f"${_buying_power_remaining:,.0f}",
-                                 maintenance_margin=f"${acct.maintenance_margin:,.0f}",
-                                 nlv=f"${acct.net_liquidation:,.0f}")
-                    else:
-                        _buying_power_remaining = 0
+                    _buying_power_remaining = acct.buying_power if acct else 0
 
-                # Use whatif margin for real margin requirement
-                # Fall back to conservative 10% notional estimate if unavailable
-                est_margin = 0.0
-                try:
-                    from src.broker.orders import get_whatif_margin
+                    # Subtract estimated margin of orders already sent to IBKR
+                    # (approved/executed today but not yet filled — buying power
+                    #  hasn't changed on IBKR side yet)
+                    cutoff = datetime.utcnow() - timedelta(hours=12)
                     with get_db() as db:
-                        s = db.query(TradeSuggestion).filter(
-                            TradeSuggestion.id == suggestion_id
-                        ).first()
-                        s_exchange = getattr(s, "exchange", "SMART") or "SMART"
-                        s_currency = getattr(s, "currency", "USD") or "USD"
-                        s_expiry = getattr(s, "expiry", "") or ""
-                    real_margin = get_whatif_margin(
-                        symbol=symbol,
-                        expiry=s_expiry,
-                        strike=strike,
-                        right="P",
-                        quantity=quantity or 1,
-                        limit_price=round((premium or 0), 2),
-                        exchange=s_exchange,
-                        currency=s_currency,
-                    )
-                    if real_margin and real_margin > 0:
-                        est_margin = real_margin
-                        log.info("auto_approve_whatif_margin",
-                                 symbol=symbol,
-                                 whatif_margin=f"${real_margin:,.0f}",
-                                 buying_power=f"${_buying_power_remaining:,.0f}")
-                    else:
-                        est_margin = (strike or 0) * 100 * (quantity or 1) * 0.10
-                        log.info("auto_approve_fallback_margin",
-                                 symbol=symbol,
-                                 est_margin=f"${est_margin:,.0f}")
-                except Exception as e:
-                    est_margin = (strike or 0) * 100 * (quantity or 1) * 0.10
-                    log.debug("auto_approve_whatif_failed", symbol=symbol, error=str(e))
+                        outstanding = db.query(TradeSuggestion).filter(
+                            TradeSuggestion.status.in_(["approved", "executed"]),
+                            TradeSuggestion.reviewed_at >= cutoff,
+                            TradeSuggestion.strike.isnot(None),
+                        ).all()
+                        for s in outstanding:
+                            est = (s.strike or 0) * 100 * (s.quantity or 1) * 0.20
+                            _buying_power_remaining -= est
+                        if outstanding:
+                            log.info("auto_approve_outstanding_orders",
+                                     count=len(outstanding),
+                                     bp_after_outstanding=f"${_buying_power_remaining:,.0f}")
 
+                # Estimate margin needed: ~20% of notional for naked puts
+                est_margin = (strike or 0) * 100 * (quantity or 1) * 0.20
                 if est_margin > 0 and _buying_power_remaining < est_margin:
                     _margin_rejected_this_cycle += 1
                     log.info("auto_approve_skipped_insufficient_margin",
@@ -348,19 +322,18 @@ def create_suggestion(
                              buying_power=f"${_buying_power_remaining:,.0f}",
                              est_margin=f"${est_margin:,.0f}",
                              rejection_count=_margin_rejected_this_cycle,
-                             msg="Not enough buying power - skipping this suggestion")
-                    # Do NOT deduct on rejection - buying power unchanged
+                             msg="Not enough buying power — skipping this suggestion")
                 else:
-                    # Only auto-approve rank 1 - one order at a time
+                    # Only auto-approve rank 1 — one order at a time
                     # Rank 2+ stays pending; next scan will promote if margin allows
                     if rank and rank > 1:
                         log.info("auto_approve_skipped_rank_limit",
                                  id=suggestion_id, symbol=symbol, rank=rank,
-                                 msg="Only rank 1 auto-approved - others pending")
+                                 msg="Only rank 1 auto-approved — others pending")
                     else:
                         log.info("auto_approving_suggestion", id=suggestion_id, symbol=symbol, source=source, rank=rank)
                         approve_suggestion(suggestion_id, note=f"auto-approved (rank #{rank})")
-                    # Deduct real margin from remaining buying power tracker
+                    # Subtract estimated margin so next suggestion sees reduced buying power
                     if est_margin > 0:
                         _buying_power_remaining -= est_margin
                         log.info("auto_approve_bp_updated",
