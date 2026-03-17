@@ -117,13 +117,6 @@ dividend:
     sector: Financials
     rationale: "AUM growth compounder, ~2.5% yield"
 
-  - symbol: AVGO
-    name: Broadcom
-    exchange: SMART
-    currency: USD
-    sector: Technology
-    rationale: "Growing dividend aristocrat in tech, ~2% yield, AI infrastructure"
-
   - symbol: TXN
     name: Texas Instruments
     exchange: SMART
@@ -137,13 +130,6 @@ dividend:
     currency: USD
     sector: Technology
     rationale: "Cloud + AI compounder, growing dividend, fortress balance sheet"
-
-  - symbol: ASML
-    name: ASML Holding
-    exchange: SMART
-    currency: USD
-    sector: Technology
-    rationale: "Monopoly on EUV lithography, growing dividend"
 
   - symbol: HD
     name: Home Depot
@@ -179,13 +165,6 @@ dividend:
     currency: USD
     sector: Industrials
     rationale: "Railroad duopoly, 17+ yr dividend growth"
-
-  - symbol: NVO
-    name: Novo Nordisk
-    exchange: SMART
-    currency: USD
-    sector: Healthcare
-    rationale: "GLP-1 dominance, growing dividend, demographic tailwind"
 
 
   - symbol: TEF
@@ -297,13 +276,6 @@ breakthrough:
     sector: EV/Battery
     rationale: "Vertically integrated EV + battery, global expansion"
 
-  - symbol: ALB
-    name: Albemarle
-    exchange: SMART
-    currency: USD
-    sector: Lithium/Materials
-    rationale: "Lithium leader, critical EV supply chain"
-
   - symbol: LI
     name: Li Auto
     exchange: SMART
@@ -354,6 +326,13 @@ breakthrough:
     rationale: "CGM leader, expanding beyond diabetes"
 
   # SWAV removed — acquired by Johnson & Johnson 2024
+
+  - symbol: ADYEY
+    name: Adyen
+    exchange: SMART
+    currency: USD
+    sector: Payments
+    rationale: "Global payment platform, unified commerce"
 
   - symbol: IONQ
     name: IonQ
@@ -594,6 +573,34 @@ growth:
     sector: Cybersecurity
     rationale: "Zero trust cloud security"
 
+  - symbol: AVGO
+    name: Broadcom
+    exchange: SMART
+    currency: USD
+    sector: Technology
+    rationale: "Growing dividend aristocrat in tech, ~2% yield, AI infrastructure"
+
+  - symbol: ASML
+    name: ASML Holding
+    exchange: SMART
+    currency: USD
+    sector: Technology
+    rationale: "Monopoly on EUV lithography, growing dividend"
+
+  - symbol: NVO
+    name: Novo Nordisk
+    exchange: SMART
+    currency: USD
+    sector: Healthcare
+    rationale: "GLP-1 dominance, growing dividend, demographic tailwind"
+
+  - symbol: ALB
+    name: Albemarle
+    exchange: SMART
+    currency: USD
+    sector: Lithium/Materials
+    rationale: "Lithium leader, critical EV supply chain"
+
   - symbol: GOOGL
     name: Alphabet
     exchange: SMART
@@ -716,13 +723,6 @@ growth:
     currency: USD
     sector: Super App
     rationale: "SE Asia ride-hail + delivery + payments"
-
-  - symbol: ADYEY
-    name: Adyen
-    exchange: SMART
-    currency: USD
-    sector: Payments
-    rationale: "Global payment platform, unified commerce"
 
   - symbol: KSPI
     name: Kaspi.kz
