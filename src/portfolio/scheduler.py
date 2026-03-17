@@ -1368,8 +1368,3 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
 
         except Exception as e:
             log.error("portfolio_trade_sync_error", error=str(e))
-        finally:
-            try:
-                ib.disconnect()
-            except Exception:
-                pass
