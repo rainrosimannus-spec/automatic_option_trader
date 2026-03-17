@@ -188,6 +188,62 @@ dividend:
     rationale: "GLP-1 dominance, growing dividend, demographic tailwind"
 
 
+  - symbol: TEF
+    name: Telefonica
+    exchange: SMART
+    currency: EUR
+    sector: Telecom
+    rationale: "European telecom, high dividend yield, Spain/LatAm exposure"
+
+  - symbol: ENG
+    name: Enagas
+    exchange: SMART
+    currency: EUR
+    sector: Energy/Infrastructure
+    rationale: "Spanish gas grid operator, regulated utility, high yield"
+
+  - symbol: RIO
+    name: Rio Tinto
+    exchange: LSE
+    currency: GBP
+    sector: Mining
+    rationale: "Global mining giant, iron ore + copper, high dividend"
+
+  - symbol: BWLPG
+    name: BW LPG
+    exchange: OSE
+    currency: NOK
+    sector: Shipping
+    rationale: "World's largest LPG tanker owner, high variable dividend"
+
+  - symbol: HAUTO
+    name: Hoegh Autoliners
+    exchange: OSE
+    currency: NOK
+    sector: Shipping
+    rationale: "Pure-play car carrier, high dividend, EV trade exposure"
+
+  - symbol: SFL
+    name: SFL Corporation
+    exchange: SMART
+    currency: USD
+    sector: Shipping
+    rationale: "Diversified shipping lessor, long-term charters, ~10% yield"
+
+  - symbol: NLY
+    name: Annaly Capital Management
+    exchange: SMART
+    currency: USD
+    sector: REITs/Mortgage
+    rationale: "Largest mortgage REIT, high yield, rate-sensitive"
+
+  - symbol: EC
+    name: Ecopetrol
+    exchange: SMART
+    currency: USD
+    sector: Energy
+    rationale: "Colombian national oil company, high yield, LatAm exposure"
+
 # ── TIER 2: BREAKTHROUGH / FRONTIER (25) ────────────────────
 # Frontrunners in transformative technologies
 # May not be profitable yet, high R&D, paradigm-shifting potential
