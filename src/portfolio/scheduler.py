@@ -23,91 +23,6 @@ log = get_logger(__name__)
 
 _portfolio_ib: Optional[IB] = None
 _portfolio_lock = threading.Lock()
-_portfolio_consecutive_failures: int = 0
-_portfolio_connected: bool = False
-
-
-def is_portfolio_connected() -> bool:
-    """Check if portfolio IB connection is alive."""
-    global _portfolio_ib, _portfolio_connected
-    if _portfolio_ib is not None and _portfolio_ib.isConnected():
-        _portfolio_connected = True
-        return True
-    _portfolio_connected = False
-    return False
-
-
-def job_portfolio_health_check(cfg: PortfolioConfig):
-    """
-    Portfolio connection health check — runs every 5 minutes.
-    Reconnects if disconnected. All other jobs use is_portfolio_connected()
-    and skip gracefully if not connected, instead of trying to reconnect themselves.
-    """
-    global _portfolio_ib, _portfolio_consecutive_failures, _portfolio_connected
-    _ensure_event_loop()
-
-    if not cfg.enabled:
-        return
-
-    if is_portfolio_connected():
-        _portfolio_consecutive_failures = 0
-        return
-
-    # Not connected — attempt reconnect
-    _portfolio_consecutive_failures += 1
-    log.warning("portfolio_disconnected_attempting_reconnect",
-                consecutive_failures=_portfolio_consecutive_failures)
-
-    try:
-        with _portfolio_lock:
-            # Clear dead connection
-            if _portfolio_ib is not None:
-                try:
-                    _portfolio_ib.disconnect()
-                except Exception:
-                    pass
-                _portfolio_ib = None
-
-            if not _is_port_open(cfg.ibkr_host, cfg.ibkr_port):
-                log.warning("portfolio_port_not_open", port=cfg.ibkr_port)
-                return
-
-            _portfolio_ib = IB()
-            _portfolio_ib.connect(
-                host=cfg.ibkr_host,
-                port=cfg.ibkr_port,
-                clientId=99,
-                timeout=30,
-                readonly=True,
-            )
-            _portfolio_ib.RequestTimeout = 15
-            _portfolio_ib.reqMarketDataType(4)
-            _portfolio_consecutive_failures = 0
-            _portfolio_connected = True
-            log.info("portfolio_reconnected_successfully")
-
-            # Refresh cache immediately on reconnect
-            try:
-                from src.portfolio.connection import refresh_portfolio_account_cache_from
-                refresh_portfolio_account_cache_from(_portfolio_ib)
-            except Exception:
-                pass
-
-    except Exception as e:
-        log.error("portfolio_reconnect_failed", error=str(e))
-
-        # Alert after 3 consecutive failures (~15 minutes)
-        if _portfolio_consecutive_failures >= 3:
-            try:
-                from src.core.alerts import get_alert_manager
-                get_alert_manager().send(
-                    title="⚠️ Portfolio Connection Down",
-                    body=f"Portfolio IBKR connection failed {_portfolio_consecutive_failures} times. Dashboard data stale.",
-                    priority="high",
-                    tags="portfolio",
-                )
-            except Exception:
-                pass
 
 
 def _is_port_open(host: str, port: int, timeout: float = 2.0) -> bool:
@@ -190,13 +105,9 @@ def job_portfolio_scan(cfg: PortfolioConfig):
     if not cfg.enabled:
         return
 
-    if not is_portfolio_connected():
-        log.debug("portfolio_scan_skipped_not_connected")
-        return
-
     with _portfolio_lock:
         try:
-            ib = _portfolio_ib
+            ib = _get_portfolio_connection(cfg)
             buyer = PortfolioBuyer(ib, cfg)
             bought = buyer.run_scan()
             log.info("portfolio_scan_job_done", bought=bought)
@@ -211,13 +122,9 @@ def job_portfolio_update_prices(cfg: PortfolioConfig):
     if not cfg.enabled:
         return
 
-    if not is_portfolio_connected():
-        log.debug("portfolio_prices_skipped_not_connected")
-        return
-
     with _portfolio_lock:
         try:
-            ib = _portfolio_ib
+            ib = _get_portfolio_connection(cfg)
             buyer = PortfolioBuyer(ib, cfg)
             buyer.update_holdings_prices()
             log.info("portfolio_prices_updated")
@@ -238,13 +145,9 @@ def job_portfolio_update_metrics(cfg: PortfolioConfig):
     if not cfg.enabled:
         return
 
-    if not is_portfolio_connected():
-        log.debug("portfolio_metrics_skipped_not_connected")
-        return
-
     with _portfolio_lock:
         try:
-            ib = _portfolio_ib
+            ib = _get_portfolio_connection(cfg)
             buyer = PortfolioBuyer(ib, cfg)
             # Always recalc scores from existing DB data first (instant, no IBKR)
             buyer.recalc_scores_from_db()
@@ -1469,3 +1372,8 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
 
         except Exception as e:
             log.error("portfolio_trade_sync_error", error=str(e))
+        finally:
+            try:
+                ib.disconnect()
+            except Exception:
+                pass
