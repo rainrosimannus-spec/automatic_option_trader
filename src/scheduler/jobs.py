@@ -1099,7 +1099,19 @@ def create_scheduler() -> BackgroundScheduler:
         from src.portfolio.scheduler import (
             job_portfolio_scan, job_portfolio_update_prices,
             job_portfolio_update_metrics, job_portfolio_monthly_screen,
-            job_portfolio_sync_trades,
+            job_portfolio_sync_trades, job_portfolio_health_check,
+        )
+
+        # Portfolio health check — every 5 minutes, handles reconnection
+        scheduler.add_job(
+            partial(job_portfolio_health_check, portfolio_cfg),
+            IntervalTrigger(minutes=5),
+            id="portfolio_health_check",
+            name="Portfolio Connection Health Check",
+            max_instances=1,
+            misfire_grace_time=60,
+            coalesce=True,
+            next_run_time=dt.now(pytz.UTC),  # run immediately on startup
         )
 
         # Buy scan — every N hours, 24/7
