@@ -648,23 +648,8 @@ def main():
     except Exception as e:
         log.warning("ipo_watchlist_seed_failed", error=str(e))
 
-    # Sync real IBKR holdings from portfolio account into database
-    # Run in background so it doesn't block the web server startup
-    pcfg = settings.portfolio
-    if is_port_open(pcfg.ibkr_host, pcfg.ibkr_port):
-        import threading
-        def _bg_portfolio_sync():
-            try:
-                _sync_ibkr_holdings()
-            except Exception as e:
-                log.warning("ibkr_holdings_sync_failed", error=str(e))
-        threading.Thread(target=_bg_portfolio_sync, daemon=True).start()
-        log.info("portfolio_sync_started_in_background")
-    else:
-        log.warning("portfolio_tws_not_running",
-                     port=pcfg.ibkr_port,
-                     msg=f"Portfolio TWS not found on port {pcfg.ibkr_port} — "
-                         f"holdings sync skipped, portfolio features limited")
+    # Portfolio holdings sync is handled by _get_portfolio_connection() in scheduler.py
+    # on first successful connect — single connection, client ID 99, no race condition
 
     # Start scheduler
     scheduler = create_scheduler()

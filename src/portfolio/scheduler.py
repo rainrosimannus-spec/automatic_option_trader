@@ -89,6 +89,12 @@ def _get_portfolio_connection(cfg: PortfolioConfig) -> IB:
                 refresh_portfolio_account_cache_from(_portfolio_ib)
             except Exception:
                 pass
+            # Sync holdings from IBKR on connect — one connection, no separate thread
+            try:
+                from src.portfolio.sync import sync_ibkr_holdings
+                sync_ibkr_holdings(_portfolio_ib)
+            except Exception as e:
+                log.warning("portfolio_holdings_sync_failed", error=str(e))
             return _portfolio_ib
         except Exception as e:
             log.warning("portfolio_connect_retry", attempt=attempt, error=str(e))
