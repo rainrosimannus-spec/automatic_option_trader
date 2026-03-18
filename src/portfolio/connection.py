@@ -113,7 +113,6 @@ def _connect(max_retries: int = 3) -> IB:
             )
             ib.RequestTimeout = 15
             ib.reqMarketDataType(4)
-            ib.reqAccountUpdates(True)
             ib.sleep(2)
 
             global _portfolio_main_loop
