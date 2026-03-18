@@ -74,6 +74,13 @@ def sync_ibkr_trades() -> int:
         # If empty, request executions explicitly
         if not fills:
             from ib_insync import ExecutionFilter
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    asyncio.set_event_loop(asyncio.new_event_loop())
+            except RuntimeError:
+                asyncio.set_event_loop(asyncio.new_event_loop())
             exec_filter = ExecutionFilter()
             if account_id:
                 exec_filter.acctCode = account_id

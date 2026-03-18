@@ -1163,6 +1163,12 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                     commission = fill.commissionReport.commission or 0.0
 
                 sec_type = contract.secType
+                wl_contract_size = getattr(wl, 'contract_size', None) or 100
+                wl_currency = getattr(wl, 'currency', 'USD') or 'USD'
+
+                def _opt_price(p):
+                    """Convert option price: GBP options are in pence, divide by 100."""
+                    return p / 100.0 if wl_currency == 'GBP' else p
                 right = getattr(contract, 'right', '')
                 strike = getattr(contract, 'strike', 0.0) or 0.0
                 expiry = getattr(contract, 'lastTradeDateOrContractMonth', '') or ''
@@ -1188,7 +1194,7 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                 elif sec_type in ("OPT", "FOP") and right == "P":
                     if side == "SLD":
                         action = "sell_put"
-                        premium_collected = price * qty * 100
+                        premium_collected = _opt_price(price) * qty * wl_contract_size
                         amount = premium_collected
                     else:
                         # Buying back a put — check if it's a close, assignment, or expiry
@@ -1220,17 +1226,17 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                                 amount = strike * shares
                         else:
                             action = "buy_put"
-                            amount = price * qty * 100
+                            amount = _opt_price(price) * qty * wl_contract_size
 
                 elif sec_type in ("OPT", "FOP") and right == "C":
                     if side == "SLD":
                         action = "sell_call"
-                        premium_collected = price * qty * 100
+                        premium_collected = _opt_price(price) * qty * wl_contract_size
                         amount = premium_collected
                     else:
                         # Buying back a call
                         action = "buy_call"
-                        amount = price * qty * 100
+                        amount = _opt_price(price) * qty * wl_contract_size
                 else:
                     # Other instrument types — skip
                     continue
