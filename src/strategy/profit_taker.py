@@ -134,12 +134,43 @@ class ProfitTaker:
         return False
 
     def _close_position(self, db, pos: Position) -> bool:
-        """Close the position by buying back the put using BS-computed price."""
+        """Close the position by buying back the put using BS-computed price.
+        Cancels any existing open close order first, then places fresh one with current price."""
         stock = self.universe.get_stock(pos.symbol)
         exchange = stock.exchange if stock else "SMART"
         opt_exchange = stock.opt_exchange if stock else "SMART"  # options exchange (e.g. EUREX for German stocks)
         currency = stock.currency if stock else "USD"
         contract_size = stock.contract_size if stock else 100
+
+        # Cancel any existing open close orders for this position
+        # so we don't accumulate duplicate orders across scan cycles
+        try:
+            existing_trades = db.query(Trade).filter(
+                Trade.position_id == pos.id,
+                Trade.trade_type == TradeType.BUY_PUT,
+                Trade.order_status == OrderStatus.SUBMITTED,
+            ).all()
+            if existing_trades:
+                from src.broker.orders import cancel_order
+                from src.broker.connection import get_ib
+                ib = get_ib()
+                for existing in existing_trades:
+                    if existing.order_id:
+                        try:
+                            # Find the live trade object and cancel it
+                            live_trades = ib.trades()
+                            for lt in live_trades:
+                                if lt.order.orderId == existing.order_id:
+                                    cancel_order(lt)
+                                    log.info("cancelled_existing_close_order",
+                                             symbol=pos.symbol, order_id=existing.order_id)
+                                    break
+                        except Exception as e:
+                            log.warning("cancel_existing_close_failed",
+                                        symbol=pos.symbol, error=str(e))
+                    existing.order_status = OrderStatus.FILLED  # mark as superseded
+        except Exception as e:
+            log.warning("cancel_existing_close_check_failed", symbol=pos.symbol, error=str(e))
 
         # Compute theoretical ask price
         stock_price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
