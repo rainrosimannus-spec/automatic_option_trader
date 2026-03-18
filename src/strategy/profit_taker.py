@@ -6,6 +6,7 @@ This extracts more premium from the same capital over time.
 from __future__ import annotations
 
 from datetime import datetime
+import pytz
 
 from src.broker.market_data import get_stock_price
 from src.broker.greeks import compute_put_greeks, get_current_iv
@@ -19,6 +20,56 @@ from src.strategy.universe import UniverseManager
 from ib_insync import Option as IBOption
 
 log = get_logger(__name__)
+
+# Market hours per currency: (timezone, open_hour, close_hour)
+_MARKET_HOURS = {
+    "USD": ("US/Eastern",      9, 16),
+    "CAD": ("US/Eastern",      9, 16),
+    "EUR": ("Europe/Berlin",   9, 17),
+    "CHF": ("Europe/Berlin",   9, 17),
+    "GBP": ("Europe/London",   8, 16),
+    "NOK": ("Europe/Berlin",   9, 17),
+    "SEK": ("Europe/Berlin",   9, 17),
+    "DKK": ("Europe/Berlin",   9, 17),
+    "JPY": ("Asia/Tokyo",      9, 15),
+    "AUD": ("Australia/Sydney",10, 16),
+    "HKD": ("Asia/Hong_Kong",  9, 16),
+}
+
+
+def _is_market_open(currency: str) -> bool:
+    """Return True if the market for this currency is currently open."""
+    hours = _MARKET_HOURS.get(currency)
+    if not hours:
+        return True  # unknown currency — assume open
+    tz_name, open_h, close_h = hours
+    tz = pytz.timezone(tz_name)
+    now = datetime.now(tz)
+    return now.weekday() < 5 and open_h <= now.hour < close_h
+
+
+def _minutes_to_market_open(currency: str) -> float:
+    """Return minutes until next market open. 0 if market is already open."""
+    hours = _MARKET_HOURS.get(currency)
+    if not hours:
+        return 0.0
+    tz_name, open_h, close_h = hours
+    tz = pytz.timezone(tz_name)
+    now = datetime.now(tz)
+
+    if now.weekday() < 5 and open_h <= now.hour < close_h:
+        return 0.0  # market is open right now
+
+    # Find next open: today if before open, else tomorrow (skip weekend)
+    from datetime import timedelta
+    candidate = now.replace(hour=open_h, minute=0, second=0, microsecond=0)
+    if now >= candidate:
+        candidate += timedelta(days=1)
+    # Skip Saturday (5) and Sunday (6)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+
+    return (candidate - now).total_seconds() / 60.0
 
 
 class ProfitTaker:
@@ -51,12 +102,65 @@ class ProfitTaker:
 
             for pos in open_puts:
                 try:
+                    # Skip if market opens more than 60 minutes from now
+                    stock = self.universe.get_stock(pos.symbol)
+                    currency = stock.currency if stock else "USD"
+                    mins_to_open = _minutes_to_market_open(currency)
+                    if mins_to_open > 60:
+                        log.debug("profit_check_skipped_market_closed",
+                                  symbol=pos.symbol, currency=currency,
+                                  mins_to_open=round(mins_to_open))
+                        continue
+
                     if self._should_close(pos):
                         success = self._close_position(db, pos)
                         if success:
                             closed.append(pos.symbol)
                 except Exception as e:
                     log.error("profit_check_error", symbol=pos.symbol, error=str(e))
+
+        # Cancel any open close-orders for positions whose market is now closed
+        try:
+            with get_db() as db:
+                from src.core.models import TradeType, OrderStatus
+                submitted_closes = (
+                    db.query(Trade)
+                    .filter(
+                        Trade.trade_type == TradeType.BUY_PUT,
+                        Trade.order_status == OrderStatus.SUBMITTED,
+                    )
+                    .all()
+                )
+                if submitted_closes:
+                    from src.broker.orders import cancel_order
+                    from src.broker.connection import get_ib
+                    ib = get_ib()
+                    live_trades = ib.trades()
+                    for t in submitted_closes:
+                        pos_currency = "USD"
+                        try:
+                            from src.strategy.universe import UniverseManager
+                            stk = UniverseManager().get_stock(t.symbol)
+                            if stk:
+                                pos_currency = stk.currency
+                        except Exception:
+                            pass
+                        if not _is_market_open(pos_currency):
+                            for lt in live_trades:
+                                if lt.order.orderId == t.order_id:
+                                    try:
+                                        cancel_order(lt)
+                                        t.order_status = OrderStatus.CANCELLED
+                                        log.info("cancelled_close_order_market_closed",
+                                                 symbol=t.symbol, order_id=t.order_id,
+                                                 currency=pos_currency)
+                                    except Exception as e:
+                                        log.warning("cancel_close_order_failed",
+                                                    symbol=t.symbol, error=str(e))
+                                    break
+                    db.commit()
+        except Exception as e:
+            log.warning("cancel_closed_market_orders_failed", error=str(e))
 
         # If rolling is enabled, trigger a re-scan on closed symbols
         if self.cfg.roll_enabled and closed:
