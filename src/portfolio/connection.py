@@ -128,6 +128,11 @@ def _connect(max_retries: int = 3) -> IB:
                 log.warning("portfolio_initial_cache_failed", error=str(e))
 
             try:
+                refresh_brkb_history(ib)
+            except Exception as e:
+                log.warning("portfolio_initial_brkb_failed", error=str(e))
+
+            try:
                 from src.portfolio.sync import sync_ibkr_holdings
                 sync_ibkr_holdings(ib)
             except Exception as e:
@@ -263,22 +268,6 @@ def refresh_portfolio_account_cache_from(ib: IB):
         else:
             data["margin_pct"] = 0
 
-        try:
-            from ib_insync import Stock as _Stock
-            _brkb = _Stock("BRK B", "SMART", "USD")
-            _bars = ib.reqHistoricalData(
-                _brkb, endDateTime="",
-                durationStr="365 D", barSizeSetting="1 day",
-                whatToShow="TRADES", useRTH=True,
-                formatDate=1, timeout=15,
-            )
-            if _bars:
-                data["brkb_history"] = {
-                    str(b.date): float(b.close) for b in _bars
-                }
-        except Exception as e:
-            log.warning("brkb_cache_fetch_failed", error=str(e))
-
         with _portfolio_cache_lock:
             _cached_portfolio_account = data
 
@@ -292,6 +281,40 @@ def refresh_portfolio_account_cache_from(ib: IB):
 
     except Exception:
         pass
+
+
+def refresh_brkb_history(ib: IB):
+    """Fetch BRK-B 1-year daily history via IBKR and store in cache.
+    Called once at startup and daily — NOT in the health check."""
+    try:
+        from ib_insync import Stock as _Stock
+        _brkb = _Stock("BRK B", "SMART", "USD")
+        _bars = ib.reqHistoricalData(
+            _brkb, endDateTime="",
+            durationStr="365 D", barSizeSetting="1 day",
+            whatToShow="TRADES", useRTH=True,
+            formatDate=1, timeout=15,
+        )
+        if _bars:
+            brkb_data = {str(b.date): float(b.close) for b in _bars}
+            with _portfolio_cache_lock:
+                _cached_portfolio_account["brkb_history"] = brkb_data
+            try:
+                import json as _json, os as _os
+                _os.makedirs(_os.path.dirname(_CACHE_FILE), exist_ok=True)
+                try:
+                    with open(_CACHE_FILE, "r") as f:
+                        existing = _json.load(f)
+                except Exception:
+                    existing = {}
+                existing["brkb_history"] = brkb_data
+                with open(_CACHE_FILE, "w") as f2:
+                    _json.dump(existing, f2)
+            except Exception:
+                pass
+            log.info("brkb_history_refreshed", entries=len(brkb_data))
+    except Exception as e:
+        log.warning("brkb_cache_fetch_failed", error=str(e))
 
 
 def get_cached_portfolio_account() -> dict:

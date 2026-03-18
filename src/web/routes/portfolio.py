@@ -96,50 +96,7 @@ def _build_portfolio_performance() -> dict:
     }
 
 
-def _build_brkb_series(labels: list) -> list:
-    """BRK-B % change series, anchored so most recent date = 0%."""
-    if not labels:
-        return []
-    try:
-        import requests
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/BRK-B?interval=1d&range=1y"
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        result = data["chart"]["result"][0]
-        timestamps = result["timestamp"]
-        closes = result["indicators"]["quote"][0]["close"]
 
-        from datetime import datetime, timezone
-        price_map = {}
-        for ts, close in zip(timestamps, closes):
-            if close is not None:
-                date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
-                price_map[date_str] = close
-
-        sorted_dates = sorted(price_map.keys())
-        prices = []
-        for label in labels:
-            p = price_map.get(label)
-            if p is None:
-                for d in reversed(sorted_dates):
-                    if d <= label:
-                        p = price_map[d]
-                        break
-            prices.append(p)
-
-        if not prices or prices[-1] is None:
-            return []
-
-        anchor_price = prices[0]
-        return [
-            round((p / anchor_price - 1.0) * 100.0, 4) if p is not None else None
-            for p in prices
-        ]
-    except Exception as e:
-        from src.core.logger import get_logger
-        get_logger(__name__).warning("brkb_series_failed", error=str(e))
-        return []
 
 
 
@@ -411,22 +368,23 @@ async def portfolio_trades_page(request: Request):
 
 
 @router.post("/portfolio/trades/sync")
-def sync_portfolio_trades():
-    """Manually trigger IBKR trade sync for portfolio."""
+async def sync_portfolio_trades():
+    """Manually trigger IBKR trade sync for portfolio — runs in background thread."""
     import asyncio
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
-    try:
-        from src.portfolio.config import PortfolioConfig
-        from src.portfolio.scheduler import job_portfolio_sync_trades
-        pcfg = PortfolioConfig()
-        job_portfolio_sync_trades(pcfg)
-    except Exception:
-        import traceback
-        traceback.print_exc()
     from fastapi.responses import RedirectResponse
+    from src.core.config import get_settings
+
+    def _run_sync():
+        try:
+            from src.portfolio.scheduler import job_portfolio_sync_trades
+            pcfg = get_settings().portfolio
+            job_portfolio_sync_trades(pcfg)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _run_sync)
     return RedirectResponse(url="/portfolio/trades", status_code=303)
 
 

@@ -1188,6 +1188,25 @@ def create_scheduler() -> BackgroundScheduler:
             coalesce=True,
         )
 
+        # BRK-B history refresh — daily at 6 AM ET (after market close data is settled)
+        from src.portfolio.connection import refresh_brkb_history as _refresh_brkb
+        def _job_brkb_refresh():
+            try:
+                from src.portfolio.connection import get_portfolio_ib
+                ib = get_portfolio_ib()
+                _refresh_brkb(ib)
+            except Exception as e:
+                log.warning("brkb_daily_refresh_failed", error=str(e))
+        scheduler.add_job(
+            _job_brkb_refresh,
+            CronTrigger(hour=6, minute=30, timezone=us_tz),
+            id="portfolio_brkb_refresh",
+            name="Portfolio BRK-B History Refresh",
+            max_instances=1,
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
+
         # Portfolio health check — every 5 minutes, mirrors options job_health_check()
         from src.portfolio.scheduler import job_portfolio_health_check
         scheduler.add_job(
