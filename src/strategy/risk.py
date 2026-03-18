@@ -369,7 +369,10 @@ class RiskManager:
         # Get current margin used by this symbol if already open
         # For new positions: estimate using current stock price × 100 multiplier
         try:
-            price = get_stock_price(symbol)
+            stock = self.universe.get_stock(symbol)
+            currency = stock.currency if stock else "USD"
+            exchange = stock.exchange if stock else "SMART"
+            price = get_stock_price(symbol, exchange=exchange, currency=currency)
             if not price or price <= 0:
                 return RiskCheck(True)  # can't check, allow
         except Exception:
