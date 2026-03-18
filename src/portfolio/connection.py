@@ -217,6 +217,13 @@ def refresh_portfolio_account_cache_from(ib: IB):
     try:
         if ib is None or not ib.isConnected():
             return
+        # Request fresh account data before reading — ensures cache is current
+        try:
+            from src.core.config import get_settings
+            _acfg = get_settings().portfolio
+            ib.reqAccountUpdates(_acfg.ibkr_account or "")
+        except Exception:
+            pass
         values = ib.accountValues()
         if not values:
             return
