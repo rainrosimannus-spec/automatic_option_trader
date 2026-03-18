@@ -14,7 +14,15 @@ function syncPositions() {
 function forceClose(id, symbol) {
     if (!window.confirm('Force close ' + symbol + '?')) return;
     fetch('/controls/force-close/' + id, {method: 'POST'})
-        .then(r => { window.location.reload(); })
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === 'ok') {
+                alert(data.message);
+                window.location.reload();
+            } else {
+                alert('Error: ' + data.message);
+            }
+        })
         .catch(e => { alert('Error: ' + e); });
 }
 </script>

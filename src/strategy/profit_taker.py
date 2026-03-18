@@ -168,7 +168,7 @@ class ProfitTaker:
                         except Exception as e:
                             log.warning("cancel_existing_close_failed",
                                         symbol=pos.symbol, error=str(e))
-                    existing.order_status = OrderStatus.FILLED  # mark as superseded
+                    existing.order_status = OrderStatus.CANCELLED  # superseded by new order
         except Exception as e:
             log.warning("cancel_existing_close_check_failed", symbol=pos.symbol, error=str(e))
 
@@ -202,11 +202,8 @@ class ProfitTaker:
         if not trade:
             return False
 
-        realized = (pos.entry_premium - ask_price) * contract_size * pos.quantity
-        pos.status = PositionStatus.CLOSED
-        pos.closed_at = datetime.utcnow()
-        pos.realized_pnl = realized
-
+        # Record the close order as SUBMITTED — position stays OPEN until fill confirmed
+        # The IBKR trade sync job will update status to FILLED when it actually executes
         trade_record = Trade(
             position_id=pos.id,
             symbol=pos.symbol,
@@ -222,7 +219,8 @@ class ProfitTaker:
         )
         db.add(trade_record)
 
-        log.info("position_closed_profit", symbol=pos.symbol, realized=round(realized, 2))
+        log.info("profit_take_order_placed", symbol=pos.symbol,
+                 order_id=trade.order.orderId, limit_price=round(ask_price, 2))
         return True
 
     def _roll_positions(self, symbols: list[str]) -> None:

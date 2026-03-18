@@ -370,6 +370,8 @@ class PutSeller:
 
     def _record_trade(self, symbol, candidate, order_id, current_vix, contract_size=100, currency="USD"):
         """Save the trade and position to the database."""
+        # UK options prices are in pence — convert to pounds for storage
+        premium = candidate.bid / 100.0 if currency == "GBP" else candidate.bid
         with get_db() as db:
             position = Position(
                 symbol=symbol,
@@ -377,9 +379,9 @@ class PutSeller:
                 position_type="short_put",
                 strike=candidate.strike,
                 expiry=candidate.expiry,
-                entry_premium=candidate.bid,
+                entry_premium=premium,
                 quantity=self.cfg.contracts_per_stock,
-                total_premium_collected=candidate.bid * contract_size * self.cfg.contracts_per_stock,
+                total_premium_collected=premium * contract_size * self.cfg.contracts_per_stock,
             )
             db.add(position)
             db.flush()  # get position.id
@@ -390,9 +392,9 @@ class PutSeller:
                 trade_type=TradeType.SELL_PUT,
                 strike=candidate.strike,
                 expiry=candidate.expiry,
-                premium=candidate.bid,
+                premium=premium,
                 quantity=self.cfg.contracts_per_stock,
-                fill_price=candidate.bid,
+                fill_price=premium,
                 order_id=order_id,
                 order_status=OrderStatus.SUBMITTED,
                 delta_at_entry=candidate.delta,

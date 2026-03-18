@@ -144,21 +144,32 @@ def save_bridge_settings(
 
 
 @router.post("/force-close/{position_id}")
-def force_close_position(position_id: int):
+async def force_close_position(position_id: int):
     """Force close a single position — sends market order to IBKR then marks DB closed."""
-    with get_db() as db:
-        pos = db.query(Position).filter(Position.id == position_id).first()
-        if pos and pos.status == PositionStatus.OPEN:
+    import asyncio
+    from fastapi.responses import JSONResponse
+
+    def _do_close():
+        order_sent = False
+        with get_db() as db:
+            pos = db.query(Position).filter(Position.id == position_id).first()
+            if not pos or pos.status != PositionStatus.OPEN:
+                return {"status": "error", "message": "Position not found or not open"}
             try:
                 from src.broker.connection import get_ib, get_ib_lock, is_connected
                 from src.broker.orders import _get_order_connection, _order_lock
+                from src.strategy.universe import UniverseManager
                 from ib_insync import Option, Stock, Order
 
                 if is_connected():
+                    universe = UniverseManager()
+                    stock = universe.get_stock(pos.symbol)
+                    opt_exchange = stock.opt_exchange if stock else "SMART"
+                    currency = stock.currency if stock else "USD"
+
                     with _order_lock:
                         ib = _get_order_connection()
 
-                        # Build the contract
                         if pos.position_type in ("short_put", "covered_call", "short_call"):
                             right = "P" if pos.position_type == "short_put" else "C"
                             contract = Option(
@@ -166,12 +177,13 @@ def force_close_position(position_id: int):
                                 lastTradeDateOrContractMonth=pos.expiry,
                                 strike=pos.strike,
                                 right=right,
-                                exchange="SMART",
+                                exchange=opt_exchange,
+                                currency=currency,
                             )
-                            action = "BUY"  # buy to close a short option
+                            action = "BUY"
                         elif pos.position_type == "stock":
-                            contract = Stock(pos.symbol, "SMART", "USD")
-                            action = "SELL"  # sell to close stock
+                            contract = Stock(pos.symbol, "SMART", currency)
+                            action = "SELL"
                         else:
                             contract = None
 
@@ -184,6 +196,7 @@ def force_close_position(position_id: int):
                             )
                             trade = ib.placeOrder(contract, order)
                             ib.sleep(1)
+                            order_sent = True
                             log.info("force_close_order_sent",
                                      position_id=position_id,
                                      symbol=pos.symbol,
@@ -191,12 +204,21 @@ def force_close_position(position_id: int):
                                      status=trade.orderStatus.status)
             except Exception as e:
                 log.error("force_close_ibkr_error", position_id=position_id, error=str(e))
+                return {"status": "error", "message": str(e)}
 
-            pos.status = PositionStatus.CLOSED
-            pos.closed_at = datetime.utcnow()
-            log.info("force_closed", position_id=position_id, symbol=pos.symbol)
+            # Only mark closed if order was successfully sent
+            if order_sent:
+                pos.status = PositionStatus.CLOSED
+                pos.closed_at = datetime.utcnow()
+                pos.realized_pnl = pos.realized_pnl or 0.0
+                log.info("force_closed", position_id=position_id, symbol=pos.symbol)
+                return {"status": "ok", "message": f"Close order sent for {pos.symbol}"}
+            else:
+                return {"status": "error", "message": "IBKR not connected"}
 
-    return RedirectResponse(url="/positions", status_code=303)
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _do_close)
+    return JSONResponse(result)
 
 
 @router.post("/cancel-order/{order_id}")

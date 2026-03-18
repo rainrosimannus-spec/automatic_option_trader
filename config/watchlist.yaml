@@ -337,6 +337,7 @@ dividend:
     exchange: SMART
     currency: GBP
     options_exchange: ICEEU
+    contract_size: 1000
     div_yield: 6.5
   - symbol: SHEL
     name: Shell plc
@@ -344,6 +345,7 @@ dividend:
     exchange: SMART
     currency: GBP
     options_exchange: ICEEU
+    contract_size: 1000
     div_yield: 3.8
   - symbol: HSBA
     name: HSBC Holdings
@@ -351,6 +353,7 @@ dividend:
     exchange: SMART
     currency: GBP
     options_exchange: ICEEU
+    contract_size: 1000
     div_yield: 5.0
   - symbol: AZN
     name: AstraZeneca plc
@@ -358,6 +361,7 @@ dividend:
     exchange: SMART
     currency: GBP
     options_exchange: ICEEU
+    contract_size: 1000
     div_yield: 2.1
 
   # ── Frankfurt / Xetra (3) ──

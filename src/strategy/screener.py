@@ -31,7 +31,9 @@ _ESTIMATED_FEES = {
 
 def _passes_fee_floor(premium, contract_size, currency, contracts=1):
     cfg = get_settings().strategy
-    gross = premium * contract_size * contracts
+    # UK options prices are in pence — convert to pounds for fee comparison
+    effective_premium = premium / 100.0 if currency == "GBP" else premium
+    gross = effective_premium * contract_size * contracts
     minimum = _ESTIMATED_FEES.get(currency, 2.0) * contracts * cfg.min_net_premium_multiplier
     if gross < minimum:
         log.info("premium_below_fee_floor", premium=round(premium, 4),
