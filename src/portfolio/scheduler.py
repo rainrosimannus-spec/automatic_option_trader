@@ -1,120 +1,70 @@
 """
 Portfolio scheduler jobs — periodic buy scans, price updates, annual rescreen.
 
-Uses a dedicated IBKR connection (clientId=99) to avoid conflicts
-with the options trader's health checks and data requests.
+Single IBKR connection owned by src.portfolio.connection — mirrors broker/connection.py pattern.
+All jobs call get_portfolio_ib() which returns the singleton or raises.
+job_portfolio_health_check() is the only place that reconnects.
 """
 from __future__ import annotations
 
-import asyncio
-import socket
 import threading
 import time
 from datetime import datetime
-from typing import Optional
 
 from ib_insync import IB
 
 from src.core.logger import get_logger
 from src.portfolio.config import PortfolioConfig
 from src.portfolio.buyer import PortfolioBuyer
+from src.portfolio.connection import (
+    get_portfolio_ib,
+    get_portfolio_lock,
+    is_portfolio_connected,
+    reconnect_portfolio,
+    refresh_portfolio_account_cache_from,
+)
 
 log = get_logger(__name__)
 
-_portfolio_ib: Optional[IB] = None
-_portfolio_lock = threading.Lock()
+_consecutive_disconnect_checks: int = 0
 
 
-def _is_port_open(host: str, port: int, timeout: float = 2.0) -> bool:
-    """Quick TCP check — is TWS/Gateway listening on this port?"""
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except (ConnectionRefusedError, TimeoutError, OSError):
-        return False
+def job_portfolio_health_check(cfg: PortfolioConfig):
+    """Periodic health check — reconnect on disconnect, mirrors job_health_check()."""
+    global _consecutive_disconnect_checks
 
-
-def _ensure_event_loop():
-    import threading
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed() or threading.current_thread() is not threading.main_thread():
-            asyncio.set_event_loop(asyncio.new_event_loop())
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
-
-
-def _get_portfolio_connection(cfg: PortfolioConfig) -> IB:
-    """Get or create a dedicated portfolio IB connection.
-    
-    Does a quick TCP port check first — if Portfolio TWS isn't running,
-    fails immediately instead of retrying for ~100 seconds.
-    """
-    global _portfolio_ib
-    _ensure_event_loop()
-
-    if _portfolio_ib is not None and _portfolio_ib.isConnected():
-        return _portfolio_ib
-
-    # Clear dead connection before attempting reconnect
-    if _portfolio_ib is not None and not _portfolio_ib.isConnected():
+    if not is_portfolio_connected():
+        _consecutive_disconnect_checks += 1
+        log.warning("portfolio_disconnected_attempting_reconnect",
+                    consecutive_failures=_consecutive_disconnect_checks)
         try:
-            _portfolio_ib.disconnect()
-        except Exception:
-            pass
-        _portfolio_ib = None
-
-    # Quick check: is the port even open?
-    if not _is_port_open(cfg.ibkr_host, cfg.ibkr_port):
-        raise ConnectionError(
-            f"Portfolio TWS not reachable on {cfg.ibkr_host}:{cfg.ibkr_port}"
-        )
-
-    _portfolio_ib = IB()
-
-    for attempt in range(1, 4):
-        try:
-            _portfolio_ib.connect(
-                host=cfg.ibkr_host,
-                port=cfg.ibkr_port,
-                clientId=99,  # dedicated client ID for portfolio
-                timeout=30,
-                readonly=True,
-            )
-            _portfolio_ib.RequestTimeout = 15
-            _portfolio_ib.reqMarketDataType(4)
-            log.info("portfolio_connection_established", clientId=99)
-            # Immediately populate cache so dashboard shows margin without waiting for hourly scan
-            try:
-                from src.portfolio.connection import refresh_portfolio_account_cache_from
-                refresh_portfolio_account_cache_from(_portfolio_ib)
-            except Exception:
-                pass
-            # Sync holdings from IBKR on connect — one connection, no separate thread
-            try:
-                from src.portfolio.sync import sync_ibkr_holdings
-                sync_ibkr_holdings(_portfolio_ib)
-            except Exception as e:
-                log.warning("portfolio_holdings_sync_failed", error=str(e))
-            return _portfolio_ib
+            reconnect_portfolio()
+            if is_portfolio_connected():
+                log.info("portfolio_reconnected_successfully")
+                _consecutive_disconnect_checks = 0
         except Exception as e:
-            log.warning("portfolio_connect_retry", attempt=attempt, error=str(e))
-            if attempt < 3:
-                time.sleep(35)  # wait for TWS 30-second rule
+            log.error("portfolio_reconnect_failed", error=str(e))
+        return
 
-    raise ConnectionError("Failed to connect portfolio scanner")
+    _consecutive_disconnect_checks = 0
+
+    # Refresh account cache on every health check so dashboard stays fresh
+    try:
+        ib = get_portfolio_ib()
+        refresh_portfolio_account_cache_from(ib)
+    except Exception as e:
+        log.warning("portfolio_health_cache_refresh_failed", error=str(e))
 
 
 def job_portfolio_scan(cfg: PortfolioConfig):
     """Scan watchlist for buy opportunities."""
-    _ensure_event_loop()
 
     if not cfg.enabled:
         return
 
-    with _portfolio_lock:
+    with get_portfolio_lock():
         try:
-            ib = _get_portfolio_connection(cfg)
+            ib = get_portfolio_ib()
             buyer = PortfolioBuyer(ib, cfg)
             bought = buyer.run_scan()
             log.info("portfolio_scan_job_done", bought=bought)
@@ -124,14 +74,13 @@ def job_portfolio_scan(cfg: PortfolioConfig):
 
 def job_portfolio_update_prices(cfg: PortfolioConfig):
     """Update holdings with current market prices."""
-    _ensure_event_loop()
 
     if not cfg.enabled:
         return
 
-    with _portfolio_lock:
+    with get_portfolio_lock():
         try:
-            ib = _get_portfolio_connection(cfg)
+            ib = get_portfolio_ib()
             buyer = PortfolioBuyer(ib, cfg)
             buyer.update_holdings_prices()
             log.info("portfolio_prices_updated")
@@ -147,14 +96,13 @@ def job_portfolio_update_prices(cfg: PortfolioConfig):
 
 def job_portfolio_update_metrics(cfg: PortfolioConfig):
     """Update watchlist metrics (SMA, RSI, discount) independently from buy scan."""
-    _ensure_event_loop()
 
     if not cfg.enabled:
         return
 
-    with _portfolio_lock:
+    with get_portfolio_lock():
         try:
-            ib = _get_portfolio_connection(cfg)
+            ib = get_portfolio_ib()
             buyer = PortfolioBuyer(ib, cfg)
             # Always recalc scores from existing DB data first (instant, no IBKR)
             buyer.recalc_scores_from_db()
@@ -179,17 +127,16 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
     They always require manual approval via dashboard.
     Breakthrough tier: always manual regardless of auto mode setting.
     """
-    _ensure_event_loop()
 
     if not cfg.enabled:
         return
 
-    with _portfolio_lock:
+    with get_portfolio_lock():
         log.info("portfolio_monthly_screen_started",
                  date=datetime.utcnow().strftime("%Y-%m-%d"))
 
         try:
-            ib = _get_portfolio_connection(cfg)
+            ib = get_portfolio_ib()
 
             # ══════════════════════════════════════════════════════
             # PHASE 1: Screen universe
@@ -1138,19 +1085,18 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
     watchlist stocks regardless of whether option trader or portfolio
     manager initiated the trade.
     """
-    _ensure_event_loop()
 
     if not cfg.enabled:
         return
 
-    with _portfolio_lock:
+    with get_portfolio_lock():
         try:
             from src.core.database import get_db
             from src.portfolio.models import PortfolioTransaction, PortfolioWatchlist
             from datetime import datetime
 
             # Use portfolio connection (port 7496), NOT options connection
-            ib = _get_portfolio_connection(cfg)
+            ib = get_portfolio_ib()
             if ib is None:
                 log.debug("portfolio_trade_sync_not_connected")
                 return

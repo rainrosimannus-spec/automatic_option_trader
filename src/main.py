@@ -648,8 +648,22 @@ def main():
     except Exception as e:
         log.warning("ipo_watchlist_seed_failed", error=str(e))
 
-    # Portfolio holdings sync is handled by _get_portfolio_connection() in scheduler.py
-    # on first successful connect — single connection, client ID 99, no race condition
+    # Connect to IBKR (Portfolio account)
+    from src.portfolio.connection import initial_connect_portfolio, is_portfolio_connected
+    from src.portfolio.connection import _is_port_open as _portfolio_port_open
+    portfolio_cfg = settings.portfolio
+    if _portfolio_port_open(portfolio_cfg.ibkr_host, portfolio_cfg.ibkr_port):
+        try:
+            initial_connect_portfolio()
+            log.info("portfolio_ibkr_ready")
+        except Exception as e:
+            log.error("portfolio_connection_failed", error=str(e))
+            log.warning("starting_without_portfolio_connection")
+    else:
+        log.warning("portfolio_tws_not_running",
+                     port=portfolio_cfg.ibkr_port,
+                     msg=f"Portfolio TWS not found on port {portfolio_cfg.ibkr_port} — "
+                         f"portfolio disabled until TWS is started")
 
     # Start scheduler
     scheduler = create_scheduler()

@@ -1188,6 +1188,18 @@ def create_scheduler() -> BackgroundScheduler:
             coalesce=True,
         )
 
+        # Portfolio health check — every 5 minutes, mirrors options job_health_check()
+        from src.portfolio.scheduler import job_portfolio_health_check
+        scheduler.add_job(
+            partial(job_portfolio_health_check, portfolio_cfg),
+            IntervalTrigger(minutes=5),
+            id="portfolio_health_check",
+            name="Portfolio IBKR Health Check",
+            max_instances=1,
+            misfire_grace_time=300,
+            coalesce=True,
+        )
+
         log.info("portfolio_scheduler_enabled",
                  account=portfolio_cfg.ibkr_account,
                  scan_interval=f"{portfolio_cfg.check_interval_hours}h",
@@ -1356,14 +1368,7 @@ def create_scheduler() -> BackgroundScheduler:
         _ensure_event_loop()
         try:
             from src.portfolio.connection import get_portfolio_ib
-            from src.core.config import get_settings
-            cfg = get_settings().portfolio
-            ib = get_portfolio_ib(
-                host=getattr(cfg, 'ibkr_host', '127.0.0.1'),
-                port=cfg.ibkr_port,
-                client_id=cfg.ibkr_client_id,
-                account=cfg.ibkr_account,
-            )
+            ib = get_portfolio_ib()
             trader = IpoTrader(ib)
             trader.check_lockup_entries()
         except Exception as e:
