@@ -266,7 +266,6 @@ def refresh_portfolio_account_cache_from(ib: IB):
         try:
             from ib_insync import Stock as _Stock
             _brkb = _Stock("BRK B", "SMART", "USD")
-            ib.qualifyContracts(_brkb)
             _bars = ib.reqHistoricalData(
                 _brkb, endDateTime="",
                 durationStr="365 D", barSizeSetting="1 day",
