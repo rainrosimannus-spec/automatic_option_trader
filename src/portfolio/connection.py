@@ -274,6 +274,14 @@ def refresh_portfolio_account_cache_from(ib: IB):
         try:
             import json, os
             os.makedirs(os.path.dirname(_CACHE_FILE), exist_ok=True)
+            # Preserve brkb_history from existing cache — it's written by refresh_brkb_history()
+            try:
+                with open(_CACHE_FILE, "r") as f:
+                    existing = json.load(f)
+                if "brkb_history" in existing and "brkb_history" not in data:
+                    data["brkb_history"] = existing["brkb_history"]
+            except Exception:
+                pass
             with open(_CACHE_FILE, "w") as f:
                 json.dump(data, f)
         except Exception:
