@@ -1196,12 +1196,13 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                             # Price ~0 means either assigned (ITM) or expired (OTM)
                             # Check current stock price vs strike to distinguish
                             try:
+                                from ib_insync import Stock
                                 stock_contract = Stock(symbol, wl.exchange or "SMART", wl.currency or "USD")
-                                self.ib.qualifyContracts(stock_contract)
-                                ticker = self.ib.reqMktData(stock_contract, "", False, False)
-                                self.ib.sleep(2)
+                                ib.qualifyContracts(stock_contract)
+                                ticker = ib.reqMktData(stock_contract, "", False, False)
+                                ib.sleep(2)
                                 stock_price = ticker.last or ticker.close or 0
-                                self.ib.cancelMktData(stock_contract)
+                                ib.cancelMktData(stock_contract)
                             except Exception:
                                 stock_price = 0
 
