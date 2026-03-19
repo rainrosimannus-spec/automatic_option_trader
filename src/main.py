@@ -665,6 +665,22 @@ def main():
                      msg=f"Portfolio TWS not found on port {portfolio_cfg.ibkr_port} — "
                          f"portfolio disabled until TWS is started")
 
+    # Start web dashboard immediately in background thread
+    # so dashboard is available right away without waiting for scheduler
+    app = create_app()
+    web_thread = threading.Thread(
+        target=uvicorn.run,
+        kwargs=dict(
+            app=app,
+            host=settings.web.host,
+            port=settings.web.port,
+            log_level="warning",
+        ),
+        daemon=True,
+    )
+    web_thread.start()
+    log.info("web_dashboard_started", port=settings.web.port)
+
     # Start scheduler
     scheduler = create_scheduler()
     scheduler.start()
@@ -680,14 +696,8 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    # Start web dashboard
-    app = create_app()
-    uvicorn.run(
-        app,
-        host=settings.web.host,
-        port=settings.web.port,
-        log_level="warning",
-    )
+    # Keep main thread alive
+    web_thread.join()
 
 
 if __name__ == "__main__":
