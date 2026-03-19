@@ -198,8 +198,11 @@ class ProfitTaker:
         )
 
         if live_ask and live_ask > 0:
+            log.debug("profit_check_live_price", symbol=pos.symbol,
+                      live_bid=live_bid, live_ask=live_ask)
             current_ask = live_ask
         else:
+            log.warning("profit_check_no_live_price_using_bs", symbol=pos.symbol)
             # Fallback to Black-Scholes
             stock_price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
             if not stock_price:
