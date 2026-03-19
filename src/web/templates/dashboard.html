@@ -505,17 +505,24 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="mt-6 bg-gray-900 border border-gray-800 rounded-lg p-4">
     <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Active Risk & Strategy Rules</h2>
     <div class="flex flex-wrap gap-2 text-xs">
+        <!-- Risk gates — gray -->
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">VIX &gt; 30 → halt</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">SPY MA10 &lt; MA20 → 50% reduction</span>
-        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 10 trades/day</span>
-        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 5% per position</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 10 trades/day (scales with NLV)</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Adaptive position size by NLV</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 30% per sector</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Market hours gate (±60 min)</span>
+        <!-- Adaptive strategy — emerald -->
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">VIX-adaptive IV rank</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Dynamic delta by VIX regime</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">DTE-adaptive delta widening</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Skip earnings within 3 days</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Dynamic profit targets (50/65/75% by DTE)</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Wheel on assignment</span>
+        <!-- Structural — blue -->
         <span class="px-2.5 py-1 rounded bg-blue-900/40 text-blue-300">Progressive CC strikes</span>
-        <span class="px-2.5 py-1 rounded bg-blue-900/40 text-blue-300">SPY tail hedge (5% OTM)</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-500">SPY tail hedge — disabled</span>
+        <!-- Portfolio intelligence — purple -->
         <span class="px-2.5 py-1 rounded bg-purple-900/40 text-purple-300">Portfolio-aware ranking</span>
         <span class="px-2.5 py-1 rounded bg-purple-900/40 text-purple-300">Margin on capitulation/stabilization</span>
     </div>
