@@ -290,25 +290,15 @@ class ProfitTaker:
             pos.symbol, pos.expiry or "", pos.strike or 0, "P", opt_exchange, currency
         )
 
-        ask_price = 0.01
         if live_ask and live_ask > 0:
             ask_price = live_ask
             log.info("profit_taker_using_live_price", symbol=pos.symbol,
                      live_bid=live_bid, live_ask=live_ask)
         else:
-            stock_price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
-            from src.broker.connection import get_ib
-            ib = get_ib()
-            iv = get_current_iv(ib, pos.symbol, exchange=exchange, currency=currency)
-            if pos.expiry and stock_price and iv and iv > 0:
-                exp_date = datetime.strptime(pos.expiry, "%Y%m%d").date()
-                dte_now = (exp_date - datetime.now().date()).days
-                if dte_now > 0:
-                    T = dte_now / 365.0
-                    greeks = compute_put_greeks(stock_price, pos.strike or 0, T, iv)
-                    if greeks:
-                        ask_price = greeks.ask
-            log.info("profit_taker_using_bs_price", symbol=pos.symbol, ask_price=ask_price)
+            log.warning("profit_taker_skipping_no_live_price",
+                        symbol=pos.symbol, strike=pos.strike)
+            return False
+        ask_price = live_ask
 
         trade = buy_to_close_put(
             symbol=pos.symbol,
