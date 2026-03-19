@@ -66,12 +66,16 @@ class WheelManager:
                     shares = stock_positions.get(symbol, 0)
 
                     if shares >= 100 * put_pos.quantity:
-                        # Assignment detected!
+                        # Assignment detected — IBKR confirms stock appeared
                         self._handle_assignment(db, put_pos, symbol)
                         assigned_symbols.append(symbol)
                     else:
-                        # Expired worthless (OTM) — profit!
-                        self._handle_expiry_worthless(db, put_pos)
+                        # No stock position — do NOT mark expired locally.
+                        # trade_sync is the sole source of truth for worthless expiry.
+                        # This avoids timezone flipping (e.g. AUD options expiring
+                        # in Sydney time while server clock is behind).
+                        log.debug("put_expiry_pending_ibkr_confirmation",
+                                  symbol=symbol, expiry=put_pos.expiry)
 
         log.info("assignment_check_done", assigned=assigned_symbols)
         return assigned_symbols
