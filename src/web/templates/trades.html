@@ -1,15 +1,5 @@
 {% extends "base.html" %}
 {% block title %}Trade History — Maggy &amp; Winston
-<script>
-function syncTrades() {
-    const btn = document.getElementById('sync-btn');
-    btn.disabled = true;
-    btn.textContent = '⏳ Syncing...';
-    fetch('/trades/sync', {method: 'POST'})
-        .then(r => { window.location.reload(); })
-        .catch(() => { btn.disabled = false; btn.textContent = '🔄 Sync from IBKR'; });
-}
-</script>
 {% endblock %}
 {% block nav_trades %}bg-gray-800 text-emerald-400{% endblock %}
 {% block m_nav_trades %}bg-gray-800 text-emerald-400{% endblock %}
@@ -17,9 +7,11 @@ function syncTrades() {
 {% block content %}
 <div class="flex items-center justify-between mb-6">
     <h1 class="text-2xl font-bold">Trade History</h1>
-    <button id="sync-btn" onclick="syncTrades()" class="px-4 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition border border-gray-700">
-        🔄 Sync from IBKR
-    </button>
+    <form method="post" action="/trades/sync" style="display:inline">
+        <button type="submit" class="px-4 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition border border-gray-700">
+            🔄 Sync from IBKR
+        </button>
+    </form>
 </div>
 
 {% if trades %}

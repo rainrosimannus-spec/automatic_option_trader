@@ -35,7 +35,8 @@ def sync_trades():
         from src.broker.trade_sync import sync_ibkr_trades, sync_ibkr_positions
         sync_ibkr_trades()
         sync_ibkr_positions()
-    except Exception:
+        return {"status": "ok"}
+    except Exception as e:
         import traceback
         traceback.print_exc()
-    return RedirectResponse(url="/trades", status_code=303)
+        return {"status": "error", "error": str(e)}
