@@ -295,6 +295,15 @@ dividend:
     options_exchange: EUREX
     div_yield: 5.2
 
+  # ── Europe (1) ──
+  - symbol: ALV
+    name: Allianz SE
+    sector: Financials
+    exchange: SMART
+    currency: EUR
+    options_exchange: EUREX
+    div_yield: 4.5
+
   # ── Japan (1) ──
   - symbol: "8306"
     name: Mitsubishi UFJ Financial
@@ -379,14 +388,6 @@ dividend:
     currency: EUR
     options_exchange: EUREX
     div_yield: 2.8
-  - symbol: ALV
-    name: Allianz SE
-    sector: Financials
-    exchange: SMART
-    currency: EUR
-    options_exchange: EUREX
-    div_yield: 4.5
-
   # ── Euronext Amsterdam (2) ──
   - symbol: ASML
     name: ASML Holding NV
