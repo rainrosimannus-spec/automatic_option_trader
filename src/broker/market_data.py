@@ -595,3 +595,40 @@ def has_upcoming_earnings(
     except Exception as e:
         log.debug("earnings_check_failed", symbol=symbol, error=str(e))
         return False
+
+
+def get_option_live_price(
+    symbol: str,
+    expiry: str,
+    strike: float,
+    right: str = "P",
+    exchange: str = "SMART",
+    currency: str = "USD",
+) -> tuple[Optional[float], Optional[float]]:
+    """
+    Fetch live bid/ask for a single option contract from IBKR.
+    Returns (bid, ask) tuple, or (None, None) if unavailable.
+    """
+    try:
+        _ensure_market_data_type()
+        ib = get_ib()
+        contract = Option(symbol, expiry, strike, right, exchange, currency=currency)
+        qualified = ib.qualifyContracts(contract)
+        if not qualified:
+            log.debug("option_live_price_qualify_failed", symbol=symbol, strike=strike)
+            return None, None
+
+        ticker = ib.reqMktData(contract, "", False, False)
+        ib.sleep(3)
+        ib.cancelMktData(contract)
+
+        bid = ticker.bid if ticker.bid and ticker.bid > 0 else None
+        ask = ticker.ask if ticker.ask and ticker.ask > 0 else None
+
+        log.debug("option_live_price_fetched", symbol=symbol, strike=strike,
+                  expiry=expiry, bid=bid, ask=ask)
+        return bid, ask
+
+    except Exception as e:
+        log.debug("option_live_price_error", symbol=symbol, strike=strike, error=str(e))
+        return None, None

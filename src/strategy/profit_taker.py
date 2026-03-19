@@ -189,23 +189,31 @@ class ProfitTaker:
         if dte <= 0:
             return False
 
-        # Get current stock price and IV for theoretical option pricing
-        stock_price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
-        if not stock_price:
-            return False
+        # Fetch live market ask from IBKR — fall back to BS only if unavailable
+        from src.broker.market_data import get_option_live_price
+        stock = self.universe.get_stock(pos.symbol)
+        opt_exchange = stock.opt_exchange if stock else "SMART"
+        live_bid, live_ask = get_option_live_price(
+            pos.symbol, pos.expiry, pos.strike, "P", opt_exchange, currency
+        )
 
-        from src.broker.connection import get_ib
-        ib = get_ib()
-        iv = get_current_iv(ib, pos.symbol, exchange=exchange, currency=currency)
-        if not iv or iv <= 0:
-            return False
-
-        T = max(dte, 1) / 365.0
-        greeks = compute_put_greeks(stock_price, pos.strike, T, iv)
-        if not greeks:
-            return False
-
-        current_ask = greeks.ask
+        if live_ask and live_ask > 0:
+            current_ask = live_ask
+        else:
+            # Fallback to Black-Scholes
+            stock_price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
+            if not stock_price:
+                return False
+            from src.broker.connection import get_ib
+            ib = get_ib()
+            iv = get_current_iv(ib, pos.symbol, exchange=exchange, currency=currency)
+            if not iv or iv <= 0:
+                return False
+            T = max(dte, 1) / 365.0
+            greeks = compute_put_greeks(stock_price, pos.strike, T, iv)
+            if not greeks:
+                return False
+            current_ask = greeks.ask
         entry_premium = pos.entry_premium
         if entry_premium <= 0:
             return False
@@ -276,22 +284,31 @@ class ProfitTaker:
         except Exception as e:
             log.warning("cancel_existing_close_check_failed", symbol=pos.symbol, error=str(e))
 
-        # Compute theoretical ask price
-        stock_price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
-        from src.broker.connection import get_ib
-        ib = get_ib()
-        iv = get_current_iv(ib, pos.symbol, exchange=exchange, currency=currency)
+        # Use live market ask as limit price — fall back to BS if unavailable
+        from src.broker.market_data import get_option_live_price
+        live_bid, live_ask = get_option_live_price(
+            pos.symbol, pos.expiry or "", pos.strike or 0, "P", opt_exchange, currency
+        )
 
-        # Compute BS limit price
         ask_price = 0.01
-        if pos.expiry:
-            exp_date = datetime.strptime(pos.expiry, "%Y%m%d").date()
-            dte_now = (exp_date - datetime.now().date()).days
-            if stock_price and iv and iv > 0 and dte_now > 0:
-                T = dte_now / 365.0
-                greeks = compute_put_greeks(stock_price, pos.strike or 0, T, iv)
-                if greeks:
-                    ask_price = greeks.ask
+        if live_ask and live_ask > 0:
+            ask_price = live_ask
+            log.info("profit_taker_using_live_price", symbol=pos.symbol,
+                     live_bid=live_bid, live_ask=live_ask)
+        else:
+            stock_price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
+            from src.broker.connection import get_ib
+            ib = get_ib()
+            iv = get_current_iv(ib, pos.symbol, exchange=exchange, currency=currency)
+            if pos.expiry and stock_price and iv and iv > 0:
+                exp_date = datetime.strptime(pos.expiry, "%Y%m%d").date()
+                dte_now = (exp_date - datetime.now().date()).days
+                if dte_now > 0:
+                    T = dte_now / 365.0
+                    greeks = compute_put_greeks(stock_price, pos.strike or 0, T, iv)
+                    if greeks:
+                        ask_price = greeks.ask
+            log.info("profit_taker_using_bs_price", symbol=pos.symbol, ask_price=ask_price)
 
         trade = buy_to_close_put(
             symbol=pos.symbol,
