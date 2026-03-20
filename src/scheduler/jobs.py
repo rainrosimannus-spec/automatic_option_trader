@@ -1261,7 +1261,7 @@ def create_scheduler() -> BackgroundScheduler:
 
             today = datetime.utcnow().strftime("%Y-%m-%d")
 
-            # Get account NLV
+            # Get options account NLV
             summary = get_account_summary()
             nlv = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
 
@@ -1306,7 +1306,11 @@ def create_scheduler() -> BackgroundScheduler:
                     pass
                 return amount  # fallback: no conversion
 
-            port_invested = sum(_to_usd(h.total_invested or 0, h.currency) for h in holdings)
+            # Use capital injections table as authoritative invested capital
+            with get_db() as db:
+                port_invested = db.execute(
+                    text("SELECT COALESCE(SUM(amount_usd), 0) FROM portfolio_capital_injections")
+                ).scalar() or 0.0
             port_value = sum(_to_usd(h.market_value or 0, h.currency) for h in holdings)
 
             # Upsert today's snapshot
@@ -1315,11 +1319,18 @@ def create_scheduler() -> BackgroundScheduler:
                     AccountSnapshot.date == today
                 ).first()
 
+                # Get portfolio NLV from portfolio connection cache
+                from src.portfolio.connection import get_cached_portfolio_account
+                portfolio_cache = get_cached_portfolio_account()
+                portfolio_nlv = portfolio_cache.get("nlv", 0.0)
+
                 if existing:
                     existing.net_liquidation = nlv
                     existing.options_premium_collected = round(cum_premium, 2)
                     existing.portfolio_invested = round(port_invested, 2)
                     existing.portfolio_market_value = round(port_value, 2)
+                    if portfolio_nlv > 0:
+                        existing.portfolio_nlv = round(portfolio_nlv, 2)
                 else:
                     db.add(AccountSnapshot(
                         date=today,
@@ -1327,6 +1338,7 @@ def create_scheduler() -> BackgroundScheduler:
                         options_premium_collected=round(cum_premium, 2),
                         portfolio_invested=round(port_invested, 2),
                         portfolio_market_value=round(port_value, 2),
+                        portfolio_nlv=round(portfolio_nlv, 2) if portfolio_nlv > 0 else 0.0,
                     ))
 
             log.info("account_snapshot_saved", date=today, nlv=round(nlv, 2))

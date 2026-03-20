@@ -123,6 +123,7 @@ class AccountSnapshot(Base):
     # Options account values
     options_premium_collected: Mapped[float] = mapped_column(Float, default=0.0)  # cumulative
     # Portfolio (long-term) values
+    portfolio_nlv: Mapped[float] = mapped_column(Float, default=0.0)  # portfolio account NLV
     portfolio_invested: Mapped[float] = mapped_column(Float, default=0.0)
     portfolio_market_value: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

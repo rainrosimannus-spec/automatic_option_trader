@@ -65,7 +65,7 @@ def _build_portfolio_performance() -> dict:
     labels = []
     raw_returns = []
     for snap in snapshots:
-        nlv = getattr(snap, "portfolio_market_value", None) or getattr(snap, "port_value", None)
+        nlv = snap.portfolio_nlv if snap.portfolio_nlv and snap.portfolio_nlv > 0 else None
         if not nlv or nlv <= 0:
             continue
         labels.append(str(snap.date)[:10])
