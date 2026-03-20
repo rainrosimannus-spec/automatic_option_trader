@@ -164,6 +164,39 @@ def _get_vix_from_fmp() -> Optional[float]:
     return None
 
 
+def get_52week_high(symbol: str, exchange: str = "SMART", currency: str = "USD") -> Optional[float]:
+    """
+    Get 52-week high price for a symbol using IBKR historical data.
+    Requests 252 trading days of daily bars and returns the max high.
+    """
+    try:
+        from ib_insync import Stock
+        with get_ib_lock():
+            _ensure_market_data_type()
+            ib = get_ib()
+            contract = Stock(symbol, exchange, currency)
+            ib.qualifyContracts(contract)
+            bars = ib.reqHistoricalData(
+                contract,
+                endDateTime="",
+                durationStr="52 W",
+                barSizeSetting="1 day",
+                whatToShow="TRADES",
+                useRTH=True,
+                formatDate=1,
+                timeout=10,
+            )
+            if not bars:
+                log.warning("no_52week_bars", symbol=symbol)
+                return None
+            high = max(bar.high for bar in bars)
+            log.info("52week_high_fetched", symbol=symbol, high=round(high, 2))
+            return high
+    except Exception as e:
+        log.warning("52week_high_error", symbol=symbol, error=str(e))
+        return None
+
+
 def get_vix() -> Optional[float]:
     """Get the current VIX level. Tries IBKR first, falls back to FMP."""
     try:

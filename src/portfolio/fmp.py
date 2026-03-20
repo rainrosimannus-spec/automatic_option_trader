@@ -126,6 +126,25 @@ def get_debt_metrics(symbol: str) -> Optional[dict]:
         return None
 
 
+def get_year_high(symbol: str) -> Optional[float]:
+    """
+    Get 52-week high price from FMP quote endpoint.
+    Used for the downtrend filter: reject if price > 40% below year high.
+    Costs 1 FMP API call per symbol.
+    """
+    data = _get("quote", symbol)
+    if not data:
+        return None
+    try:
+        item = data[0] if isinstance(data, list) else data
+        year_high = item.get("yearHigh")
+        if year_high and float(year_high) > 0:
+            return float(year_high)
+    except Exception as e:
+        log.warning("fmp_year_high_parse_failed", symbol=symbol, error=str(e))
+    return None
+
+
 def get_full_fundamentals(symbol: str) -> Optional[dict]:
     """
     Fetch all fundamental metrics needed for screening in one call bundle.

@@ -147,6 +147,24 @@ class PutSeller:
         log.info("put_scan_completed", market=market_label, trades=len(traded), symbols=traded)
         return traded
 
+    def _resolve_dte(self, current_vix: float | None, currency: str) -> tuple[int, int] | None:
+        """Return (dte_min, dte_max) based on VIX and currency. None = halt."""
+        tiers = self.cfg.dte_tiers
+        if current_vix is None:
+            return (7, 14)  # fail-open: no VIX data, use mid tier
+        if current_vix > tiers.mid_vix["vix_max"]:
+            return None     # VIX > 30: halt
+        if current_vix < tiers.low_vix["vix_max"]:
+            if currency == "USD":
+                return (tiers.low_vix["dte_min_usd"], tiers.low_vix["dte_max_usd"])
+            else:
+                return (tiers.low_vix["dte_min_other"], tiers.low_vix["dte_max_other"])
+        # VIX 20-30: mid tier, same for everyone
+        if currency == "USD":
+            return (tiers.mid_vix["dte_min_usd"], tiers.mid_vix["dte_max_usd"])
+        else:
+            return (tiers.mid_vix["dte_min_other"], tiers.mid_vix["dte_max_other"])
+
     def _evaluate_symbol(self, symbol: str, current_vix: float | None, market: str | None = None) -> dict | None:
         """Evaluate a symbol for put-selling. Returns candidate dict or None."""
         log.info("scanning_symbol", symbol=symbol)
@@ -246,8 +264,15 @@ class PutSeller:
         # Get dynamic delta range based on current VIX
         delta_range = self.risk.get_dynamic_delta_range()
 
-        # Screen for best put contract with dynamic delta
-        candidate = screen_puts(symbol, exchange=opt_exchange, currency=currency, delta_override=delta_range, stock_exchange=exchange)
+        # Resolve DTE range based on VIX and currency
+        dte_range = self._resolve_dte(current_vix, currency)
+        if dte_range is None:
+            log.info("vix_halt_dte", symbol=symbol, vix=current_vix)
+            return False
+        dte_min, dte_max = dte_range
+
+        # Screen for best put contract with dynamic delta and VIX-adaptive DTE
+        candidate = screen_puts(symbol, exchange=opt_exchange, currency=currency, delta_override=delta_range, stock_exchange=exchange, dte_min=dte_min, dte_max=dte_max)
         if not candidate:
             return False
 
@@ -292,6 +317,23 @@ class PutSeller:
         except Exception as e:
             log.warning("whatif_margin_check_failed", symbol=symbol, error=str(e))
             # fail open — don't block if whatif unavailable
+
+        # 52-week high filter: reject if price is more than 40% below year high
+        try:
+            from src.broker.market_data import get_52week_high
+            year_high = get_52week_high(symbol, exchange=exchange, currency=currency)
+            if year_high and year_high > 0:
+                current_price = get_stock_price(symbol, exchange=exchange, currency=currency)
+                if current_price and current_price < year_high * 0.60:
+                    log.info("year_high_filter_blocked",
+                             symbol=symbol,
+                             price=round(current_price, 2),
+                             year_high=round(year_high, 2),
+                             pct_below=round((1 - current_price / year_high) * 100, 1))
+                    return False
+        except Exception as e:
+            log.warning("year_high_filter_failed", symbol=symbol, error=str(e))
+            # fail open — don't block if data unavailable
 
         # Suggestion mode: create suggestion instead of placing order
         cfg = get_settings()
