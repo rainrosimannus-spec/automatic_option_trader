@@ -25,9 +25,27 @@ class IBKRConfig(BaseModel):
     account: str = ""
 
 
+class DteTierLow(BaseModel):
+    vix_max: float = 20
+    dte_min_usd: int = 0
+    dte_max_usd: int = 3
+    dte_min_other: int = 0
+    dte_max_other: int = 7
+
+class DteTierMid(BaseModel):
+    vix_max: float = 30
+    dte_min_usd: int = 7
+    dte_max_usd: int = 14
+    dte_min_other: int = 7
+    dte_max_other: int = 14
+
+class DteTiers(BaseModel):
+    low_vix: DteTierLow = DteTierLow()
+    mid_vix: DteTierMid = DteTierMid()
+    high_vix: str = "halt"
+
 class StrategyConfig(BaseModel):
-    dte_min: int = 5
-    dte_max: int = 14
+    dte_tiers: DteTiers = DteTiers()
     delta_min: float = 0.20
     delta_max: float = 0.30
     contracts_per_stock: int = 1

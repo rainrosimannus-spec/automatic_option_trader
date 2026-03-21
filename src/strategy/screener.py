@@ -69,6 +69,8 @@ def screen_puts(
     currency: str = "USD",
     delta_override: tuple[float, float] | None = None,
     stock_exchange: str | None = None,
+    dte_min: int | None = None,
+    dte_max: int | None = None,
 ) -> Optional[ScoredContract]:
     """
     Screen and rank put contracts for a symbol.
@@ -81,12 +83,16 @@ def screen_puts(
     cfg = get_settings().strategy
     stk_exchange = stock_exchange or exchange
 
+    # Use passed DTE values if provided, otherwise fall back to config
+    resolved_dte_min = dte_min if dte_min is not None else getattr(cfg, 'dte_min', 5)
+    resolved_dte_max = dte_max if dte_max is not None else getattr(cfg, 'dte_max', 14)
+
     contracts = get_put_contracts(
         symbol,
         exchange=exchange,
         currency=currency,
-        max_dte=cfg.dte_max,
-        min_dte=cfg.dte_min,
+        max_dte=resolved_dte_max,
+        min_dte=resolved_dte_min,
     )
 
     if not contracts:

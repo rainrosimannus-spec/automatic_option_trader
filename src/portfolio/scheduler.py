@@ -1120,6 +1120,20 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                 wl_rows = db.query(PortfolioWatchlist).all()
                 watchlist_symbols = {w.symbol: w for w in wl_rows}
 
+            # Load contract sizes from yaml (not in DB model)
+            import yaml as _yaml
+            try:
+                with open("config/watchlist.yaml") as _f:
+                    _wl_yaml = _yaml.safe_load(_f)
+                _contract_sizes = {}
+                for _section in _wl_yaml.values():
+                    if isinstance(_section, list):
+                        for _entry in _section:
+                            if isinstance(_entry, dict) and "symbol" in _entry:
+                                _contract_sizes[_entry["symbol"]] = _entry.get("contract_size", 100)
+            except Exception:
+                _contract_sizes = {}
+
                 # Existing exec IDs to skip duplicates
                 existing = db.query(PortfolioTransaction.ibkr_exec_id).filter(
                     PortfolioTransaction.ibkr_exec_id.isnot(None)
@@ -1163,7 +1177,7 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                     commission = fill.commissionReport.commission or 0.0
 
                 sec_type = contract.secType
-                wl_contract_size = getattr(wl, 'contract_size', None) or 100
+                wl_contract_size = _contract_sizes.get(symbol) or getattr(wl, 'contract_size', None) or 100
                 wl_currency = getattr(wl, 'currency', 'USD') or 'USD'
 
                 def _opt_price(p):
@@ -1234,9 +1248,34 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                         premium_collected = _opt_price(price) * qty * wl_contract_size
                         amount = premium_collected
                     else:
-                        # Buying back a call
-                        action = "buy_call"
-                        amount = _opt_price(price) * qty * wl_contract_size
+                        # Buying back a call — check if expired, assigned, or genuine close
+                        if price <= 0.01:
+                            try:
+                                from ib_insync import Stock
+                                stock_contract = Stock(symbol, wl.exchange or "SMART", wl.currency or "USD")
+                                ib.qualifyContracts(stock_contract)
+                                ticker = ib.reqMktData(stock_contract, "", False, False)
+                                ib.sleep(2)
+                                stock_price = ticker.last or ticker.close or 0
+                                ib.cancelMktData(stock_contract)
+                            except Exception:
+                                stock_price = 0
+
+                            if stock_price > 0 and stock_price < strike:
+                                # Stock below strike — call expired worthless OTM
+                                action = "call_expired"
+                                price = 0.0
+                                amount = 0.0
+                            else:
+                                # Stock at or above strike — call was assigned ITM
+                                action = "call_assigned"
+                                price = strike
+                                contract_size = getattr(wl, 'contract_size', None) or 100
+                                shares = qty * contract_size
+                                amount = strike * shares
+                        else:
+                            action = "buy_call"
+                            amount = _opt_price(price) * qty * wl_contract_size
                 else:
                     # Other instrument types — skip
                     continue

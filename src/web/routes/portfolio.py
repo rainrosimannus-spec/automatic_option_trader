@@ -227,8 +227,20 @@ async def portfolio_page(request: Request):
     fx_rates = _get_fx_rates(currencies)
     total_invested = get_total_invested_usd()
     total_value = sum(_to_usd(h.market_value or 0, h.currency, fx_rates) for h in holdings)
-    total_pnl = total_value - total_invested
-    total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
+    ibkr_unrealized_pnl = None
+    try:
+        from src.portfolio.connection import get_cached_portfolio_account
+        _acct = get_cached_portfolio_account()
+        ibkr_unrealized_pnl = _acct.get("unrealized_pnl")
+    except Exception:
+        pass
+
+    if ibkr_unrealized_pnl is not None:
+        total_pnl = ibkr_unrealized_pnl
+        total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
+    else:
+        total_pnl = total_value - total_invested
+        total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
 
     # Dividend income
     with get_db() as db:

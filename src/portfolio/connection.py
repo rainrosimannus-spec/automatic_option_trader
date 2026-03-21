@@ -229,6 +229,8 @@ def refresh_portfolio_account_cache_from(ib: IB):
                     data["margin"] = float(v.value)
                 elif v.tag == "BuyingPower" and v.currency in ("BASE", "USD"):
                     data["buying_power"] = float(v.value)
+                elif v.tag == "UnrealizedPnL" and v.currency in ("BASE", "USD"):
+                    data["unrealized_pnl"] = float(v.value)
 
         fx_rates = {}
         for v in values:

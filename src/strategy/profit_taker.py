@@ -112,6 +112,17 @@ class ProfitTaker:
                                   mins_to_open=round(mins_to_open))
                         continue
 
+                    # Never take profit on 0-3 DTE — let them expire worthless
+                    try:
+                        from datetime import datetime as _dt
+                        exp_date = _dt.strptime(pos.expiry, "%Y%m%d").date()
+                        dte = (exp_date - _dt.now().date()).days
+                    except Exception:
+                        dte = 99  # parse failure: don't skip, let normal logic decide
+                    if dte <= 3:
+                        log.info("profit_skip_short_dte", symbol=pos.symbol, dte=dte)
+                        continue
+
                     if self._should_close(pos):
                         success = self._close_position(db, pos)
                         if success:
