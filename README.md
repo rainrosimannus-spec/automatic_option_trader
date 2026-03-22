@@ -4,6 +4,18 @@
 
 ---
 
+## Working Style
+
+The owner is not a programmer. All instructions must be:
+- **Complete and copy-paste ready** — every command goes in a code block, no steps skipped
+- **Sequential** — one change at a time, verify output before proceeding to the next
+- **Atomic** — fix one thing, verify it works, then commit before moving on
+- **Explicit** — never assume the user knows what a command does or why
+
+Standard sequence for every change: **fix → verify → commit**. Never bundle unverified changes into a single commit.
+
+---
+
 ## Table of Contents
 
 1. [What It Does](#what-it-does)
@@ -22,7 +34,7 @@
 
 ## What It Does
 
-Maggy & Winston runs two parallel strategies on two separate IBKR accounts. The **Options Trader** (Maggy) sells short puts on a curated universe of stocks, takes profit at 50–75%, and rolls into covered calls on assignment — the classic wheel strategy. The **Portfolio Manager** (Winston) holds a long-term concentrated portfolio of 50 stocks across growth, dividend, and breakthrough tiers, deploying capital slowly when prices are right. Both are fully automated, risk-gated, and visible through a single web dashboard. The system has been live since February 20, 2026.
+Maggy & Winston runs two parallel strategies on two separate IBKR accounts. The **Options Trader** (Maggy) sells short puts on a curated universe of stocks, takes profit at 50–75%, and rolls into covered calls on assignment — the classic wheel strategy. The **Portfolio Manager** (Winston) holds a long-term concentrated portfolio of ~50 stocks across growth, dividend, and breakthrough tiers, deploying capital slowly when prices are right. Both are fully automated, risk-gated, and visible through a single web dashboard. The system has been live since February 20, 2026.
 
 ---
 
@@ -118,7 +130,8 @@ SQLite. Path configured in `settings.yaml`.
 > **`account_snapshots` has two separate NLV fields:**
 > - `net_liquidation` — options account NLV (feeds options performance graph)
 > - `portfolio_nlv` — portfolio account NLV (feeds portfolio performance graph)
-> Never mix these up.
+>
+> These were separated on March 20, 2026. **Never mix them up** — the graphs break silently if the wrong field is written.
 
 ---
 
@@ -136,9 +149,9 @@ SQLite. Path configured in `settings.yaml`.
 
 Fail-open: if VIX data unavailable → mid tier (7–14 DTE).
 
-**52-week high filter**: New puts are blocked if the stock is more than 40% below its 52-week high (`get_52week_high()` via IBKR historical data). Prevents selling puts on structurally broken stocks. Fail-open if data unavailable.
+**52-week high filter** *(options only — does not apply to portfolio buying)*: New puts are blocked if the stock is more than 40% below its 52-week high (`get_52week_high()` via IBKR historical data). Prevents selling puts on structurally broken stocks. Fail-open if data unavailable.
 
-**Profit taking**: Closes at 50/65/75% profit depending on DTE. **Skips positions with DTE ≤ 3** — lets them expire worthless instead.
+**Profit taking**: Closes at 50/65/75% profit depending on DTE. **Skips positions with DTE ≤ 3** — lets them expire worthless instead. Commissions would eat the remaining premium.
 
 **Active risk gates** (always on):
 - VIX > 30 → halt all new puts
@@ -157,11 +170,11 @@ Fail-open: if VIX data unavailable → mid tier (7–14 DTE).
 
 **Allocation target**: 50% growth / 25% dividend / 25% breakthrough
 
-**Universe**: ~50 stocks (halved from 100 for scanning efficiency). Monthly screener job re-scores all names via FMP fundamentals.
+**Universe**: ~50 stocks, planned expansion to 100 in Month 2 alongside $5M scaling. Originally 100 stocks, halved for scanning efficiency when FMP free tier (250 calls/day) became the bottleneck. Expanding back to 100 requires either an FMP paid plan (~$20/month) or batching the monthly screener across two days.
 
-**Philosophy**: Slow, deliberate deployment. Best stocks at the right price, 10-year horizon. No rush to be fully invested.
+**Philosophy**: Slow, deliberate deployment. Best stocks at the right price, 10-year horizon. No rush to be fully invested — patience is the edge.
 
-**Invested capital**: Always sourced from `portfolio_capital_injections` table — not cost basis, not market value. Sum of all cash deposits = true invested capital.
+**Invested capital**: Always sourced from `portfolio_capital_injections` table — not cost basis, not market value. Sum of all cash deposits = true invested capital ($498,514 as of March 2026).
 
 ---
 
@@ -175,6 +188,8 @@ Fail-open: if VIX data unavailable → mid tier (7–14 DTE).
 | `dte_tiers.mid_vix.vix_max` | VIX threshold for halt | 30 |
 | `dte_tiers.low_vix.dte_min_usd` | Min DTE for USD stocks in low VIX | 0 |
 | `dte_tiers.low_vix.dte_max_usd` | Max DTE for USD stocks in low VIX | 3 |
+| `dte_tiers.low_vix.dte_min_other` | Min DTE for non-USD in low VIX | 0 |
+| `dte_tiers.low_vix.dte_max_other` | Max DTE for non-USD in low VIX | 7 |
 | `dte_tiers.mid_vix.dte_min_usd` | Min DTE in mid VIX | 7 |
 | `dte_tiers.mid_vix.dte_max_usd` | Max DTE in mid VIX | 14 |
 | `vix_pause_threshold` | Hard halt above this VIX | 30.0 |
@@ -186,7 +201,7 @@ Fail-open: if VIX data unavailable → mid tier (7–14 DTE).
 
 ### `config/watchlist.yaml`
 
-Structured as `growth:` and `dividend:` sections. UK stocks (RIO, SHEL, HSBA, AZN) require `contract_size: 1000`. Both this file **and** the DB must be kept in sync when tiers change.
+Structured as `growth:` and `dividend:` sections. UK stocks (RIO, SHEL, HSBA, AZN) require `contract_size: 1000`. Both this file **and** the DB `portfolio_watchlist` table must be kept in sync when tiers change — YAML feeds the annual screener, DB drives the dashboard.
 
 ---
 
@@ -194,12 +209,12 @@ Structured as `growth:` and `dividend:` sections. UK stocks (RIO, SHEL, HSBA, AZ
 
 `http://37.0.30.34:8080`
 
-- **Options tab** — open positions, P&L, performance graph (options NLV vs 11,700 EUR invested), active risk rules
+- **Options tab** — open positions, P&L, performance graph (options NLV vs ~11,700 EUR seed capital), active risk rules
 - **Portfolio tab** — holdings, watchlist, performance graph (portfolio NLV vs $498,514 invested, BRK-B benchmark), accrued interest, loans
 - **Controls** — force close, cancel order (both update DB after IBKR action)
 - **Sync buttons** — trade history sync, positions sync, capital injections sync
 
-> Portfolio performance graph starts from **2026-03-20** (first day with correct `portfolio_nlv` snapshots). Prior data was corrupted by options NLV being recorded in the wrong field.
+> Portfolio performance graph starts from **2026-03-20** — first day with correct `portfolio_nlv` snapshots. The graph will be flat/empty until the first snapshot job runs at 09:35 ET on the next trading day.
 
 ---
 
@@ -212,8 +227,9 @@ Structured as `growth:` and `dividend:` sections. UK stocks (RIO, SHEL, HSBA, AZ
 | 09:35 ET | Account snapshot (options NLV + portfolio NLV) |
 | Market hours | Put selling scans, profit checks, health checks |
 | 08:00 ET | Accrued interest Flex Query refresh |
-| Daily | Portfolio screener (monthly), BRK-B history update |
-| Market close | Order cancellation for stale SUBMITTED orders |
+| Monthly | Portfolio screener (FMP fundamentals re-score) |
+| Daily | BRK-B history update |
+| Market close | Cancel stale SUBMITTED orders |
 
 ### Watchlist changes
 
@@ -227,39 +243,42 @@ When adding/removing/reclassifying stocks, **always update both**:
 ~/restart-all.sh
 ```
 
-Kills all `automatic_option_trader` Python processes, then restarts IBC gateways and the Python app. Web server starts immediately in a background thread — dashboard is available within seconds.
+Kills all `automatic_option_trader` Python processes, then restarts IBC gateways and the Python app. Web server starts immediately in a background thread — dashboard available within seconds.
 
 ---
 
 ## Troubleshooting
 
 **Dashboard shows black screen on load**
-Restart was recently run. Web server starts in background thread — wait 10–15 seconds and refresh.
+Restart was recently run. Web server starts in a background thread — wait 10–15 seconds and refresh.
 
 **`remove Client 99` loop in logs**
-Missing `_ensure_event_loop()` in `_get_portfolio_connection()`. Check `src/portfolio/connection.py`. Fix was applied March 17 — if it reappears, the connection is leaking.
+Missing `_ensure_event_loop()` in `_get_portfolio_connection()`. Fix was applied March 17. If it reappears, the portfolio connection is leaking — check `src/portfolio/connection.py`.
 
 **NLV shows stale value (16:00–20:00)**
-Known issue. `accountValues()` push likely stops on read-only connections after extended idle. Uninvestigated. NLV refreshes on next connection cycle.
+Known issue. `accountValues()` push likely stops on read-only connections after extended idle. NLV refreshes on the next connection cycle. Uninvestigated.
 
 **`restart-all.sh` leaves stale client ID 12**
-The script kills all `automatic_option_trader` Python processes before restarting. If conflict persists, check for zombie Java gateway processes:
+The script kills all `automatic_option_trader` Python processes before restarting. If the conflict persists, check for zombie Java gateway processes:
 ```bash
 pkill -f "ibgateway"
 ```
 Then re-run `~/restart-all.sh`.
 
 **Accrued interest shows same number as yesterday**
-The Flex Query refreshes at 08:00 ET. If it ran before IBKR settled overnight data, it cached yesterday's value. Either wait until 08:00 ET next day, or trigger manually:
+Flex Query refreshes at 08:00 ET. If IBKR hadn't settled overnight data by then, yesterday's value was cached. Trigger manually if needed:
 ```bash
-.venv/bin/python3 -c "
+cd ~/automatic_option_trader && .venv/bin/python3 -c "
 from src.portfolio.capital_injections import fetch_accrued_interest_usd
 print(fetch_accrued_interest_usd())
 "
 ```
 
+**Portfolio performance graph is empty**
+Normal after a restart or `graph_start_date` reset. First data point writes at 09:35 ET on the next trading day. If it stays empty longer, check `system_state` table key `graph_start_date`.
+
 **`FMP 402 Payment Required` errors**
-FMP `/stable/quote` endpoint requires a paid plan. The system falls back to IBKR for all data that was previously FMP-dependent (52-week high, VIX). Only FMP endpoints used: income statement, ratios, balance sheet (monthly screener only, 250 calls/day free tier).
+The `/stable/quote` endpoint requires a paid FMP plan. The system uses IBKR for 52-week high and VIX instead — these errors are harmless. FMP is only used for the monthly screener (income, ratios, balance sheet — 250 free calls/day sufficient for ~50 stocks, not enough for 100).
 
 ---
 
@@ -290,12 +309,13 @@ Required before going live at $5M:
 
 **Suggested roadmap:**
 - **Month 1 (March–April)** — run test account through full cycle, observe, fix
-- **Month 2 (April–May)** — implement scaling safeguards, test in suggestion mode
+- **Month 2 (April–May)** — implement scaling safeguards; expand portfolio universe to 100 stocks; upgrade FMP plan
 - **Month 3 (May–June)** — simulate $5M parameters in suggestion mode, flip to live when confident
 
 ### Portfolio strategy session (separate)
 
 - Review all ~50 watchlist names with strict 10-year quality lens
+- Expand universe to 100 stocks (25 growth / 12–13 dividend / 12–13 breakthrough additions)
 - Position sizing for $5M scale
 - Buy signal conservatism calibration
 - **Max return session**: what would change if life depended on it
@@ -313,3 +333,4 @@ Commit after every meaningful change. `data/` is not in git (cache files). `conf
 ---
 
 *Last updated: March 20, 2026 — v0.4 (VIX-adaptive DTE, 52-week high filter, portfolio graph separation)*
+
