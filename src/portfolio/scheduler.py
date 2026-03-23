@@ -1101,13 +1101,11 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                 log.debug("portfolio_trade_sync_not_connected")
                 return
 
-            # Get fills from IBKR
+            # Get fills from IBKR — always request fresh executions first
             try:
+                ib.reqExecutions()
+                ib.sleep(2)
                 fills = ib.fills()
-                if not fills:
-                    ib.reqExecutions()
-                    ib.sleep(2)
-                    fills = ib.fills()
             except Exception as e:
                 log.error("portfolio_trade_sync_fetch_error", error=str(e))
                 return
