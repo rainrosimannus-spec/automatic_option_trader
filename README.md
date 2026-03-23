@@ -11,6 +11,8 @@ The owner is not a programmer. All instructions must be:
 - **Sequential** — one change at a time, verify output before proceeding to the next
 - **Atomic** — fix one thing, verify it works, then commit before moving on
 - **Explicit** — never assume the user knows what a command does or why
+- **Never assume — always check** — before drawing conclusions, read the actual code or data. Do not guess based on how things usually work
+- **No shortcuts** — always do it properly, as if the outcome depended on it. The easy path that skips steps is always wrong
 
 Standard sequence for every change: **fix → verify → commit**. Never bundle unverified changes into a single commit.
 
@@ -333,4 +335,3 @@ Commit after every meaningful change. `data/` is not in git (cache files). `conf
 ---
 
 *Last updated: March 20, 2026 — v0.4 (VIX-adaptive DTE, 52-week high filter, portfolio graph separation)*
-
