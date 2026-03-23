@@ -381,8 +381,8 @@ async def portfolio_trades_page(request: Request):
 
 @router.post("/portfolio/trades/sync")
 async def sync_portfolio_trades():
-    """Manually trigger IBKR trade sync for portfolio — runs in background thread."""
-    import asyncio
+    """Manually trigger IBKR trade sync for portfolio — fires in background, returns immediately."""
+    import threading
     from fastapi.responses import RedirectResponse
     from src.core.config import get_settings
 
@@ -395,8 +395,7 @@ async def sync_portfolio_trades():
             import traceback
             traceback.print_exc()
 
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _run_sync)
+    threading.Thread(target=_run_sync, daemon=True).start()
     return RedirectResponse(url="/portfolio/trades", status_code=303)
 
 

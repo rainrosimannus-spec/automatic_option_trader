@@ -30,12 +30,15 @@ def list_trades(request: Request, limit: int = Query(100, ge=1, le=1000)):
 
 @router.post("/sync")
 def sync_trades():
-    """Manually trigger IBKR trade + position sync."""
-    try:
-        from src.broker.trade_sync import sync_ibkr_trades, sync_ibkr_positions
-        sync_ibkr_trades()
-        sync_ibkr_positions()
-    except Exception:
-        import traceback
-        traceback.print_exc()
+    """Manually trigger IBKR trade + position sync — fires in background, returns immediately."""
+    import threading
+    def _run_sync():
+        try:
+            from src.broker.trade_sync import sync_ibkr_trades, sync_ibkr_positions
+            sync_ibkr_trades()
+            sync_ibkr_positions()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+    threading.Thread(target=_run_sync, daemon=True).start()
     return RedirectResponse(url="/trades", status_code=303)

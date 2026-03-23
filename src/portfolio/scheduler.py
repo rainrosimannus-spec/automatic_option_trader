@@ -1134,11 +1134,11 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
             except Exception:
                 _contract_sizes = {}
 
-                # Existing exec IDs to skip duplicates
-                existing = db.query(PortfolioTransaction.ibkr_exec_id).filter(
-                    PortfolioTransaction.ibkr_exec_id.isnot(None)
-                ).all()
-                existing_ids = {row[0] for row in existing}
+            # Existing exec IDs to skip duplicates
+            existing = db.query(PortfolioTransaction.ibkr_exec_id).filter(
+                PortfolioTransaction.ibkr_exec_id.isnot(None)
+            ).all()
+            existing_ids = {row[0] for row in existing}
 
             imported = 0
 
