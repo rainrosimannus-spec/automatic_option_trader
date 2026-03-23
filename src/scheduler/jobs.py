@@ -1265,9 +1265,6 @@ def create_scheduler() -> BackgroundScheduler:
             summary = get_account_summary()
             nlv = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
 
-            if nlv <= 0:
-                return
-
             # Get cumulative options premium
             with get_db() as db:
                 trades = db.query(Trade).filter(
