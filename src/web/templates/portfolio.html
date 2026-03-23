@@ -109,7 +109,7 @@ function syncInjections() {
                     </span>
                 </div>
             </div>
-            {% if perf_labels and perf_labels|length > 1 %}
+            {% if perf_labels and perf_labels|length >= 1 %}
             <div style="height: 260px;">
                 <button id="sync-inj-btn" onclick="syncInjections()" style="font-size:11px;padding:3px 10px;cursor:pointer;margin-bottom:6px;">⟳ Sync Deposits</button>
                 <canvas id="portfolioChart"></canvas>
@@ -199,7 +199,7 @@ function syncInjections() {
     {% endif %}
 
     <!-- Chart.js scripts -->
-    {% if perf_labels and perf_labels|length > 1 %}
+    {% if perf_labels and perf_labels|length >= 1 %}
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         // ── Portfolio vs BRK-B Benchmark Chart ──
