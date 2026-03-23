@@ -223,26 +223,28 @@ async def force_close_position(position_id: int):
 
 @router.post("/cancel-order/{order_id}")
 def cancel_ibkr_order(order_id: int):
-    """Cancel an open order on IBKR and update DB record."""
+    """Cancel an open order on IBKR and update DB record. Returns JSON."""
+    from fastapi.responses import JSONResponse
     try:
         from src.broker.orders import _get_order_connection, _order_lock
         from src.core.database import get_db
         from src.core.models import Trade, OrderStatus
+        cancelled_on_ibkr = False
         with _order_lock:
             ib = _get_order_connection()
             for trade in ib.openTrades():
                 if trade.order.orderId == order_id:
                     ib.cancelOrder(trade.order)
                     ib.sleep(1)
+                    cancelled_on_ibkr = True
                     log.info("order_cancelled_from_dashboard", order_id=order_id)
                     break
-        # Update DB record regardless of whether order was found on IBKR
         with get_db() as db:
             t = db.query(Trade).filter(Trade.order_id == order_id).first()
             if t:
                 t.order_status = OrderStatus.CANCELLED
-                db.commit()
                 log.info("order_cancelled_db_updated", order_id=order_id)
+        return JSONResponse({"status": "ok", "message": f"Order {order_id} cancelled"})
     except Exception as e:
         log.warning("cancel_order_failed", order_id=order_id, error=str(e))
-    return RedirectResponse(url="/", status_code=303)
+        return JSONResponse({"status": "error", "message": str(e)})

@@ -1,6 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — Maggy &amp; Winston
-{% endblock %}
+{% block title %}Dashboard — Maggy &amp; Winston{% endblock %}
 {% block nav_dashboard %}bg-gray-800 text-emerald-400
 {% endblock %}
 
@@ -383,9 +382,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <td class="py-2 px-3 text-right font-mono">${{ "%.2f"|format(o.limit) if o.limit else 'MKT' }}</td>
                         <td class="py-2 px-3 text-amber-400">{{ o.status }}</td>
                         <td class="py-2 px-3">
-                            <form method="post" action="/controls/cancel-order/{{ o.order_id }}">
-                                <button class="text-red-500/60 hover:text-red-400 transition font-bold px-2 py-1">✕ Cancel</button>
-                            </form>
+                            <button onclick="handleAction(this, '/controls/cancel-order/{{ o.order_id }}', 'Cancel this order?')" class="text-red-500/60 hover:text-red-400 transition font-bold px-2 py-1">✕ Cancel</button>
                         </td>
                     </tr>
                     {% endfor %}
@@ -432,10 +429,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <td class="py-2 px-3 text-gray-400">{{ p.expiry[4:6] + '/' + p.expiry[6:8] if p.expiry and p.expiry|length >= 8 else '—' }}</td>
                         <td class="py-2 px-3 text-right text-emerald-400 font-mono">${{ "%.2f"|format(p.entry_premium) }}</td>
                         <td class="py-2 px-3">
-                            <form method="post" action="/controls/force-close/{{ p.id }}"
-                                  onsubmit="return confirm('Force close {{ p.symbol }}?')">
-                                <button class="text-red-500/60 hover:text-red-400 transition">✕</button>
-                            </form>
+                            <button onclick="handleAction(this, '/controls/force-close/{{ p.id }}', 'Force close {{ p.symbol }}?')" class="text-red-500/60 hover:text-red-400 transition">✕</button>
                         </td>
                     </tr>
                     {% endfor %}
@@ -535,4 +529,39 @@ document.addEventListener('DOMContentLoaded', function() {
 
 
 
+<script>
+function handleAction(btn, url, confirmMsg) {
+    if (!confirm(confirmMsg)) return;
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '⏳';
+    fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}})
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === 'ok') {
+                btn.innerHTML = '✓';
+                btn.classList.remove('text-red-500/60');
+                btn.classList.add('text-emerald-400');
+                setTimeout(() => location.reload(), 1500);
+            } else {
+                btn.innerHTML = '✗ ' + (data.message || 'Error');
+                btn.classList.add('text-red-400');
+                setTimeout(() => {
+                    btn.innerHTML = original;
+                    btn.disabled = false;
+                    btn.classList.remove('text-red-400');
+                }, 3000);
+            }
+        })
+        .catch(() => {
+            btn.innerHTML = '✗ Failed';
+            btn.classList.add('text-red-400');
+            setTimeout(() => {
+                btn.innerHTML = original;
+                btn.disabled = false;
+                btn.classList.remove('text-red-400');
+            }, 3000);
+        });
+}
+</script>
 {% endblock %}
