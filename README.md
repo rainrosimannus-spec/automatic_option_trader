@@ -14,6 +14,9 @@ The owner is not a programmer. All instructions must be:
 - **Never assume — always check** — before drawing conclusions, read the actual code or data. Do not guess based on how things usually work
 - **No shortcuts** — always do it properly, as if the outcome depended on it. The easy path that skips steps is always wrong
 - **Admit mistakes immediately** — if a fix didn't work, say so directly. Do not make excuses, do not linger on explanations, do not blame timing or external factors. Acknowledge the mistake, find the real cause, fix it properly
+- **No manual file editing** — the owner is not a programmer. All code changes must be delivered as copy-paste ready terminal commands that modify files directly (e.g. `sed`, Python heredoc replacements). Never instruct the owner to open a file and edit it manually. Every change goes in a code block that can be run as-is.
+- **Read before writing** — always read the exact current code before writing a replacement. Never assume what the code looks like based on context or previous sessions.
+- **Verify after every change** — after every file modification, run a targeted `grep` or `sed -n` to confirm the new code is exactly in place before moving to the next change.
 
 Standard sequence for every change: **fix → verify → commit**. Never bundle unverified changes into a single commit.
 
@@ -100,8 +103,8 @@ tmux attach -t portfolio
 | `src/strategy/put_seller.py` | Put selling logic, `_resolve_dte()`, 52-week high filter, GBP pence conversion |
 | `src/strategy/profit_taker.py` | Profit taking, market hours gate, skips DTE ≤ 3 |
 | `src/strategy/screener.py` | `screen_puts()`, DTE override params, Black-Scholes contract scoring |
-| `src/strategy/wheel.py` | Assignment detection, covered call writing |
-| `src/strategy/risk.py` | All risk gates: VIX, margin, sector, position size, earnings |
+| `src/strategy/wheel.py` | Assignment detection, covered call writing, regime-aware CC delta |
+| `src/strategy/risk.py` | All risk gates: VIX, margin, sector, position size, scaling safeguards |
 | `src/broker/connection.py` | Options IBKR connection, client ID 12, lock-based |
 | `src/broker/market_data.py` | Stock/option prices, IV, SPY MAs, `get_option_live_price()`, `get_52week_high()` |
 | `src/broker/trade_sync.py` | Syncs IBKR executions to DB, marks positions expired/filled |
@@ -113,9 +116,9 @@ tmux attach -t portfolio
 | `src/web/routes/portfolio.py` | Portfolio dashboard, `_build_portfolio_performance()` using `portfolio_nlv` |
 | `src/web/routes/controls.py` | Force close, cancel order buttons |
 | `src/core/models.py` | All DB models including `AccountSnapshot` (has both `net_liquidation` and `portfolio_nlv`) |
-| `src/core/config.py` | Pydantic config models including `DteTiers` |
+| `src/core/config.py` | Pydantic config models including `DteTiers` and scaling safeguard fields |
 | `config/watchlist.yaml` | Options universe: `growth:` / `dividend:` sections, contract sizes for UK stocks |
-| `config/settings.yaml` | All strategy parameters: `dte_tiers`, VIX thresholds, profit targets |
+| `config/settings.yaml` | All strategy parameters: `dte_tiers`, VIX thresholds, profit targets, scaling safeguards |
 | `data/portfolio_account_cache.json` | File cache: NLV, loans, accrued interest, FX rates, BRK-B history (not in git) |
 
 ---
@@ -152,24 +155,30 @@ SQLite. Path configured in `settings.yaml`.
 | VIX | USD stocks | Non-USD stocks |
 |-----|-----------|----------------|
 | < 20 | 0–3 DTE | 0–7 DTE |
-| 20–30 | 7–14 DTE | 7–14 DTE |
+| 20–30 | 0–3 DTE | 0–7 DTE |
 | > 30 | **halt** | **halt** |
 
-Fail-open: if VIX data unavailable → mid tier (7–14 DTE).
+Both tiers below 30 use the same DTE range. 7-14 DTE was removed in March 2026 — see Strategy Decisions section for rationale.
 
-**52-week high filter** *(options only — does not apply to portfolio buying)*: New puts are blocked if the stock is more than 40% below its 52-week high (`get_52week_high()` via IBKR historical data). Prevents selling puts on structurally broken stocks. Fail-open if data unavailable.
+Fail-open: if VIX data unavailable → mid tier (0–3 DTE).
+
+**52-week high filter** *(options only)*: New puts are blocked if the stock is more than 40% below its 52-week high. Prevents selling puts on structurally broken stocks. Fail-open if data unavailable.
 
 **Profit taking**: Closes at 50/65/75% profit depending on DTE. **Skips positions with DTE ≤ 3** — lets them expire worthless instead. Commissions would eat the remaining premium.
 
 **Active risk gates** (always on):
 - VIX > 30 → halt all new puts
-- SPY MA10 < MA20 → 50% position size reduction
+- SPY MA10 < MA20 → 50% position size reduction (TREND_BEARISH)
 - Max 10 trades/day (scales with NLV)
 - Adaptive position size by NLV
+- Hard dollar cap per position (scaling safeguard)
+- Total open exposure cap (scaling safeguard)
+- Daily deployment limit (scaling safeguard)
+- Intraday loss halt (scaling safeguard)
 - Max 30% exposure per sector
 - Market hours gate (±60 min)
 - Skip earnings within 3 days
-- Dynamic delta by VIX regime
+- Dynamic delta by VIX regime and trend
 - 40% below 52-week high → no new puts
 - 0–3 DTE positions expire — no early close
 - Wheel on assignment
@@ -178,11 +187,78 @@ Fail-open: if VIX data unavailable → mid tier (7–14 DTE).
 
 **Allocation target**: 50% growth / 25% dividend / 25% breakthrough
 
-**Universe**: ~50 stocks, planned expansion to 100 in Month 2 alongside $5M scaling. Originally 100 stocks, halved for scanning efficiency when FMP free tier (250 calls/day) became the bottleneck. Expanding back to 100 requires either an FMP paid plan (~$20/month) or batching the monthly screener across two days.
+**Universe**: ~50 stocks, planned expansion to 100 in Month 2 alongside $5M scaling.
 
 **Philosophy**: Slow, deliberate deployment. Best stocks at the right price, 10-year horizon. No rush to be fully invested — patience is the edge.
 
 **Invested capital**: Always sourced from `portfolio_capital_injections` table — not cost basis, not market value. Sum of all cash deposits = true invested capital ($498,514 as of March 2026).
+
+---
+
+## Strategy Decisions and Rationale (March 24, 2026)
+
+### Why 0-3 DTE across all VIX regimes
+
+The original system used 7-14 DTE in elevated VIX to provide a recovery buffer. This was wrong for the wheel strategy. The buffer only helps traders who close positions early at a loss. For a wheel operator who holds to expiry and accepts assignment, a longer DTE just means a longer period of unrealized loss with no ability to reset. The 7-14 DTE window was removed. Both VIX tiers below 30 now use 0-3 DTE for USD stocks and 0-7 DTE for non-USD stocks (liquidity reasons — European and Asian option chains are thinner at very short DTE).
+
+The HALT at VIX 30+ already handles the one scenario where 0-3 DTE is genuinely dangerous (gap-down, no-recovery, instant assignment in a panicking market). Below that threshold, faster expiry and faster reset is strictly better for wheel.
+
+### Delta calibration by regime
+
+| Condition | Delta range | Rationale |
+|---|---|---|
+| TREND_NEUTRAL, VIX < 20 | 0.20–0.30 | Normal market, standard wheel |
+| TREND_NEUTRAL, VIX 20–25 | 0.15–0.25 | Elevated, step back |
+| TREND_NEUTRAL, VIX 25–30 | 0.10–0.20 | High, conservative |
+| TREND_BEARISH, any VIX | 0.10–0.20 | Force high-VIX range regardless of VIX number |
+| TREND_BEARISH + VIX > 25 | 0.08–0.15 | Tightest range — directional risk dominates |
+
+TREND_BEARISH is detected by SPY MA10 < MA20. In a trending bear market, strikes that look safe at neutral-market delta levels are not safe — the market is actively moving against you. The TREND_BEARISH override compensates for directional risk that VIX alone does not capture.
+
+### Covered call delta by regime
+
+In TREND_BEARISH the priority is letting the stock recover, not maximizing call premium. Selling tight calls in a downtrend locks the position permanently below cost basis.
+
+| Condition | CC delta range | Rationale |
+|---|---|---|
+| TREND_NEUTRAL, VIX < 20 | 0.20–0.30 | Collect premium aggressively |
+| TREND_NEUTRAL, VIX >= 20 | 0.15–0.25 | IV inflated, good premium further out |
+| TREND_BEARISH | 0.10–0.20 | Let stock recover, don't cap upside |
+| TREND_BEARISH + VIX > 25 | 0.08–0.15 | Maximum distance, tiny premium acceptable |
+
+### No stop-loss on puts — by design
+
+Stop-losses on short puts are not implemented and should not be. For the wheel strategy, hitting the strike means assignment — the strategy working as intended, not a failure. The cost of stop-losses (closing at a loss, paying commission, missing recovery) exceeds the benefit over a full wheel cycle. The HALT at VIX 30+ is the circuit breaker for extreme scenarios.
+
+---
+
+## $5M+ Scaling Safeguards
+
+All limits are adaptive — they scale with NLV as a percentage, with hard ceilings that prevent runaway exposure at very large account sizes. All parameters are tunable in `config/settings.yaml` without code changes.
+
+| Safeguard | Formula | At $5M | At $15M |
+|---|---|---|---|
+| Per-position cap | min(NLV × 1%, $150K) | $50K | $150K |
+| Total exposure cap | min(NLV × 20%, $2M) | $1M | $2M |
+| Daily deployment limit | min(NLV × 3%, $500K) | $150K | $450K |
+| Intraday loss halt | NLV × 2% | $100K | $300K |
+
+Position count tiers:
+
+| NLV | Max positions |
+|---|---|
+| < $50K | 4 |
+| < $200K | 8 |
+| < $500K | 15 |
+| < $2M | 20 |
+| < $5M | 30 |
+| $5M+ | 40 |
+
+### Suggested ramp to $5M live
+
+- **Month 1** — run current account through full wheel cycle, observe all new risk gates firing
+- **Month 2** — simulate $5M parameters in suggestion mode, verify no single scan cycle would breach limits
+- **Month 3** — flip to live; keep suggestion mode on for first 2–4 weeks at new capital level
 
 ---
 
@@ -198,14 +274,22 @@ Fail-open: if VIX data unavailable → mid tier (7–14 DTE).
 | `dte_tiers.low_vix.dte_max_usd` | Max DTE for USD stocks in low VIX | 3 |
 | `dte_tiers.low_vix.dte_min_other` | Min DTE for non-USD in low VIX | 0 |
 | `dte_tiers.low_vix.dte_max_other` | Max DTE for non-USD in low VIX | 7 |
-| `dte_tiers.mid_vix.dte_min_usd` | Min DTE in mid VIX | 7 |
-| `dte_tiers.mid_vix.dte_max_usd` | Max DTE in mid VIX | 14 |
+| `dte_tiers.mid_vix.dte_min_usd` | Min DTE in mid VIX | 0 |
+| `dte_tiers.mid_vix.dte_max_usd` | Max DTE in mid VIX | 3 |
 | `vix_pause_threshold` | Hard halt above this VIX | 30.0 |
 | `delta_min` / `delta_max` | Put delta range (config fallback) | 0.15 / 0.30 |
 | `min_premium_put` | Minimum acceptable put premium | $0.50 |
 | `contracts_per_stock` | Contracts per position | 1 |
 | `profit_take_enabled` | Enable profit taker | true |
 | `cc_dte_min` / `cc_dte_max` | Covered call DTE range | 5 / 30 |
+| `position_dollar_pct` | Per-position cap as % of NLV | 0.01 |
+| `max_position_dollars` | Hard ceiling per position | $150,000 |
+| `min_position_dollars` | Floor — small accounts unaffected | $25,000 |
+| `total_exposure_pct` | Total open collateral cap as % of NLV | 0.20 |
+| `max_total_exposure` | Hard ceiling total open collateral | $2,000,000 |
+| `daily_deployment_pct` | Max new collateral per day as % of NLV | 0.03 |
+| `max_daily_deployment` | Hard ceiling new collateral per day | $500,000 |
+| `intraday_loss_halt_pct` | Halt if unrealized loss exceeds this % of NLV | 0.02 |
 
 ### `config/watchlist.yaml`
 
@@ -222,7 +306,7 @@ Structured as `growth:` and `dividend:` sections. UK stocks (RIO, SHEL, HSBA, AZ
 - **Controls** — force close, cancel order (both update DB after IBKR action)
 - **Sync buttons** — trade history sync, positions sync, capital injections sync
 
-> Portfolio performance graph starts from **2026-03-20** — first day with correct `portfolio_nlv` snapshots. The graph will be flat/empty until the first snapshot job runs at 09:35 ET on the next trading day.
+> Portfolio performance graph starts from **2026-03-20** — first day with correct `portfolio_nlv` snapshots.
 
 ---
 
@@ -274,7 +358,7 @@ pkill -f "ibgateway"
 Then re-run `~/restart-all.sh`.
 
 **Accrued interest shows same number as yesterday**
-Flex Query refreshes at 08:00 ET. If IBKR hadn't settled overnight data by then, yesterday's value was cached. Trigger manually if needed:
+Flex Query refreshes at 08:00 ET. Trigger manually if needed:
 ```bash
 cd ~/automatic_option_trader && .venv/bin/python3 -c "
 from src.portfolio.capital_injections import fetch_accrued_interest_usd
@@ -286,7 +370,7 @@ print(fetch_accrued_interest_usd())
 Normal after a restart or `graph_start_date` reset. First data point writes at 09:35 ET on the next trading day. If it stays empty longer, check `system_state` table key `graph_start_date`.
 
 **`FMP 402 Payment Required` errors**
-The `/stable/quote` endpoint requires a paid FMP plan. The system uses IBKR for 52-week high and VIX instead — these errors are harmless. FMP is only used for the monthly screener (income, ratios, balance sheet — 250 free calls/day sufficient for ~50 stocks, not enough for 100).
+The `/stable/quote` endpoint requires a paid FMP plan. The system uses IBKR for 52-week high and VIX instead — these errors are harmless.
 
 ---
 
@@ -299,26 +383,12 @@ The `/stable/quote` endpoint requires a paid FMP plan. The system uses IBKR for 
 | 1 | NLV staleness 16:00–20:00 — investigate `accountValues()` push on read-only connections | Medium |
 | 2 | `restart-all.sh` — stress-test through real crash with active positions | Medium |
 | 3 | Cancel / Force close buttons — test on a live open position | Low |
-| 4 | iPhone Safari sync button unreliable | Low |
+| 4 | Next session: universe watchlist review for $5M scale | Medium |
+| 5 | Next session: portfolio strategy session (50/25/25, universe expansion to 100 stocks) | Medium |
 
 ### $5M options account scaling (Month 2 — April/May 2026)
 
-The system is **not safe at $5M** without explicit capital scaling safeguards. Current NLV-based position sizing would produce $300–750K collateral per single put at that scale.
-
-Required before going live at $5M:
-
-| Safeguard | Description |
-|-----------|-------------|
-| Hard dollar cap per position | Absolute ceiling on collateral regardless of NLV (e.g. $50K max) |
-| Hard cap on total exposure | Max total open collateral across all positions |
-| Daily deployment limit | Max new collateral per day — prevent $5M deployment in one scan cycle |
-| Emergency halt threshold | Auto-halt if unrealized loss exceeds X% of NLV in a single day |
-| Suggestion mode ramp | Manual approval of every trade for first 2–4 weeks at new capital level |
-
-**Suggested roadmap:**
-- **Month 1 (March–April)** — run test account through full cycle, observe, fix
-- **Month 2 (April–May)** — implement scaling safeguards; expand portfolio universe to 100 stocks; upgrade FMP plan
-- **Month 3 (May–June)** — simulate $5M parameters in suggestion mode, flip to live when confident
+All scaling safeguards implemented March 24, 2026. See $5M+ Scaling Safeguards section above for full details and ramp plan.
 
 ### Portfolio strategy session (separate)
 
@@ -327,82 +397,6 @@ Required before going live at $5M:
 - Position sizing for $5M scale
 - Buy signal conservatism calibration
 - **Max return session**: what would change if life depended on it
-
----
-
-## Git
-
-```
-github.com/rainrosimannus-spec/automatic_option_trader
-```
-
-Commit after every meaningful change. `data/` is not in git (cache files). `config/settings.yaml` and `config/watchlist.yaml` are in git.
-
----
-
-*Last updated: March 20, 2026 — v0.4 (VIX-adaptive DTE, 52-week high filter, portfolio graph separation)*
-
-## Working Style — Additional Rules
-
-- **No manual file editing** — the owner is not a programmer. All code changes must be delivered as copy-paste ready terminal commands that modify files directly (e.g. `sed`, Python heredoc replacements). Never instruct the owner to open a file and edit it manually. Every change goes in a code block that can be run as-is.
-- **Read before writing** — always read the exact current code before writing a replacement. Never assume what the code looks like based on context or previous sessions.
-- **Verify after every change** — after every file modification, run a targeted `grep` or `sed -n` to confirm the new code is exactly in place before moving to the next change.
-
----
-
-## Strategy Logic — Decisions and Rationale (March 24, 2026)
-
-### Why 0-3 DTE across all VIX regimes
-
-The original system used 7-14 DTE in elevated VIX to provide a recovery buffer. This was wrong for the wheel strategy. The buffer only helps traders who close positions early at a loss. For a wheel operator who holds to expiry and accepts assignment, a longer DTE just means a longer period of unrealized loss with no ability to reset. The 7-14 DTE window was removed. Both VIX tiers below 30 now use 0-3 DTE for USD stocks and 0-7 DTE for non-USD stocks (liquidity reasons — European and Asian option chains are thinner at very short DTE).
-
-The HALT at VIX 30+ already handles the one scenario where 0-3 DTE is genuinely dangerous. Below that threshold, faster expiry and faster reset is strictly better for wheel.
-
-### Delta calibration by regime
-
-| Condition | Delta range | Rationale |
-|---|---|---|
-| TREND_NEUTRAL, VIX < 20 | 0.20–0.30 | Normal market, standard wheel |
-| TREND_NEUTRAL, VIX 20–25 | 0.15–0.25 | Elevated, step back |
-| TREND_NEUTRAL, VIX 25–30 | 0.10–0.20 | High, conservative |
-| TREND_BEARISH, any VIX | 0.10–0.20 | Force high-VIX range regardless of VIX number |
-| TREND_BEARISH + VIX > 25 | 0.08–0.15 | Tightest range — directional risk dominates |
-
-TREND_BEARISH is detected by SPY MA10 < MA20. In a trending bear market, strikes that look safe at neutral-market delta levels are not safe. The TREND_BEARISH override compensates for directional risk that VIX alone does not capture.
-
-### Covered call delta by regime
-
-| Condition | CC delta range | Rationale |
-|---|---|---|
-| TREND_NEUTRAL, VIX < 20 | 0.20–0.30 | Collect premium aggressively |
-| TREND_NEUTRAL, VIX >= 20 | 0.15–0.25 | IV inflated, good premium further out |
-| TREND_BEARISH | 0.10–0.20 | Let stock recover, don't cap upside |
-| TREND_BEARISH + VIX > 25 | 0.08–0.15 | Maximum distance, tiny premium acceptable |
-
-### No stop-loss on puts — by design
-
-Stop-losses on short puts are not implemented and should not be. For the wheel strategy, hitting the strike means assignment — the strategy working as intended, not a failure. The cost of stop-losses exceeds the benefit over a full wheel cycle. The HALT at VIX 30+ is the circuit breaker for extreme scenarios.
-
----
-
-## $5M+ Scaling Safeguards
-
-All limits are adaptive — they scale with NLV as a percentage, with hard ceilings that prevent runaway exposure at very large account sizes. All parameters are tunable in `config/settings.yaml` without code changes.
-
-| Safeguard | Formula | At $5M | At $15M |
-|---|---|---|---|
-| Per-position cap | min(NLV × 1%, $150K) | $50K | $150K |
-| Total exposure cap | min(NLV × 20%, $2M) | $1M | $2M |
-| Daily deployment limit | min(NLV × 3%, $500K) | $150K | $450K |
-| Intraday loss halt | NLV × 2% | $100K | $300K |
-
-Position count tiers extended: 30 positions at $2M-5M NLV, 40 at $5M+.
-
-### Suggested ramp to $5M live
-
-- **Month 1** — run current account through full wheel cycle, observe all new risk gates firing
-- **Month 2** — simulate $5M parameters in suggestion mode, verify no single scan cycle would breach limits
-- **Month 3** — flip to live; keep suggestion mode on for first 2-4 weeks at new capital level
 
 ---
 
@@ -426,21 +420,22 @@ Position count tiers extended: 30 positions at $2M-5M NLV, 40 at $5M+.
 
 **Current positions:**
 5 open puts expiring March 27 — all ITM, all likely assignment: PANW, PG, SHOP, TTD, UBER.
-Wheel begins on all five Friday. System is in TREND_BEARISH — covered call logic will
-automatically select wide strikes (delta 0.10-0.20). Do not fight for premium, let stocks recover.
+Wheel begins on all five Friday. System is in TREND_BEARISH — covered call logic will automatically select wide strikes (delta 0.10-0.20). Do not fight for premium, let the stocks recover.
 
 **System state:**
 Both connections stable. All new risk gates active and logging correctly.
 Margin at 91% due to open puts — no new trades until Friday expiry clears margin.
 
-**Open items:**
+---
 
-| # | Item | Priority |
-|---|------|----------|
-| 1 | NLV staleness 16:00-20:00 | Medium |
-| 2 | restart-all.sh stress-test through crash with active positions | Medium |
-| 3 | Force close / cancel buttons — untested on live position | Low |
-| 4 | Next session: universe watchlist review for $5M scale | Medium |
-| 5 | Next session: portfolio strategy session (50/25/25, universe expansion) | Medium |
+## Git
+
+```
+github.com/rainrosimannus-spec/automatic_option_trader
+```
+
+Commit after every meaningful change. `data/` is not in git (cache files). `config/settings.yaml` and `config/watchlist.yaml` are in git — note that `settings.yaml` is in `.gitignore` due to API keys; use `git add -f` if intentional commit is needed.
+
+---
 
 *Last updated: March 24, 2026 — v0.5 (regime-aware DTE/delta, $5M scaling safeguards)*
