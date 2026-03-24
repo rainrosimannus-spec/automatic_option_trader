@@ -1310,16 +1310,16 @@ def create_scheduler() -> BackgroundScheduler:
                 ).scalar() or 0.0
             port_value = sum(_to_usd(h.market_value or 0, h.currency) for h in holdings)
 
+            # Get portfolio NLV — same level as port_value, outside DB block
+            from src.portfolio.connection import get_cached_portfolio_account
+            portfolio_cache = get_cached_portfolio_account()
+            portfolio_nlv = portfolio_cache.get("nlv", 0.0)
+
             # Upsert today's snapshot
             with get_db() as db:
                 existing = db.query(AccountSnapshot).filter(
                     AccountSnapshot.date == today
                 ).first()
-
-                # Get portfolio NLV from portfolio connection cache
-                from src.portfolio.connection import get_cached_portfolio_account
-                portfolio_cache = get_cached_portfolio_account()
-                portfolio_nlv = portfolio_cache.get("nlv", 0.0)
 
                 if existing:
                     existing.net_liquidation = nlv
@@ -1359,11 +1359,7 @@ def create_scheduler() -> BackgroundScheduler:
     )
     log.info("account_snapshot_scheduled")
 
-    # Also take a snapshot right now at startup
-    try:
-        _job_account_snapshot()
-    except Exception:
-        pass
+    # Startup snapshot removed — health check writes portfolio_nlv every 5 min
 
     # ── IPO Rider jobs ────────────────────────────────────────
     from src.ipo.trader import IpoTrader
