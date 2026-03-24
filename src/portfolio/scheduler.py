@@ -1397,5 +1397,37 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
             if imported > 0:
                 log.info("portfolio_trade_sync_done", imported=imported)
 
+            # Write portfolio_nlv to snapshot — same pattern as options trade sync
+            try:
+                from src.portfolio.connection import get_cached_portfolio_account
+                from src.core.models import AccountSnapshot
+                from sqlalchemy import text
+                portfolio_cache = get_cached_portfolio_account()
+                portfolio_nlv = portfolio_cache.get("nlv", 0.0)
+                if portfolio_nlv > 0:
+                    today = datetime.utcnow().strftime("%Y-%m-%d")
+                    with get_db() as db:
+                        total_invested = db.execute(
+                            text("SELECT COALESCE(SUM(amount_usd), 0) FROM portfolio_capital_injections")
+                        ).scalar() or 0.0
+                        existing = db.query(AccountSnapshot).filter(
+                            AccountSnapshot.date == today
+                        ).first()
+                        if existing:
+                            existing.portfolio_nlv = round(portfolio_nlv, 2)
+                            if not existing.portfolio_invested or existing.portfolio_invested <= 0:
+                                existing.portfolio_invested = round(total_invested, 2)
+                        else:
+                            db.add(AccountSnapshot(
+                                date=today,
+                                net_liquidation=0.0,
+                                options_premium_collected=0.0,
+                                portfolio_nlv=round(portfolio_nlv, 2),
+                                portfolio_invested=round(total_invested, 2),
+                                portfolio_market_value=0.0,
+                            ))
+            except Exception as e:
+                log.warning("portfolio_sync_nlv_snapshot_failed", error=str(e))
+
         except Exception as e:
             log.error("portfolio_trade_sync_error", error=str(e))
