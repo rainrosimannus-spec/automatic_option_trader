@@ -341,3 +341,106 @@ Commit after every meaningful change. `data/` is not in git (cache files). `conf
 ---
 
 *Last updated: March 20, 2026 — v0.4 (VIX-adaptive DTE, 52-week high filter, portfolio graph separation)*
+
+## Working Style — Additional Rules
+
+- **No manual file editing** — the owner is not a programmer. All code changes must be delivered as copy-paste ready terminal commands that modify files directly (e.g. `sed`, Python heredoc replacements). Never instruct the owner to open a file and edit it manually. Every change goes in a code block that can be run as-is.
+- **Read before writing** — always read the exact current code before writing a replacement. Never assume what the code looks like based on context or previous sessions.
+- **Verify after every change** — after every file modification, run a targeted `grep` or `sed -n` to confirm the new code is exactly in place before moving to the next change.
+
+---
+
+## Strategy Logic — Decisions and Rationale (March 24, 2026)
+
+### Why 0-3 DTE across all VIX regimes
+
+The original system used 7-14 DTE in elevated VIX to provide a recovery buffer. This was wrong for the wheel strategy. The buffer only helps traders who close positions early at a loss. For a wheel operator who holds to expiry and accepts assignment, a longer DTE just means a longer period of unrealized loss with no ability to reset. The 7-14 DTE window was removed. Both VIX tiers below 30 now use 0-3 DTE for USD stocks and 0-7 DTE for non-USD stocks (liquidity reasons — European and Asian option chains are thinner at very short DTE).
+
+The HALT at VIX 30+ already handles the one scenario where 0-3 DTE is genuinely dangerous. Below that threshold, faster expiry and faster reset is strictly better for wheel.
+
+### Delta calibration by regime
+
+| Condition | Delta range | Rationale |
+|---|---|---|
+| TREND_NEUTRAL, VIX < 20 | 0.20–0.30 | Normal market, standard wheel |
+| TREND_NEUTRAL, VIX 20–25 | 0.15–0.25 | Elevated, step back |
+| TREND_NEUTRAL, VIX 25–30 | 0.10–0.20 | High, conservative |
+| TREND_BEARISH, any VIX | 0.10–0.20 | Force high-VIX range regardless of VIX number |
+| TREND_BEARISH + VIX > 25 | 0.08–0.15 | Tightest range — directional risk dominates |
+
+TREND_BEARISH is detected by SPY MA10 < MA20. In a trending bear market, strikes that look safe at neutral-market delta levels are not safe. The TREND_BEARISH override compensates for directional risk that VIX alone does not capture.
+
+### Covered call delta by regime
+
+| Condition | CC delta range | Rationale |
+|---|---|---|
+| TREND_NEUTRAL, VIX < 20 | 0.20–0.30 | Collect premium aggressively |
+| TREND_NEUTRAL, VIX >= 20 | 0.15–0.25 | IV inflated, good premium further out |
+| TREND_BEARISH | 0.10–0.20 | Let stock recover, don't cap upside |
+| TREND_BEARISH + VIX > 25 | 0.08–0.15 | Maximum distance, tiny premium acceptable |
+
+### No stop-loss on puts — by design
+
+Stop-losses on short puts are not implemented and should not be. For the wheel strategy, hitting the strike means assignment — the strategy working as intended, not a failure. The cost of stop-losses exceeds the benefit over a full wheel cycle. The HALT at VIX 30+ is the circuit breaker for extreme scenarios.
+
+---
+
+## $5M+ Scaling Safeguards
+
+All limits are adaptive — they scale with NLV as a percentage, with hard ceilings that prevent runaway exposure at very large account sizes. All parameters are tunable in `config/settings.yaml` without code changes.
+
+| Safeguard | Formula | At $5M | At $15M |
+|---|---|---|---|
+| Per-position cap | min(NLV × 1%, $150K) | $50K | $150K |
+| Total exposure cap | min(NLV × 20%, $2M) | $1M | $2M |
+| Daily deployment limit | min(NLV × 3%, $500K) | $150K | $450K |
+| Intraday loss halt | NLV × 2% | $100K | $300K |
+
+Position count tiers extended: 30 positions at $2M-5M NLV, 40 at $5M+.
+
+### Suggested ramp to $5M live
+
+- **Month 1** — run current account through full wheel cycle, observe all new risk gates firing
+- **Month 2** — simulate $5M parameters in suggestion mode, verify no single scan cycle would breach limits
+- **Month 3** — flip to live; keep suggestion mode on for first 2-4 weeks at new capital level
+
+---
+
+## Handoff — March 24, 2026 (end of day)
+
+**Strategy changes (this session):**
+- 7-14 DTE mid-VIX tier dropped — both tiers now 0-3 DTE (USD) / 0-7 DTE (non-USD)
+- Delta tiers recalibrated: VIX<20=0.20-0.30, VIX 20-25=0.15-0.25, VIX 25-30=0.10-0.20
+- TREND_BEARISH delta floor added to `risk.py` — forces high-VIX range regardless of actual VIX
+- TREND_BEARISH + VIX>25 forces tightest range 0.08-0.15
+- Regime-aware covered call delta added to `wheel.py`
+- Screener DTE scoring: hardcoded 7-DTE target replaced with dynamic midpoint of passed range
+
+**Scaling safeguards added (this session):**
+- Hard dollar cap per position in `risk.py` and `put_seller.py`
+- Total open exposure cap — `check_total_exposure()` in `risk.py`
+- Daily deployment limit — `check_daily_deployment()` in `risk.py`
+- Intraday loss halt — `check_intraday_loss()` in `risk.py`
+- Position count tiers extended to $5M+ in `risk.py`
+- 8 new scaling fields added to Pydantic config model in `config.py`
+
+**Current positions:**
+5 open puts expiring March 27 — all ITM, all likely assignment: PANW, PG, SHOP, TTD, UBER.
+Wheel begins on all five Friday. System is in TREND_BEARISH — covered call logic will
+automatically select wide strikes (delta 0.10-0.20). Do not fight for premium, let stocks recover.
+
+**System state:**
+Both connections stable. All new risk gates active and logging correctly.
+Margin at 91% due to open puts — no new trades until Friday expiry clears margin.
+
+**Open items:**
+
+| # | Item | Priority |
+|---|------|----------|
+| 1 | NLV staleness 16:00-20:00 | Medium |
+| 2 | restart-all.sh stress-test through crash with active positions | Medium |
+| 3 | Force close / cancel buttons — untested on live position | Low |
+| 4 | Next session: universe watchlist review for $5M scale | Medium |
+| 5 | Next session: portfolio strategy session (50/25/25, universe expansion) | Medium |
+
+*Last updated: March 24, 2026 — v0.5 (regime-aware DTE/delta, $5M scaling safeguards)*
