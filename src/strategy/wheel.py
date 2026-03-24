@@ -235,9 +235,23 @@ class WheelManager:
         net_cost_basis = (cost_basis or 0) - (stock_pos.total_premium_collected / max(stock_pos.quantity, 1))
         min_strike = net_cost_basis if self.cfg.cc_above_cost_basis and net_cost_basis > 0 else None
 
-        # Target ATM delta for maximum premium
-        cc_delta_min = self.cfg.cc_delta_min
-        cc_delta_max = self.cfg.cc_delta_max
+        # Regime-aware covered call delta
+        # TREND_BEARISH: sell far OTM — let stock recover, don't cap upside
+        # TREND_BEARISH + VIX > 25: maximum distance, tiny premium acceptable
+        # TREND_NEUTRAL + elevated VIX: IV is inflated, good premium further out
+        # TREND_NEUTRAL + low VIX: sell closer, collect premium aggressively
+        regime = self.risk.get_regime()
+        vix = regime.vix or 20.0
+        spy_bearish = regime.spy_bullish is False
+
+        if spy_bearish and vix >= 25:
+            cc_delta_min, cc_delta_max = 0.08, 0.15
+        elif spy_bearish:
+            cc_delta_min, cc_delta_max = 0.10, 0.20
+        elif vix >= 20:
+            cc_delta_min, cc_delta_max = 0.15, 0.25
+        else:
+            cc_delta_min, cc_delta_max = 0.20, 0.30
 
         log.info("covered_call_params", symbol=symbol,
                  cost_basis=round(cost_basis, 2) if cost_basis else None,

@@ -211,10 +211,10 @@ def screen_puts(
         if bid < cfg.min_bid:
             continue
 
-        # 1. DTE score — prefer 7 DTE, penalise both shorter and longer
-        #    7 DTE → 1.0, 5 DTE → 0.71, 10 DTE → 0.57, 14 DTE → 0.0
-        dte_target = 7
-        dte_score = 1 - abs(dte - dte_target) / dte_target
+        # 1. DTE score — prefer midpoint of allowed DTE range, penalise both shorter and longer
+        #    Midpoint of resolved_dte_min/max — no longer hardcoded to 7 DTE
+        dte_target = max(1, (resolved_dte_min + resolved_dte_max) // 2)
+        dte_score = 1 - abs(dte - dte_target) / max(dte_target, 1)
         dte_score = max(0.0, min(1.0, dte_score))
 
         # 2. Delta score — prefer centre of allowed range (~0.20-0.25)

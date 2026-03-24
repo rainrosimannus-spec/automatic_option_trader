@@ -825,15 +825,20 @@ class RiskManager:
 
     def get_dynamic_delta_range(self) -> tuple[float, float]:
         """
-        Get the current delta range based on VIX level.
-        Low VIX (<15): wider delta (more aggressive, but VIX is low so risk is low)
-        Mid VIX (15-25): moderate delta
-        High VIX (25-30): tight delta (further OTM, fatter premium anyway)
+        Get the current delta range based on VIX level and SPY trend regime.
 
-        0-2 DTE override: widen delta range because:
-        - Theta decay is extreme, gamma risk is the main factor
-        - Narrow delta windows eliminate too many candidates
-        - At 0-2 DTE, a 0.25 delta put is very far OTM in absolute terms
+        VIX tiers (baseline):
+          VIX < 20  → 0.20-0.30 (normal, standard wheel)
+          VIX 20-25 → 0.15-0.25 (elevated, step back)
+          VIX 25-30 → 0.10-0.20 (high, conservative)
+
+        TREND_BEARISH override (SPY MA10 < MA20):
+          Forces minimum high-VIX range regardless of actual VIX.
+          If also VIX > 25: forces tightest range (0.08-0.15).
+
+        Rationale: in a trending bear market, strikes that look safe at
+        neutral-market delta levels are not safe. Wider OTM distance
+        compensates for directional risk that VIX alone does not capture.
         """
         strat_cfg = get_settings().strategy
         if not strat_cfg.dynamic_delta_enabled:
@@ -841,11 +846,23 @@ class RiskManager:
 
         regime = self.get_regime()
         vix = regime.vix
+        spy_bearish = regime.spy_bullish is False
 
         if vix is None:
             return (strat_cfg.delta_min, strat_cfg.delta_max)
 
-        if vix < 15:
+        # TREND_BEARISH + high VIX: tightest range
+        if spy_bearish and vix >= 25:
+            delta_range = (0.08, 0.15)
+            log.debug("dynamic_delta", vix=vix, regime="bearish+high_vix", delta_range=delta_range)
+
+        # TREND_BEARISH: force at least high-VIX range regardless of VIX number
+        elif spy_bearish:
+            delta_range = (strat_cfg.delta_vix_high, strat_cfg.delta_vix_high_max)
+            log.debug("dynamic_delta", vix=vix, regime="bearish", delta_range=delta_range)
+
+        # Normal VIX-based tiers
+        elif vix < 20:
             delta_range = (strat_cfg.delta_vix_low, strat_cfg.delta_vix_low_max)
             log.debug("dynamic_delta", vix=vix, regime="low", delta_range=delta_range)
         elif vix < 25:
@@ -856,7 +873,7 @@ class RiskManager:
             log.debug("dynamic_delta", vix=vix, regime="high", delta_range=delta_range)
 
         # Note: DTE-specific delta widening is handled in the screener per-contract.
-        # This method provides the base delta range from VIX level.
+        # This method provides the base delta range from VIX level and trend regime.
 
         return delta_range
 
