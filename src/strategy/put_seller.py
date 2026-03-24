@@ -280,11 +280,15 @@ class PutSeller:
         try:
             from src.broker.orders import get_whatif_margin
             from src.broker.account import get_account_summary
+            from src.core.config import get_settings
             acct = get_account_summary()
             if acct and acct.net_liquidation > 0:
                 nlv = acct.net_liquidation
                 buying_power = acct.buying_power
                 maintenance_margin = acct.maintenance_margin
+                risk_cfg = get_settings().risk
+
+                # Layer 1 — percentage-based cap (existing logic)
                 if nlv < 100_000:
                     total_capacity = nlv * 6
                     max_pct = 0.25
@@ -292,6 +296,15 @@ class PutSeller:
                     total_capacity = buying_power + maintenance_margin
                     max_pct = 0.15
                 max_per_position = total_capacity * max_pct
+
+                # Layer 2 — hard dollar cap (scaling safeguard, only bites at large NLV)
+                dollar_cap = min(
+                    nlv * risk_cfg.position_dollar_pct,
+                    risk_cfg.max_position_dollars,
+                )
+                if dollar_cap >= risk_cfg.min_position_dollars:
+                    max_per_position = min(max_per_position, dollar_cap)
+
                 real_margin = get_whatif_margin(
                     symbol=symbol,
                     expiry=candidate.expiry,
@@ -308,7 +321,8 @@ class PutSeller:
                              real_margin=f"${real_margin:,.0f}",
                              max_per_position=f"${max_per_position:,.0f}",
                              total_capacity=f"${total_capacity:,.0f}",
-                             max_pct=f"{max_pct:.0%}")
+                             max_pct=f"{max_pct:.0%}",
+                             dollar_cap=f"${dollar_cap:,.0f}")
                     return False
                 log.info("whatif_margin_passed",
                          symbol=symbol,

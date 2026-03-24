@@ -105,6 +105,15 @@ class RiskConfig(BaseModel):
     max_buying_power_usage: float = 0.60
     max_margin_usage: float = 0.80        # block new trades when margin > 80% of NLV
     min_cash_reserve: float = 10000.0
+    # Scaling safeguards ($5M+)
+    position_dollar_pct: float = 0.01        # per-position cap as % of NLV
+    max_position_dollars: float = 150000.0   # hard ceiling per position
+    min_position_dollars: float = 25000.0    # floor — small accounts unaffected below this
+    total_exposure_pct: float = 0.20         # total open collateral cap as % of NLV
+    max_total_exposure: float = 2000000.0    # hard ceiling total open collateral
+    daily_deployment_pct: float = 0.03       # max new collateral per day as % of NLV
+    max_daily_deployment: float = 500000.0   # hard ceiling new collateral per day
+    intraday_loss_halt_pct: float = 0.02     # halt if unrealized loss > 2% of NLV
     # Correlation gate (skip if NLV < 50K or fewer than 3 open positions)
     max_correlation: float = 0.85        # block if avg pairwise correlation > this
     correlation_nlv_threshold: float = 50000.0

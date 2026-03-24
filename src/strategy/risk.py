@@ -323,8 +323,12 @@ class RiskManager:
             max_pos = 8
         elif net_liq < 500_000:
             max_pos = 15
-        else:
+        elif net_liq < 2_000_000:
             max_pos = 20
+        elif net_liq < 5_000_000:
+            max_pos = 30
+        else:
+            max_pos = 40
 
         with get_db() as db:
             open_count = (
@@ -342,17 +346,22 @@ class RiskManager:
 
     def check_position_size(self, symbol: str) -> RiskCheck:
         """
-        Adaptive per-position size limit based on NLV.
-        Uses same anchor pattern as sector check — starts permissive,
-        tightens automatically as account grows.
+        Adaptive per-position size limit based on NLV, with hard dollar cap for large accounts.
 
-        Tiers (% of NLV × 6 capacity per position):
-          NLV < $50K   → 25% (4 positions max by capacity)
-          NLV < $200K  → 15%
-          NLV >= $200K → floors at 5% (max_single_stock_pct target)
+        Two-layer check:
+          Layer 1 — percentage-based (existing): NLV × 6 capacity × adaptive %
+            NLV < $50K   → 25%
+            NLV < $200K  → 15%
+            NLV >= $200K → 5%
+
+          Layer 2 — hard dollar cap (scaling safeguard):
+            max = min(NLV × position_dollar_pct, max_position_dollars)
+            floor at min_position_dollars so small accounts are unaffected
+            At $5M NLV → min($50K, $150K) = $50K per position
+            At $15M NLV → min($150K, $150K) = $150K per position (ceiling)
 
         Real margin enforcement is handled by get_whatif_margin in put_seller.py.
-        This check adds a secondary guardrail on position concentration.
+        This check adds secondary guardrails on position concentration.
         """
         try:
             summary = get_account_summary()
@@ -378,16 +387,31 @@ class RiskManager:
         except Exception:
             return RiskCheck(True)
 
-        capacity = net_liq * 6  # same formula as put_seller.py
-        max_position_value = capacity * effective_limit
         estimated_margin = price * 100  # 1 contract = 100 shares
 
+        # Layer 1 — percentage-based cap (existing logic)
+        capacity = net_liq * 6
+        max_position_value = capacity * effective_limit
         if estimated_margin > max_position_value:
             return RiskCheck(
                 False,
                 f"{symbol} estimated margin ${estimated_margin:,.0f} exceeds "
                 f"{effective_limit:.0%} position limit (${max_position_value:,.0f}) at NLV ${net_liq:,.0f}",
             )
+
+        # Layer 2 — hard dollar cap (scaling safeguard, only bites at large NLV)
+        dollar_cap = min(
+            net_liq * self.cfg.position_dollar_pct,
+            self.cfg.max_position_dollars,
+        )
+        if dollar_cap >= self.cfg.min_position_dollars and estimated_margin > dollar_cap:
+            return RiskCheck(
+                False,
+                f"{symbol} estimated margin ${estimated_margin:,.0f} exceeds "
+                f"hard dollar cap ${dollar_cap:,.0f} (NLV ${net_liq:,.0f} × {self.cfg.position_dollar_pct:.0%}, "
+                f"ceiling ${self.cfg.max_position_dollars:,.0f})",
+            )
+
         return RiskCheck(True)
 
     def _get_adaptive_position_limit(self, net_liq: float) -> float:
@@ -877,6 +901,146 @@ class RiskManager:
 
         return delta_range
 
+    # ── Scaling safeguards ─────────────────────────────────
+    def check_total_exposure(self) -> RiskCheck:
+        """
+        Block if total open collateral across all positions exceeds cap.
+        Cap = min(NLV × total_exposure_pct, max_total_exposure).
+        Skipped on small accounts where cap would be below $100K.
+        Estimated margin = stock price × 100 per open put position.
+        """
+        try:
+            summary = get_account_summary()
+            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+        except Exception:
+            return RiskCheck(True)
+
+        exposure_cap = min(
+            net_liq * self.cfg.total_exposure_pct,
+            self.cfg.max_total_exposure,
+        )
+        if exposure_cap < 100_000:
+            return RiskCheck(True)  # small account — skip
+
+        with get_db() as db:
+            open_puts = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "short_put",
+                )
+                .all()
+            )
+
+        total_exposure = 0.0
+        for pos in open_puts:
+            try:
+                stock = self.universe.get_stock(pos.symbol)
+                currency = stock.currency if stock else "USD"
+                exchange = stock.exchange if stock else "SMART"
+                price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
+                if price and price > 0:
+                    total_exposure += price * 100 * pos.quantity
+            except Exception:
+                continue
+
+        if total_exposure >= exposure_cap:
+            return RiskCheck(
+                False,
+                f"Total open exposure ${total_exposure:,.0f} >= cap ${exposure_cap:,.0f} "
+                f"(NLV ${net_liq:,.0f} × {self.cfg.total_exposure_pct:.0%}, "
+                f"ceiling ${self.cfg.max_total_exposure:,.0f})",
+            )
+        return RiskCheck(True)
+
+    def check_daily_deployment(self) -> RiskCheck:
+        """
+        Block if new collateral deployed today exceeds daily limit.
+        Limit = min(NLV × daily_deployment_pct, max_daily_deployment).
+        Skipped on small accounts where limit would be below $50K.
+        Tracks sum of estimated margin for puts opened today.
+        """
+        try:
+            summary = get_account_summary()
+            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+        except Exception:
+            return RiskCheck(True)
+
+        daily_limit = min(
+            net_liq * self.cfg.daily_deployment_pct,
+            self.cfg.max_daily_deployment,
+        )
+        if daily_limit < 50_000:
+            return RiskCheck(True)  # small account — skip
+
+        today_start = datetime.combine(date.today(), datetime.min.time())
+        with get_db() as db:
+            todays_puts = (
+                db.query(Position)
+                .filter(
+                    Position.opened_at >= today_start,
+                    Position.position_type == "short_put",
+                )
+                .all()
+            )
+
+        deployed_today = 0.0
+        for pos in todays_puts:
+            try:
+                stock = self.universe.get_stock(pos.symbol)
+                currency = stock.currency if stock else "USD"
+                exchange = stock.exchange if stock else "SMART"
+                price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
+                if price and price > 0:
+                    deployed_today += price * 100 * pos.quantity
+            except Exception:
+                continue
+
+        if deployed_today >= daily_limit:
+            return RiskCheck(
+                False,
+                f"Daily deployment ${deployed_today:,.0f} >= limit ${daily_limit:,.0f} "
+                f"(NLV ${net_liq:,.0f} × {self.cfg.daily_deployment_pct:.0%}, "
+                f"ceiling ${self.cfg.max_daily_deployment:,.0f})",
+            )
+        return RiskCheck(True)
+
+    def check_intraday_loss(self) -> RiskCheck:
+        """
+        Halt new trades if unrealized loss exceeds intraday_loss_halt_pct of NLV.
+        Reads total unrealized P&L from all open positions in DB.
+        Scales with NLV — no ceiling, pain threshold scales with account size.
+        """
+        try:
+            summary = get_account_summary()
+            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+        except Exception:
+            return RiskCheck(True)
+
+        halt_threshold = net_liq * self.cfg.intraday_loss_halt_pct
+
+        with get_db() as db:
+            open_puts = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "short_put",
+                )
+                .all()
+            )
+
+        total_unrealized = sum(
+            (pos.unrealized_pnl or 0) for pos in open_puts
+        )
+
+        if total_unrealized <= -halt_threshold:
+            return RiskCheck(
+                False,
+                f"Intraday loss ${abs(total_unrealized):,.0f} exceeds halt threshold "
+                f"${halt_threshold:,.0f} ({self.cfg.intraday_loss_halt_pct:.0%} of NLV ${net_liq:,.0f})",
+            )
+        return RiskCheck(True)
+
     # ── Master check ────────────────────────────────────────
     def can_open_put(self, symbol: str, market: str | None = None) -> RiskCheck:
         """Run all pre-trade checks for selling a put."""
@@ -884,8 +1048,11 @@ class RiskManager:
             self.check_vix_gate(),
             self.check_margin_usage(),
             self.check_daily_limit(),
+            self.check_daily_deployment(),
             self.check_position_limit(),
             self.check_position_size(symbol),
+            self.check_total_exposure(),
+            self.check_intraday_loss(),
             self.check_sector_exposure(symbol),
             self.check_correlation(symbol),
             self.check_delta_exposure(symbol),
