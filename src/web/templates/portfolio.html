@@ -418,14 +418,13 @@ function syncInjections() {
     {% endif %}
 
     <!-- ═══ Open Options Positions (live from IBKR portfolio account) ═══ -->
-    {% set open_options = portfolio_open_orders | selectattr("sec_type", "equalto", "OPT") | selectattr("status", "in", ["Filled", "PreSubmitted", "Submitted"]) | list %}
     {% set open_opts_live = portfolio_open_orders | selectattr("sec_type", "equalto", "OPT") | list %}
-    {% if open_opts_live %}
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
         <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">
             📊 Open Options Positions
             <span class="text-xs text-purple-400 ml-2">{{open_opts_live|length}} position(s) — portfolio account</span>
         </h2>
+        {% if open_opts_live %}
         <div class="overflow-x-auto">
             <table class="w-full text-left text-sm">
                 <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
@@ -478,17 +477,19 @@ function syncInjections() {
                 </tbody>
             </table>
         </div>
+        {% else %}
+        <div class="text-gray-500 text-center py-6 text-sm">No open options positions.</div>
+        {% endif %}
     </div>
-    {% endif %}
 
     <!-- ═══ Pending Orders (all asset types, portfolio account) ═══ -->
     {% set pending = portfolio_open_orders | selectattr("status", "in", ["PreSubmitted", "Submitted"]) | list %}
-    {% if pending %}
-    <div class="bg-gray-900 border border-amber-900/40 rounded-lg p-5 mb-6">
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
         <h2 class="text-sm font-medium text-amber-400 uppercase tracking-wider mb-4">
             ⏳ Pending Orders
             <span class="text-xs text-gray-400 ml-2">{{pending|length}} order(s) awaiting fill — portfolio account</span>
         </h2>
+        {% if pending %}
         <div class="overflow-x-auto">
             <table class="w-full text-left text-sm">
                 <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
@@ -533,8 +534,10 @@ function syncInjections() {
                 </tbody>
             </table>
         </div>
+        {% else %}
+        <div class="text-gray-500 text-center py-6 text-sm">No pending orders.</div>
+        {% endif %}
     </div>
-    {% endif %}
 
     <!-- ═══ Buy Signals (Watchlist) ═══ -->
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
