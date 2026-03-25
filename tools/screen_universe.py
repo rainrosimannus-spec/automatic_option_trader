@@ -285,8 +285,15 @@ def _fmp_get(endpoint: str, symbol: str, params: dict = {}) -> Optional[list]:
 
 
 def _get_fmp_fundamentals(symbol: str) -> dict:
+    """
+    Fetch all fundamental metrics needed for scoring.
+    Includes gross margin, FCF margin trend, and dividend CAGR for 10-year total return.
+    Uses 4-5 API calls — monthly screener only.
+    """
     result = {}
-    income = _fmp_get("income-statement", symbol, {"limit": 4})
+
+    # ── Income statement: revenue, margins ──
+    income = _fmp_get("income-statement", symbol, {"limit": 5})
     if income and len(income) >= 2:
         try:
             rev_latest = income[0].get("revenue", 0)
@@ -301,10 +308,21 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
                 if rev_oldest and years > 0 else 0
             )
             result["net_income_latest"] = income[0].get("netIncome", 0)
+            # Gross margin — key indicator of pricing power and scalability
+            gross_profit = income[0].get("grossProfit", 0)
+            revenue = income[0].get("revenue", 0)
+            if revenue and revenue > 0:
+                result["gross_margin_pct"] = gross_profit / revenue * 100
+            # Gross margin trend: improving or deteriorating?
+            if len(income) >= 3:
+                gm_old = income[2].get("grossProfit", 0) / max(income[2].get("revenue", 1), 1) * 100
+                gm_new = income[0].get("grossProfit", 0) / max(income[0].get("revenue", 1), 1) * 100
+                result["gross_margin_trend"] = gm_new - gm_old  # positive = improving
         except Exception:
             pass
 
-    ratios = _fmp_get("ratios", symbol, {"limit": 2})
+    # ── Ratios: PE, PEG, dividend yield, payout ──
+    ratios = _fmp_get("ratios", symbol, {"limit": 3})
     if ratios and len(ratios) >= 1:
         try:
             r = ratios[0]
@@ -312,6 +330,7 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
             result["peg_ratio"] = r.get("priceEarningsToGrowthRatio") or 0
             result["payout_ratio"] = (r.get("payoutRatio") or 0) * 100
             result["dividend_yield"] = (r.get("dividendYield") or 0) * 100
+            result["roe"] = (r.get("returnOnEquity") or 0) * 100  # return on equity
             if len(ratios) >= 2:
                 prev_yield = (ratios[1].get("dividendYield") or 0) * 100
                 curr_yield = result["dividend_yield"]
@@ -321,6 +340,7 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
         except Exception:
             pass
 
+    # ── Balance sheet: debt ──
     bs = _fmp_get("balance-sheet-statement", symbol, {"limit": 2})
     if bs and len(bs) >= 1:
         try:
@@ -330,13 +350,62 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
         except Exception:
             pass
 
-    cf = _fmp_get("cash-flow-statement", symbol, {"limit": 3})
+    # ── Cash flow: FCF quality and trend ──
+    cf = _fmp_get("cash-flow-statement", symbol, {"limit": 4})
     if cf:
         try:
             result["fcf_negative_years"] = sum(
                 1 for c in cf if (c.get("freeCashFlow") or 0) < 0
             )
             result["fcf_latest"] = cf[0].get("freeCashFlow") or 0
+            # FCF margin trend: is FCF growing as % of revenue?
+            # Positive trend = company converts more revenue to cash over time
+            if len(cf) >= 3 and income and len(income) >= 3:
+                fcf_old = cf[2].get("freeCashFlow", 0)
+                rev_old = income[2].get("revenue", 1) or 1
+                fcf_new = cf[0].get("freeCashFlow", 0)
+                rev_new = income[0].get("revenue", 1) or 1
+                fcf_margin_old = fcf_old / rev_old * 100
+                fcf_margin_new = fcf_new / rev_new * 100
+                result["fcf_margin_trend"] = fcf_margin_new - fcf_margin_old
+        except Exception:
+            pass
+
+    # ── Dividend CAGR: the most important factor for 10-year dividend total return ──
+    # A 3% yield growing 10%/year beats a 6% yield flat — every time, by year 8
+    div_yield = result.get("dividend_yield", 0)
+    if div_yield > 0.5:  # only fetch for actual dividend payers
+        try:
+            hist = _fmp_get("historical-dividends", symbol)
+            if hist and isinstance(hist, dict):
+                payments = hist.get("historical", [])
+            elif hist and isinstance(hist, list):
+                payments = hist
+            else:
+                payments = []
+            # Get annual dividend sums for last 5 years
+            from collections import defaultdict
+            by_year = defaultdict(float)
+            for p in payments:
+                date_str = p.get("date", "") or p.get("paymentDate", "")
+                dividend = p.get("dividend", 0) or p.get("adjDividend", 0)
+                if date_str and dividend:
+                    year = int(date_str[:4])
+                    by_year[year] += float(dividend)
+            years_sorted = sorted(by_year.keys(), reverse=True)
+            if len(years_sorted) >= 4:
+                # 3-year CAGR
+                d_new = by_year[years_sorted[0]]
+                d_3yr = by_year[years_sorted[3]]
+                if d_new > 0 and d_3yr > 0:
+                    cagr_3yr = ((d_new / d_3yr) ** (1/3) - 1) * 100
+                    result["dividend_cagr_3yr"] = round(cagr_3yr, 1)
+            if len(years_sorted) >= 6:
+                # 5-year CAGR
+                d_5yr = by_year[years_sorted[5]]
+                if d_new > 0 and d_5yr > 0:
+                    cagr_5yr = ((d_new / d_5yr) ** (1/5) - 1) * 100
+                    result["dividend_cagr_5yr"] = round(cagr_5yr, 1)
         except Exception:
             pass
 
@@ -344,58 +413,300 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
 
 
 def _score_growth(fmp: dict) -> float:
-    scores = []
+    """
+    Score growth quality for growth/breakthrough stocks.
+    Revenue growth alone is not enough — gross margin shows whether
+    growth is profitable and scalable, not just bought with spending.
+
+    Components:
+      - Revenue growth (YoY + 3yr avg): 0-60 pts
+      - Gross margin level: 0-25 pts (higher margin = better business quality)
+      - Gross margin trend: 0-15 pts (improving margins = compounding advantage)
+    """
+    score = 0.0
+    components = 0
+
+    # Revenue growth (60% weight)
     yoy = fmp.get("revenue_yoy_pct", 0)
     avg = fmp.get("revenue_avg_pct", 0)
+    rev_scores = []
     if yoy != 0:
-        scores.append(min(100, max(0, 30 + yoy * 1.75)))
+        rev_scores.append(min(100, max(0, 30 + yoy * 1.75)))
     if avg != 0:
-        scores.append(min(100, max(0, 30 + avg * 1.75)))
-    return round(sum(scores) / len(scores), 1) if scores else 50.0
+        rev_scores.append(min(100, max(0, 30 + avg * 1.75)))
+    if rev_scores:
+        score += (sum(rev_scores) / len(rev_scores)) * 0.60
+        components += 1
+
+    # Gross margin level (25% weight)
+    # >60% = exceptional (software/pharma), >40% = good, >20% = acceptable, <20% = commodity
+    gm = fmp.get("gross_margin_pct")
+    if gm is not None:
+        if gm >= 60:
+            gm_score = 100
+        elif gm >= 40:
+            gm_score = 70 + (gm - 40) * 1.5
+        elif gm >= 20:
+            gm_score = 40 + (gm - 20) * 1.5
+        else:
+            gm_score = max(10, gm * 2)
+        score += gm_score * 0.25
+        components += 1
+
+    # Gross margin trend (15% weight)
+    # Expanding margins = pricing power + operational leverage
+    gm_trend = fmp.get("gross_margin_trend")
+    if gm_trend is not None:
+        if gm_trend > 5:
+            trend_score = 100
+        elif gm_trend > 2:
+            trend_score = 75
+        elif gm_trend > 0:
+            trend_score = 60
+        elif gm_trend > -2:
+            trend_score = 40
+        else:
+            trend_score = 15
+        score += trend_score * 0.15
+        components += 1
+
+    if components == 0:
+        return 50.0
+    # Normalize: if not all components available, scale to what we have
+    return round(min(100, score), 1)
 
 
 def _score_valuation(fmp: dict) -> float:
-    scores = []
-    pe = fmp.get("pe_ratio", 0)
+    """
+    Score valuation — PEG-first, PE as fallback.
+    Critical fix: raw PE penalizes the best compounders.
+    A PE of 35 on 30% growth is CHEAPER than a PE of 15 on 5% growth.
+    PEG corrects for this. PE alone is only used when PEG unavailable.
+
+    Components:
+      - PEG ratio (primary): 0-100 pts — growth-adjusted valuation
+      - PE ratio (fallback): 0-100 pts — absolute valuation floor check
+      - ROE bonus: 0-10 pts — high ROE at reasonable valuation = exceptional
+    """
+    score = 0.0
+    has_score = False
+
     peg = fmp.get("peg_ratio", 0)
-    if pe and pe > 0:
-        scores.append(max(10, min(100, 110 - pe * 2.5)))
+    pe = fmp.get("pe_ratio", 0)
+    roe = fmp.get("roe", 0)
+
     if peg and peg > 0:
-        scores.append(max(10, min(100, 100 - peg * 30)))
-    return round(sum(scores) / len(scores), 1) if scores else 50.0
+        # PEG < 1 = undervalued relative to growth (ideal)
+        # PEG 1-2 = fairly valued
+        # PEG > 3 = expensive relative to growth
+        if peg < 0.5:
+            score = 100
+        elif peg < 1.0:
+            score = 80 + (1.0 - peg) * 40
+        elif peg < 1.5:
+            score = 65 - (peg - 1.0) * 30
+        elif peg < 2.5:
+            score = 40 - (peg - 1.5) * 15
+        else:
+            score = max(10, 25 - (peg - 2.5) * 6)
+        has_score = True
+    elif pe and pe > 0:
+        # PE-only fallback — gentler penalty than before
+        # PE 10 = 90pts, PE 20 = 70pts, PE 30 = 50pts, PE 50 = 20pts
+        if pe < 10:
+            score = 90
+        elif pe < 20:
+            score = 90 - (pe - 10) * 2
+        elif pe < 35:
+            score = 70 - (pe - 20) * 1.3
+        else:
+            score = max(10, 50 - (pe - 35) * 1.0)
+        has_score = True
+
+    if not has_score:
+        return 50.0
+
+    # ROE bonus (up to 10 pts) — only meaningful at reasonable PEG
+    # High ROE + reasonable PEG = compounding machine
+    if roe and roe > 15 and score > 40:
+        roe_bonus = min(10, (roe - 15) * 0.4)
+        score = min(100, score + roe_bonus)
+
+    return round(score, 1)
 
 
 def _score_quality(fmp: dict) -> float:
+    """
+    Score balance sheet and cash flow quality.
+    Key insight: FCF margin trend predicts whether price will hold up
+    even while dividends are paid. Declining FCF = future dividend cut
+    AND price decline — the worst outcome for total return.
+
+    Components:
+      - Debt/equity: 0-40 pts (financial stability)
+      - FCF consistency: 0-35 pts (cash generation reliability)
+      - FCF margin trend: 0-25 pts (structural price support signal)
+    """
     scores = []
-    de = fmp.get("debt_to_equity", 0)
-    fcf_neg = fmp.get("fcf_negative_years", 0)
+    weights = []
+
+    # Debt/equity (40% weight)
+    de = fmp.get("debt_to_equity")
     if de is not None:
-        scores.append(max(10, min(100, 95 - de * 30)))
+        if de < 0.3:
+            de_score = 100
+        elif de < 0.7:
+            de_score = 85 - (de - 0.3) * 37.5
+        elif de < 1.5:
+            de_score = 70 - (de - 0.7) * 31.25
+        elif de < 3.0:
+            de_score = 45 - (de - 1.5) * 20
+        else:
+            de_score = max(10, 15 - (de - 3.0) * 2)
+        scores.append(de_score)
+        weights.append(0.40)
+
+    # FCF consistency (35% weight)
+    fcf_neg = fmp.get("fcf_negative_years")
     if fcf_neg is not None:
-        scores.append(max(10, 90 - fcf_neg * 30))
-    return round(sum(scores) / len(scores), 1) if scores else 50.0
+        fcf_score = max(10, 100 - fcf_neg * 30)
+        scores.append(fcf_score)
+        weights.append(0.35)
+
+    # FCF margin trend (25% weight)
+    # This is the forward-looking price protection signal:
+    # improving FCF margin = business getting more efficient = price support
+    # deteriorating FCF margin = structural problem = future price decline
+    fcf_trend = fmp.get("fcf_margin_trend")
+    if fcf_trend is not None:
+        if fcf_trend > 5:
+            trend_score = 100
+        elif fcf_trend > 2:
+            trend_score = 80
+        elif fcf_trend > 0:
+            trend_score = 65
+        elif fcf_trend > -2:
+            trend_score = 45
+        elif fcf_trend > -5:
+            trend_score = 25
+        else:
+            trend_score = 10
+        scores.append(trend_score)
+        weights.append(0.25)
+
+    if not scores:
+        return 50.0
+
+    total_weight = sum(weights)
+    weighted = sum(s * w for s, w in zip(scores, weights))
+    return round(weighted / total_weight, 1)
 
 
 def _score_dividend_total_return(fmp: dict, growth_score: float) -> float:
+    """
+    Score for maximum 10-year TOTAL return on dividend stocks.
+    Total return = dividends received + price appreciation.
+
+    Critical insight: a stock paying 5% yield while price falls 3%/year
+    delivers only 2% real return. Price appreciation is driven by
+    earnings/FCF growth. Both must be scored.
+
+    Components (100 pts total):
+      - Dividend CAGR (35 pts): the most important long-term factor
+        A 3% yield growing 10%/yr beats a 6% flat yield by year 8.
+      - Current yield (25 pts): immediate income, but not the whole story
+      - Payout sustainability (20 pts): can they keep growing it?
+      - Earnings growth / price appreciation proxy (20 pts):
+        Revenue + FCF margin trend → will the stock price hold up?
+
+    Dividend cut = immediate disqualifier (score floored at 5).
+    """
     div_yield = fmp.get("dividend_yield", 0)
     payout = fmp.get("payout_ratio", 0)
     dividend_cut = fmp.get("dividend_cut", False)
     rev_yoy = fmp.get("revenue_yoy_pct", 0)
-    yield_score = min(40, div_yield * 8)
+    rev_avg = fmp.get("revenue_avg_pct", 0)
+    cagr_3yr = fmp.get("dividend_cagr_3yr")
+    cagr_5yr = fmp.get("dividend_cagr_5yr")
+    fcf_trend = fmp.get("fcf_margin_trend", 0)
+
+    # Dividend cut = structural problem, floor entire score
     if dividend_cut:
-        sustainability = 0
-    elif payout <= 0:
-        sustainability = 15
-    elif payout < 40:
-        sustainability = 30
-    elif payout < 60:
-        sustainability = 20
-    elif payout < 80:
-        sustainability = 10
+        return 5.0
+
+    # ── Dividend CAGR (35 pts) ──
+    # Use 5yr CAGR if available, else 3yr, else estimate from revenue growth
+    cagr = cagr_5yr if cagr_5yr is not None else cagr_3yr
+    if cagr is not None:
+        if cagr < 0:
+            cagr_score = 0   # dividend shrinking = structural problem
+        elif cagr < 2:
+            cagr_score = 8   # barely keeping up with inflation
+        elif cagr < 5:
+            cagr_score = 18  # modest growth
+        elif cagr < 8:
+            cagr_score = 25  # solid
+        elif cagr < 12:
+            cagr_score = 30  # strong
+        elif cagr < 18:
+            cagr_score = 33  # exceptional
+        else:
+            cagr_score = 35  # elite compounder
     else:
-        sustainability = 0
-    growth_component = min(30, max(0, rev_yoy * 1.5))
-    return round(min(100, yield_score + sustainability + growth_component), 1)
+        # No dividend history — estimate from revenue growth as proxy
+        rev_growth = max(rev_yoy, rev_avg) if rev_avg else rev_yoy
+        cagr_score = min(20, max(0, rev_growth * 1.2))
+
+    # ── Current yield (25 pts) ──
+    # Sweet spot: 2.5-6% yield. Below 2% = mostly a growth stock.
+    # Above 8% = yield trap risk (market pricing in trouble).
+    if div_yield < 1.0:
+        yield_score = 2
+    elif div_yield < 2.0:
+        yield_score = 8
+    elif div_yield < 3.0:
+        yield_score = 15
+    elif div_yield < 4.5:
+        yield_score = 22
+    elif div_yield < 6.0:
+        yield_score = 25
+    elif div_yield < 8.0:
+        yield_score = 20  # getting into yield-trap territory
+    else:
+        yield_score = 10  # likely a yield trap — market sees risk
+
+    # ── Payout ratio sustainability (20 pts) ──
+    if payout <= 0:
+        sustainability = 10  # no data, neutral
+    elif payout < 35:
+        sustainability = 20  # lots of room to grow dividend
+    elif payout < 55:
+        sustainability = 17  # healthy
+    elif payout < 70:
+        sustainability = 12  # manageable but watch FCF
+    elif payout < 85:
+        sustainability = 6   # stretched — needs earnings growth
+    else:
+        sustainability = 0   # unsustainable without growth
+
+    # ── Price appreciation proxy (20 pts) ──
+    # Earnings/FCF growth drives price over 10 years.
+    # A flat-price high-yield stock is a bad 10-year investment.
+    rev_growth = (rev_yoy + rev_avg) / 2 if rev_avg else rev_yoy
+    earnings_score = min(12, max(0, rev_growth * 0.8))
+    # FCF margin trend: improving FCF = price will hold up
+    if fcf_trend > 3:
+        fcf_price_score = 8
+    elif fcf_trend > 0:
+        fcf_price_score = 5
+    elif fcf_trend > -3:
+        fcf_price_score = 2
+    else:
+        fcf_price_score = 0  # FCF deteriorating = price risk
+    price_appreciation_score = min(20, earnings_score + fcf_price_score)
+
+    total = cagr_score + yield_score + sustainability + price_appreciation_score
+    return round(min(100, total), 1)
 
 @dataclass
 class StockScore:
