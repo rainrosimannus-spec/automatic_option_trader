@@ -1,0 +1,222 @@
+# ============================================================
+# Options Trader — Master Configuration
+# ============================================================
+
+app:
+  name: "Options Trader"
+  mode: "live"                 # "paper" | "live" — controls data type and safety features
+  suggestion_mode: true        # true = suggest trades with Approve/Reject, false = auto-execute
+  log_level: "INFO"            # DEBUG, INFO, WARNING, ERROR
+  db_path: "data/trades.db"
+
+ibkr:
+  host: "127.0.0.1"
+  port: 4001                   # Options Trader TWS on new account (7496=portfolio TWS)
+  client_id: 12
+  timeout: 30
+  readonly: false              # LIVE: can place orders
+  account: "U23886415"           # Options Trader live account (separate from portfolio)
+
+strategy:
+  # --- Put Selling ---
+  dte_tiers:
+    low_vix:  {vix_max: 20, dte_min_usd: 0, dte_max_usd: 3,  dte_min_other: 0, dte_max_other: 7 }   # VIX < 20
+    mid_vix:  {vix_max: 30, dte_min_usd: 0, dte_max_usd: 3,  dte_min_other: 0, dte_max_other: 7 }   # VIX 20-30
+    high_vix: halt                                                                                    # VIX > 30
+  delta_min: 0.15              # minimum abs delta for short puts
+  delta_max: 0.30              # maximum abs delta for short puts
+  contracts_per_stock: 1       # number of contracts per position
+  min_premium: 0.10            # minimum acceptable premium for calls ($)
+  min_premium_put: 0.50        # minimum acceptable premium for puts ($)
+  min_open_interest: 10        # minimum open interest filter
+  min_bid: 0.05                # minimum bid price filter
+
+  # --- IV Rank Filter ---
+  iv_rank_enabled: true        # only sell puts when IV is elevated
+  iv_rank_min: 20              # minimum IV rank percentile
+  iv_lookback_days: 252        # ~1 year of trading days for IV percentile
+
+  # --- Dynamic Delta (VIX-adjusted) ---
+  dynamic_delta_enabled: true
+  delta_vix_low: 0.20          # delta range 0.15-0.35 when VIX < 15 (calm — closer to ATM)
+  delta_vix_low_max: 0.30
+  delta_vix_mid: 0.15          # delta range 0.10-0.30 when VIX 15-25 (normal)
+  delta_vix_mid_max: 0.25
+  delta_vix_high: 0.05         # delta range 0.05-0.20 when VIX 25-30 (elevated — farther OTM)
+  delta_vix_high_max: 0.20
+
+  # --- Profit Taking / Rolling ---
+  profit_take_enabled: true    # close at 50% profit and redeploy — worthwhile at 7 DTE
+  profit_take_pct: 0.50        # close when 50% of premium captured
+  roll_enabled: false          # no rolling — sell fresh puts on next scan cycle
+
+  # --- Earnings Avoidance ---
+  earnings_avoid_enabled: true # skip stocks with earnings within N days
+  earnings_avoid_days: 3       # don't sell puts if earnings within this many days
+
+  # --- Wheel (Covered Calls on assignment) ---
+  wheel_enabled: true
+  cc_dte_min: 5                # covered call min DTE
+  cc_dte_max: 30               # covered call max DTE (wider range for smart strikes)
+  cc_delta_min: 0.15           # lower delta floor for smart management
+  cc_delta_max: 0.35
+  cc_above_cost_basis: true    # only sell calls above cost basis
+  cc_progressive_strikes: true # raise strike as stock recovers (protect upside)
+
+  # --- Portfolio Hedge ---
+  hedge_enabled: false          # buy rolling SPY OTM puts as tail hedge
+  hedge_otm_pct: 0.05          # 5% out of the money
+  hedge_dte_target: 30         # target DTE for hedge puts
+  hedge_roll_dte: 7            # roll when DTE drops below this
+  hedge_budget_pct: 0.04       # spend max 4% of collected premiums on hedges
+  hedge_contracts: 1           # number of SPY put contracts
+
+risk:
+  vix_pause_threshold: 30.0    # pause ALL new trades when VIX > this
+  max_portfolio_positions: 50  # hard cap on simultaneous short option positions
+  max_daily_positions: 10      # base: 10 trades/day for first 100K EUR
+  max_daily_positions_cap: 25  # hard cap regardless of portfolio size
+  daily_position_step: 100000  # +1 trade per 100K EUR above base
+  max_sector_pct: 0.30         # target 30% — adaptive: starts at 100%, tightens as NLV grows
+  max_single_stock_pct: 5.00   # max 500% of portfolio in one stock (small account override)
+  max_buying_power_usage: 0.60 # never use more than 60% of buying power
+
+  # --- $5M+ Scaling Safeguards ---
+  position_dollar_pct: 0.01        # per-position cap as % of NLV (1%)
+  max_position_dollars: 150000     # hard ceiling per position regardless of NLV ($150K)
+  min_position_dollars: 25000      # floor — small accounts not affected below this
+  total_exposure_pct: 0.20         # total open collateral cap as % of NLV (20%)
+  max_total_exposure: 2000000      # hard ceiling total open collateral ($2M)
+  daily_deployment_pct: 0.03       # max new collateral per day as % of NLV (3%)
+  max_daily_deployment: 500000     # hard ceiling new collateral per day ($500K)
+  intraday_loss_halt_pct: 0.02     # halt if unrealized loss exceeds 2% of NLV in one day
+  max_margin_usage: 0.80       # block new trades when margin exceeds 80% of NLV
+  min_cash_reserve: 2000       # minimum cash reserve — effective reserve is max(this, 15% of NLV)
+
+  # --- Correlation Gate ---
+  max_correlation: 0.85        # block if new symbol avg correlation > this with open positions
+  correlation_nlv_threshold: 50000.0   # skip check below this NLV (small account)
+  correlation_lookback_days: 60        # days of price history for correlation
+
+  # --- Delta Exposure Gate ---
+  max_portfolio_delta: 500.0   # total abs delta units (e.g. 20 x 0.25 x 100 = 500)
+  delta_nlv_threshold: 50000.0 # skip check below this NLV (small account)
+
+  # --- SPY Moving Average Gate ---
+  spy_ma_enabled: true         # enable SPY 10/20 MA crossover gate
+  spy_ma_fast: 10              # fast MA period (days)
+  spy_ma_slow: 20              # slow MA period (days)
+  spy_bearish_reduction: 0.50  # reduce new entries to 50% when bearish (0.0 = block all)
+
+schedule:
+  market_open: "09:30"
+  market_close: "16:00"
+  timezone: "US/Eastern"
+  scan_interval_minutes: 30    # how often to scan for new trades during market hours
+  position_check_minutes: 5    # how often to check open positions
+  enabled_markets: []           # empty = all markets (SMART, SWX, OSE, TSE, ASX)
+
+web:
+  host: "0.0.0.0"
+  port: 8080
+  reload: false
+
+# ── Long-Term Portfolio Builder ────────────────────────────
+portfolio:
+  enabled: true                    # portfolio builder active
+  suggestion_mode: true            # true = suggest trades with Approve/Reject, false = auto-execute
+  readonly: true                   # true = read-only IBKR connection (cannot place orders)
+  ibkr_host: "127.0.0.1"
+  ibkr_port: 7496                  # live TWS port
+  ibkr_client_id: 97               # 97 reserved for portfolio connection (99 was getting stuck)
+  ibkr_account: "U17562704"
+  flex_token: "143657687013266247113779"
+  flex_query_id: "1432933"
+
+  # Buy criteria
+  max_single_buy_eur: 100000       # max EUR per single stock purchase
+  min_single_buy_eur: 5000         # min EUR per buy (avoid unreasonable fees)
+  min_discount_pct: 5.0            # min % below 200d SMA to trigger value buy
+  sma_period: 200                  # 200-day moving average
+  rsi_period: 14                   # RSI lookback
+  rsi_oversold: 30.0               # RSI below this = oversold buy signal
+  max_portfolio_pct: 0.10          # max 10% of portfolio in any single stock
+
+  # Tier-specific overrides
+  dividend_min_discount_pct: 7.0
+  dividend_rsi_oversold: 25.0
+  breakthrough_min_discount_pct: 3.0
+  breakthrough_rsi_oversold: 35.0
+  cash_reserve_pct: 0.05           # keep 5% cash reserve always
+
+  # Market guard
+  market_overbought_pct: 15.0      # SPY >15% above 200d SMA → park cash
+
+  # Annual rescreen — December 1st, $1B+ market cap
+  rescreen_month: 12               # December
+  rescreen_day: 1                  # 1st
+  rescreen_regions: ""             # blank = all 27 markets
+  rescreen_top_n: 50
+  rescreen_min_market_cap: 1000000000  # $1B minimum market cap
+
+  # Dividend reinvestment
+  reinvest_dividends: true
+  min_dividend_reinvest: 50.0
+
+  # Cash yield (earn interest on parked cash)
+  cash_yield_enabled: true
+  cash_yield_symbol: "SGOV"        # short-term US treasury ETF
+  cash_yield_exchange: "SMART"
+  cash_yield_currency: "USD"
+
+  # Schedule
+  check_interval_hours: 4          # check buy opportunities every 4 hours
+  scan_hour: 10
+  scan_minute: 30                # auto-reload for dev
+
+# ── Cash Bridge (Options → Portfolio) ───────────────────────
+bridge:
+  enabled: false                    # enable when both accounts are live
+  min_portfolio_value: 1000000      # EUR — only transfer if options account > this
+  transfer_pct: 0.10                # 10% annual transfer
+  transfer_month: 7                 # July
+  transfer_day: 31                  # 31st
+  source_account: "U23886415"        # options IBKR account ID
+  target_account: "U17562704"        # portfolio IBKR account ID
+  currency: "EUR"
+  dry_run: true                     # safety: log but don't transfer until confirmed
+
+# ── Alerts / Notifications ──────────────────────────────────
+alerts:
+  enabled: true
+
+  # Telegram Bot (free, recommended)
+  # 1. Message @BotFather on Telegram → /newbot → get token
+  # 2. Message your bot, then visit:
+  #    https://api.telegram.org/bot<TOKEN>/getUpdates → get chat_id
+  telegram_enabled: false
+  telegram_bot_token: ""            # e.g., "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+  telegram_chat_id: ""              # e.g., "123456789"
+
+  # ntfy.sh (free, no signup — just pick a unique topic name)
+  # Install ntfy app on phone, subscribe to your topic
+  ntfy_enabled: true
+  ntfy_topic: "Pabertiiger-1941d4d9"  # subscribed at ntfy.sh/Pabertiiger-1941d4d9
+  ntfy_server: "https://ntfy.sh"
+
+  # What to notify about
+  alert_critical: true              # halts, circuit breaker, disconnects >10min
+  alert_daily: true                 # end-of-day summary at 16:15 ET
+  alert_trades: false               # every individual trade (noisy)
+  alert_bridge: true                # annual bridge transfers
+  alert_assignments: true           # put assignments
+
+# ── Finnhub API (IPO date scanner) ──────────────────────────
+# Free tier: 60 API calls/min — register at https://finnhub.io/register
+finnhub:
+  api_key: "d6cruuhr01qgk7mjihu0d6cruuhr01qgk7mjihug"
+
+# Financial Modeling Prep — fundamentals data (revenue, dividends, debt, payout ratio)
+# Free tier: 250 requests/day — https://financialmodelingprep.com
+fmp:
+  api_key: "5zJhzNn8xcYF9q1se7jPxeyqoBI1GEVS"
