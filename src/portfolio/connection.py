@@ -337,3 +337,58 @@ def get_cached_portfolio_account() -> dict:
             return json.load(f)
     except Exception:
         return {}
+
+
+# ── Open orders cache (mirrors broker/orders.py pattern) ────
+_cached_portfolio_orders: list = []
+_portfolio_orders_lock = threading.Lock()
+
+
+def refresh_portfolio_open_orders_cache() -> None:
+    """Fetch open orders from portfolio IBKR and cache them. Non-blocking for dashboard."""
+    global _cached_portfolio_orders
+    try:
+        if not is_portfolio_connected():
+            with _portfolio_orders_lock:
+                _cached_portfolio_orders = []
+            return
+        ib = get_portfolio_ib()
+        with _portfolio_lock:
+            trades = ib.openTrades()
+        new_cache = []
+        for t in trades:
+            try:
+                c = t.contract
+                o = t.order
+                s = t.orderStatus
+                new_cache.append({
+                    "order_id": o.orderId,
+                    "symbol": c.symbol,
+                    "sec_type": c.secType,
+                    "expiry": getattr(c, "lastTradeDateOrContractMonth", ""),
+                    "strike": getattr(c, "strike", ""),
+                    "right": getattr(c, "right", ""),
+                    "action": o.action,
+                    "quantity": o.totalQuantity,
+                    "order_type": o.orderType,
+                    "limit_price": getattr(o, "lmtPrice", None),
+                    "status": s.status,
+                    "filled": s.filled,
+                    "remaining": s.remaining,
+                })
+            except Exception:
+                continue
+        with _portfolio_orders_lock:
+            _cached_portfolio_orders = new_cache
+    except Exception:
+        pass
+    finally:
+        if not is_portfolio_connected():
+            with _portfolio_orders_lock:
+                _cached_portfolio_orders = []
+
+
+def get_cached_portfolio_open_orders() -> list:
+    """Return cached portfolio open orders (non-blocking, for dashboard)."""
+    with _portfolio_orders_lock:
+        return list(_cached_portfolio_orders)

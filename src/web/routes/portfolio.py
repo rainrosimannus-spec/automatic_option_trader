@@ -276,6 +276,14 @@ async def portfolio_page(request: Request):
     except Exception:
         pass
 
+    # Open orders from portfolio IBKR (cached, non-blocking)
+    portfolio_open_orders = []
+    try:
+        from src.portfolio.connection import get_cached_portfolio_open_orders
+        portfolio_open_orders = get_cached_portfolio_open_orders()
+    except Exception:
+        pass
+
     return templates.TemplateResponse("portfolio.html", {
         "request": request,
         "holdings": holdings,
@@ -309,6 +317,7 @@ async def portfolio_page(request: Request):
         # Top performers
         "top_performers": performers[:5],
         "bottom_performers": list(reversed(performers[-5:])) if len(performers) > 5 else [],
+        "portfolio_open_orders": portfolio_open_orders,
     })
 
 

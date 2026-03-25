@@ -55,6 +55,13 @@ def job_portfolio_health_check(cfg: PortfolioConfig):
     except Exception as e:
         log.warning("portfolio_health_cache_refresh_failed", error=str(e))
 
+    # Refresh open orders cache for portfolio dashboard
+    try:
+        from src.portfolio.connection import refresh_portfolio_open_orders_cache
+        refresh_portfolio_open_orders_cache()
+    except Exception as e:
+        log.warning("portfolio_health_orders_refresh_failed", error=str(e))
+
     # Write portfolio_nlv to today's snapshot row so graph stays current
     try:
         from src.portfolio.connection import get_cached_portfolio_account

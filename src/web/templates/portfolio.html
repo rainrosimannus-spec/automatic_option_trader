@@ -417,6 +417,125 @@ function syncInjections() {
     </div>
     {% endif %}
 
+    <!-- ═══ Open Options Positions (live from IBKR portfolio account) ═══ -->
+    {% set open_options = portfolio_open_orders | selectattr("sec_type", "equalto", "OPT") | selectattr("status", "in", ["Filled", "PreSubmitted", "Submitted"]) | list %}
+    {% set open_opts_live = portfolio_open_orders | selectattr("sec_type", "equalto", "OPT") | list %}
+    {% if open_opts_live %}
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">
+            📊 Open Options Positions
+            <span class="text-xs text-purple-400 ml-2">{{open_opts_live|length}} position(s) — portfolio account</span>
+        </h2>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+                <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
+                    <tr>
+                        <th class="px-3 py-2">Symbol</th>
+                        <th class="px-3 py-2">Type</th>
+                        <th class="px-3 py-2 text-right">Strike</th>
+                        <th class="px-3 py-2">Expiry</th>
+                        <th class="px-3 py-2">Action</th>
+                        <th class="px-3 py-2 text-right">Qty</th>
+                        <th class="px-3 py-2 text-right">Limit</th>
+                        <th class="px-3 py-2">Status</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-800/50">
+                    {% for o in open_opts_live %}
+                    <tr class="hover:bg-gray-800/50">
+                        <td class="px-3 py-2 font-medium text-white">{{o.symbol}}</td>
+                        <td class="px-3 py-2">
+                            <span class="px-1.5 py-0.5 rounded text-xs
+                                {% if o.right == 'P' %}bg-red-900/50 text-red-300
+                                {% elif o.right == 'C' %}bg-blue-900/50 text-blue-300
+                                {% else %}bg-gray-800 text-gray-400{% endif %}">
+                                {% if o.right == 'P' %}PUT{% elif o.right == 'C' %}CALL{% else %}{{o.right}}{% endif %}
+                            </span>
+                        </td>
+                        <td class="px-3 py-2 text-right text-white">{{o.strike}}</td>
+                        <td class="px-3 py-2 text-amber-300">{{o.expiry}}</td>
+                        <td class="px-3 py-2">
+                            <span class="px-1.5 py-0.5 rounded text-xs
+                                {% if o.action == 'SELL' %}bg-emerald-900/50 text-emerald-300
+                                {% else %}bg-red-900/50 text-red-300{% endif %}">
+                                {{o.action}}
+                            </span>
+                        </td>
+                        <td class="px-3 py-2 text-right text-gray-300">{{o.quantity}}</td>
+                        <td class="px-3 py-2 text-right text-gray-300">
+                            {% if o.limit_price and o.limit_price > 0 %}${{"{:.2f}".format(o.limit_price)}}{% else %}MKT{% endif %}
+                        </td>
+                        <td class="px-3 py-2">
+                            <span class="px-1.5 py-0.5 rounded text-xs
+                                {% if o.status == 'Filled' %}bg-emerald-900/50 text-emerald-300
+                                {% elif o.status in ['PreSubmitted', 'Submitted'] %}bg-amber-900/50 text-amber-300
+                                {% else %}bg-gray-800 text-gray-400{% endif %}">
+                                {{o.status}}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ═══ Pending Orders (all asset types, portfolio account) ═══ -->
+    {% set pending = portfolio_open_orders | selectattr("status", "in", ["PreSubmitted", "Submitted"]) | list %}
+    {% if pending %}
+    <div class="bg-gray-900 border border-amber-900/40 rounded-lg p-5 mb-6">
+        <h2 class="text-sm font-medium text-amber-400 uppercase tracking-wider mb-4">
+            ⏳ Pending Orders
+            <span class="text-xs text-gray-400 ml-2">{{pending|length}} order(s) awaiting fill — portfolio account</span>
+        </h2>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+                <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
+                    <tr>
+                        <th class="px-3 py-2">Symbol</th>
+                        <th class="px-3 py-2">Type</th>
+                        <th class="px-3 py-2">Action</th>
+                        <th class="px-3 py-2 text-right">Qty</th>
+                        <th class="px-3 py-2 text-right">Filled</th>
+                        <th class="px-3 py-2 text-right">Remaining</th>
+                        <th class="px-3 py-2 text-right">Limit</th>
+                        <th class="px-3 py-2">Order Type</th>
+                        <th class="px-3 py-2">Status</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-800/50">
+                    {% for o in pending %}
+                    <tr class="hover:bg-gray-800/50">
+                        <td class="px-3 py-2 font-medium text-white">{{o.symbol}}</td>
+                        <td class="px-3 py-2 text-gray-400 text-xs">{{o.sec_type}}</td>
+                        <td class="px-3 py-2">
+                            <span class="px-1.5 py-0.5 rounded text-xs
+                                {% if o.action == 'BUY' %}bg-emerald-900/50 text-emerald-300
+                                {% else %}bg-red-900/50 text-red-300{% endif %}">
+                                {{o.action}}
+                            </span>
+                        </td>
+                        <td class="px-3 py-2 text-right text-gray-300">{{o.quantity}}</td>
+                        <td class="px-3 py-2 text-right text-emerald-400">{{o.filled}}</td>
+                        <td class="px-3 py-2 text-right text-amber-400">{{o.remaining}}</td>
+                        <td class="px-3 py-2 text-right text-gray-300">
+                            {% if o.limit_price and o.limit_price > 0 %}${{"{:.2f}".format(o.limit_price)}}{% else %}MKT{% endif %}
+                        </td>
+                        <td class="px-3 py-2 text-xs text-gray-400">{{o.order_type}}</td>
+                        <td class="px-3 py-2">
+                            <span class="px-1.5 py-0.5 rounded text-xs bg-amber-900/50 text-amber-300">
+                                {{o.status}}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- ═══ Buy Signals (Watchlist) ═══ -->
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
         <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">
