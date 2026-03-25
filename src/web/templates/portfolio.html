@@ -418,7 +418,7 @@ function syncInjections() {
     {% endif %}
 
     <!-- ═══ Open Options Positions (live from IBKR portfolio account) ═══ -->
-    {% set open_opts_live = portfolio_open_orders | selectattr("sec_type", "equalto", "OPT") | list %}
+    {% set open_opts_live = portfolio_open_orders | selectattr("sec_type", "equalto", "OPT") | selectattr("status", "equalto", "Open") | list %}
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
         <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">
             📊 Open Options Positions
@@ -435,8 +435,8 @@ function syncInjections() {
                         <th class="px-3 py-2">Expiry</th>
                         <th class="px-3 py-2">Action</th>
                         <th class="px-3 py-2 text-right">Qty</th>
-                        <th class="px-3 py-2 text-right">Limit</th>
-                        <th class="px-3 py-2">Status</th>
+                        <th class="px-3 py-2 text-right">Avg Cost</th>
+                        <th class="px-3 py-2">Direction</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-gray-800/50">
@@ -462,14 +462,13 @@ function syncInjections() {
                         </td>
                         <td class="px-3 py-2 text-right text-gray-300">{{o.quantity}}</td>
                         <td class="px-3 py-2 text-right text-gray-300">
-                            {% if o.limit_price and o.limit_price > 0 %}${{"{:.2f}".format(o.limit_price)}}{% else %}MKT{% endif %}
+                            {% if o.avg_cost and o.avg_cost > 0 %}${{"{:.2f}".format(o.avg_cost)}}{% else %}—{% endif %}
                         </td>
                         <td class="px-3 py-2">
                             <span class="px-1.5 py-0.5 rounded text-xs
-                                {% if o.status == 'Filled' %}bg-emerald-900/50 text-emerald-300
-                                {% elif o.status in ['PreSubmitted', 'Submitted'] %}bg-amber-900/50 text-amber-300
-                                {% else %}bg-gray-800 text-gray-400{% endif %}">
-                                {{o.status}}
+                                {% if o.action == 'SELL' %}bg-red-900/50 text-red-300
+                                {% else %}bg-emerald-900/50 text-emerald-300{% endif %}">
+                                {% if o.action == 'SELL' %}SHORT{% else %}LONG{% endif %}
                             </span>
                         </td>
                     </tr>
@@ -483,7 +482,7 @@ function syncInjections() {
     </div>
 
     <!-- ═══ Pending Orders (all asset types, portfolio account) ═══ -->
-    {% set pending = portfolio_open_orders | selectattr("status", "in", ["PreSubmitted", "Submitted"]) | list %}
+    {% set pending = [] %}
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
         <h2 class="text-sm font-medium text-amber-400 uppercase tracking-wider mb-4">
             ⏳ Pending Orders

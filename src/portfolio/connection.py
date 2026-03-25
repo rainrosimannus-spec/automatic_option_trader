@@ -345,47 +345,53 @@ _portfolio_orders_lock = threading.Lock()
 
 
 def refresh_portfolio_open_orders_cache() -> None:
-    """Fetch open orders from portfolio IBKR and cache them. Non-blocking for dashboard."""
+    """
+    Fetch open option positions from portfolio IBKR and cache for dashboard.
+    Uses ib.positions() not openTrades() — the portfolio connection is read-only
+    so openTrades() always returns empty. positions() returns all held positions
+    regardless of how they were entered, which is what the dashboard needs.
+    Only caches option positions (secType == OPT) — stock holdings shown separately.
+    Preserves existing cache if not connected (shows last known state).
+    """
     global _cached_portfolio_orders
     try:
         if not is_portfolio_connected():
-            with _portfolio_orders_lock:
-                _cached_portfolio_orders = []
-            return
+            return  # preserve existing cache — don't wipe on transient disconnect
         ib = get_portfolio_ib()
         with _portfolio_lock:
-            trades = ib.openTrades()
+            positions = ib.positions()
         new_cache = []
-        for t in trades:
+        for pos in positions:
             try:
-                c = t.contract
-                o = t.order
-                s = t.orderStatus
+                c = pos.contract
+                if c.secType != "OPT":
+                    continue
+                # Determine action from position sign: negative = short (sold), positive = long (bought)
+                position_size = pos.position
+                action = "SELL" if position_size < 0 else "BUY"
                 new_cache.append({
-                    "order_id": o.orderId,
+                    "order_id": None,
                     "symbol": c.symbol,
                     "sec_type": c.secType,
                     "expiry": getattr(c, "lastTradeDateOrContractMonth", ""),
                     "strike": getattr(c, "strike", ""),
                     "right": getattr(c, "right", ""),
-                    "action": o.action,
-                    "quantity": o.totalQuantity,
-                    "order_type": o.orderType,
-                    "limit_price": getattr(o, "lmtPrice", None),
-                    "status": s.status,
-                    "filled": s.filled,
-                    "remaining": s.remaining,
+                    "action": action,
+                    "quantity": abs(position_size),
+                    "order_type": "POSITION",
+                    "limit_price": None,
+                    "status": "Open",
+                    "filled": abs(position_size),
+                    "remaining": 0,
+                    "avg_cost": getattr(pos, "avgCost", None),
                 })
             except Exception:
                 continue
         with _portfolio_orders_lock:
             _cached_portfolio_orders = new_cache
-    except Exception:
-        pass
-    finally:
-        if not is_portfolio_connected():
-            with _portfolio_orders_lock:
-                _cached_portfolio_orders = []
+        log.info("portfolio_options_cache_refreshed", count=len(new_cache))
+    except Exception as e:
+        log.warning("portfolio_options_cache_failed", error=str(e))
 
 
 def get_cached_portfolio_open_orders() -> list:
