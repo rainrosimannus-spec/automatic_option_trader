@@ -184,16 +184,21 @@ def job_check_assignments():
     _ensure_event_loop()
     if _is_paused():
         return
-    if not _ensure_connected():
-        return
 
     universe = UniverseManager()
     risk = RiskManager(universe)
     wheel = WheelManager(risk, universe=universe)
 
-    assigned = wheel.check_assignments()
-    called = wheel.check_called_away()
+    # Assignment detection requires IBKR connection (needs stock positions)
+    # But write_covered_calls() in suggestion mode only needs the DB
+    if _ensure_connected():
+        assigned = wheel.check_assignments()
+        called = wheel.check_called_away()
+    else:
+        log.warning("assignment_check_skipped_no_connection",
+                    reason="IBKR not connected — skipping assignment detection, still writing CCs")
 
+    # Always attempt to write covered calls — in suggestion mode this is DB-only
     wheel.write_covered_calls()
 
 
