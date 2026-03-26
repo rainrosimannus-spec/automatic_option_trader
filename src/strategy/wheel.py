@@ -227,15 +227,6 @@ class WheelManager:
         currency = self.universe.get_currency(symbol)
         contract_size = self.universe.get_contract_size(symbol)
 
-        # Ensure event loop is available for ib_insync calls
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                asyncio.set_event_loop(asyncio.new_event_loop())
-        except RuntimeError:
-            asyncio.set_event_loop(asyncio.new_event_loop())
-
         # Get current stock price to determine recovery level
         from src.broker.market_data import get_stock_price
         current_price = get_stock_price(symbol, exchange, currency)
