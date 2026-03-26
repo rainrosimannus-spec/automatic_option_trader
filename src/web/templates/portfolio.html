@@ -674,25 +674,102 @@ function syncInjections() {
         {% endif %}
     </div>
 
-    <!-- ═══ Strategy Info ═══ -->
-    <div class="mt-6 bg-gray-900/50 border border-gray-800 rounded-lg p-4">
-        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Buy Criteria</h3>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs text-gray-400">
-            <div>
-                <span class="text-emerald-400 font-medium">Below 200 SMA</span><br>
-                Buy when price ≥5% below 200-day average
+    <!-- ═══ Risk Management & Strategy ═══ -->
+    <div class="mt-6 bg-gray-900 border border-gray-800 rounded-lg p-5">
+        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-4">Active Risk Management</h3>
+
+        <!-- Row 1: Market & Margin Status -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <!-- Market Status -->
+            <div class="bg-gray-800/60 rounded-lg p-3">
+                <div class="text-xs text-gray-500 mb-1">Market Status</div>
+                {% if market_status == "overbought" %}
+                <div class="text-amber-400 font-medium text-sm">⚠ Overbought</div>
+                <div class="text-xs text-gray-400 mt-0.5">SPY {{market_pct}}% above 200 SMA — parking cash</div>
+                {% elif market_status == "normal" %}
+                <div class="text-emerald-400 font-medium text-sm">✓ Normal</div>
+                <div class="text-xs text-gray-400 mt-0.5">SPY {{market_pct}}% vs 200 SMA — deploying</div>
+                {% else %}
+                <div class="text-gray-400 font-medium text-sm">— Awaiting scan</div>
+                <div class="text-xs text-gray-500 mt-0.5">First scan pending</div>
+                {% endif %}
             </div>
-            <div>
-                <span class="text-emerald-400 font-medium">RSI Oversold</span><br>
-                Buy when RSI(14) ≤ 30 (emotional overreaction)
+
+            <!-- Margin Usage -->
+            <div class="bg-gray-800/60 rounded-lg p-3">
+                <div class="text-xs text-gray-500 mb-1">Margin Usage</div>
+                <div class="font-medium text-sm {% if portfolio_margin_pct > 70 %}text-red-400{% elif portfolio_margin_pct > 50 %}text-amber-400{% else %}text-emerald-400{% endif %}">
+                    {{"{:.1f}".format(portfolio_margin_pct)}}%
+                </div>
+                <div class="text-xs text-gray-400 mt-0.5">${{"{:,.0f}".format(portfolio_maintenance_margin)}} maintenance</div>
             </div>
-            <div>
-                <span class="text-emerald-400 font-medium">52-Week Low</span><br>
-                Buy when within 5% of annual low
+
+            <!-- Buying Power -->
+            <div class="bg-gray-800/60 rounded-lg p-3">
+                <div class="text-xs text-gray-500 mb-1">Buying Power</div>
+                <div class="font-medium text-sm text-cyan-400">${{"{:,.0f}".format(portfolio_buying_power)}}</div>
+                <div class="text-xs text-gray-400 mt-0.5">Available to deploy</div>
             </div>
-            <div>
-                <span class="text-amber-400 font-medium">Market Guard</span><br>
-                Park cash when SPY >15% above 200 SMA
+
+            <!-- Suggestion Mode -->
+            <div class="bg-gray-800/60 rounded-lg p-3">
+                <div class="text-xs text-gray-500 mb-1">Execution Mode</div>
+                <div class="font-medium text-sm text-purple-400">✓ Suggestion Mode</div>
+                <div class="text-xs text-gray-400 mt-0.5">All trades require approval</div>
+            </div>
+        </div>
+
+        <!-- Row 2: $5M Adaptive Caps -->
+        <div class="mb-4">
+            <div class="text-xs text-gray-600 uppercase tracking-wider mb-2">Adaptive Deployment Caps — current NLV ${{"{:,.0f}".format(portfolio_nlv)}}</div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <!-- Per-position cap -->
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <div class="flex items-center justify-between mb-1">
+                        <div class="text-xs text-gray-500">Per-Position Cap</div>
+                        <div class="text-xs text-emerald-400 font-medium">${{"{:,.0f}".format(position_cap)}}</div>
+                    </div>
+                    <div class="text-xs text-gray-400">min(NLV × 5%, $200K) — applies to buys + puts</div>
+                </div>
+                <!-- Total exposure cap -->
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <div class="flex items-center justify-between mb-1">
+                        <div class="text-xs text-gray-500">Total Exposure Cap</div>
+                        <div class="text-xs text-emerald-400 font-medium">${{"{:,.0f}".format(total_exposure_cap)}}</div>
+                    </div>
+                    <div class="text-xs text-gray-400">min(NLV × 25%, $3M) — all holdings + open puts</div>
+                </div>
+                <!-- Daily deployment cap -->
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <div class="flex items-center justify-between mb-1">
+                        <div class="text-xs text-gray-500">Daily Deployment Cap</div>
+                        <div class="text-xs text-emerald-400 font-medium">${{"{:,.0f}".format(daily_deployment_cap)}}</div>
+                    </div>
+                    <div class="text-xs text-gray-400">min(NLV × 10%, $1M) — new capital per day</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 3: Buy Signal Criteria -->
+        <div>
+            <div class="text-xs text-gray-600 uppercase tracking-wider mb-2">Buy Signal Criteria</div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs text-gray-400">
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <span class="text-emerald-400 font-medium block mb-0.5">Below SMA</span>
+                    Growth ≥5% · Dividend ≥7% · Breakthrough ≥3% below tier SMA
+                </div>
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <span class="text-emerald-400 font-medium block mb-0.5">RSI Oversold</span>
+                    Growth ≤30 · Dividend ≤25 · Breakthrough ≤35 — tier-specific thresholds
+                </div>
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <span class="text-emerald-400 font-medium block mb-0.5">52-Week Low</span>
+                    Within 5–10% of annual low depending on tier volatility profile
+                </div>
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <span class="text-amber-400 font-medium block mb-0.5">Market Guard</span>
+                    Park cash when SPY >15% above 200 SMA — deploy on pullbacks only
+                </div>
             </div>
         </div>
     </div>

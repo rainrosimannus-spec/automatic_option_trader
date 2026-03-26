@@ -276,6 +276,19 @@ async def portfolio_page(request: Request):
     except Exception:
         pass
 
+    # Compute adaptive cap values for risk panel display
+    _nlv = portfolio_nlv or 0.0
+    try:
+        from src.core.config import get_settings
+        _pcfg = get_settings().portfolio
+        position_cap = round(min(_nlv * _pcfg.position_cap_pct, _pcfg.position_cap_max_usd), 0)
+        total_exposure_cap = round(min(_nlv * _pcfg.total_exposure_pct, _pcfg.total_exposure_max_usd), 0)
+        daily_deployment_cap = round(min(_nlv * _pcfg.daily_deployment_pct, _pcfg.daily_deployment_max_usd), 0)
+    except Exception:
+        position_cap = 0.0
+        total_exposure_cap = 0.0
+        daily_deployment_cap = 0.0
+
     # Open orders from portfolio IBKR (cached, non-blocking)
     portfolio_open_orders = []
     try:
@@ -318,6 +331,9 @@ async def portfolio_page(request: Request):
         "top_performers": performers[:5],
         "bottom_performers": list(reversed(performers[-5:])) if len(performers) > 5 else [],
         "portfolio_open_orders": portfolio_open_orders,
+        "position_cap": position_cap,
+        "total_exposure_cap": total_exposure_cap,
+        "daily_deployment_cap": daily_deployment_cap,
     })
 
 
