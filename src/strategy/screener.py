@@ -328,6 +328,8 @@ def screen_calls(
     delta_min/max_override: for progressive strike management.
     Uses Black-Scholes theoretical pricing from historical IV data.
     """
+    from src.broker.connection import ensure_main_event_loop
+    ensure_main_event_loop()
     cfg = get_settings().strategy
     stk_exchange = stock_exchange or exchange
 
