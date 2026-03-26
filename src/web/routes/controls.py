@@ -225,9 +225,11 @@ def cancel_ibkr_order(order_id: int):
     """Cancel an open order on IBKR and update DB record. Returns JSON."""
     from fastapi.responses import JSONResponse
     try:
+        from src.broker.connection import ensure_main_event_loop
         from src.broker.orders import cancel_order, get_open_orders
         from src.core.database import get_db
         from src.core.models import Trade, OrderStatus
+        ensure_main_event_loop()
         for trade in get_open_orders():
             if trade.order.orderId == order_id:
                 cancel_order(trade)
