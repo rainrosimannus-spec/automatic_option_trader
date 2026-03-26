@@ -438,4 +438,4 @@ Commit after every meaningful change. `data/` is not in git (cache files). `conf
 
 ---
 
-*Last updated: March 24, 2026 — v0.5 (regime-aware DTE/delta, $5M scaling safeguards)*
+*Last updated: March 26, 2026 — v0.7 (portfolio dashboard risk panel, open options live, adaptive caps, HALT both accounts, 10-year total return screener)*
