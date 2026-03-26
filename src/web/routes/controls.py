@@ -144,22 +144,20 @@ def save_bridge_settings(
 
 
 @router.post("/force-close/{position_id}")
-async def force_close_position(position_id: int):
+def force_close_position(position_id: int):
     """Force close a single position — sends market order to IBKR then marks DB closed."""
-    import asyncio
     from fastapi.responses import JSONResponse
-
-    def _do_close():
+    from src.broker.connection import ensure_main_event_loop, get_ib, get_ib_lock, is_connected
+    from src.strategy.universe import UniverseManager
+    from ib_insync import Option, Stock, Order
+    try:
+        ensure_main_event_loop()
         order_sent = False
         with get_db() as db:
             pos = db.query(Position).filter(Position.id == position_id).first()
             if not pos or pos.status != PositionStatus.OPEN:
-                return {"status": "error", "message": "Position not found or not open"}
+                return JSONResponse({"status": "error", "message": "Position not found or not open"})
             try:
-                from src.broker.connection import get_ib, get_ib_lock, is_connected
-                from src.strategy.universe import UniverseManager
-                from ib_insync import Option, Stock, Order
-
                 if is_connected():
                     universe = UniverseManager()
                     stock = universe.get_stock(pos.symbol)
@@ -203,21 +201,19 @@ async def force_close_position(position_id: int):
                                      status=trade.orderStatus.status)
             except Exception as e:
                 log.error("force_close_ibkr_error", position_id=position_id, error=str(e))
-                return {"status": "error", "message": str(e)}
+                return JSONResponse({"status": "error", "message": str(e)})
 
-            # Only mark closed if order was successfully sent
             if order_sent:
                 pos.status = PositionStatus.CLOSED
                 pos.closed_at = datetime.utcnow()
                 pos.realized_pnl = pos.realized_pnl or 0.0
                 log.info("force_closed", position_id=position_id, symbol=pos.symbol)
-                return {"status": "ok", "message": f"Close order sent for {pos.symbol}"}
+                return JSONResponse({"status": "ok", "message": f"Close order sent for {pos.symbol}"})
             else:
-                return {"status": "error", "message": "IBKR not connected"}
-
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, _do_close)
-    return JSONResponse(result)
+                return JSONResponse({"status": "error", "message": "IBKR not connected"})
+    except Exception as e:
+        log.error("force_close_error", position_id=position_id, error=str(e))
+        return JSONResponse({"status": "error", "message": str(e)})
 
 
 @router.post("/cancel-order/{order_id}")
