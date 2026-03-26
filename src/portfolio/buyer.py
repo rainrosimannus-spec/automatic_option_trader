@@ -75,6 +75,20 @@ class PortfolioBuyer:
 
         bought = []
 
+        # ── Manual HALT check — same system_state key as options trader ──
+        try:
+            from src.core.database import get_db
+            from src.core.models import SystemState
+            with get_db() as db:
+                halt_state = db.query(SystemState).filter(
+                    SystemState.key == "halted"
+                ).first()
+                if halt_state and halt_state.value == "true":
+                    log.warning("portfolio_scan_halted", reason="manual halt active")
+                    return bought
+        except Exception as e:
+            log.warning("portfolio_halt_check_failed", error=str(e))
+
         # Step 1: Detect market regime
         regime = self._detect_regime()
         self._store_state("market_regime", regime.regime_name)
