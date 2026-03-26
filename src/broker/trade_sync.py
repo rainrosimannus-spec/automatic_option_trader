@@ -458,6 +458,14 @@ def sync_ibkr_positions() -> int:
                              symbol=pos.symbol, strike=pos.strike, expiry=pos.expiry)
                     tracked_keys.add(key)
                     continue
+                # If stock appeared in account, this is an assignment — let wheel handle it
+                # Do NOT mark expired here or the wheel will never see it
+                if ibkr_stock_positions.get(pos.symbol, 0) >= 100 * pos.quantity:
+                    log.info("position_sync_skipped_assignment",
+                             symbol=pos.symbol, strike=pos.strike,
+                             stock_qty=ibkr_stock_positions.get(pos.symbol, 0))
+                    tracked_keys.add(key)
+                    continue
                 pos.status = PositionStatus.EXPIRED
                 pos.closed_at = datetime.utcnow()
 
