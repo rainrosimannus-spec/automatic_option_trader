@@ -5,9 +5,6 @@ Starts the IBKR connection, scheduler, and web dashboard.
 """
 from __future__ import annotations
 
-import nest_asyncio
-nest_asyncio.apply()  # Allow nested event loops — required for ib_insync in threaded scheduler
-
 import signal
 import sys
 import threading
