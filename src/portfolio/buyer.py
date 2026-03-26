@@ -281,6 +281,39 @@ class PortfolioBuyer:
             else:
                 max_for_this = deployable
 
+            # ── $5M scaling safeguards ──
+            # 1. Hard dollar cap per position
+            position_cap = min(
+                (net_liquidation or 0) * self.cfg.position_cap_pct,
+                self.cfg.position_cap_max_usd,
+            )
+            if position_cap > self.cfg.min_single_buy_eur and max_for_this > position_cap:
+                log.info("portfolio_position_cap_applied",
+                         symbol=stock.symbol,
+                         cap=round(position_cap, 0),
+                         was=round(max_for_this, 0))
+                max_for_this = position_cap
+
+            # 2. Total exposure cap — how much is already deployed today + open positions
+            if not self._check_total_exposure(net_liquidation or 0):
+                log.info("portfolio_total_exposure_cap_reached",
+                         symbol=stock.symbol,
+                         nlv=round(net_liquidation or 0, 0))
+                break  # no point checking more stocks
+
+            # 3. Daily deployment limit — how much new capital deployed today
+            daily_deployed = self._get_daily_deployed()
+            daily_cap = min(
+                (net_liquidation or 0) * self.cfg.daily_deployment_pct,
+                self.cfg.daily_deployment_max_usd,
+            )
+            if daily_cap > self.cfg.min_single_buy_eur and daily_deployed >= daily_cap:
+                log.info("portfolio_daily_deployment_cap_reached",
+                         symbol=stock.symbol,
+                         deployed_today=round(daily_deployed, 0),
+                         cap=round(daily_cap, 0))
+                break  # no point checking more stocks
+
             buy_amount = self._calculate_buy_amount(
                 analysis, net_liquidation, max_for_this
             )
@@ -824,6 +857,63 @@ class PortfolioBuyer:
         return K * math.exp(-r * T) * N(-d2) - S * N(-d1)
 
     # ── Buy amount calculation ───────────────────────────────
+    def _check_total_exposure(self, net_liq: float) -> bool:
+        """
+        Check if total portfolio exposure is within cap.
+        Cap = min(NLV × total_exposure_pct, total_exposure_max_usd).
+        Returns True if more deployment is allowed, False if cap reached.
+        Skipped on small accounts where cap would be below min_single_buy_eur.
+        """
+        cap = min(net_liq * self.cfg.total_exposure_pct, self.cfg.total_exposure_max_usd)
+        if cap < self.cfg.min_single_buy_eur:
+            return True  # small account — skip check
+        try:
+            from src.core.database import get_db
+            from src.portfolio.models import PortfolioHolding, PortfolioPutEntry
+            with get_db() as db:
+                holdings = db.query(PortfolioHolding).filter(
+                    PortfolioHolding.shares > 0
+                ).all()
+                total = sum(h.market_value or 0 for h in holdings)
+                open_puts = db.query(PortfolioPutEntry).filter(
+                    PortfolioPutEntry.status == "open"
+                ).all()
+                total += sum((p.strike * p.contracts * 100) for p in open_puts)
+            if total >= cap:
+                log.info("portfolio_total_exposure_cap",
+                         total=round(total, 0), cap=round(cap, 0),
+                         nlv=round(net_liq, 0))
+                return False
+        except Exception as e:
+            log.warning("portfolio_exposure_check_failed", error=str(e))
+        return True
+
+    def _get_daily_deployed(self) -> float:
+        """
+        Sum of capital deployed today — stock buys + put collateral.
+        Used for daily deployment cap enforcement.
+        """
+        try:
+            from src.core.database import get_db
+            from src.portfolio.models import PortfolioTransaction, PortfolioPutEntry
+            from datetime import date, datetime
+            today_start = datetime.combine(date.today(), datetime.min.time())
+            with get_db() as db:
+                txns = db.query(PortfolioTransaction).filter(
+                    PortfolioTransaction.action == "buy",
+                    PortfolioTransaction.created_at >= today_start,
+                ).all()
+                stock_deployed = sum(t.amount for t in txns)
+                puts = db.query(PortfolioPutEntry).filter(
+                    PortfolioPutEntry.status == "open",
+                    PortfolioPutEntry.opened_at >= today_start,
+                ).all()
+                put_collateral = sum((p.strike * p.contracts * 100) for p in puts)
+            return stock_deployed + put_collateral
+        except Exception as e:
+            log.warning("portfolio_daily_deployed_check_failed", error=str(e))
+            return 0.0
+
     def _calculate_buy_amount(
         self,
         analysis: StockAnalysis,

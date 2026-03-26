@@ -63,6 +63,16 @@ class PortfolioConfig(BaseModel):
     # Buy criteria
     max_single_buy_eur: float = 100000.0
     min_single_buy_eur: float = 5000.0
+    # $5M+ adaptive scaling safeguards — apply to ALL capital deployment (buys + puts + calls)
+    # Per-position cap: min(NLV × 5%, $200K) — prevents single stock from dominating
+    position_cap_pct: float = 0.05           # 5% of NLV per position
+    position_cap_max_usd: float = 200000.0   # hard ceiling regardless of NLV
+    # Total exposure cap: min(NLV × 25%, $3M) — portfolio-level ceiling
+    total_exposure_pct: float = 0.25         # 25% of NLV total deployed
+    total_exposure_max_usd: float = 3000000.0 # hard ceiling
+    # Daily deployment limit: min(NLV × 10%, $1M) — no single-day blowout
+    daily_deployment_pct: float = 0.10       # 10% of NLV per day
+    daily_deployment_max_usd: float = 1000000.0 # hard ceiling
     min_discount_pct: float = 5.0
     sma_period: int = 200
     rsi_period: int = 14

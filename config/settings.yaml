@@ -136,6 +136,13 @@ portfolio:
   # Buy criteria
   max_single_buy_eur: 100000       # max EUR per single stock purchase
   min_single_buy_eur: 5000         # min EUR per buy (avoid unreasonable fees)
+  # $5M+ adaptive scaling safeguards — apply to ALL capital deployment
+  position_cap_pct: 0.05           # per-position cap as % of NLV (5%)
+  position_cap_max_usd: 200000     # hard ceiling per position ($200K)
+  total_exposure_pct: 0.25         # total deployed cap as % of NLV (25%)
+  total_exposure_max_usd: 3000000  # hard ceiling total exposure ($3M)
+  daily_deployment_pct: 0.10       # max new capital per day as % of NLV (10%)
+  daily_deployment_max_usd: 1000000 # hard ceiling daily deployment ($1M)
   min_discount_pct: 5.0            # min % below 200d SMA to trigger value buy
   sma_period: 200                  # 200-day moving average
   rsi_period: 14                   # RSI lookback
