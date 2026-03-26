@@ -189,6 +189,14 @@ class WheelManager:
                     o.get("qty", 0) for o in open_orders
                     if o.get("symbol") == symbol and o.get("right") == "C"
                 )
+                # Also check DB for submitted CC suggestions (survives restart)
+                from src.core.suggestions import TradeSuggestion
+                pending_db = db.query(TradeSuggestion).filter(
+                    TradeSuggestion.symbol == symbol,
+                    TradeSuggestion.action == "sell_covered_call",
+                    TradeSuggestion.status == "submitted",
+                ).count()
+                pending_contracts += pending_db
 
                 lots_to_cover = lots_needed - covered_contracts - pending_contracts
 
