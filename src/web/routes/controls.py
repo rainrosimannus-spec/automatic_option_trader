@@ -157,7 +157,6 @@ async def force_close_position(position_id: int):
                 return {"status": "error", "message": "Position not found or not open"}
             try:
                 from src.broker.connection import get_ib, get_ib_lock, is_connected
-                from src.broker.orders import _get_order_connection, _order_lock
                 from src.strategy.universe import UniverseManager
                 from ib_insync import Option, Stock, Order
 
@@ -167,8 +166,8 @@ async def force_close_position(position_id: int):
                     opt_exchange = stock.opt_exchange if stock else "SMART"
                     currency = stock.currency if stock else "USD"
 
-                    with _order_lock:
-                        ib = _get_order_connection()
+                    with get_ib_lock():
+                        ib = get_ib()
 
                         if pos.position_type in ("short_put", "covered_call", "short_call"):
                             right = "P" if pos.position_type == "short_put" else "C"
@@ -222,29 +221,34 @@ async def force_close_position(position_id: int):
 
 
 @router.post("/cancel-order/{order_id}")
-def cancel_ibkr_order(order_id: int):
+async def cancel_ibkr_order(order_id: int):
     """Cancel an open order on IBKR and update DB record. Returns JSON."""
+    import asyncio
     from fastapi.responses import JSONResponse
-    try:
-        from src.broker.orders import _get_order_connection, _order_lock
-        from src.core.database import get_db
-        from src.core.models import Trade, OrderStatus
-        cancelled_on_ibkr = False
-        with _order_lock:
-            ib = _get_order_connection()
-            for trade in ib.openTrades():
-                if trade.order.orderId == order_id:
-                    ib.cancelOrder(trade.order)
-                    ib.sleep(1)
-                    cancelled_on_ibkr = True
-                    log.info("order_cancelled_from_dashboard", order_id=order_id)
-                    break
-        with get_db() as db:
-            t = db.query(Trade).filter(Trade.order_id == order_id).first()
-            if t:
-                t.order_status = OrderStatus.CANCELLED
-                log.info("order_cancelled_db_updated", order_id=order_id)
-        return JSONResponse({"status": "ok", "message": f"Order {order_id} cancelled"})
-    except Exception as e:
-        log.warning("cancel_order_failed", order_id=order_id, error=str(e))
-        return JSONResponse({"status": "error", "message": str(e)})
+
+    def _do_cancel():
+        try:
+            from src.broker.connection import get_ib, get_ib_lock
+            from src.core.database import get_db
+            from src.core.models import Trade, OrderStatus
+            with get_ib_lock():
+                ib = get_ib()
+                for trade in ib.openTrades():
+                    if trade.order.orderId == order_id:
+                        ib.cancelOrder(trade.order)
+                        ib.sleep(1)
+                        log.info("order_cancelled_from_dashboard", order_id=order_id)
+                        break
+            with get_db() as db:
+                t = db.query(Trade).filter(Trade.order_id == order_id).first()
+                if t:
+                    t.order_status = OrderStatus.CANCELLED
+                    log.info("order_cancelled_db_updated", order_id=order_id)
+            return {"status": "ok", "message": f"Order {order_id} cancelled"}
+        except Exception as e:
+            log.warning("cancel_order_failed", order_id=order_id, error=str(e))
+            return {"status": "error", "message": str(e)}
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _do_cancel)
+    return JSONResponse(result)
