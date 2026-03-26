@@ -621,6 +621,39 @@ def sync_ibkr_positions() -> int:
                          symbol=data["symbol"], strike=data["strike"],
                          premium=premium_per_share)
 
+            # Update matching submitted suggestion to executed (covered call fill)
+            if data["right"] == "C":
+                try:
+                    from src.core.suggestions import TradeSuggestion
+                    pending_sugg = db.query(TradeSuggestion).filter(
+                        TradeSuggestion.symbol == data["symbol"],
+                        TradeSuggestion.strike == data["strike"],
+                        TradeSuggestion.expiry == data["expiry"],
+                        TradeSuggestion.action == "sell_covered_call",
+                        TradeSuggestion.status == "submitted",
+                    ).first()
+                    if pending_sugg:
+                        pending_sugg.status = "executed"
+                        pending_sugg.reviewed_at = datetime.utcnow()
+                        pending_sugg.review_note = "Filled — synced from IBKR"
+                        log.info("covered_call_suggestion_marked_executed",
+                                 symbol=data["symbol"], strike=data["strike"])
+                    # Also update the submitted trade record to FILLED
+                    submitted_trade = db.query(Trade).filter(
+                        Trade.symbol == data["symbol"],
+                        Trade.strike == data["strike"],
+                        Trade.expiry == data["expiry"],
+                        Trade.trade_type == TradeType.SELL_CALL,
+                        Trade.order_status == OrderStatus.SUBMITTED,
+                    ).first()
+                    if submitted_trade:
+                        submitted_trade.order_status = OrderStatus.FILLED
+                        submitted_trade.fill_price = premium_per_share
+                        log.info("covered_call_trade_marked_filled",
+                                 symbol=data["symbol"], strike=data["strike"])
+                except Exception as e:
+                    log.warning("covered_call_suggestion_update_failed", error=str(e))
+
             changes += 1
             log.info("position_created_by_sync",
                      symbol=data["symbol"], type=pos_type,
