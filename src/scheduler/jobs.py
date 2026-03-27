@@ -507,6 +507,31 @@ def job_health_check():
         except Exception:
             pass
 
+    # Reconcile submitted suggestions against live IBKR orders
+    # Any submitted suggestion with no matching live order is a ghost — expire it
+    if is_connected():
+        try:
+            from src.broker.orders import get_cached_open_orders
+            from src.core.database import get_db
+            from src.core.suggestions import TradeSuggestion
+            live_orders = get_cached_open_orders()
+            live_symbols_rights = {
+                (o.get("symbol", "").upper(), o.get("right", ""))
+                for o in live_orders
+            }
+            with get_db() as db:
+                submitted = db.query(TradeSuggestion).filter(
+                    TradeSuggestion.status == "submitted",
+                ).all()
+                for s in submitted:
+                    right = "P" if s.action == "sell_put" else "C"
+                    if (s.symbol.upper(), right) not in live_symbols_rights:
+                        s.status = "expired"
+                        log.info("health_check_expiring_ghost_suggestion",
+                                 id=s.id, symbol=s.symbol, action=s.action)
+        except Exception as e:
+            log.warning("health_check_reconcile_failed", error=str(e))
+
     # Scan zombie check removed — single connection, no zombies possible
 
     # Refresh VIX and SPY for dashboard display — only every 5 minutes
