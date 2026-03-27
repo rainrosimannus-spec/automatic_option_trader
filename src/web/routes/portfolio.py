@@ -243,11 +243,37 @@ async def portfolio_page(request: Request):
         total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
 
     # Dividend income
+    from datetime import date
+    current_year = date.today().year
     with get_db() as db:
-        div_txns = db.query(PortfolioTransaction).filter(
+        div_txns_ytd = db.query(PortfolioTransaction).filter(
             PortfolioTransaction.action == "dividend"
         ).all()
-    total_dividends = sum(t.amount for t in div_txns)
+        div_txns_ytd = [t for t in div_txns_ytd if t.created_at and t.created_at.year == current_year]
+    total_dividends = sum(t.amount for t in div_txns_ytd)
+
+    # Accrued dividends (ex-div passed, not yet paid) from IBKR cache
+    dividends_accrued = 0.0
+    try:
+        from src.portfolio.connection import get_cached_portfolio_account
+        dividends_accrued = get_cached_portfolio_account().get("accrued_dividends", 0.0)
+    except Exception:
+        pass
+
+    # Dividend yield YTD — dividend-tier holdings only
+    dividends_yield_pct = 0.0
+    try:
+        from src.portfolio.models import PortfolioHolding as _PH
+        with get_db() as db:
+            div_holdings = db.query(_PH).filter(
+                _PH.tier == "dividend",
+                _PH.shares > 0
+            ).all()
+        div_cost_basis = sum(h.total_invested for h in div_holdings)
+        if div_cost_basis > 0:
+            dividends_yield_pct = ((total_dividends + dividends_accrued) / div_cost_basis) * 100
+    except Exception:
+        pass
 
     market_status = _get_state("market_status") or "unknown"
     market_pct = _get_state("market_pct_above_sma") or ""
@@ -308,6 +334,8 @@ async def portfolio_page(request: Request):
         "total_pnl": total_pnl,
         "total_pnl_pct": total_pnl_pct,
         "total_dividends": total_dividends,
+        "dividends_accrued": dividends_accrued,
+        "dividends_yield_pct": dividends_yield_pct,
         "num_holdings": len(holdings),
         "portfolio_margin_pct": portfolio_margin_pct,
         "portfolio_maintenance_margin": portfolio_maintenance_margin,

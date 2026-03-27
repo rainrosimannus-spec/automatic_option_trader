@@ -265,6 +265,15 @@ def refresh_portfolio_account_cache_from(ib: IB):
                         loans += _fx(val, v.currency)
             data["loans"] = loans
 
+            accrued_dividends = 0.0
+            for v in values:
+                if v.tag == "AccruedDividend" and v.currency not in ("BASE",):
+                    try:
+                        accrued_dividends += _fx(float(v.value), v.currency)
+                    except Exception:
+                        pass
+            data["accrued_dividends"] = accrued_dividends
+
             try:
                 from src.portfolio.capital_injections import fetch_accrued_interest_usd
                 data["accrued_interest"] = fetch_accrued_interest_usd()

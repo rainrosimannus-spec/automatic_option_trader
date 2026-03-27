@@ -56,8 +56,21 @@ function syncInjections() {
             </div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
-            <div class="text-xs text-gray-500 uppercase tracking-wider">Dividends</div>
-            <div class="text-2xl font-bold text-blue-400 mt-1">${{"{:,.0f}".format(total_dividends)}}</div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">Dividends</div>
+            <div class="flex flex-col gap-1.5">
+                <div class="flex justify-between items-baseline">
+                    <div class="text-xs text-gray-500">pending</div>
+                    <div class="text-sm font-bold text-blue-400">${{"{:,.0f}".format(dividends_accrued)}}</div>
+                </div>
+                <div class="flex justify-between items-baseline">
+                    <div class="text-xs text-gray-500">accrued YTD</div>
+                    <div class="text-sm font-bold text-white">${{"{:,.0f}".format(total_dividends)}}</div>
+                </div>
+                <div class="flex justify-between items-baseline">
+                    <div class="text-xs text-gray-500">DT yield YTD</div>
+                    <div class="text-sm font-bold text-emerald-400">{{"{:.2f}".format(dividends_yield_pct)}}%</div>
+                </div>
+            </div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Margin Used</div>
