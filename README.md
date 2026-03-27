@@ -439,3 +439,47 @@ Commit after every meaningful change. `data/` is not in git (cache files). `conf
 ---
 
 *Last updated: March 24, 2026 — v0.5 (regime-aware DTE/delta, $5M scaling safeguards)*
+
+---
+
+## Claude Access Instructions (for next sessions)
+
+### Dashboard access
+Claude can read the dashboard directly using the Claude in Chrome browser tool:
+- Navigate to `http://37.0.30.34:8080` for the main options dashboard
+- Navigate to `http://37.0.30.34:8080/suggestions/options` for options suggestions
+- Navigate to `http://37.0.30.34:8080/suggestions/` for portfolio suggestions
+
+### Git access
+Token at `~/.github_claude_token`. Claude cannot fetch GitHub URLs directly — must read files via bash on the server.
+
+---
+
+## Handoff — March 27, 2026 (end of day)
+
+**Fixed today:**
+- `controls.py`: cancel-order imported wrong function (`_get_order_connection` → `get_ib` + `get_ib_lock`)
+- `controls.py`: cancel-order and force-close use `ensure_main_event_loop()` instead of asyncio executor
+- `controls.py`: cancel-order now also cancels matching suggestion by symbol+strike+expiry
+- `jobs.py`: every put scan and CC scan cancels all unfilled IBKR orders before placing new ones
+- `jobs.py`: expired submitted suggestions only if no matching filled trade exists
+- `jobs.py`: health check reconciles submitted suggestions against live IBKR orders every 5 min
+- `jobs.py`: NLV snapshot skips writing 0.0 — guard added same as portfolio_nlv
+- `screener.py`: screen_calls now fetches real market bid/ask from IBKR (same as screen_puts)
+- `wheel.py`: CC delta fixed at 0.30-0.45 regardless of regime — goal is to get called away, not protect
+- `logger.py`: rotating file logger added at `logs/trader.log`, 7 days retention
+
+**Current positions (options account):**
+- PG: stock at $143, covered call $146 sold at $2.65 (April expiry) — waiting for fill confirmation
+- TTD $26, SHOP $123, UBER $75, PANW $162 — all expired today, all ITM, all assigned
+- Wheel will fire covered calls on TTD, SHOP, UBER, PANW after assignment detection
+
+**System state:**
+- VIX at 31 — HALT active, no new puts until VIX drops below 30
+- Both connections stable
+- Suggestion lifecycle now clean: pending → submitted → filled/expired/cancelled
+
+**Open items:**
+- Verify TTD, SHOP, UBER, PANW assignments detected and covered calls written
+- Structlog output does not write to `logs/trader.log` — only stdlib logging does. Fix needed.
+- File logging added but structlog still goes to stdout only
