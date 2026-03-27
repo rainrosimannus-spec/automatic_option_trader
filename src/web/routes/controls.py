@@ -235,6 +235,17 @@ def cancel_ibkr_order(order_id: int):
             if t:
                 t.order_status = OrderStatus.CANCELLED
                 log.info("order_cancelled_db_updated", order_id=order_id)
+                # Also cancel matching suggestion
+                from src.core.suggestions import TradeSuggestion
+                suggestions = db.query(TradeSuggestion).filter(
+                    TradeSuggestion.symbol == t.symbol,
+                    TradeSuggestion.strike == t.strike,
+                    TradeSuggestion.expiry == t.expiry,
+                    TradeSuggestion.status.in_(["submitted", "approved", "queued", "pending"]),
+                ).all()
+                for s in suggestions:
+                    s.status = "cancelled"
+                    log.info("suggestion_cancelled_with_order", suggestion_id=s.id, order_id=order_id)
         return JSONResponse({"status": "ok", "message": f"Order {order_id} cancelled"})
     except Exception as e:
         log.warning("cancel_order_failed", order_id=order_id, error=str(e))
