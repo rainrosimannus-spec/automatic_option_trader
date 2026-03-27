@@ -1334,7 +1334,8 @@ def create_scheduler() -> BackgroundScheduler:
                 ).first()
 
                 if existing:
-                    existing.net_liquidation = nlv
+                    if nlv > 0:
+                        existing.net_liquidation = nlv
                     existing.options_premium_collected = round(cum_premium, 2)
                     existing.portfolio_invested = round(port_invested, 2)
                     existing.portfolio_market_value = round(port_value, 2)
