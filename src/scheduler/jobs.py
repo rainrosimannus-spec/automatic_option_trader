@@ -133,15 +133,24 @@ def job_scan_market(market: str):
                              market=market, symbol=sym,
                              order_id=oo.order.orderId)
                     cancel_order(oo)
-            # Expire all submitted suggestions for this market
+            # Expire submitted suggestions that have no matching filled trade
+            from src.core.models import Trade, OrderStatus
             with get_db() as db:
                 stale = db.query(TradeSuggestion).filter(
                     TradeSuggestion.status == "submitted",
                     TradeSuggestion.symbol.in_(market_symbols),
                 ).all()
                 for s in stale:
-                    s.status = "expired"
-                    log.info("scan_expiring_submitted_suggestion", id=s.id, symbol=s.symbol)
+                    filled = db.query(Trade).filter(
+                        Trade.symbol == s.symbol,
+                        Trade.strike == s.strike,
+                        Trade.expiry == s.expiry,
+                        Trade.order_status == OrderStatus.FILLED,
+                    ).first()
+                    if not filled:
+                        s.status = "expired"
+                        s.review_note = "Cancelled by next scan"
+                        log.info("scan_expiring_submitted_suggestion", id=s.id, symbol=s.symbol)
         except Exception as e:
             log.warning("scan_cancel_stale_orders_failed", market=market, error=str(e))
 
@@ -235,14 +244,23 @@ def job_check_assignments():
                          symbol=getattr(oo.contract, 'symbol', '?'),
                          order_id=oo.order.orderId)
                 cancel_order(oo)
-            # Expire ALL submitted suggestions — fresh ones will be created
+            # Expire submitted suggestions that have no matching filled trade
+            from src.core.models import Trade, OrderStatus
             with get_db() as db:
                 stale = db.query(TradeSuggestion).filter(
                     TradeSuggestion.status == "submitted",
                 ).all()
                 for s in stale:
-                    s.status = "expired"
-                    log.info("cc_scan_expiring_submitted_suggestion", id=s.id, symbol=s.symbol)
+                    filled = db.query(Trade).filter(
+                        Trade.symbol == s.symbol,
+                        Trade.strike == s.strike,
+                        Trade.expiry == s.expiry,
+                        Trade.order_status == OrderStatus.FILLED,
+                    ).first()
+                    if not filled:
+                        s.status = "expired"
+                        s.review_note = "Cancelled by next scan"
+                        log.info("cc_scan_expiring_submitted_suggestion", id=s.id, symbol=s.symbol)
             wheel.write_covered_calls()
         finally:
             _scan_lock.release()
