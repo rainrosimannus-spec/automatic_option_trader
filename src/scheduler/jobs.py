@@ -123,6 +123,8 @@ def job_scan_market(market: str):
         # Cancel any unfilled orders for this market before placing new ones
         try:
             from src.broker.orders import get_open_orders, cancel_order
+            from src.core.database import get_db
+            from src.core.suggestions import TradeSuggestion
             market_symbols = [s.upper() for s in symbols]
             for oo in get_open_orders():
                 sym = getattr(oo.contract, 'symbol', '')
@@ -131,6 +133,15 @@ def job_scan_market(market: str):
                              market=market, symbol=sym,
                              order_id=oo.order.orderId)
                     cancel_order(oo)
+            # Expire all submitted suggestions for this market
+            with get_db() as db:
+                stale = db.query(TradeSuggestion).filter(
+                    TradeSuggestion.status == "submitted",
+                    TradeSuggestion.symbol.in_(market_symbols),
+                ).all()
+                for s in stale:
+                    s.status = "expired"
+                    log.info("scan_expiring_submitted_suggestion", id=s.id, symbol=s.symbol)
         except Exception as e:
             log.warning("scan_cancel_stale_orders_failed", market=market, error=str(e))
 
@@ -218,21 +229,20 @@ def job_check_assignments():
             from src.broker.orders import get_open_orders, cancel_order
             from src.core.database import get_db
             from src.core.suggestions import TradeSuggestion
+            # Cancel ALL unfilled options orders before fresh scan
             for oo in get_open_orders():
-                if getattr(oo.contract, 'right', '') == 'C':
-                    log.info("cc_scan_cancelling_stale_order",
-                             symbol=getattr(oo.contract, 'symbol', '?'),
-                             order_id=oo.order.orderId)
-                    cancel_order(oo)
-            # Also expire any submitted CC suggestions so wheel writes fresh ones
+                log.info("cc_scan_cancelling_unfilled_order",
+                         symbol=getattr(oo.contract, 'symbol', '?'),
+                         order_id=oo.order.orderId)
+                cancel_order(oo)
+            # Expire ALL submitted suggestions — fresh ones will be created
             with get_db() as db:
                 stale = db.query(TradeSuggestion).filter(
-                    TradeSuggestion.action == "sell_covered_call",
                     TradeSuggestion.status == "submitted",
                 ).all()
                 for s in stale:
                     s.status = "expired"
-                    log.info("cc_scan_expiring_stale_suggestion", id=s.id, symbol=s.symbol)
+                    log.info("cc_scan_expiring_submitted_suggestion", id=s.id, symbol=s.symbol)
             wheel.write_covered_calls()
         finally:
             _scan_lock.release()
