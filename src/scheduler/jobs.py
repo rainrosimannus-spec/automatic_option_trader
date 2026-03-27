@@ -120,6 +120,20 @@ def job_scan_market(market: str):
         if not symbols:
             return
 
+        # Cancel any unfilled orders for this market before placing new ones
+        try:
+            from src.broker.orders import get_open_orders, cancel_order
+            market_symbols = [s.upper() for s in symbols]
+            for oo in get_open_orders():
+                sym = getattr(oo.contract, 'symbol', '')
+                if sym.upper() in market_symbols:
+                    log.info("scan_cancelling_stale_order",
+                             market=market, symbol=sym,
+                             order_id=oo.order.orderId)
+                    cancel_order(oo)
+        except Exception as e:
+            log.warning("scan_cancel_stale_orders_failed", market=market, error=str(e))
+
         log.info("market_scan_starting", market=market, stocks=len(symbols))
 
         risk = RiskManager(universe)
@@ -197,11 +211,28 @@ def job_check_assignments():
         log.warning("assignment_check_skipped_no_connection",
                     reason="IBKR not connected — skipping assignment detection, still writing CCs")
 
-    # Write covered calls — uses same IBKR connection as put selling scan
-    # Must acquire _scan_lock to serialize IBKR access and avoid event loop conflict
+    # Cancel any unfilled covered call orders before writing new ones
     acquired = _scan_lock.acquire(timeout=60)
     if acquired:
         try:
+            from src.broker.orders import get_open_orders, cancel_order
+            from src.core.database import get_db
+            from src.core.suggestions import TradeSuggestion
+            for oo in get_open_orders():
+                if getattr(oo.contract, 'right', '') == 'C':
+                    log.info("cc_scan_cancelling_stale_order",
+                             symbol=getattr(oo.contract, 'symbol', '?'),
+                             order_id=oo.order.orderId)
+                    cancel_order(oo)
+            # Also expire any submitted CC suggestions so wheel writes fresh ones
+            with get_db() as db:
+                stale = db.query(TradeSuggestion).filter(
+                    TradeSuggestion.action == "sell_covered_call",
+                    TradeSuggestion.status == "submitted",
+                ).all()
+                for s in stale:
+                    s.status = "expired"
+                    log.info("cc_scan_expiring_stale_suggestion", id=s.id, symbol=s.symbol)
             wheel.write_covered_calls()
         finally:
             _scan_lock.release()
