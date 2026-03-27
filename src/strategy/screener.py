@@ -416,6 +416,40 @@ def screen_calls(
         return None
 
     best = max(candidates, key=lambda c: c.score)
+
+    # Fetch real market quote — BS pricing can differ significantly from actual market
+    try:
+        ib = get_ib()
+        ticker = ib.reqMktData(best.contract, "", True, False)  # snapshot
+        ib.sleep(2)
+        ib.cancelMktData(best.contract)
+
+        real_bid = ticker.bid
+        real_ask = ticker.ask
+
+        if real_bid and real_bid > 0 and real_bid != float('inf') and real_bid != -1.0:
+            real_mid = round((real_bid + real_ask) / 2, 2) if (real_ask and real_ask > 0 and real_ask != float('inf') and real_ask != -1.0) else real_bid
+            log.info("call_market_quote_fetched", symbol=symbol, strike=best.strike,
+                     bs_bid=round(best.bid, 2), real_bid=round(real_bid, 2),
+                     real_ask=round(real_ask, 2) if real_ask and real_ask > 0 else None)
+            best = ScoredContract(
+                contract=best.contract,
+                strike=best.strike,
+                expiry=best.expiry,
+                delta=best.delta,
+                bid=round(real_bid, 2),
+                ask=round(real_ask, 2) if (real_ask and real_ask > 0 and real_ask != float('inf') and real_ask != -1.0) else best.ask,
+                mid=real_mid,
+                iv=best.iv,
+                open_interest=best.open_interest,
+                score=best.score,
+            )
+        else:
+            log.info("call_market_quote_unavailable_using_bs", symbol=symbol,
+                     strike=best.strike, bs_bid=round(best.bid, 2))
+    except Exception as e:
+        log.warning("call_market_quote_fetch_failed", symbol=symbol, error=str(e))
+
     log.info(
         "call_screened",
         symbol=symbol,
