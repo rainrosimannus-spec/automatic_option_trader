@@ -202,19 +202,23 @@ def refresh_portfolio_account_cache():
         refresh_portfolio_account_cache_from(_portfolio_ib)
     else:
         try:
-            from src.portfolio.capital_injections import fetch_accrued_interest_usd
+            from src.portfolio.capital_injections import fetch_accrued_interest_usd, fetch_dividends_ytd_usd
             interest = fetch_accrued_interest_usd()
+            dividends_ytd = fetch_dividends_ytd_usd()
             with _portfolio_cache_lock:
                 _cached_portfolio_account["accrued_interest"] = interest
+                _cached_portfolio_account["dividends_ytd"] = dividends_ytd
             try:
                 import json as _json, os as _os
                 _os.makedirs(_os.path.dirname(_CACHE_FILE), exist_ok=True)
                 with open(_CACHE_FILE, "r") as f:
                     _data = _json.load(f)
                 _data["accrued_interest"] = interest
+                _data["dividends_ytd"] = dividends_ytd
                 with open(_CACHE_FILE, "w") as f:
                     _json.dump(_data, f)
                 log.info("accrued_interest_refreshed", value=round(interest, 2))
+                log.info("dividends_ytd_refreshed", value=round(dividends_ytd, 2))
             except Exception as e:
                 log.warning("accrued_interest_file_write_failed", error=str(e))
         except Exception as e:
@@ -275,13 +279,16 @@ def refresh_portfolio_account_cache_from(ib: IB):
             data["accrued_dividends"] = accrued_dividends
 
             try:
-                from src.portfolio.capital_injections import fetch_accrued_interest_usd
+                from src.portfolio.capital_injections import fetch_accrued_interest_usd, fetch_dividends_ytd_usd
                 data["accrued_interest"] = fetch_accrued_interest_usd()
+                data["dividends_ytd"] = fetch_dividends_ytd_usd()
             except Exception:
                 data["accrued_interest"] = 0.0
+                data["dividends_ytd"] = 0.0
         except Exception:
             data["loans"] = 0.0
             data["accrued_interest"] = 0.0
+            data["dividends_ytd"] = 0.0
 
         if data.get("nlv", 0) > 0:
             data["margin_pct"] = (data.get("margin", 0) / data["nlv"]) * 100

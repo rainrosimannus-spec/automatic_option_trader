@@ -239,3 +239,38 @@ def fetch_accrued_interest_usd() -> float:
     except Exception as e:
         log.warning("fetch_accrued_interest_failed", error=str(e))
     return 0.0
+
+
+def fetch_dividends_ytd_usd() -> float:
+    """
+    Fetch dividends paid YTD from IBKR Flex Query.
+    Uses ChangeInDividendAccrual entries with code='Re' (reversal = cash paid out).
+    Returns sum of abs(netAmount) for current calendar year, in USD.
+    """
+    try:
+        from src.core.config import get_settings
+        from datetime import date
+        cfg = get_settings()
+        token = cfg.portfolio.flex_token
+        qid = cfg.portfolio.flex_query_id
+        if not token or not qid:
+            return 0.0
+        import xml.etree.ElementTree as ET
+        xml_content = fetch_flex_statement(token, qid)
+        root = ET.fromstring(xml_content)
+        current_year = str(date.today().year)
+        total = 0.0
+        for el in root.iter("ChangeInDividendAccrual"):
+            if el.attrib.get("code") == "Re":
+                entry_date = el.attrib.get("date", "")
+                if entry_date.startswith(current_year):
+                    try:
+                        fx = float(el.attrib.get("fxRateToBase", 1))
+                        net = float(el.attrib.get("netAmount", 0))
+                        total += abs(net) * fx
+                    except Exception:
+                        pass
+        return total
+    except Exception as e:
+        log.warning("fetch_dividends_ytd_failed", error=str(e))
+    return 0.0

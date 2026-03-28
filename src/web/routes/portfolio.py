@@ -242,21 +242,14 @@ async def portfolio_page(request: Request):
         total_pnl = total_value - total_invested
         total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
 
-    # Dividend income
-    from datetime import date
-    current_year = date.today().year
-    with get_db() as db:
-        div_txns_ytd = db.query(PortfolioTransaction).filter(
-            PortfolioTransaction.action == "dividend"
-        ).all()
-        div_txns_ytd = [t for t in div_txns_ytd if t.created_at and t.created_at.year == current_year]
-    total_dividends = sum(t.amount for t in div_txns_ytd)
-
-    # Accrued dividends (ex-div passed, not yet paid) from IBKR cache
+    # Dividend income — from IBKR cache (populated by Flex Query)
     dividends_accrued = 0.0
+    total_dividends = 0.0
     try:
         from src.portfolio.connection import get_cached_portfolio_account
-        dividends_accrued = get_cached_portfolio_account().get("accrued_dividends", 0.0)
+        _div_cache = get_cached_portfolio_account()
+        dividends_accrued = _div_cache.get("accrued_dividends", 0.0)
+        total_dividends = _div_cache.get("dividends_ytd", 0.0)
     except Exception:
         pass
 
