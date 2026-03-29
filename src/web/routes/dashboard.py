@@ -299,12 +299,24 @@ def dashboard(request: Request):
             except Exception:
                 pass
 
-        recent_trades = (
+        _all_recent = (
             db.query(Trade)
             .order_by(Trade.created_at.desc())
-            .limit(15)
+            .limit(50)
             .all()
         )
+        # Find symbol+date pairs that have an ASSIGNMENT — suppress buy_put/buy_stock for those
+        _assignment_keys = set()
+        for t in _all_recent:
+            if t.trade_type == TradeType.ASSIGNMENT:
+                _assignment_keys.add((t.symbol, t.created_at.date()))
+        recent_trades = []
+        for t in _all_recent:
+            if t.trade_type in (TradeType.BUY_PUT, TradeType.BUY_STOCK):
+                if (t.symbol, t.created_at.date()) in _assignment_keys:
+                    continue
+            recent_trades.append(t)
+        recent_trades = recent_trades[:15]
 
         # Pending suggestions count — split by source
         from src.core.suggestions import TradeSuggestion
