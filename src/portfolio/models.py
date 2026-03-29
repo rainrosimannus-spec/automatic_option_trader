@@ -1,7 +1,7 @@
 """
 Portfolio database models — three-tier long-term portfolio.
 
-Tiers: dividend (25%), breakthrough (25%), growth (50%)
+Tiers: dividend (15%), breakthrough (25%), growth (60%)
 Entry methods: direct buy OR sell cash-secured put at target strike
 """
 from __future__ import annotations

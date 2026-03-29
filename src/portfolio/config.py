@@ -2,9 +2,9 @@
 Portfolio-specific configuration — three-tier long-term portfolio.
 
 Tiers:
-  - dividend:     25% — established dividend growers, best 15yr total return
+  - dividend:     15% — established dividend growers, best 15yr total return
   - breakthrough: 25% — frontier tech, may not be profitable yet
-  - growth:       50% — proven track record, expanding TAM
+  - growth:       60% — proven track record, expanding TAM
 """
 from __future__ import annotations
 
