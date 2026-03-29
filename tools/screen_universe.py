@@ -3,8 +3,8 @@ Watchlist Screener — Monthly Universe Refresh Tool
 
 Screens global stocks across three tiers:
   - Breakthrough (25): Early-stage high-potential companies via AI scan
-  - Growth (50): High revenue growth, strong fundamentals globally
-  - Dividend (25): Best 10-year total return forecast (price + yield)
+  - Growth (60): High revenue growth, strong fundamentals globally
+  - Dividend (15): Best 10-year total return forecast (price + yield)
 
 Outputs:
   - config/screened_universe.yaml  — full 100-stock portfolio watchlist
@@ -742,8 +742,8 @@ class UniverseScreener:
         self,
         regions: list[str] | None = None,
         min_market_cap: float = 1e9,
-        growth_count: int = 50,
-        dividend_count: int = 25,
+        growth_count: int = 60,
+        dividend_count: int = 15,
         breakthrough_count: int = 25,
         options_count: int = 50,
     ) -> tuple[list[StockScore], list[StockScore]]:
@@ -1026,8 +1026,8 @@ def main():
     parser.add_argument("--port", type=int, default=7496)
     parser.add_argument("--region", default="all")
     parser.add_argument("--min-mcap", type=float, default=1e9)
-    parser.add_argument("--growth", type=int, default=50)
-    parser.add_argument("--dividend", type=int, default=25)
+    parser.add_argument("--growth", type=int, default=60)
+    parser.add_argument("--dividend", type=int, default=15)
     parser.add_argument("--breakthrough", type=int, default=25)
     parser.add_argument("--options-count", type=int, default=50)
     parser.add_argument("--universe-output", default="config/screened_universe.yaml")
