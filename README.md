@@ -14,7 +14,7 @@ The owner is not a programmer. All instructions must be:
 - **Never assume — always check** — before drawing conclusions, read the actual code or data. Do not guess based on how things usually work
 - **No shortcuts** — always do it properly, as if the outcome depended on it. The easy path that skips steps is always wrong
 - **Admit mistakes immediately** — if a fix didn't work, say so directly. Do not make excuses, do not linger on explanations, do not blame timing or external factors. Acknowledge the mistake, find the real cause, fix it properly
-- **No manual file editing** — the owner is not a programmer. All code changes must be delivered as copy-paste ready terminal commands that modify files directly (e.g. `sed`, Python heredoc replacements). Never instruct the owner to open a file and edit it manually. Every change goes in a code block that can be run as-is.
+- **No manual file editing** — the owner is not a programmer. All code changes must be delivered as copy-paste ready terminal commands that modify files directly using Python patch scripts (`/tmp/patchN.py`). Never use heredoc (`<< 'EOF'`) for multi-line Python — it breaks on quotes. Never instruct the owner to open a file and edit it manually. Every change goes in a code block that can be run as-is.
 - **Read before writing** — always read the exact current code before writing a replacement. Never assume what the code looks like based on context or previous sessions.
 - **Verify after every change** — after every file modification, run a targeted `grep` or `sed -n` to confirm the new code is exactly in place before moving to the next change.
 

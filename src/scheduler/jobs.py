@@ -352,8 +352,19 @@ def job_execute_queued():
             if acct and acct.net_liquidation > 0:
                 margin_pct = acct.maintenance_margin / acct.net_liquidation
                 if margin_pct >= cfg.risk.max_margin_usage:
-                    log.info("execute_queued_margin_blocked", margin_pct=f"{margin_pct:.1%}")
-                    return
+                    # Check if there are covered call suggestions pending — those don't consume margin
+                    from src.core.suggestions import TradeSuggestion
+                    from src.core.database import get_db as _get_db
+                    with _get_db() as _db:
+                        cc_pending = _db.query(TradeSuggestion).filter(
+                            TradeSuggestion.status.in_(["queued", "pending"]),
+                            TradeSuggestion.source == "options",
+                            TradeSuggestion.action == "sell_call",
+                        ).count()
+                    if cc_pending == 0:
+                        log.info("execute_queued_margin_blocked", margin_pct=f"{margin_pct:.1%}")
+                        return
+                    log.info("execute_queued_margin_blocked_cc_exempt", margin_pct=f"{margin_pct:.1%}", cc_pending=cc_pending)
                 from src.strategy.risk import RiskManager
                 from src.strategy.universe import UniverseManager
                 rm = RiskManager(UniverseManager())
@@ -379,6 +390,10 @@ def job_execute_queued():
                                 msg="headroom unknown — blocking execution for safety")
                     break
                 if headroom is not None:
+                    # Covered calls are fully covered by held stock — zero margin required
+                    if s.action == "sell_call":
+                        selected = s
+                        break
                     try:
                         real_margin = get_whatif_margin(
                             symbol=s.symbol,
