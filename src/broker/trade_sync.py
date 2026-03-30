@@ -161,23 +161,47 @@ def sync_ibkr_trades() -> int:
                     f"{contract.symbol} @ ${fill_price:.2f}"
                 )
 
-            trade = Trade(
-                symbol=contract.symbol,
-                trade_type=trade_type,
-                strike=strike,
-                expiry=expiry,
-                premium=premium,
-                quantity=abs(int(execution.shares)),
-                fill_price=fill_price,
-                commission=commission,
-                order_id=execution.orderId,
-                order_status=OrderStatus.FILLED,
-                notes=notes,
-                source="ibkr_sync",
-                ibkr_exec_id=exec_id,
-                created_at=exec_time,
-            )
-            db.add(trade)
+            # Check if a system-created SUBMITTED row exists for this fill
+            # If so, update it instead of creating a duplicate
+            existing_trade = db.query(Trade).filter(
+                Trade.symbol == contract.symbol,
+                Trade.trade_type == trade_type,
+                Trade.strike == strike,
+                Trade.expiry == expiry,
+                Trade.order_status == OrderStatus.SUBMITTED,
+                Trade.ibkr_exec_id.is_(None),
+                Trade.source == "system",
+            ).first()
+
+            if existing_trade:
+                existing_trade.order_status = OrderStatus.FILLED
+                existing_trade.fill_price = fill_price
+                existing_trade.premium = premium
+                existing_trade.commission = commission
+                existing_trade.ibkr_exec_id = exec_id
+                existing_trade.source = "ibkr_sync"
+                existing_trade.notes = notes
+                existing_trade.created_at = exec_time
+                log.info("trade_updated_from_fill", symbol=contract.symbol,
+                         trade_type=str(trade_type), strike=strike)
+            else:
+                trade = Trade(
+                    symbol=contract.symbol,
+                    trade_type=trade_type,
+                    strike=strike,
+                    expiry=expiry,
+                    premium=premium,
+                    quantity=abs(int(execution.shares)),
+                    fill_price=fill_price,
+                    commission=commission,
+                    order_id=execution.orderId,
+                    order_status=OrderStatus.FILLED,
+                    notes=notes,
+                    source="ibkr_sync",
+                    ibkr_exec_id=exec_id,
+                    created_at=exec_time,
+                )
+                db.add(trade)
             existing_ids.add(exec_id)
             imported += 1
 
@@ -291,6 +315,10 @@ def _sync_stock_to_portfolio(fills) -> int:
             action = "buy" if side == "BOT" else "sell"
             shares = abs(int(execution.shares))
             price = execution.price
+            # IBKR reports GBP stock prices in pence — convert to pounds
+            currency = contract.currency or "USD"
+            if currency == "GBP":
+                price = price / 100.0
             amount = shares * price
 
             commission = 0.0
@@ -321,7 +349,7 @@ def _sync_stock_to_portfolio(fills) -> int:
                 commission=commission,
                 currency=contract.currency or "USD",
                 tier=tier,
-                notes=f"IBKR sync: {side} {shares} {contract.symbol} @ ${price:.2f}",
+                notes=f"IBKR sync: {side} {shares} {contract.symbol} @ {currency}{price:.2f}",
                 source="ibkr_sync",
                 ibkr_exec_id=exec_id,
                 created_at=exec_time,
