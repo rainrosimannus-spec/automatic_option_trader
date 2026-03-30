@@ -184,6 +184,18 @@ class WheelManager:
                 ).all()
                 covered_contracts = sum(p.quantity for p in open_calls)
 
+                # Also count filled call trades today — catches fills before trade_sync runs
+                from src.core.models import Trade, TradeType, OrderStatus
+                from datetime import date as _date
+                today_str = _date.today().strftime("%Y-%m-%d")
+                filled_calls_today = db.query(Trade).filter(
+                    Trade.symbol == symbol,
+                    Trade.trade_type == TradeType.SELL_CALL,
+                    Trade.order_status == OrderStatus.FILLED,
+                    Trade.created_at >= today_str,
+                ).count()
+                covered_contracts += filled_calls_today
+
                 # Count pending IBKR call orders
                 pending_contracts = sum(
                     o.get("qty", 0) for o in open_orders
