@@ -445,6 +445,13 @@ Commit after every meaningful change. `data/` is not in git (cache files). `conf
 ## Claude Access Instructions (for next sessions)
 
 ### Dashboard access
+### Reading code files
+The repo is public. Claude can fetch any file directly via raw GitHub URL without the owner pasting it:
+```
+https://raw.githubusercontent.com/rainrosimannus-spec/automatic_option_trader/main/PATH/TO/FILE
+```
+Note: GitHub shows the last **pushed** version. For files modified in the current session but not yet pushed, ask the owner to paste or push first.
+
 Claude can read the dashboard directly using the Claude in Chrome browser tool:
 - Navigate to `http://37.0.30.34:8080` for the main options dashboard
 - Navigate to `http://37.0.30.34:8080/suggestions/options` for options suggestions
