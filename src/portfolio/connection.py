@@ -213,8 +213,10 @@ def refresh_portfolio_account_cache():
                 _os.makedirs(_os.path.dirname(_CACHE_FILE), exist_ok=True)
                 with open(_CACHE_FILE, "r") as f:
                     _data = _json.load(f)
-                _data["accrued_interest"] = interest
-                _data["dividends_ytd"] = dividends_ytd
+                if interest != 0.0:
+                    _data["accrued_interest"] = interest
+                if dividends_ytd != 0.0:
+                    _data["dividends_ytd"] = dividends_ytd
                 with open(_CACHE_FILE, "w") as f:
                     _json.dump(_data, f)
                 log.info("accrued_interest_refreshed", value=round(interest, 2))
@@ -263,10 +265,11 @@ def refresh_portfolio_account_cache_from(ib: IB):
 
             loans = 0.0
             for v in values:
-                if v.tag == "TotalCashBalance" and v.currency not in ("BASE",):
+                if v.tag == "TotalCashBalance" and v.currency == "BASE":
                     val = float(v.value)
                     if val < 0:
-                        loans += _fx(val, v.currency)
+                        loans = val
+                    break
             data["loans"] = loans
 
             accrued_dividends = 0.0
@@ -278,10 +281,21 @@ def refresh_portfolio_account_cache_from(ib: IB):
                         pass
             data["accrued_dividends"] = accrued_dividends
 
+            accrued_dividends = 0.0
+            for v in values:
+                if v.tag == "AccruedDividend" and v.currency not in ("BASE",):
+                    try:
+                        accrued_dividends += _fx(float(v.value), v.currency)
+                    except Exception:
+                        pass
+            data["accrued_dividends"] = accrued_dividends
+
             try:
-                from src.portfolio.capital_injections import fetch_accrued_interest_usd, fetch_dividends_ytd_usd
-                data["accrued_interest"] = fetch_accrued_interest_usd()
-                data["dividends_ytd"] = fetch_dividends_ytd_usd()
+                import json as _json
+                with open(_CACHE_FILE, "r") as _f:
+                    _cached = _json.load(_f)
+                data["accrued_interest"] = _cached.get("accrued_interest", 0.0)
+                data["dividends_ytd"] = _cached.get("dividends_ytd", 0.0)
             except Exception:
                 data["accrued_interest"] = 0.0
                 data["dividends_ytd"] = 0.0
