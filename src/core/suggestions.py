@@ -100,6 +100,12 @@ class TradeSuggestion(Base):
     opt_exchange: Mapped[Optional[str]] = mapped_column(String(15), nullable=True)
     opt_currency: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
 
+    # Trailing stop (for sell_stock_review and reduce_position_review)
+    trailing_stop_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # e.g. 0.05 = 5% trailing stop below peak price
+    trailing_peak_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Highest price seen since the suggestion was created
+
 
 # ── Safety checks ────────────────────────────────────────────
 
@@ -180,6 +186,8 @@ def create_suggestion(
     funding_source: str = "cash",
     opt_exchange: str | None = None,
     opt_currency: str | None = None,
+    trailing_stop_pct: float | None = None,
+    trailing_peak_price: float | None = None,
 ) -> TradeSuggestion | None:
     """
     Create a trade suggestion after safety validation.
@@ -245,6 +253,8 @@ def create_suggestion(
         funding_source=funding_source,
         opt_exchange=opt_exchange,
         opt_currency=opt_currency,
+        trailing_stop_pct=trailing_stop_pct,
+        trailing_peak_price=trailing_peak_price,
         status="pending",
         expires_at=expires_at,
     )

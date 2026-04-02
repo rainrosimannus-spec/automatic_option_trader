@@ -64,6 +64,8 @@ def _migrate_columns(engine):
         # Options exchange routing (v19+)
         ("trade_suggestions", "opt_exchange", "VARCHAR(15)"),
         ("trade_suggestions", "opt_currency", "VARCHAR(5)"),
+        ("trade_suggestions", "trailing_stop_pct", "REAL"),
+        ("trade_suggestions", "trailing_peak_price", "REAL"),
     ]
     from sqlalchemy import text
     with engine.connect() as conn:

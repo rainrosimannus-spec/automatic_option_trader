@@ -498,6 +498,8 @@ def _review_existing_holdings(
                 source="rescreen",
                 tier=tier,
                 signal="annual_review_sell",
+                trailing_stop_pct=0.05,
+                trailing_peak_price=current_price,
                 rationale=rationale,
                 current_price=current_price,
                 sma_200=sma_200,
@@ -593,6 +595,8 @@ def _review_existing_holdings(
                 source="rescreen",
                 tier=tier,
                 signal="annual_review_trim_profit",
+                trailing_stop_pct=0.05,
+                trailing_peak_price=current_price,
                 rationale=rationale,
                 current_price=current_price,
                 sma_200=sma_200,
@@ -803,6 +807,8 @@ def _review_existing_holdings_monthly(
                             source="rescreen",
                             tier=tier,
                             signal="monthly_dividend_disqualified",
+                trailing_stop_pct=0.05,
+                trailing_peak_price=current_price,
                             rationale=rationale,
                             current_price=current_price,
                             sma_200=sma_200,
@@ -879,6 +885,8 @@ def _review_existing_holdings_monthly(
                                     source="rescreen",
                                     tier=tier,
                                     signal="monthly_growth_thesis_weak",
+                trailing_stop_pct=0.05,
+                trailing_peak_price=current_price,
                                     rationale=rationale,
                                     current_price=current_price,
                                     sma_200=sma_200,
@@ -909,6 +917,8 @@ def _review_existing_holdings_monthly(
                 source="rescreen",
                 tier=tier,
                 signal="monthly_review_sell",
+                trailing_stop_pct=0.05,
+                trailing_peak_price=current_price,
                 rationale=rationale,
                 current_price=current_price,
                 sma_200=sma_200,
@@ -942,6 +952,8 @@ def _review_existing_holdings_monthly(
                     source="rescreen",
                     tier=tier,
                     signal="monthly_review_reduce",
+                trailing_stop_pct=0.05,
+                trailing_peak_price=current_price,
                     rationale=rationale,
                     current_price=current_price,
                     sma_200=sma_200,
@@ -1052,6 +1064,8 @@ def _review_existing_holdings_monthly(
                 source="rescreen",
                 tier=tier,
                 signal="monthly_review_trim_profit",
+                trailing_stop_pct=0.05,
+                trailing_peak_price=current_price,
                 rationale=rationale,
                 current_price=current_price,
                 sma_200=sma_200,
@@ -1438,3 +1452,88 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
 
         except Exception as e:
             log.error("portfolio_trade_sync_error", error=str(e))
+
+def job_portfolio_trailing_stop_monitor(cfg):
+    """
+    Monitor active sell_stock_review and reduce_position_review suggestions
+    that have a trailing stop set. Every 15 min:
+      - Fetch current price
+      - Update trailing_peak_price if price has risen
+      - If price drops >= 5% below peak, create a new sell_stock_review suggestion
+        with updated limit_price and clear rationale (manual approval required)
+    """
+    from src.core.suggestions import TradeSuggestion, create_suggestion
+    from src.core.database import get_db
+    from src.portfolio.connection import get_portfolio_ib
+    from src.broker.market_data import get_stock_price
+    import datetime as dt
+
+    WATCH_ACTIONS = {"sell_stock_review", "reduce_position_review"}
+
+    try:
+        with get_db() as db:
+            candidates = db.query(TradeSuggestion).filter(
+                TradeSuggestion.action.in_(WATCH_ACTIONS),
+                TradeSuggestion.status.in_(["pending"]),
+                TradeSuggestion.trailing_stop_pct.isnot(None),
+                TradeSuggestion.trailing_peak_price.isnot(None),
+            ).all()
+
+            if not candidates:
+                return
+
+            for s in candidates:
+                try:
+                    price = get_stock_price(s.symbol)
+                    if not price or price <= 0:
+                        continue
+
+                    # Update peak if price has risen
+                    if price > s.trailing_peak_price:
+                        s.trailing_peak_price = price
+                        log.info("trailing_peak_updated",
+                                 symbol=s.symbol, peak=round(price, 2))
+                        continue
+
+                    # Check if price has dropped >= trailing_stop_pct below peak
+                    stop_price = round(s.trailing_peak_price * (1 - s.trailing_stop_pct), 2)
+                    if price <= stop_price:
+                        log.info("trailing_stop_triggered",
+                                 symbol=s.symbol,
+                                 peak=round(s.trailing_peak_price, 2),
+                                 stop=stop_price,
+                                 current=round(price, 2))
+                        # Expire the original suggestion
+                        s.status = "expired"
+                        s.review_note = (
+                            f"Trailing stop triggered — new suggestion created "
+                            f"at ${stop_price:.2f}"
+                        )
+                        # Create a fresh suggestion with updated limit price
+                        create_suggestion(
+                            symbol=s.symbol,
+                            action=s.action,
+                            quantity=s.quantity,
+                            limit_price=stop_price,
+                            order_type="LMT",
+                            source=s.source or "portfolio",
+                            tier=s.tier or "growth",
+                            signal="trailing_stop_triggered",
+                            rationale=(
+                                f"TRAILING STOP TRIGGERED: {s.symbol} fell to "
+                                f"${price:.2f}, which is {s.trailing_stop_pct*100:.0f}% "
+                                f"below peak of ${s.trailing_peak_price:.2f}. "
+                                f"Suggested limit: ${stop_price:.2f}. "
+                                f"Requires manual approval."
+                            ),
+                            current_price=price,
+                            sma_200=s.sma_200,
+                            rank=0,
+                            funding_source="n/a",
+                            expires_hours=720,
+                        )
+                except Exception as e:
+                    log.warning("trailing_stop_check_failed",
+                                symbol=s.symbol, error=str(e))
+    except Exception as e:
+        log.error("trailing_stop_monitor_error", error=str(e))

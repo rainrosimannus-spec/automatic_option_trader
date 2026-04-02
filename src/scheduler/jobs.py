@@ -1210,7 +1210,7 @@ def create_scheduler() -> BackgroundScheduler:
         from src.portfolio.scheduler import (
             job_portfolio_scan, job_portfolio_update_prices,
             job_portfolio_update_metrics, job_portfolio_monthly_screen,
-            job_portfolio_sync_trades,
+            job_portfolio_sync_trades, job_portfolio_trailing_stop_monitor,
         )
 
         # Buy scan — every N hours, 24/7
@@ -1297,6 +1297,19 @@ def create_scheduler() -> BackgroundScheduler:
             max_instances=1,
             misfire_grace_time=3600,
             coalesce=True,
+        )
+
+        # Trailing stop monitor — every 15 min during market hours
+        trailing_first_run = dt.now(pytz.UTC) + timedelta(seconds=150)
+        scheduler.add_job(
+            partial(job_portfolio_trailing_stop_monitor, portfolio_cfg),
+            IntervalTrigger(minutes=15),
+            id="portfolio_trailing_stop",
+            name="Portfolio Trailing Stop Monitor",
+            max_instances=1,
+            misfire_grace_time=600,
+            coalesce=True,
+            next_run_time=trailing_first_run,
         )
 
         # BRK-B history refresh — daily at 6 AM ET (after market close data is settled)
