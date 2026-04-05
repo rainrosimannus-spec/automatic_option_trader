@@ -368,6 +368,20 @@ class PortfolioBuyer:
             except Exception as _e:
                 log.debug("portfolio_earnings_check_failed", symbol=stock.symbol, error=str(_e))
 
+            # Sentiment guard — skip if strongly negative news sentiment in last 7 days
+            try:
+                from src.portfolio.sentiment import get_news_sentiment
+                from src.core.config import get_settings as _gs
+                _api_key = _gs().raw.get("finnhub", {}).get("api_key", "")
+                if _api_key:
+                    _sent = get_news_sentiment(stock.symbol, _api_key, days=7)
+                    if _sent["signal"] == "negative" and _sent["score"] < -0.3:
+                        log.info("portfolio_sentiment_skip", symbol=stock.symbol,
+                                 score=_sent["score"], articles=_sent["articles"])
+                        continue
+            except Exception as _e:
+                log.debug("portfolio_sentiment_check_failed", symbol=stock.symbol, error=str(_e))
+
             if entry_method == "direct_buy":
                 success = self._execute_buy(stock, analysis, buy_amount,
                                             funding_source=rs.funding_source,
