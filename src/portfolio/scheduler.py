@@ -400,26 +400,16 @@ job_portfolio_annual_rescreen = job_portfolio_monthly_screen
 
 
 
-
-def _get_chronos_trend(symbol: str) -> str | None:
-    """
-    Get today's Chronos forecast trend for a symbol.
-    Returns "up", "down", "flat", or None if no forecast available.
-    """
+def _get_chronos_trend(symbol):
     try:
         from src.portfolio.models import PortfolioForecast
         from src.core.database import get_db
         import datetime as _dt
-        today_str = _dt.date.today().strftime("%Y-%m-%d")
+        t = _dt.date.today().strftime("%Y-%m-%d")
         with get_db() as db:
-            fc = db.query(PortfolioForecast).filter(
-                PortfolioForecast.symbol == symbol,
-                PortfolioForecast.forecast_date == today_str,
-            ).first()
-            if fc:
-                return fc.trend
-    except Exception:
-        pass
+            fc = db.query(PortfolioForecast).filter(PortfolioForecast.symbol==symbol,PortfolioForecast.forecast_date==t).first()
+            if fc: return fc.trend
+    except Exception: pass
     return None
 
 def _review_existing_holdings(
@@ -513,20 +503,14 @@ def _review_existing_holdings(
                 f"now ${current_price:.2f}. "
                 f"Consider selling — fundamentals no longer qualify."
             )
-            create_suggestion(
+            _cu=_get_chronos_trend(symbol)=="up"
+            (not _cu) and create_suggestion(
                 symbol=symbol,
                 action="sell_stock_review",  # special action — requires manual execution
                 quantity=shares,
                 limit_price=round(current_price * 0.998, 2),
                 source="rescreen",
                 tier=tier,
-                
-                # Chronos forecast guard — suppress sell if model predicts UP trend
-                _chronos = _get_chronos_trend(symbol)
-                if _chronos == "up":
-                    log.info("sell_suppressed_forecast_up", symbol=symbol, signal="annual_review_sell")
-                    continue
-
                 signal="annual_review_sell",
                 trailing_stop_pct=0.05,
                 trailing_peak_price=current_price,
@@ -556,21 +540,15 @@ def _review_existing_holdings(
                     f"Suggest reducing by {reduce_shares} shares to bring to ~8%. "
                     f"P&L: {pnl_pct:+.1f}%, current ${current_price:.2f}."
                 )
-                create_suggestion(
+                _cu=_get_chronos_trend(symbol)=="up"
+                (not _cu) and create_suggestion(
                     symbol=symbol,
                     action="reduce_position_review",
                     quantity=reduce_shares,
                     limit_price=round(current_price * 0.998, 2),
                     source="rescreen",
                     tier=tier,
-                    
-                # Chronos forecast guard — suppress reduce if model predicts UP trend
-                _chronos = _get_chronos_trend(symbol)
-                if _chronos == "up":
-                    log.info("reduce_suppressed_forecast_up", symbol=symbol, signal="annual_review_reduce")
-                    continue
-
-                signal="annual_review_reduce",
+                    signal="annual_review_reduce",
                     rationale=rationale,
                     current_price=current_price,
                     sma_200=sma_200,
@@ -624,20 +602,14 @@ def _review_existing_holdings(
                 f"Position: {shares} shares @ ${avg_cost:.2f}, "
                 f"now ${current_price:.2f}."
             )
-            create_suggestion(
+            _cu=_get_chronos_trend(symbol)=="up"
+            (not _cu) and create_suggestion(
                 symbol=symbol,
                 action="sell_stock_review",
                 quantity=shares,
                 limit_price=round(current_price * 0.998, 2),
                 source="rescreen",
                 tier=tier,
-                
-                # Chronos forecast guard — suppress sell if model predicts UP trend
-                _chronos = _get_chronos_trend(symbol)
-                if _chronos == "up":
-                    log.info("sell_suppressed_forecast_up", symbol=symbol, signal="annual_review_trim_profit")
-                    continue
-
                 signal="annual_review_trim_profit",
                 trailing_stop_pct=0.05,
                 trailing_peak_price=current_price,
@@ -843,23 +815,17 @@ def _review_existing_holdings_monthly(
                             f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}. "
                             f"P&L: {pnl_pct:+.1f}%."
                         )
-                        create_suggestion(
+                        _cu=_get_chronos_trend(symbol)=="up"
+                        (not _cu) and create_suggestion(
                             symbol=symbol,
                             action="sell_stock_review",
                             quantity=shares,
                             limit_price=round(current_price * 0.998, 2),
                             source="rescreen",
                             tier=tier,
-                            
-                # Chronos forecast guard — suppress sell if model predicts UP trend
-                _chronos = _get_chronos_trend(symbol)
-                if _chronos == "up":
-                    log.info("sell_suppressed_forecast_up", symbol=symbol, signal="monthly_dividend_disqualified")
-                    continue
-
-                signal="monthly_dividend_disqualified",
-                trailing_stop_pct=0.05,
-                trailing_peak_price=current_price,
+                            signal="monthly_dividend_disqualified",
+                            trailing_stop_pct=0.05,
+                            trailing_peak_price=current_price,
                             rationale=rationale,
                             current_price=current_price,
                             sma_200=sma_200,
@@ -928,23 +894,17 @@ def _review_existing_holdings_monthly(
                                     f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}. "
                                     f"P&L: {pnl_pct:+.1f}%."
                                 )
-                                create_suggestion(
+                                _cu=_get_chronos_trend(symbol)=="up"
+                                (not _cu) and create_suggestion(
                                     symbol=symbol,
                                     action="sell_stock_review",
                                     quantity=shares,
                                     limit_price=round(current_price * 0.998, 2),
                                     source="rescreen",
                                     tier=tier,
-                                    
-                # Chronos forecast guard — suppress sell if model predicts UP trend
-                _chronos = _get_chronos_trend(symbol)
-                if _chronos == "up":
-                    log.info("sell_suppressed_forecast_up", symbol=symbol, signal="monthly_growth_thesis_weak")
-                    continue
-
-                signal="monthly_growth_thesis_weak",
-                trailing_stop_pct=0.05,
-                trailing_peak_price=current_price,
+                                    signal="monthly_growth_thesis_weak",
+                                    trailing_stop_pct=0.05,
+                                    trailing_peak_price=current_price,
                                     rationale=rationale,
                                     current_price=current_price,
                                     sma_200=sma_200,
@@ -967,20 +927,14 @@ def _review_existing_holdings_monthly(
                 f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}. "
                 f"Consider selling — fundamentals no longer qualify."
             )
-            create_suggestion(
+            _cu=_get_chronos_trend(symbol)=="up"
+            (not _cu) and create_suggestion(
                 symbol=symbol,
                 action="sell_stock_review",
                 quantity=shares,
                 limit_price=round(current_price * 0.998, 2),
                 source="rescreen",
                 tier=tier,
-                
-                # Chronos forecast guard — suppress sell if model predicts UP trend
-                _chronos = _get_chronos_trend(symbol)
-                if _chronos == "up":
-                    log.info("sell_suppressed_forecast_up", symbol=symbol, signal="monthly_review_sell")
-                    continue
-
                 signal="monthly_review_sell",
                 trailing_stop_pct=0.05,
                 trailing_peak_price=current_price,
@@ -1009,23 +963,17 @@ def _review_existing_holdings_monthly(
                     f"Suggest reducing by {reduce_shares} shares to ~8%. "
                     f"P&L: {pnl_pct:+.1f}%, current ${current_price:.2f}."
                 )
-                create_suggestion(
+                _cu=_get_chronos_trend(symbol)=="up"
+                (not _cu) and create_suggestion(
                     symbol=symbol,
                     action="reduce_position_review",
                     quantity=reduce_shares,
                     limit_price=round(current_price * 0.998, 2),
                     source="rescreen",
                     tier=tier,
-                    
-                # Chronos forecast guard — suppress reduce if model predicts UP trend
-                _chronos = _get_chronos_trend(symbol)
-                if _chronos == "up":
-                    log.info("reduce_suppressed_forecast_up", symbol=symbol, signal="monthly_review_reduce")
-                    continue
-
-                signal="monthly_review_reduce",
-                trailing_stop_pct=0.05,
-                trailing_peak_price=current_price,
+                    signal="monthly_review_reduce",
+                    trailing_stop_pct=0.05,
+                    trailing_peak_price=current_price,
                     rationale=rationale,
                     current_price=current_price,
                     sma_200=sma_200,
@@ -1128,20 +1076,14 @@ def _review_existing_holdings_monthly(
                 f"Consider trimming or selling while in profit. "
                 f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}."
             )
-            create_suggestion(
+            _cu=_get_chronos_trend(symbol)=="up"
+            (not _cu) and create_suggestion(
                 symbol=symbol,
                 action="sell_stock_review",
                 quantity=shares,
                 limit_price=round(current_price * 0.998, 2),
                 source="rescreen",
                 tier=tier,
-                
-                # Chronos forecast guard — suppress sell if model predicts UP trend
-                _chronos = _get_chronos_trend(symbol)
-                if _chronos == "up":
-                    log.info("sell_suppressed_forecast_up", symbol=symbol, signal="monthly_review_trim_profit")
-                    continue
-
                 signal="monthly_review_trim_profit",
                 trailing_stop_pct=0.05,
                 trailing_peak_price=current_price,
