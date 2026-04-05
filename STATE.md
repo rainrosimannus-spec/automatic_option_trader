@@ -62,7 +62,6 @@ with get_db() as db:
 
 3. **Watchlist universe review** — review ~50 stocks with strict 10-year quality lens ahead of $5M scaling
 
-4. **Portfolio strategy session** — 15/60/25 allocation review, expansion to 100 stocks
 
 ---
 
