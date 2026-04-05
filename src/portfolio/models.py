@@ -201,3 +201,17 @@ class PortfolioCapitalInjection(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(String(20), default="manual")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class PortfolioForecast(Base):
+    """Nightly Chronos price forecasts for watchlist stocks."""
+    __tablename__ = "portfolio_forecasts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(10), index=True)
+    forecast_date: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD
+    last_price: Mapped[float] = mapped_column(Float)
+    forecast_day5: Mapped[float] = mapped_column(Float)    # median forecast day 5
+    forecast_day10: Mapped[float] = mapped_column(Float)   # median forecast day 10
+    trend: Mapped[str] = mapped_column(String(10))         # "up", "down", "flat"
+    confidence: Mapped[float] = mapped_column(Float)       # quantile spread ratio (lower = more confident)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

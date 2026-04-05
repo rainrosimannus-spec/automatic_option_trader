@@ -399,6 +399,29 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
 job_portfolio_annual_rescreen = job_portfolio_monthly_screen
 
 
+
+
+def _get_chronos_trend(symbol: str) -> str | None:
+    """
+    Get today's Chronos forecast trend for a symbol.
+    Returns "up", "down", "flat", or None if no forecast available.
+    """
+    try:
+        from src.portfolio.models import PortfolioForecast
+        from src.core.database import get_db
+        import datetime as _dt
+        today_str = _dt.date.today().strftime("%Y-%m-%d")
+        with get_db() as db:
+            fc = db.query(PortfolioForecast).filter(
+                PortfolioForecast.symbol == symbol,
+                PortfolioForecast.forecast_date == today_str,
+            ).first()
+            if fc:
+                return fc.trend
+    except Exception:
+        pass
+    return None
+
 def _review_existing_holdings(
     ib: IB,
     cfg: PortfolioConfig,
@@ -497,6 +520,13 @@ def _review_existing_holdings(
                 limit_price=round(current_price * 0.998, 2),
                 source="rescreen",
                 tier=tier,
+                
+                # Chronos forecast guard — suppress sell if model predicts UP trend
+                _chronos = _get_chronos_trend(symbol)
+                if _chronos == "up":
+                    log.info("sell_suppressed_forecast_up", symbol=symbol, signal="annual_review_sell")
+                    continue
+
                 signal="annual_review_sell",
                 trailing_stop_pct=0.05,
                 trailing_peak_price=current_price,
@@ -533,7 +563,14 @@ def _review_existing_holdings(
                     limit_price=round(current_price * 0.998, 2),
                     source="rescreen",
                     tier=tier,
-                    signal="annual_review_reduce",
+                    
+                # Chronos forecast guard — suppress reduce if model predicts UP trend
+                _chronos = _get_chronos_trend(symbol)
+                if _chronos == "up":
+                    log.info("reduce_suppressed_forecast_up", symbol=symbol, signal="annual_review_reduce")
+                    continue
+
+                signal="annual_review_reduce",
                     rationale=rationale,
                     current_price=current_price,
                     sma_200=sma_200,
@@ -594,6 +631,13 @@ def _review_existing_holdings(
                 limit_price=round(current_price * 0.998, 2),
                 source="rescreen",
                 tier=tier,
+                
+                # Chronos forecast guard — suppress sell if model predicts UP trend
+                _chronos = _get_chronos_trend(symbol)
+                if _chronos == "up":
+                    log.info("sell_suppressed_forecast_up", symbol=symbol, signal="annual_review_trim_profit")
+                    continue
+
                 signal="annual_review_trim_profit",
                 trailing_stop_pct=0.05,
                 trailing_peak_price=current_price,
@@ -806,7 +850,14 @@ def _review_existing_holdings_monthly(
                             limit_price=round(current_price * 0.998, 2),
                             source="rescreen",
                             tier=tier,
-                            signal="monthly_dividend_disqualified",
+                            
+                # Chronos forecast guard — suppress sell if model predicts UP trend
+                _chronos = _get_chronos_trend(symbol)
+                if _chronos == "up":
+                    log.info("sell_suppressed_forecast_up", symbol=symbol, signal="monthly_dividend_disqualified")
+                    continue
+
+                signal="monthly_dividend_disqualified",
                 trailing_stop_pct=0.05,
                 trailing_peak_price=current_price,
                             rationale=rationale,
@@ -884,7 +935,14 @@ def _review_existing_holdings_monthly(
                                     limit_price=round(current_price * 0.998, 2),
                                     source="rescreen",
                                     tier=tier,
-                                    signal="monthly_growth_thesis_weak",
+                                    
+                # Chronos forecast guard — suppress sell if model predicts UP trend
+                _chronos = _get_chronos_trend(symbol)
+                if _chronos == "up":
+                    log.info("sell_suppressed_forecast_up", symbol=symbol, signal="monthly_growth_thesis_weak")
+                    continue
+
+                signal="monthly_growth_thesis_weak",
                 trailing_stop_pct=0.05,
                 trailing_peak_price=current_price,
                                     rationale=rationale,
@@ -916,6 +974,13 @@ def _review_existing_holdings_monthly(
                 limit_price=round(current_price * 0.998, 2),
                 source="rescreen",
                 tier=tier,
+                
+                # Chronos forecast guard — suppress sell if model predicts UP trend
+                _chronos = _get_chronos_trend(symbol)
+                if _chronos == "up":
+                    log.info("sell_suppressed_forecast_up", symbol=symbol, signal="monthly_review_sell")
+                    continue
+
                 signal="monthly_review_sell",
                 trailing_stop_pct=0.05,
                 trailing_peak_price=current_price,
@@ -951,7 +1016,14 @@ def _review_existing_holdings_monthly(
                     limit_price=round(current_price * 0.998, 2),
                     source="rescreen",
                     tier=tier,
-                    signal="monthly_review_reduce",
+                    
+                # Chronos forecast guard — suppress reduce if model predicts UP trend
+                _chronos = _get_chronos_trend(symbol)
+                if _chronos == "up":
+                    log.info("reduce_suppressed_forecast_up", symbol=symbol, signal="monthly_review_reduce")
+                    continue
+
+                signal="monthly_review_reduce",
                 trailing_stop_pct=0.05,
                 trailing_peak_price=current_price,
                     rationale=rationale,
@@ -1063,6 +1135,13 @@ def _review_existing_holdings_monthly(
                 limit_price=round(current_price * 0.998, 2),
                 source="rescreen",
                 tier=tier,
+                
+                # Chronos forecast guard — suppress sell if model predicts UP trend
+                _chronos = _get_chronos_trend(symbol)
+                if _chronos == "up":
+                    log.info("sell_suppressed_forecast_up", symbol=symbol, signal="monthly_review_trim_profit")
+                    continue
+
                 signal="monthly_review_trim_profit",
                 trailing_stop_pct=0.05,
                 trailing_peak_price=current_price,

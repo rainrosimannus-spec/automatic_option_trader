@@ -1212,6 +1212,7 @@ def create_scheduler() -> BackgroundScheduler:
             job_portfolio_update_metrics, job_portfolio_monthly_screen,
             job_portfolio_sync_trades, job_portfolio_trailing_stop_monitor,
         )
+        from src.portfolio.forecaster import job_portfolio_chronos_forecast
 
         # Buy scan — every N hours, 24/7
         # Stagger: prices first (60s), trade sync (90s), metrics (120s), scan later (180s)
@@ -1326,6 +1327,17 @@ def create_scheduler() -> BackgroundScheduler:
             CronTrigger(hour=6, minute=30, timezone=us_tz),
             id="portfolio_brkb_refresh",
             name="Portfolio BRK-B History Refresh",
+            max_instances=1,
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
+
+        # Chronos nightly forecast — 17:30 ET (after US close, before Asian open)
+        scheduler.add_job(
+            partial(job_portfolio_chronos_forecast, portfolio_cfg),
+            CronTrigger(hour=17, minute=30, timezone=us_tz),
+            id="portfolio_chronos_forecast",
+            name="Portfolio Chronos Nightly Forecast",
             max_instances=1,
             misfire_grace_time=3600,
             coalesce=True,
