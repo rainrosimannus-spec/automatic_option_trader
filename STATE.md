@@ -26,8 +26,8 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 
 **Options account (Maggy):**
 - TTD: assigned at $26.50, stock at ~$22.70, cost basis $25.52. Wheel scanning for covered calls. Working by design — TREND_BEARISH, wide strikes.
-- SHOP, UBER, PANW: assigned March 27, wheel scanning for covered calls
-- PG: covered call April expiry, awaiting fill confirmation
+- SHOP, UBER, PANW, PG: covered calls active
+- TTD: assigned at $26.50, stock at ~$22.70, cost basis $25.52 — scanning for covered call (TREND_BEARISH, wide strikes)
 - VIX normalizing — new puts expected to resume
 
 **Portfolio account (Winston):**
