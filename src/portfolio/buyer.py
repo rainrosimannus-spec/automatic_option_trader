@@ -358,6 +358,16 @@ class PortfolioBuyer:
                      symbol=stock.symbol, method=entry_method,
                      suggestion_mode=self.cfg.suggestion_mode)
 
+            # Earnings guard — skip if earnings within 3 days (same rule as Maggy)
+            try:
+                from src.broker.market_data import has_upcoming_earnings
+                if has_upcoming_earnings(stock.symbol, stock.exchange, stock.currency, within_days=3):
+                    log.info("portfolio_earnings_skip", symbol=stock.symbol,
+                             reason="earnings within 3 days")
+                    continue
+            except Exception as _e:
+                log.debug("portfolio_earnings_check_failed", symbol=stock.symbol, error=str(_e))
+
             if entry_method == "direct_buy":
                 success = self._execute_buy(stock, analysis, buy_amount,
                                             funding_source=rs.funding_source,
