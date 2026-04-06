@@ -178,13 +178,14 @@ def disconnect_portfolio() -> None:
 
 def reconnect_portfolio() -> IB:
     """Force a fresh reconnection. Only called by health check job."""
-    global _portfolio_ib
+    global _portfolio_ib, _portfolio_main_loop
     if _portfolio_ib:
         try:
             _portfolio_ib.disconnect()
         except Exception:
             pass
     _portfolio_ib = None
+    _portfolio_main_loop = None  # force fresh event loop — stale loop causes silent reconnect failure
     _portfolio_ib = _connect(max_retries=3)
     return _portfolio_ib
 
