@@ -360,8 +360,7 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                 ],
                 "removed": [
                     sym for sym in flagged_removal
-                    if sym not in [h.symbol for h in
-                        __import__("src.portfolio.models", fromlist=["PortfolioHolding"]).PortfolioHolding.__table__.c]
+                    if sym not in open_positions
                 ],
                 "flagged_removal": flagged_removal,
                 "reclassified": reclassified,
