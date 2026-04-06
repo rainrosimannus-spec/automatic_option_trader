@@ -1269,14 +1269,14 @@ def create_scheduler() -> BackgroundScheduler:
             next_run_time=metrics_first_run,
         )
 
-        # Monthly screener — first Monday of each month, 2 AM ET
+        # Monthly screener — first Monday of each month, 3 AM ET
         # Screens global universe, updates watchlist, CC suggestions, reclassifications
         scheduler.add_job(
             partial(job_portfolio_monthly_screen, portfolio_cfg),
             CronTrigger(
                 day_of_week="mon",
                 day="1-7",      # first Monday of month (day 1-7 that falls on Monday)
-                hour=2,
+                hour=3,
                 minute=0,
                 timezone=us_tz,
             ),
