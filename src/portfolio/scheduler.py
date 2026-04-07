@@ -193,9 +193,9 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
             portfolio_universe, options_universe = screener.screen_all(
                 regions=regions,
                 min_market_cap=cfg.rescreen_min_market_cap,
-                growth_count=60,
+                growth_count=65,
                 dividend_count=15,
-                breakthrough_count=25,
+                breakthrough_count=20,
                 options_count=50,
             )
 
