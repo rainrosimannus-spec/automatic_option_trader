@@ -186,6 +186,7 @@ def reconnect_portfolio() -> IB:
             pass
     _portfolio_ib = None
     _portfolio_main_loop = None  # force fresh event loop — stale loop causes silent reconnect failure
+    time.sleep(10)  # give IBKR gateway time to release client ID before reconnecting
     _portfolio_ib = _connect(max_retries=3)
     return _portfolio_ib
 
