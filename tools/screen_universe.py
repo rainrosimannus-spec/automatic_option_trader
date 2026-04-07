@@ -33,6 +33,64 @@ except RuntimeError:
 
 from ib_insync import IB, Stock, Option
 
+# ── Dedicated dividend candidate pool ─────────────────────────────────────────
+# These are screened in addition to regional pools.
+# Focus: long dividend history, growing payouts, strong FCF, not value traps.
+# Scored by _score_dividend_total_return() — best 15 selected for dividend tier.
+DIVIDEND_CANDIDATES = {
+    "US_DIV": {
+        "exchange": "SMART", "currency": "USD",
+        "symbols": [
+            # Telecom — high yield, stable cash flows
+            "T", "VZ",
+            # Tobacco — controversial but exceptional dividend history
+            "MO", "PM",
+            # REITs — income vehicles
+            "O", "AMT", "PLD", "SPG",
+            # US dividend growers — consistent CAGR
+            "TXN", "CSCO", "IBM", "WFC", "BAC", "USB",
+            "PRU", "AFL", "MET", "MMM", "EMR", "ETN",
+            "NEE", "D", "SO", "DUK", "AEP",  # utilities
+            "CVS", "WBA",  # pharmacy
+            "NLY", "MAIN", "ARCC",  # BDCs/mREITs
+            "EPD", "ET", "MMP",  # midstream energy
+            "XOM", "CVX",  # already in US but strong dividend
+        ],
+    },
+    "NO_DIV": {
+        "exchange": "OSE", "currency": "NOK",
+        "symbols": [
+            "BWLPG", "HAUTO", "EQNR", "MOWI", "AKRBP",
+            "DNB", "ORK", "YAR", "SUBC", "SFL",
+        ],
+    },
+    "UK_DIV": {
+        "exchange": "LSE", "currency": "GBP",
+        "symbols": [
+            "SHEL", "BP", "BATS", "IMB", "LGEN", "AVST",
+            "NG", "SSE", "WPP", "MNG", "HWDN",
+        ],
+    },
+    "EU_DIV": {
+        "exchange": "AEB", "currency": "EUR",
+        "symbols": [
+            "PHIA", "UNA", "RAND", "ABN",  # Netherlands
+        ],
+    },
+    "ES_DIV": {
+        "exchange": "BM", "currency": "EUR",
+        "symbols": ["TEF", "ENG", "IBE", "REP"],
+    },
+    "ADR_DIV": {
+        # Emerging market dividend payers via US ADR — USD, SMART exchange
+        "exchange": "SMART", "currency": "USD",
+        "symbols": [
+            "PBR", "EC", "HDB", "IBN", "SFL",
+            "VALE", "RIO", "BHP",  # miners with variable dividends
+        ],
+    },
+}
+
 CANDIDATE_POOLS = {
     "US": {
         "exchange": "SMART",
@@ -785,6 +843,31 @@ class UniverseScreener:
                 time.sleep(0.3)
 
         print(f"\n{'='*60}")
+        print(f"\n{'='*60}")
+        print(f"PHASE 1b: Screening dedicated dividend candidates")
+        print(f"{'='*60}")
+
+        for region, pool in DIVIDEND_CANDIDATES.items():
+            print(f"\n\u2500\u2500 {region} \u2014 {len(pool['symbols'])} candidates \u2500\u2500")
+            for symbol in pool["symbols"]:
+                if any(s.symbol == str(symbol) for s in all_scores):
+                    continue
+                try:
+                    score = self._score_stock(
+                        symbol=str(symbol),
+                        exchange=pool["exchange"],
+                        currency=pool["currency"],
+                    )
+                    if score and score.market_cap >= min_market_cap:
+                        all_scores.append(score)
+                        status = "\u2705 " if score.options_available else "\u26d4 "
+                        print(f"  {status} {score.symbol:8s} | Port: {score.portfolio_score:5.1f} | Div: {score.dividend_yield:.1f}% | MCap: ${score.market_cap/1e9:6.1f}B")
+                    else:
+                        print(f"  \u26d4  {symbol:8s} | Below threshold or no data")
+                except Exception as e:
+                    print(f"  \u274c  {symbol:8s} | Error: {e}")
+                time.sleep(0.3)
+
         print(f"PHASE 2: Breakthrough scan via AI")
         print(f"{'='*60}")
 
