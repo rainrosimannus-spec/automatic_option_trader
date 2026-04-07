@@ -96,8 +96,9 @@ async def run_screener_now(request: Request):
         return HTMLResponse('<div class="text-red-400">Portfolio not enabled.</div>')
 
     def _run():
-        from src.portfolio.connection import get_portfolio_lock
+        from src.portfolio.connection import get_portfolio_lock, _ensure_event_loop
         from src.portfolio.scheduler import job_portfolio_monthly_screen
+        _ensure_event_loop()
         with get_portfolio_lock():
             job_portfolio_monthly_screen(cfg)
 
