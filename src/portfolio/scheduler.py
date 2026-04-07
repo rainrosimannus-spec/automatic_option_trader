@@ -403,6 +403,55 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
 # Keep old name as alias for backward compatibility during transition
 job_portfolio_annual_rescreen = job_portfolio_monthly_screen
 
+def job_portfolio_monthly_review(cfg: PortfolioConfig):
+    """
+    Monthly holdings review — runs 4 AM ET, first Monday of month.
+    Runs 1 hour after job_portfolio_monthly_screen completes.
+
+    For each holding, independently evaluates two actions:
+      1. CC harvesting: sell OTM covered call (delta 0.15-0.20, 45-90 DTE)
+         if annualized premium yield > 8%. Income, not an exit.
+         Only for dividend and growth tiers (not breakthrough).
+      2. Trailing stop: attach 5% trailing stop if fundamentals deteriorating
+         or stock dropped off screened universe.
+
+    CC and trailing stop are NOT mutually exclusive — both can run simultaneously.
+    CC harvests income on the upside; trailing stop protects on the downside.
+
+    suggestion_mode=True  → both go to dashboard for manual approval
+    suggestion_mode=False → CC submitted to IBKR directly, trailing stop activates
+    """
+    if not cfg.enabled:
+        return
+
+    with get_portfolio_lock():
+        log.info("portfolio_monthly_review_started",
+                 date=datetime.utcnow().strftime("%Y-%m-%d"))
+        try:
+            ib = get_portfolio_ib()
+            _review_existing_holdings_monthly(ib, cfg, _get_current_screened_symbols(), _get_current_screened_tiers())
+            log.info("portfolio_monthly_review_done")
+        except Exception as e:
+            log.error("portfolio_monthly_review_error", error=str(e))
+
+
+def _get_current_screened_symbols() -> set:
+    """Get the set of symbols currently in the screened universe (DB)."""
+    from src.core.database import get_db
+    from src.portfolio.models import PortfolioWatchlist
+    with get_db() as db:
+        return {w.symbol for w in db.query(PortfolioWatchlist).all()}
+
+
+def _get_current_screened_tiers() -> dict:
+    """Get symbol -> tier mapping from current screened universe (DB)."""
+    from src.core.database import get_db
+    from src.portfolio.models import PortfolioWatchlist
+    with get_db() as db:
+        return {w.symbol: (w.tier or "growth") for w in db.query(PortfolioWatchlist).all()}
+
+
+
 
 
 def _get_chronos_trend(symbol):

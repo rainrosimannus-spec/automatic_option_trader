@@ -1210,7 +1210,7 @@ def create_scheduler() -> BackgroundScheduler:
         from src.portfolio.scheduler import (
             job_portfolio_scan, job_portfolio_update_prices,
             job_portfolio_update_metrics, job_portfolio_monthly_screen,
-            job_portfolio_sync_trades, job_portfolio_trailing_stop_monitor,
+            job_portfolio_monthly_review, job_portfolio_sync_trades, job_portfolio_trailing_stop_monitor,
         )
         from src.portfolio.forecaster import job_portfolio_chronos_forecast
 
@@ -1282,6 +1282,23 @@ def create_scheduler() -> BackgroundScheduler:
             ),
             id="portfolio_rescreen",
             name="Portfolio Monthly Screen",
+            max_instances=1,
+            replace_existing=True,
+        )
+
+        # Monthly holdings review — first Monday of each month, 4 AM ET
+        # Runs 1 hour after screener. Reviews holdings, CC harvesting + trailing stops.
+        scheduler.add_job(
+            partial(job_portfolio_monthly_review, portfolio_cfg),
+            CronTrigger(
+                day_of_week="mon",
+                day="1-7",
+                hour=4,
+                minute=0,
+                timezone=us_tz,
+            ),
+            id="portfolio_monthly_review",
+            name="Portfolio Monthly Holdings Review",
             max_instances=1,
             misfire_grace_time=3600,
             coalesce=True,
