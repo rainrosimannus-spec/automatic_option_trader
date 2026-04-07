@@ -872,6 +872,22 @@ class UniverseScreener:
 
         price = ticker.last if ticker.last and ticker.last > 0 else ticker.close
         if not price or price <= 0:
+            # Fallback to FMP price when IBKR returns no data
+            try:
+                key = _fmp_key()
+                if key:
+                    import requests as _req
+                    r = _req.get(
+                        f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={key}",
+                        timeout=10,
+                    )
+                    data = r.json()
+                    if data and isinstance(data, list) and data[0].get("price"):
+                        price = float(data[0]["price"])
+                        print(f"  ℹ️  {symbol}: using FMP price ${price:.2f} (IBKR returned no data)")
+            except Exception:
+                pass
+        if not price or price <= 0:
             return None
         score.price = float(price)
         score.market_cap = self._estimate_market_cap(contract, price)
