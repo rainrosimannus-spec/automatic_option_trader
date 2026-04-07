@@ -1,0 +1,3 @@
+Next screener run: May 4, 2026 (first Monday of May, 3 AM ET)
+FMP quota resets: midnight UTC April 8
+All fixes committed. Screener will produce 15/65/20 universe cleanly.

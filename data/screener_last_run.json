@@ -1,0 +1,168 @@
+{
+  "status": "success",
+  "run_date": "2026-04-07 13:58 UTC",
+  "stocks_screened": 60,
+  "added": [],
+  "removed": [],
+  "flagged_removal": [
+    "BMY",
+    "NVO",
+    "NTLA",
+    "TSM",
+    "SMCI",
+    "BESI",
+    "TER",
+    "ZS",
+    "CEG",
+    "SE",
+    "GRAB",
+    "0ZQ",
+    "AIR",
+    "ALV",
+    "BRK B",
+    "BZG2",
+    "CRWV",
+    "GOOG",
+    "HII",
+    "IBN",
+    "LIN",
+    "MC",
+    "MSTR",
+    "NLY",
+    "NNOX",
+    "PBR",
+    "RGTI",
+    "SFL",
+    "SPOT",
+    "HDB",
+    "GSBD"
+  ],
+  "reclassified": [],
+  "suggestions_created": [
+    {
+      "symbol": "0ZQ",
+      "action": "CONSIDER SELL",
+      "reason": "Off watchlist but profitable (+114.0%)"
+    },
+    {
+      "symbol": "AIR",
+      "action": "CONSIDER SELL",
+      "reason": "Off watchlist but profitable (+11.3%)"
+    },
+    {
+      "symbol": "ALV",
+      "action": "CONSIDER SELL",
+      "reason": "Off watchlist but profitable (+8.1%)"
+    },
+    {
+      "symbol": "BESI",
+      "action": "CONSIDER SELL",
+      "reason": "Off watchlist but profitable (+116.1%)"
+    },
+    {
+      "symbol": "BMY",
+      "action": "CONSIDER SELL",
+      "reason": "Off watchlist but profitable (+34.8%)"
+    },
+    {
+      "symbol": "BZG2",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -12.2%, below SMA"
+    },
+    {
+      "symbol": "CEG",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -18.2%, below SMA"
+    },
+    {
+      "symbol": "CRWV",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -28.1%, below SMA"
+    },
+    {
+      "symbol": "GOOG",
+      "action": "CONSIDER SELL",
+      "reason": "Off watchlist but profitable (+96.1%)"
+    },
+    {
+      "symbol": "GRAB",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -19.9%, below SMA"
+    },
+    {
+      "symbol": "IBN",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -11.6%, below SMA"
+    },
+    {
+      "symbol": "LIN",
+      "action": "CONSIDER SELL",
+      "reason": "Off watchlist but profitable (+17.0%)"
+    },
+    {
+      "symbol": "MC",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -14.9%, below SMA"
+    },
+    {
+      "symbol": "MSTR",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -32.6%, below SMA"
+    },
+    {
+      "symbol": "NLY",
+      "action": "CONSIDER SELL",
+      "reason": "Off watchlist but profitable (+19.7%)"
+    },
+    {
+      "symbol": "NNOX",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -24.1%, below SMA"
+    },
+    {
+      "symbol": "PBR",
+      "action": "CONSIDER SELL",
+      "reason": "Off watchlist but profitable (+76.3%)"
+    },
+    {
+      "symbol": "RGTI",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -30.5%, below SMA"
+    },
+    {
+      "symbol": "SFL",
+      "action": "CONSIDER SELL",
+      "reason": "Off watchlist but profitable (+57.3%)"
+    },
+    {
+      "symbol": "SMCI",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -42.4%, below SMA"
+    },
+    {
+      "symbol": "TER",
+      "action": "CONSIDER SELL",
+      "reason": "Off watchlist but profitable (+125.9%)"
+    },
+    {
+      "symbol": "TSM",
+      "action": "CONSIDER SELL",
+      "reason": "Off watchlist but profitable (+118.2%)"
+    },
+    {
+      "symbol": "ZS",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -32.8%, below SMA"
+    },
+    {
+      "symbol": "HDB",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -23.8%, below SMA"
+    },
+    {
+      "symbol": "SE",
+      "action": "SELL",
+      "reason": "Off watchlist, P&L -28.3%, below SMA"
+    }
+  ]
+}

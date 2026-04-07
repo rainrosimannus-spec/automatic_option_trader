@@ -1,0 +1,367 @@
+# Screened universe — generated 2026-04-07 13:55
+# 0 breakthrough + 60 growth + 0 dividend = 60 total
+# DO NOT edit manually — regenerated monthly by screener job
+
+breakthrough: []
+growth:
+- symbol: AAPL
+  name: APPLE INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: MSFT
+  name: MICROSOFT CORP
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: NVDA
+  name: NVIDIA CORP
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: GOOGL
+  name: ALPHABET INC-CL A
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: AMZN
+  name: AMAZON.COM INC
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: META
+  name: META PLATFORMS INC-CLASS A
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: TSLA
+  name: TESLA INC
+  sector: Consumer, Cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: AVGO
+  name: BROADCOM INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: CRM
+  name: SALESFORCE INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: AMD
+  name: ADVANCED MICRO DEVICES
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: NFLX
+  name: NETFLIX INC
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: ADBE
+  name: ADOBE INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: NOW
+  name: SERVICENOW INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: UBER
+  name: UBER TECHNOLOGIES INC
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: PLTR
+  name: PALANTIR TECHNOLOGIES INC-A
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: PANW
+  name: PALO ALTO NETWORKS INC
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: CRWD
+  name: CROWDSTRIKE HOLDINGS INC - A
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: SHOP
+  name: SHOPIFY INC - CLASS A
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: COIN
+  name: COINBASE GLOBAL INC -CLASS A
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: MELI
+  name: MERCADOLIBRE INC
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: ANET
+  name: ARISTA NETWORKS INC
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: DDOG
+  name: DATADOG INC - CLASS A
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: TTD
+  name: TRADE DESK INC/THE -CLASS A
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: NET
+  name: CLOUDFLARE INC - CLASS A
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: ARM
+  name: ARM HOLDINGS PLC-ADR
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: SNOW
+  name: SNOWFLAKE INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: ABNB
+  name: AIRBNB INC-CLASS A
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: RIVN
+  name: RIVIAN AUTOMOTIVE INC-A
+  sector: Consumer, Cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: SOFI
+  name: SOFI TECHNOLOGIES INC
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: RBLX
+  name: ROBLOX CORP -CLASS A
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: DASH
+  name: DOORDASH INC - A
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: ORCL
+  name: ORACLE CORP
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: INTC
+  name: INTEL CORP
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: QCOM
+  name: QUALCOMM INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: MU
+  name: MICRON TECHNOLOGY INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: LRCX
+  name: LAM RESEARCH CORP
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: KLAC
+  name: KLA CORP
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: CDNS
+  name: CADENCE DESIGN SYS INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: SNPS
+  name: SYNOPSYS INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: LLY
+  name: ELI LILLY & CO
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: UNH
+  name: UNITEDHEALTH GROUP INC
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: ABBV
+  name: ABBVIE INC
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: JNJ
+  name: JOHNSON & JOHNSON
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: MRK
+  name: MERCK & CO INC
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: PFE
+  name: PFIZER INC
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: TMO
+  name: THERMO FISHER SCIENTIFIC INC
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: ABT
+  name: ABBOTT LABORATORIES .
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: ISRG
+  name: INTUITIVE SURGICAL INC
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: VRTX
+  name: VERTEX PHARMACEUTICALS INC
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: REGN
+  name: REGENERON PHARMACEUTICALS
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: DXCM
+  name: DEXCOM INC
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: MRNA
+  name: MODERNA INC
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: GILD
+  name: GILEAD SCIENCES INC
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: AMGN
+  name: AMGEN INC
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: JPM
+  name: JPMORGAN CHASE & CO
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: V
+  name: VISA INC-CLASS A SHARES
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: MA
+  name: MASTERCARD INC - A
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: GS
+  name: GOLDMAN SACHS GROUP INC
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: BLK
+  name: BLACKROCK INC
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+- symbol: SCHW
+  name: SCHWAB (CHARLES) CORP
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  portfolio_score: 50.0
+dividend: []
