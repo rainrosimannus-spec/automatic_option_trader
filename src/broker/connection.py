@@ -150,13 +150,15 @@ def is_connected() -> bool:
 
 def reconnect() -> IB:
     """Force a fresh reconnection. Only called by health check job."""
-    global _ib
+    global _ib, _main_loop
     if _ib:
         try:
             _ib.disconnect()
         except Exception:
             pass
     _ib = None
+    _main_loop = None  # force fresh event loop on reconnect
+    time.sleep(10)  # give IBKR gateway time to release client ID before reconnecting
     _ib = _connect(max_retries=3)
     return _ib
 
