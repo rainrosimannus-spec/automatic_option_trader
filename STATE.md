@@ -6,7 +6,7 @@ Read this to know what to do next, what's broken, and what to test first.
 
 ---
 
-## System Status (April 5, 2026)
+## System Status (April 7, 2026)
 
 Both connections stable. App running. Dashboard accessible at http://37.0.30.34:8080
 
@@ -65,7 +65,7 @@ with get_db() as db:
 
 ---
 
-## What Changed Last Session (April 5, 2026)
+## What Changed Last Session (April 7, 2026)
 
 **Fixed bugs:**
 - Portfolio loans doubled → `connection.py` now uses `TotalCashBalance BASE` only
@@ -108,5 +108,5 @@ Key file locations:
 
 ---
 
-*Last updated: April 5, 2026 — end of session*
+*Last updated: April 7, 2026 — end of session*
 *Update this file at the end of every session before committing*
