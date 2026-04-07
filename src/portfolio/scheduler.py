@@ -327,14 +327,11 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                      flagged_removal=len(flagged_removal))
 
             # ══════════════════════════════════════════════════════
-            # PHASE 3: Review existing holdings
+            # PHASE 3: Holdings review runs as separate job (job_portfolio_monthly_review)
+            # Scheduled 1 hour after screener at 4 AM ET, first Monday of month
             # ══════════════════════════════════════════════════════
-            review_suggestions = _review_existing_holdings_monthly(
-                ib, cfg, new_symbols, new_tiers
-            )
-
-            log.info("portfolio_monthly_screen_phase3_done",
-                     review_suggestions=len(review_suggestions))
+            log.info("portfolio_monthly_screen_phase3_skipped",
+                     reason="holdings review is now a separate scheduled job")
 
             # ══════════════════════════════════════════════════════
             # PHASE 4: Alert
@@ -343,7 +340,7 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                 len(portfolio_universe),
                 added,
                 flagged_removal,
-                review_suggestions,
+                [],
             )
 
             # ══════════════════════════════════════════════════════
