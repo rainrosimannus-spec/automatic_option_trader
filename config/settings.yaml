@@ -227,3 +227,7 @@ finnhub:
 # Free tier: 250 requests/day — https://financialmodelingprep.com
 fmp:
   api_key: "5zJhzNn8xcYF9q1se7jPxeyqoBI1GEVS"
+
+
+anthropic:
+  api_key: "ANTHROPIC_API_KEY"

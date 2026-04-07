@@ -233,9 +233,15 @@ Return raw JSON only, no markdown, no explanation."""
 
 def _get_breakthrough_candidates() -> list[dict]:
     try:
+        from src.core.config import get_settings
+        _ant_key = get_settings().raw.get("anthropic", {}).get("api_key", "")
         resp = requests.post(
             "https://api.anthropic.com/v1/messages",
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": _ant_key,
+                "anthropic-version": "2023-06-01",
+            },
             json={
                 "model": "claude-sonnet-4-20250514",
                 "max_tokens": 2000,
