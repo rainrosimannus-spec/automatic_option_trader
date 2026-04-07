@@ -1,17 +1,57 @@
 """
 Financial Modeling Prep (FMP) API client.
 Provides fundamental data: revenue growth, dividends, payout ratio, debt metrics.
-Free tier: 250 requests/day — use sparingly (monthly screener only).
+Free tier: 250 requests/day — cache aggressively.
+Cache: data/fmp_cache.json — 30 days per symbol, survives restarts and re-runs.
 """
 from __future__ import annotations
 
+import json
+import time
 import requests
+from pathlib import Path
 from typing import Optional
 from src.core.logger import get_logger
 
 log = get_logger(__name__)
 
 FMP_BASE = "https://financialmodelingprep.com/stable"
+_CACHE_FILE = Path("data/fmp_cache.json")
+_CACHE_TTL_DAYS = 30
+
+
+def _load_cache() -> dict:
+    try:
+        if _CACHE_FILE.exists():
+            return json.loads(_CACHE_FILE.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _save_cache(cache: dict) -> None:
+    try:
+        _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _CACHE_FILE.write_text(json.dumps(cache, indent=2))
+    except Exception as e:
+        log.warning("fmp_cache_save_failed", error=str(e))
+
+
+def _cache_get(symbol: str) -> Optional[dict]:
+    cache = _load_cache()
+    entry = cache.get(symbol)
+    if not entry:
+        return None
+    age_days = (time.time() - entry.get("cached_at", 0)) / 86400
+    if age_days > _CACHE_TTL_DAYS:
+        return None
+    return entry.get("data")
+
+
+def _cache_set(symbol: str, data: dict) -> None:
+    cache = _load_cache()
+    cache[symbol] = {"cached_at": time.time(), "data": data}
+    _save_cache(cache)
 
 
 def get_fmp_key() -> Optional[str]:
@@ -45,10 +85,6 @@ def _get(endpoint: str, symbol: str, params: dict = {}) -> Optional[dict | list]
 
 
 def get_income_growth(symbol: str, years: int = 3) -> Optional[dict]:
-    """
-    Get revenue and earnings growth over last N years.
-    Returns: {revenue_growth_yoy: float, avg_revenue_growth: float}
-    """
     data = _get("income-statement", symbol, {"limit": years + 1, "period": "annual"})
     if not data or len(data) < 2:
         return None
@@ -69,10 +105,6 @@ def get_income_growth(symbol: str, years: int = 3) -> Optional[dict]:
 
 
 def get_dividend_data(symbol: str) -> Optional[dict]:
-    """
-    Get dividend metrics: yield, payout ratio, growth, cuts.
-    Returns: {dividend_yield, payout_ratio, dividend_growth_yoy, dividend_cut}
-    """
     data = _get("ratios", symbol, {"limit": 3, "period": "annual"})
     if not data or len(data) < 1:
         return None
@@ -83,7 +115,6 @@ def get_dividend_data(symbol: str) -> Optional[dict]:
             "payout_ratio": round((latest.get("payoutRatio") or 0) * 100, 1),
             "dividend_cut": False,
         }
-        # Check for dividend cut (yield dropped significantly year over year)
         if len(data) >= 2:
             prev_yield = (data[1].get("dividendYield") or 0) * 100
             curr_yield = result["dividend_yield"]
@@ -96,10 +127,6 @@ def get_dividend_data(symbol: str) -> Optional[dict]:
 
 
 def get_debt_metrics(symbol: str) -> Optional[dict]:
-    """
-    Get debt/equity ratio and free cash flow.
-    Returns: {debt_to_equity, fcf_positive, fcf_negative_years}
-    """
     data = _get("balance-sheet-statement", symbol, {"limit": 3, "period": "annual"})
     cf_data = _get("cash-flow-statement", symbol, {"limit": 3, "period": "annual"})
     if not data:
@@ -109,14 +136,12 @@ def get_debt_metrics(symbol: str) -> Optional[dict]:
         total_debt = latest.get("totalDebt") or 0
         equity = latest.get("totalStockholdersEquity") or 1
         de_ratio = total_debt / abs(equity) if equity else 0
-
         fcf_negative_years = 0
         if cf_data:
             for cf in cf_data:
                 fcf = (cf.get("freeCashFlow") or 0)
                 if fcf < 0:
                     fcf_negative_years += 1
-
         return {
             "debt_to_equity": round(de_ratio, 2),
             "fcf_negative_years": fcf_negative_years,
@@ -127,11 +152,6 @@ def get_debt_metrics(symbol: str) -> Optional[dict]:
 
 
 def get_year_high(symbol: str) -> Optional[float]:
-    """
-    Get 52-week high price from FMP quote endpoint.
-    Used for the downtrend filter: reject if price > 40% below year high.
-    Costs 1 FMP API call per symbol.
-    """
     data = _get("quote", symbol)
     if not data:
         return None
@@ -147,10 +167,16 @@ def get_year_high(symbol: str) -> Optional[float]:
 
 def get_full_fundamentals(symbol: str) -> Optional[dict]:
     """
-    Fetch all fundamental metrics needed for screening in one call bundle.
-    Returns combined dict or None if data unavailable.
-    Uses 3 API calls — use sparingly.
+    Fetch all fundamental metrics needed for screening.
+    Results cached per symbol for 30 days in data/fmp_cache.json.
+    Cache survives restarts and re-runs — zero quota burn on repeat calls.
     """
+    # Check cache first
+    cached = _cache_get(symbol)
+    if cached is not None:
+        log.info("fmp_cache_hit", symbol=symbol)
+        return cached
+
     income = get_income_growth(symbol)
     dividends = get_dividend_data(symbol)
     debt = get_debt_metrics(symbol)
@@ -166,5 +192,19 @@ def get_full_fundamentals(symbol: str) -> Optional[dict]:
     if debt:
         result.update(debt)
 
+    # Cache the result
+    _cache_set(symbol, result)
     log.info("fmp_fundamentals_fetched", symbol=symbol, metrics=list(result.keys()))
     return result
+
+
+def clear_cache(symbol: str = None) -> None:
+    """Clear cache for one symbol or entirely. Call before forced re-fetch."""
+    if symbol is None:
+        _CACHE_FILE.unlink(missing_ok=True)
+        log.info("fmp_cache_cleared_all")
+    else:
+        cache = _load_cache()
+        cache.pop(symbol, None)
+        _save_cache(cache)
+        log.info("fmp_cache_cleared_symbol", symbol=symbol)
