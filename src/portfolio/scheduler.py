@@ -199,6 +199,15 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                 options_count=50,
             )
 
+            # Guard: if screener returned 0 stocks, abort — do not overwrite files
+            if len(portfolio_universe) == 0:
+                log.error("portfolio_monthly_screen_empty_results",
+                          msg="Screener returned 0 stocks — aborting to preserve existing universe")
+                raise RuntimeError(
+                    "Screener returned 0 stocks globally — likely FMP API failure. "
+                    "Existing universe preserved."
+                )
+
             # Write output files
             write_screened_universe(
                 portfolio_universe,
