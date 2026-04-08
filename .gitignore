@@ -24,3 +24,4 @@ data/trades.db
 *.log
 logs/
 build/
+config/settings.yaml
