@@ -286,7 +286,7 @@ Return ONLY a JSON array of up to 30 companies. Each entry must have:
 - megatrend: which megatrend drives this (1-3 words)
 - rationale: why explosive potential (1 sentence max)
 
-Return raw JSON only, no markdown, no explanation."""
+Keep rationale under 8 words. Return raw JSON only, no markdown, no explanation."""
 
 
 def _get_breakthrough_candidates() -> list[dict]:
@@ -302,7 +302,7 @@ def _get_breakthrough_candidates() -> list[dict]:
             },
             json={
                 "model": "claude-sonnet-4-20250514",
-                "max_tokens": 2000,
+                "max_tokens": 4000,
                 "messages": [{"role": "user", "content": BREAKTHROUGH_PROMPT}],
             },
             timeout=30,
