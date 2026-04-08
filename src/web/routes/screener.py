@@ -96,16 +96,9 @@ async def run_screener_now(request: Request):
         return HTMLResponse('<div class="text-red-400">Portfolio not enabled.</div>')
 
     def _run():
-        import asyncio
-        import time
-        asyncio.set_event_loop(asyncio.new_event_loop())
-        from src.portfolio.connection import get_portfolio_lock, is_portfolio_connected
+        from src.portfolio.connection import get_portfolio_lock, _ensure_event_loop
         from src.portfolio.scheduler import job_portfolio_monthly_screen
-        # Wait up to 2 minutes for portfolio connection to be live
-        for _ in range(24):
-            if is_portfolio_connected():
-                break
-            time.sleep(5)
+        _ensure_event_loop()
         with get_portfolio_lock():
             job_portfolio_monthly_screen(cfg)
 
