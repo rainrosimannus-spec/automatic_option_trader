@@ -261,7 +261,11 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                     # breakthrough stored as tier="breakthrough", category="growth"
                     # (category only has growth/dividend for legacy compat)
                     new_category = "dividend" if score.tier == "dividend" else "growth"
-                    if sym not in current_watchlist:
+                    # Re-fetch from DB to avoid stale dict on repeated runs
+                    existing_wl = db.query(PortfolioWatchlist).filter(
+                        PortfolioWatchlist.symbol == sym
+                    ).first()
+                    if existing_wl is None:
                         db.add(PortfolioWatchlist(
                             symbol=sym,
                             name=score.name,
