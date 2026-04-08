@@ -383,14 +383,14 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                 ],
                 "flagged_removal": flagged_removal,
                 "reclassified": reclassified,
-                "suggestions_created": review_suggestions,
+                "suggestions_created": [],
             }, indent=2))
 
             log.info("portfolio_monthly_screen_done",
                      screened=len(portfolio_universe),
                      added=len(added),
                      flagged=len(flagged_removal),
-                     suggestions=len(review_suggestions))
+                     suggestions=0)
 
         except Exception as e:
             log.error("portfolio_monthly_screen_error", error=str(e))
