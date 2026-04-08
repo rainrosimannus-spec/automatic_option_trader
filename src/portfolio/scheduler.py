@@ -177,6 +177,15 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                  date=datetime.utcnow().strftime("%Y-%m-%d"))
 
         try:
+            # Ensure connection is live before starting — reconnect if needed
+            if not is_portfolio_connected():
+                log.warning("portfolio_screener_reconnecting",
+                            reason="not connected at screener start")
+                try:
+                    reconnect_portfolio()
+                except Exception as e:
+                    raise ConnectionError(f"Cannot reconnect portfolio for screener: {e}")
+
             ib = get_portfolio_ib()
 
             # ══════════════════════════════════════════════════════
