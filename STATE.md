@@ -6,7 +6,7 @@ Read this to know what to do next, what's broken, and what to test first.
 
 ---
 
-## System Status (April 7, 2026)
+## System Status (April 8, 2026)
 
 Both connections stable. App running. Dashboard accessible at http://37.0.30.34:8080
 
@@ -16,27 +16,30 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 | Portfolio gateway (port 7496) | Running |
 | Trader app (port 8080) | Running |
 | Trailing stop monitor | Active, every 15 min |
-| Chronos forecast job | Registered, runs 17:30 ET — NOT YET TESTED ON LIVE DATA |
-| Sentiment guard | Active in buyer.py |
-| Earnings guard | Active in buyer.py |
+| FMP cache | Active, 30-day cache in data/fmp_cache.json |
+| Screener | Fixed — 20 breakthrough / 65 growth / 15 dividend / 50 options |
 
 ---
 
-## Current Positions
+## Top Priority Next Session
 
-**Options account (Maggy):**
-- TTD: assigned at $26.50, stock at ~$22.70, cost basis $25.52. Wheel scanning for covered calls. Working by design — TREND_BEARISH, wide strikes.
-- SHOP, UBER, PANW, PG: covered calls active
-- TTD: assigned at $26.50, stock at ~$22.70, cost basis $25.52 — scanning for covered call (TREND_BEARISH, wide strikes)
-- VIX normalizing — new puts expected to resume
+1. Verify screener Run Now completes successfully with all tiers populated
+2. Update STATE.md with screener results after clean run
+3. Implement job_portfolio_monthly_review (CC harvesting + trailing stops)
 
-**Portfolio account (Winston):**
-- 42 holdings, market value ~$874K, invested $498,514
-- Unrealized P&L: -11.2% (tariff-related market selloff April 2026)
-- Margin at ~94.7% — no new buys until margin clears
+## What Changed This Session (April 8, 2026)
 
----
-
+- FMP 30-day cache added to src/portfolio/fmp.py
+- Screener targets: 65 growth / 15 dividend / 20 breakthrough / 50 options
+- Screener separated from holdings review — screener produces universe only
+- New job_portfolio_monthly_review added (4 AM ET, first Monday)
+- Breakthrough scan fixed: max_tokens 2000→4000, rationale shortened
+- UNIQUE constraint crash fixed: re-query DB instead of stale dict
+- review_suggestions undefined reference fixed
+- Run Now button fixed: waits for portfolio connection before starting
+- settings.yaml removed from git tracking (contains secrets)
+- Anthropic API key rotated and updated
+- All 24+ commits pushed to GitHub
 ## Top Priority Next Session
 
 1. **Chronos live test** — run nightly forecast job manually during market hours to verify it fetches real IBKR prices and writes to `portfolio_forecasts` table correctly:
