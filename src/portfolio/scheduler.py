@@ -31,6 +31,8 @@ _consecutive_disconnect_checks: int = 0
 
 def job_portfolio_health_check(cfg: PortfolioConfig):
     """Periodic health check — reconnect on disconnect, mirrors job_health_check()."""
+    from src.portfolio.connection import _ensure_event_loop as _ensure_portfolio_event_loop
+    _ensure_portfolio_event_loop()
     global _consecutive_disconnect_checks
 
     if not is_portfolio_connected():
