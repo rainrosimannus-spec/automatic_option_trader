@@ -425,7 +425,6 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                             sector=score.sector,
                             tier=score.tier,
                             rationale=score.rationale if score.tier == "breakthrough" else None,
-                            composite_score=score.portfolio_score,
                             growth_score=score.growth_score,
                             valuation_score=score.valuation_score,
                             quality_score=score.quality_score,
@@ -452,7 +451,6 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                         # Update rationale for breakthrough stocks
                         if score.tier == "breakthrough" and score.rationale:
                             w.rationale = score.rationale
-                        w.composite_score = score.portfolio_score
                         w.growth_score = score.growth_score
                         w.valuation_score = score.valuation_score
                         w.quality_score = score.quality_score
