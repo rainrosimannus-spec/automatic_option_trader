@@ -1,455 +1,455 @@
-# Options trading universe — generated 2026-04-07 13:55
+# Options trading universe — generated 2026-04-09 06:21
 # Top 50 stocks ranked by options_score (fundamentals + liquidity)
 # DO NOT edit manually — regenerated monthly by screener job
 
 stocks:
-- symbol: AAPL
-  name: APPLE INC
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 62.8
-  options_liquidity: 82.0
-  rank: 1
 - symbol: NVDA
   name: NVIDIA CORP
   sector: Technology
   exchange: SMART
   currency: USD
-  tier: growth
-  options_score: 62.8
+  tier: breakthrough
+  options_score: 81.3
   options_liquidity: 82.0
+  rank: 1
+- symbol: ZS
+  name: ZSCALER INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 75.6
+  options_liquidity: 76.6
   rank: 2
-- symbol: GOOGL
-  name: ALPHABET INC-CL A
-  sector: Communications
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 62.8
-  options_liquidity: 82.0
-  rank: 3
-- symbol: AMZN
-  name: AMAZON.COM INC
-  sector: Communications
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 62.8
-  options_liquidity: 82.0
-  rank: 4
-- symbol: TSLA
-  name: TESLA INC
-  sector: Consumer, Cyclical
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 62.8
-  options_liquidity: 82.0
-  rank: 5
-- symbol: AVGO
-  name: BROADCOM INC
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 62.8
-  options_liquidity: 82.0
-  rank: 6
-- symbol: MU
-  name: MICRON TECHNOLOGY INC
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 62.3
-  options_liquidity: 80.8
-  rank: 7
-- symbol: GS
-  name: GOLDMAN SACHS GROUP INC
-  sector: Financial
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 62.3
-  options_liquidity: 80.8
-  rank: 8
-- symbol: AMD
-  name: ADVANCED MICRO DEVICES
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 61.8
-  options_liquidity: 79.4
-  rank: 9
-- symbol: CRWD
-  name: CROWDSTRIKE HOLDINGS INC - A
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 61.8
-  options_liquidity: 79.4
-  rank: 10
-- symbol: COIN
-  name: COINBASE GLOBAL INC -CLASS A
-  sector: Financial
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 61.8
-  options_liquidity: 79.4
-  rank: 11
-- symbol: SNOW
-  name: SNOWFLAKE INC
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 61.8
-  options_liquidity: 79.4
-  rank: 12
-- symbol: ORCL
-  name: ORACLE CORP
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 61.8
-  options_liquidity: 79.4
-  rank: 13
-- symbol: NFLX
-  name: NETFLIX INC
-  sector: Communications
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 61.2
-  options_liquidity: 78.0
-  rank: 14
-- symbol: UBER
-  name: UBER TECHNOLOGIES INC
-  sector: Communications
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 61.2
-  options_liquidity: 78.0
-  rank: 15
-- symbol: PANW
-  name: PALO ALTO NETWORKS INC
-  sector: Communications
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 61.2
-  options_liquidity: 78.0
-  rank: 16
-- symbol: SHOP
-  name: SHOPIFY INC - CLASS A
-  sector: Communications
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 61.2
-  options_liquidity: 78.0
-  rank: 17
-- symbol: SOFI
-  name: SOFI TECHNOLOGIES INC
-  sector: Financial
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 61.2
-  options_liquidity: 78.0
-  rank: 18
-- symbol: LLY
-  name: ELI LILLY & CO
-  sector: Consumer, Non-cyclical
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 61.2
-  options_liquidity: 78.0
-  rank: 19
-- symbol: UNH
-  name: UNITEDHEALTH GROUP INC
-  sector: Consumer, Non-cyclical
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 61.2
-  options_liquidity: 78.0
-  rank: 20
-- symbol: CRM
-  name: SALESFORCE INC
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.6
-  options_liquidity: 76.6
-  rank: 21
-- symbol: ADBE
-  name: ADOBE INC
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.6
-  options_liquidity: 76.6
-  rank: 22
-- symbol: MELI
-  name: MERCADOLIBRE INC
-  sector: Communications
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.6
-  options_liquidity: 76.6
-  rank: 23
-- symbol: ARM
-  name: ARM HOLDINGS PLC-ADR
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.6
-  options_liquidity: 76.6
-  rank: 24
-- symbol: JPM
-  name: JPMORGAN CHASE & CO
-  sector: Financial
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.6
-  options_liquidity: 76.6
-  rank: 25
-- symbol: NET
-  name: CLOUDFLARE INC - CLASS A
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.1
-  options_liquidity: 75.2
-  rank: 26
-- symbol: INTC
-  name: INTEL CORP
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.1
-  options_liquidity: 75.2
-  rank: 27
-- symbol: QCOM
-  name: QUALCOMM INC
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.1
-  options_liquidity: 75.2
-  rank: 28
-- symbol: ABBV
-  name: ABBVIE INC
-  sector: Consumer, Non-cyclical
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.1
-  options_liquidity: 75.2
-  rank: 29
-- symbol: ISRG
-  name: INTUITIVE SURGICAL INC
-  sector: Consumer, Non-cyclical
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.1
-  options_liquidity: 75.2
-  rank: 30
-- symbol: GILD
-  name: GILEAD SCIENCES INC
-  sector: Consumer, Non-cyclical
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.1
-  options_liquidity: 75.2
-  rank: 31
-- symbol: V
-  name: VISA INC-CLASS A SHARES
-  sector: Financial
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.1
-  options_liquidity: 75.2
-  rank: 32
-- symbol: SCHW
-  name: SCHWAB (CHARLES) CORP
-  sector: Financial
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 60.1
-  options_liquidity: 75.2
-  rank: 33
-- symbol: NOW
-  name: SERVICENOW INC
-  sector: Technology
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 59.5
-  options_liquidity: 73.8
-  rank: 34
-- symbol: ANET
-  name: ARISTA NETWORKS INC
-  sector: Communications
-  exchange: SMART
-  currency: USD
-  tier: growth
-  options_score: 59.5
-  options_liquidity: 73.8
-  rank: 35
 - symbol: DDOG
   name: DATADOG INC - CLASS A
   sector: Technology
   exchange: SMART
   currency: USD
+  tier: breakthrough
+  options_score: 74.4
+  options_liquidity: 75.2
+  rank: 3
+- symbol: ASML
+  name: ASML HOLDING NV
+  sector: Technology
+  exchange: AEB
+  currency: EUR
   tier: growth
-  options_score: 59.5
-  options_liquidity: 73.8
-  rank: 36
-- symbol: ABNB
-  name: AIRBNB INC-CLASS A
+  options_score: 73.7
+  options_liquidity: 72.4
+  rank: 4
+- symbol: SHOP
+  name: SHOPIFY INC - CLASS A
   sector: Communications
   exchange: SMART
-  currency: USD
+  currency: CAD
   tier: growth
-  options_score: 59.5
-  options_liquidity: 73.8
-  rank: 37
-- symbol: RIVN
-  name: RIVIAN AUTOMOTIVE INC-A
+  options_score: 73.4
+  options_liquidity: 72.4
+  rank: 5
+- symbol: SOFI
+  name: SOFI TECHNOLOGIES INC
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 73.2
+  options_liquidity: 79.4
+  rank: 6
+- symbol: SNOW
+  name: SNOWFLAKE INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 72.9
+  options_liquidity: 80.8
+  rank: 7
+- symbol: PLTR
+  name: PALANTIR TECHNOLOGIES INC-A
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 71.6
+  options_liquidity: 51.4
+  rank: 8
+- symbol: ASM
+  name: ASM INTERNATIONAL NV
+  sector: Technology
+  exchange: AEB
+  currency: EUR
+  tier: growth
+  options_score: 71.4
+  options_liquidity: 58.4
+  rank: 9
+- symbol: RKLB
+  name: ROCKET LAB CORP
+  sector: Industrial
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 71.2
+  options_liquidity: 69.6
+  rank: 10
+- symbol: NET
+  name: CLOUDFLARE INC - CLASS A
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 71.1
+  options_liquidity: 76.6
+  rank: 11
+- symbol: TSLA
+  name: TESLA INC
   sector: Consumer, Cyclical
   exchange: SMART
   currency: USD
+  tier: breakthrough
+  options_score: 70.2
+  options_liquidity: 82.0
+  rank: 12
+- symbol: ROKU
+  name: ROKU INC
+  sector: Communications
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 70.2
+  options_liquidity: 75.2
+  rank: 13
+- symbol: MFC
+  name: MANULIFE FINANCIAL CORP
+  sector: Financial
+  exchange: SMART
+  currency: CAD
+  tier: dividend
+  options_score: 69.9
+  options_liquidity: 72.4
+  rank: 14
+- symbol: INFY
+  name: INFOSYS LTD
+  sector: Technology
+  exchange: NSE
+  currency: INR
+  tier: dividend
+  options_score: 68.9
+  options_liquidity: 71.8
+  rank: 15
+- symbol: RACE
+  name: FERRARI NV
+  sector: Consumer, Cyclical
+  exchange: BVME
+  currency: EUR
   tier: growth
-  options_score: 59.5
-  options_liquidity: 73.8
-  rank: 38
-- symbol: JNJ
-  name: JOHNSON & JOHNSON
-  sector: Consumer, Non-cyclical
+  options_score: 68.5
+  options_liquidity: 69.6
+  rank: 16
+- symbol: EMR
+  name: EMERSON ELECTRIC CO
+  sector: Industrial
   exchange: SMART
   currency: USD
   tier: growth
-  options_score: 59.5
-  options_liquidity: 73.8
-  rank: 39
-- symbol: MRK
-  name: MERCK & CO INC
-  sector: Consumer, Non-cyclical
+  options_score: 67.9
+  options_liquidity: 69.6
+  rank: 17
+- symbol: ETN
+  name: EATON CORP PLC
+  sector: Industrial
   exchange: SMART
   currency: USD
   tier: growth
-  options_score: 59.5
+  options_score: 67.9
   options_liquidity: 73.8
-  rank: 40
-- symbol: MRNA
-  name: MODERNA INC
-  sector: Consumer, Non-cyclical
+  rank: 18
+- symbol: PATH
+  name: UIPATH INC - CLASS A
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 67.4
+  options_liquidity: 72.4
+  rank: 19
+- symbol: FSLR
+  name: FIRST SOLAR INC
+  sector: Energy
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 67.1
+  options_liquidity: 72.4
+  rank: 20
+- symbol: CNR
+  name: CANADIAN NATL RAILWAY CO
+  sector: Industrial
+  exchange: SMART
+  currency: CAD
+  tier: growth
+  options_score: 67.1
+  options_liquidity: 69.6
+  rank: 21
+- symbol: IONQ
+  name: IONQ INC
+  sector: Technology
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 67.0
+  options_liquidity: 64.8
+  rank: 22
+- symbol: CRH
+  name: CRH PLC
+  sector: Industrial
+  exchange: LSE
+  currency: GBP
+  tier: growth
+  options_score: 65.7
+  options_liquidity: 82.0
+  rank: 23
+- symbol: RY
+  name: ROYAL BANK OF CANADA
+  sector: Financial
+  exchange: SMART
+  currency: CAD
+  tier: dividend
+  options_score: 65.7
+  options_liquidity: 72.4
+  rank: 24
+- symbol: IBM
+  name: INTL BUSINESS MACHINES CORP
+  sector: Technology
   exchange: SMART
   currency: USD
   tier: growth
-  options_score: 59.5
-  options_liquidity: 73.8
-  rank: 41
-- symbol: BLK
-  name: BLACKROCK INC
+  options_score: 65.2
+  options_liquidity: 79.4
+  rank: 25
+- symbol: HDB
+  name: HDFC BANK LTD-ADR
   sector: Financial
   exchange: SMART
   currency: USD
   tier: growth
-  options_score: 59.5
+  options_score: 65.1
+  options_liquidity: 55.6
+  rank: 26
+- symbol: NEE
+  name: NEXTERA ENERGY INC
+  sector: Utilities
+  exchange: SMART
+  currency: USD
+  tier: dividend
+  options_score: 64.7
+  options_liquidity: 71.0
+  rank: 27
+- symbol: UPST
+  name: UPSTART HOLDINGS INC
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 64.3
   options_liquidity: 73.8
+  rank: 28
+- symbol: MET
+  name: METLIFE INC
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  tier: dividend
+  options_score: 64.2
+  options_liquidity: 64.0
+  rank: 29
+- symbol: USB
+  name: US BANCORP
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  tier: dividend
+  options_score: 64.1
+  options_liquidity: 72.4
+  rank: 30
+- symbol: NTLA
+  name: INTELLIA THERAPEUTICS INC
+  sector: Consumer, Non-cyclical
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 63.7
+  options_liquidity: 59.8
+  rank: 31
+- symbol: BAC
+  name: BANK OF AMERICA CORP
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  tier: growth
+  options_score: 63.7
+  options_liquidity: 82.0
+  rank: 32
+- symbol: TSCO
+  name: TESCO PLC
+  sector: Consumer, Non-cyclical
+  exchange: LSE
+  currency: GBP
+  tier: growth
+  options_score: 63.2
+  options_liquidity: 82.0
+  rank: 33
+- symbol: O
+  name: REALTY INCOME CORP
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  tier: dividend
+  options_score: 63.2
+  options_liquidity: 61.2
+  rank: 34
+- symbol: AZN
+  name: ASTRAZENECA PLC
+  sector: Consumer, Non-cyclical
+  exchange: LSE
+  currency: GBP
+  tier: dividend
+  options_score: 63.2
+  options_liquidity: 55.6
+  rank: 35
+- symbol: IBN
+  name: ICICI BANK LTD-SPON ADR
+  sector: Financial
+  exchange: SMART
+  currency: USD
+  tier: growth
+  options_score: 63.1
+  options_liquidity: 58.4
+  rank: 36
+- symbol: ENPH
+  name: ENPHASE ENERGY INC
+  sector: Energy
+  exchange: SMART
+  currency: USD
+  tier: breakthrough
+  options_score: 63.0
+  options_liquidity: 75.2
+  rank: 37
+- symbol: JHX
+  name: JAMES HARDIE INDUSTRIES-CDI
+  sector: Industrial
+  exchange: ASX
+  currency: AUD
+  tier: growth
+  options_score: 62.9
+  options_liquidity: 61.2
+  rank: 38
+- symbol: ULVR
+  name: UNILEVER PLC
+  sector: Consumer, Non-cyclical
+  exchange: LSE
+  currency: GBP
+  tier: growth
+  options_score: 62.8
+  options_liquidity: 82.0
+  rank: 39
+- symbol: HSBA
+  name: HSBC HOLDINGS PLC
+  sector: Financial
+  exchange: LSE
+  currency: GBP
+  tier: growth
+  options_score: 62.8
+  options_liquidity: 82.0
+  rank: 40
+- symbol: REL
+  name: RELX PLC
+  sector: Consumer, Non-cyclical
+  exchange: LSE
+  currency: GBP
+  tier: growth
+  options_score: 62.8
+  options_liquidity: 82.0
+  rank: 41
+- symbol: ABF
+  name: ASSOCIATED BRITISH FOODS PLC
+  sector: Consumer, Cyclical
+  exchange: LSE
+  currency: GBP
+  tier: growth
+  options_score: 62.8
+  options_liquidity: 82.0
   rank: 42
-- symbol: TTD
-  name: TRADE DESK INC/THE -CLASS A
-  sector: Communications
-  exchange: SMART
-  currency: USD
+- symbol: SSE
+  name: SSE PLC
+  sector: Utilities
+  exchange: LSE
+  currency: GBP
   tier: growth
-  options_score: 59.0
-  options_liquidity: 72.4
+  options_score: 62.8
+  options_liquidity: 82.0
   rank: 43
-- symbol: RBLX
-  name: ROBLOX CORP -CLASS A
-  sector: Technology
-  exchange: SMART
-  currency: USD
+- symbol: EXPN
+  name: EXPERIAN PLC
+  sector: Consumer, Non-cyclical
+  exchange: LSE
+  currency: GBP
   tier: growth
-  options_score: 59.0
-  options_liquidity: 72.4
+  options_score: 62.8
+  options_liquidity: 82.0
   rank: 44
-- symbol: DASH
-  name: DOORDASH INC - A
-  sector: Communications
-  exchange: SMART
-  currency: USD
+- symbol: IMB
+  name: IMPERIAL BRANDS PLC
+  sector: Consumer, Non-cyclical
+  exchange: LSE
+  currency: GBP
   tier: growth
-  options_score: 59.0
-  options_liquidity: 72.4
+  options_score: 62.8
+  options_liquidity: 82.0
   rank: 45
-- symbol: CDNS
-  name: CADENCE DESIGN SYS INC
-  sector: Technology
-  exchange: SMART
-  currency: USD
+- symbol: ANTO
+  name: ANTOFAGASTA PLC
+  sector: Basic Materials
+  exchange: LSE
+  currency: GBP
   tier: growth
-  options_score: 59.0
-  options_liquidity: 72.4
+  options_score: 62.8
+  options_liquidity: 82.0
   rank: 46
-- symbol: ABT
-  name: ABBOTT LABORATORIES .
-  sector: Consumer, Non-cyclical
-  exchange: SMART
-  currency: USD
+- symbol: SMIN
+  name: SMITHS GROUP PLC
+  sector: Industrial
+  exchange: LSE
+  currency: GBP
   tier: growth
-  options_score: 59.0
-  options_liquidity: 72.4
+  options_score: 62.8
+  options_liquidity: 82.0
   rank: 47
-- symbol: VRTX
-  name: VERTEX PHARMACEUTICALS INC
+- symbol: BEAM
+  name: BEAM THERAPEUTICS INC
   sector: Consumer, Non-cyclical
   exchange: SMART
   currency: USD
-  tier: growth
-  options_score: 59.0
-  options_liquidity: 72.4
+  tier: breakthrough
+  options_score: 61.5
+  options_liquidity: 58.4
   rank: 48
-- symbol: REGN
-  name: REGENERON PHARMACEUTICALS
+- symbol: ITC
+  name: ITC LTD
   sector: Consumer, Non-cyclical
-  exchange: SMART
-  currency: USD
+  exchange: NSE
+  currency: INR
   tier: growth
-  options_score: 59.0
-  options_liquidity: 72.4
+  options_score: 61.4
+  options_liquidity: 68.3
   rank: 49
-- symbol: AMGN
-  name: AMGEN INC
-  sector: Consumer, Non-cyclical
+- symbol: PLD
+  name: PROLOGIS INC
+  sector: Financial
   exchange: SMART
   currency: USD
-  tier: growth
-  options_score: 59.0
-  options_liquidity: 72.4
+  tier: dividend
+  options_score: 61.4
+  options_liquidity: 64.0
   rank: 50

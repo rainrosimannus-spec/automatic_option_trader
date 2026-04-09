@@ -1,168 +1,317 @@
 {
   "status": "success",
-  "run_date": "2026-04-07 13:58 UTC",
-  "stocks_screened": 60,
-  "added": [],
-  "removed": [],
+  "run_date": "2026-04-09 06:21 UTC",
+  "stocks_screened": 100,
+  "added": [
+    {
+      "symbol": "NVDA",
+      "name": "NVIDIA CORP",
+      "tier": "breakthrough",
+      "megatrend": "AI/compute",
+      "rationale": "AI infrastructure backbone with accelerating demand."
+    },
+    {
+      "symbol": "PLTR",
+      "name": "PALANTIR TECHNOLOGIES INC-A",
+      "tier": "breakthrough",
+      "megatrend": "AI/compute",
+      "rationale": "AI-powered data analytics for enterprises."
+    },
+    {
+      "symbol": "RKLB",
+      "name": "ROCKET LAB CORP",
+      "tier": "breakthrough",
+      "megatrend": "Space",
+      "rationale": "Small satellite launch market leader."
+    },
+    {
+      "symbol": "IONQ",
+      "name": "IONQ INC",
+      "tier": "breakthrough",
+      "megatrend": "Quantum computing",
+      "rationale": "Pure-play quantum computing pioneer."
+    },
+    {
+      "symbol": "CRSP",
+      "name": "CRISPR THERAPEUTICS AG",
+      "tier": "breakthrough",
+      "megatrend": "Genomics/biotech",
+      "rationale": "Gene editing breakthrough treatments approval."
+    },
+    {
+      "symbol": "BEAM",
+      "name": "BEAM THERAPEUTICS INC",
+      "tier": "breakthrough",
+      "megatrend": "Genomics/biotech",
+      "rationale": "Precision gene editing without double-strand breaks."
+    },
+    {
+      "symbol": "ROKU",
+      "name": "ROKU INC",
+      "tier": "breakthrough",
+      "megatrend": "AI/compute",
+      "rationale": "Streaming platform with AI-powered advertising."
+    },
+    {
+      "symbol": "FSLR",
+      "name": "FIRST SOLAR INC",
+      "tier": "breakthrough",
+      "megatrend": "Energy transition",
+      "rationale": "Advanced thin-film solar technology leader."
+    },
+    {
+      "symbol": "ENPH",
+      "name": "ENPHASE ENERGY INC",
+      "tier": "breakthrough",
+      "megatrend": "Energy transition",
+      "rationale": "Microinverter technology revolutionizing solar installations."
+    },
+    {
+      "symbol": "SOFI",
+      "name": "SOFI TECHNOLOGIES INC",
+      "tier": "breakthrough",
+      "megatrend": "AI/compute",
+      "rationale": "AI-driven digital banking and lending."
+    },
+    {
+      "symbol": "UPST",
+      "name": "UPSTART HOLDINGS INC",
+      "tier": "breakthrough",
+      "megatrend": "AI/compute",
+      "rationale": "AI-powered credit decisioning platform."
+    },
+    {
+      "symbol": "NET",
+      "name": "CLOUDFLARE INC - CLASS A",
+      "tier": "breakthrough",
+      "megatrend": "AI/compute",
+      "rationale": "Edge computing infrastructure for AI applications."
+    },
+    {
+      "symbol": "PATH",
+      "name": "UIPATH INC - CLASS A",
+      "tier": "breakthrough",
+      "megatrend": "AI/compute",
+      "rationale": "Robotic process automation with AI enhancement."
+    },
+    {
+      "symbol": "DDOG",
+      "name": "DATADOG INC - CLASS A",
+      "tier": "breakthrough",
+      "megatrend": "AI/compute",
+      "rationale": "AI-powered infrastructure monitoring and security."
+    },
+    {
+      "symbol": "ARKG",
+      "name": "ARK GENOMIC REVOLUTION ETF",
+      "tier": "breakthrough",
+      "megatrend": "Genomics/biotech",
+      "rationale": "Pure-play genomics revolution exposure."
+    },
+    {
+      "symbol": "STEM",
+      "name": "STEM INC",
+      "tier": "breakthrough",
+      "megatrend": "Energy transition",
+      "rationale": "AI-driven energy storage optimization platform."
+    },
+    {
+      "symbol": "EMR",
+      "name": "EMERSON ELECTRIC CO",
+      "tier": "growth",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "CNR",
+      "name": "CANADIAN NATL RAILWAY CO",
+      "tier": "growth",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "ETN",
+      "name": "EATON CORP PLC",
+      "tier": "growth",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "IBM",
+      "name": "INTL BUSINESS MACHINES CORP",
+      "tier": "growth",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "AFL",
+      "name": "AFLAC INC",
+      "tier": "growth",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "CSL",
+      "name": "CSL LIMITED",
+      "tier": "growth",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "BAC",
+      "name": "BANK OF AMERICA CORP",
+      "tier": "growth",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "RY",
+      "name": "ROYAL BANK OF CANADA",
+      "tier": "dividend",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "MFC",
+      "name": "MANULIFE FINANCIAL CORP",
+      "tier": "dividend",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "O",
+      "name": "REALTY INCOME CORP",
+      "tier": "dividend",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "PLD",
+      "name": "PROLOGIS INC",
+      "tier": "dividend",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "USB",
+      "name": "US BANCORP",
+      "tier": "dividend",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "D",
+      "name": "DOMINION ENERGY INC",
+      "tier": "dividend",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "NEE",
+      "name": "NEXTERA ENERGY INC",
+      "tier": "dividend",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "MET",
+      "name": "METLIFE INC",
+      "tier": "dividend",
+      "megatrend": "",
+      "rationale": ""
+    },
+    {
+      "symbol": "DUK",
+      "name": "DUKE ENERGY CORP",
+      "tier": "dividend",
+      "megatrend": "",
+      "rationale": ""
+    }
+  ],
+  "removed": [
+    "U11",
+    "BN4",
+    "S68",
+    "CBA",
+    "GSK",
+    "WES",
+    "PRU",
+    "BHP",
+    "SHEL",
+    "VOD",
+    "AD",
+    "RAND",
+    "RIO"
+  ],
   "flagged_removal": [
     "BMY",
+    "AVGO",
+    "MSFT",
     "NVO",
-    "NTLA",
     "TSM",
+    "ARM",
     "SMCI",
-    "BESI",
     "TER",
-    "ZS",
+    "NOW",
     "CEG",
+    "MELI",
     "SE",
     "GRAB",
     "0ZQ",
     "AIR",
     "ALV",
+    "AMZN",
     "BRK B",
     "BZG2",
     "CRWV",
     "GOOG",
     "HII",
-    "IBN",
     "LIN",
     "MC",
     "MSTR",
+    "NFLX",
     "NLY",
     "NNOX",
     "PBR",
     "RGTI",
     "SFL",
     "SPOT",
-    "HDB",
-    "GSBD"
+    "TTD",
+    "UNH",
+    "GSBD",
+    "U11",
+    "BN4",
+    "S68",
+    "CBA",
+    "GSK",
+    "WES",
+    "PRU",
+    "BHP",
+    "SHEL",
+    "VOD",
+    "AD",
+    "RAND",
+    "RIO"
   ],
-  "reclassified": [],
-  "suggestions_created": [
+  "reclassified": [
     {
-      "symbol": "0ZQ",
-      "action": "CONSIDER SELL",
-      "reason": "Off watchlist but profitable (+114.0%)"
+      "symbol": "TSLA",
+      "from_tier": "growth",
+      "to_tier": "breakthrough",
+      "reason": "Screener reclassified from growth to breakthrough"
     },
     {
-      "symbol": "AIR",
-      "action": "CONSIDER SELL",
-      "reason": "Off watchlist but profitable (+11.3%)"
-    },
-    {
-      "symbol": "ALV",
-      "action": "CONSIDER SELL",
-      "reason": "Off watchlist but profitable (+8.1%)"
-    },
-    {
-      "symbol": "BESI",
-      "action": "CONSIDER SELL",
-      "reason": "Off watchlist but profitable (+116.1%)"
-    },
-    {
-      "symbol": "BMY",
-      "action": "CONSIDER SELL",
-      "reason": "Off watchlist but profitable (+34.8%)"
-    },
-    {
-      "symbol": "BZG2",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -12.2%, below SMA"
-    },
-    {
-      "symbol": "CEG",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -18.2%, below SMA"
-    },
-    {
-      "symbol": "CRWV",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -28.1%, below SMA"
-    },
-    {
-      "symbol": "GOOG",
-      "action": "CONSIDER SELL",
-      "reason": "Off watchlist but profitable (+96.1%)"
-    },
-    {
-      "symbol": "GRAB",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -19.9%, below SMA"
-    },
-    {
-      "symbol": "IBN",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -11.6%, below SMA"
-    },
-    {
-      "symbol": "LIN",
-      "action": "CONSIDER SELL",
-      "reason": "Off watchlist but profitable (+17.0%)"
-    },
-    {
-      "symbol": "MC",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -14.9%, below SMA"
-    },
-    {
-      "symbol": "MSTR",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -32.6%, below SMA"
-    },
-    {
-      "symbol": "NLY",
-      "action": "CONSIDER SELL",
-      "reason": "Off watchlist but profitable (+19.7%)"
-    },
-    {
-      "symbol": "NNOX",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -24.1%, below SMA"
-    },
-    {
-      "symbol": "PBR",
-      "action": "CONSIDER SELL",
-      "reason": "Off watchlist but profitable (+76.3%)"
-    },
-    {
-      "symbol": "RGTI",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -30.5%, below SMA"
-    },
-    {
-      "symbol": "SFL",
-      "action": "CONSIDER SELL",
-      "reason": "Off watchlist but profitable (+57.3%)"
-    },
-    {
-      "symbol": "SMCI",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -42.4%, below SMA"
-    },
-    {
-      "symbol": "TER",
-      "action": "CONSIDER SELL",
-      "reason": "Off watchlist but profitable (+125.9%)"
-    },
-    {
-      "symbol": "TSM",
-      "action": "CONSIDER SELL",
-      "reason": "Off watchlist but profitable (+118.2%)"
+      "symbol": "SNOW",
+      "from_tier": "growth",
+      "to_tier": "breakthrough",
+      "reason": "Screener reclassified from growth to breakthrough"
     },
     {
       "symbol": "ZS",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -32.8%, below SMA"
-    },
-    {
-      "symbol": "HDB",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -23.8%, below SMA"
-    },
-    {
-      "symbol": "SE",
-      "action": "SELL",
-      "reason": "Off watchlist, P&L -28.3%, below SMA"
+      "from_tier": "growth",
+      "to_tier": "breakthrough",
+      "reason": "Screener reclassified from growth to breakthrough"
     }
-  ]
+  ],
+  "suggestions_created": []
 }
