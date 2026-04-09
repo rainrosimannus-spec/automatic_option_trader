@@ -158,12 +158,13 @@ def job_portfolio_update_metrics(cfg: PortfolioConfig):
 
 
 
+
 def _assess_structural_risks():
     """
-    Call Claude to reassess structural risks for all current watchlist symbols.
+    Call Claude Sonnet to reassess structural risks for all current watchlist symbols.
     Rewrites config/structural_risks.yaml completely.
     Called monthly after screener phase 2.
-    Processes in batches of 50 to avoid token limits.
+    Processes in batches of 40 to stay within token limits.
     """
     import requests, json, yaml
     from pathlib import Path
@@ -190,14 +191,36 @@ def _assess_structural_risks():
 
     def _call_claude(batch):
         prompt_lines = [
-            "You are a structural risk analyst for a long-term equity portfolio.",
-            "Assess the following stocks for structural risks.",
-            "Risk categories: ai_disruption, regulatory, geopolitical, single_product, profitability.",
-            "Each risk level must be exactly one of: none, low, medium, high.",
-            "Return a single JSON object where each key is the stock symbol and value is an object with the 5 risk keys.",
-            "Return raw JSON only — no markdown, no explanation, no code blocks.",
+            "You are a structural risk analyst for a long-term equity portfolio. Be conservative and specific.",
             "",
-            "Stocks to assess:",
+            "For each stock, assess ONLY risks that are material, specific, and well-documented.",
+            "The strong default is NO risk (omit the key entirely). Only flag what is genuinely notable.",
+            "",
+            "Risk categories and what qualifies:",
+            "  ai_disruption: AI/LLMs directly threaten the CORE business model. Not 'AI is changing everything' — only flag if the primary revenue stream is being replaced by AI (e.g. UiPath RPA replaced by agents, search replaced by AI answers).",
+            "  regulatory: Active, specific antitrust case, pricing regulation, or policy risk. Not general 'regulation exists'.",
+            "  geopolitical: Meaningful China/Taiwan manufacturing exposure, sanctions risk, or revenue concentration in politically unstable markets.",
+            "  single_product: >50% revenue from one product or one customer. Not just 'they have a flagship product'.",
+            "  profitability: Currently unprofitable with significant cash burn. Profitable companies never get this flag.",
+            "",
+            "Levels:",
+            "  low = minor background risk, worth noting",
+            "  medium = real, manageable risk investors should know about",
+            "  high = severe or near-term existential risk",
+            "",
+            "Rules:",
+            "  - Stable dividend stocks, diversified industrials, banks, utilities: almost always empty {}",
+            "  - Blue chip tech (MSFT, GOOG, AMZN): at most 1-2 flags, never all five",
+            "  - Pre-revenue biotech/deeptech: profitability: high is appropriate",
+            "  - Chinese stocks: geopolitical: medium or high is appropriate",
+            "  - If unsure, use 'low' not 'medium'. If very unsure, omit entirely.",
+            "",
+            "Return a JSON object. Each key is the stock symbol.",
+            "Value is an object with ONLY the risk keys that apply (non-none). Omit keys with no risk.",
+            "If no material risks: return {} for that stock.",
+            "Return raw JSON only — no markdown, no explanation.",
+            "",
+            "Stocks:",
             json.dumps(batch, indent=2),
         ]
         resp = requests.post(
@@ -208,7 +231,7 @@ def _assess_structural_risks():
                 "anthropic-version": "2023-06-01",
             },
             json={
-                "model": "claude-haiku-4-5-20251001",
+                "model": "claude-sonnet-4-20250514",
                 "max_tokens": 4000,
                 "messages": [{"role": "user", "content": "\n".join(prompt_lines)}],
             },
@@ -222,18 +245,21 @@ def _assess_structural_risks():
                 text = text[4:]
         return json.loads(text.strip())
 
-    # Process in batches of 50
-    valid_levels = {"none", "low", "medium", "high"}
+    # Process in batches of 40
+    valid_levels = {"low", "medium", "high"}
     clean = {}
-    batch_size = 50
+    batch_size = 40
     for i in range(0, len(symbols_info), batch_size):
         batch = symbols_info[i:i + batch_size]
         try:
             result = _call_claude(batch)
             for sym, flags in result.items():
                 if not isinstance(flags, dict):
+                    clean[sym] = {}
                     continue
-                clean[sym] = {k: flags.get(k, "none") if flags.get(k, "none") in valid_levels else "none" for k in risk_keys}
+                # Only keep valid non-none values
+                filtered = {k: v for k, v in flags.items() if k in risk_keys and v in valid_levels}
+                clean[sym] = filtered
             log.info("structural_risks_batch_done", batch=i // batch_size + 1, symbols=len(result))
         except Exception as e:
             log.warning("structural_risks_batch_failed", batch=i // batch_size + 1, error=str(e))
@@ -254,6 +280,7 @@ def _assess_structural_risks():
     yaml_path.write_text(header + yaml.dump(clean, default_flow_style=False, sort_keys=True))
     log.info("structural_risks_yaml_written", symbols=len(clean))
 
+    # Apply to DB
     _RISK_PENALTY = {"none": 0, "low": 5, "medium": 10, "high": 20}
     from src.core.database import get_engine
     from sqlalchemy import text as _text
@@ -268,9 +295,9 @@ def _assess_structural_risks():
                 "risk_geopolitical = :geo, risk_single_product = :prod, "
                 "risk_profitability = :prof, risk_total_penalty = :penalty "
                 "WHERE symbol = :symbol"
-            ), {"ai": flags.get("ai_disruption","none"), "reg": flags.get("regulatory","none"),
-                "geo": flags.get("geopolitical","none"), "prod": flags.get("single_product","none"),
-                "prof": flags.get("profitability","none"), "penalty": total, "symbol": sym})
+            ), {"ai": flags.get("ai_disruption", "none"), "reg": flags.get("regulatory", "none"),
+                "geo": flags.get("geopolitical", "none"), "prod": flags.get("single_product", "none"),
+                "prof": flags.get("profitability", "none"), "penalty": total, "symbol": sym})
             if result.rowcount > 0:
                 updated += 1
         conn.commit()

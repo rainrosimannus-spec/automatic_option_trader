@@ -5,813 +5,197 @@
 # Penalty: none=0, low=5, medium=10, high=20
 # ============================================================
 
-0ZQ:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: medium
-  regulatory: medium
-  single_product: medium
+0ZQ: {}
 '1211':
-  ai_disruption: medium
-  geopolitical: high
-  profitability: medium
-  regulatory: medium
-  single_product: low
+  geopolitical: medium
 '1299':
-  ai_disruption: low
-  geopolitical: high
-  profitability: medium
-  regulatory: medium
-  single_product: low
+  geopolitical: medium
 '1810':
-  ai_disruption: high
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: low
+  geopolitical: medium
 '1928':
-  ai_disruption: low
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: high
+  geopolitical: medium
+  regulatory: medium
 '2269':
-  ai_disruption: low
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: medium
+  geopolitical: medium
 '2318':
-  ai_disruption: medium
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: low
+  geopolitical: medium
 '3690':
-  ai_disruption: high
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: low
+  geopolitical: medium
 '9618':
-  ai_disruption: high
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: low
+  geopolitical: medium
 '9988':
-  ai_disruption: high
   geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: low
-ABF:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
-  regulatory: low
-  single_product: low
-ABN:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: medium
-  regulatory: high
-  single_product: low
-AFL:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: low
-  regulatory: high
-  single_product: low
-AGL:
-  ai_disruption: low
-  geopolitical: medium
-  profitability: medium
-  regulatory: high
-  single_product: low
-AIR:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: medium
   regulatory: medium
-  single_product: medium
-AKZA:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
-  regulatory: medium
-  single_product: low
+ABF: {}
+ABN: {}
+AFL: {}
+AGL: {}
+AIR: {}
+AKZA: {}
 ALL:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: low
-  regulatory: medium
-  single_product: low
-ALV:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: medium
-  regulatory: medium
-  single_product: medium
+  regulatory: low
+ALV: {}
 AMZN:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: high
-  single_product: none
-ANTO:
-  ai_disruption: low
-  geopolitical: medium
-  profitability: medium
-  regulatory: medium
-  single_product: high
-ARKG:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: high
-  single_product: low
-ARM:
-  ai_disruption: medium
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: medium
+  regulatory: low
+ANTO: {}
+ARKG: {}
+ARM: {}
 ASM:
-  ai_disruption: low
-  geopolitical: high
-  profitability: low
-  regulatory: high
-  single_product: high
+  geopolitical: medium
 ASML:
-  ai_disruption: low
   geopolitical: high
-  profitability: low
-  regulatory: high
-  single_product: high
-AVGO:
-  ai_disruption: medium
-  geopolitical: high
-  profitability: low
-  regulatory: high
-  single_product: medium
-AZN:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: high
-  single_product: medium
+  regulatory: medium
+AVGO: {}
+AZN: {}
 BAC:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: low
-  regulatory: high
-  single_product: low
-BARC:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: medium
-  regulatory: high
-  single_product: low
+  regulatory: low
+BARC: {}
 BATS:
-  ai_disruption: low
-  geopolitical: medium
-  profitability: medium
-  regulatory: high
-  single_product: medium
+  regulatory: medium
 BEAM:
-  ai_disruption: low
-  geopolitical: low
   profitability: high
-  regulatory: high
-  single_product: high
 BESI:
-  ai_disruption: low
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: high
-BMY:
-  ai_disruption: low
   geopolitical: low
-  profitability: medium
-  regulatory: high
-  single_product: medium
-BRK B:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: medium
-  single_product: none
-BZG2:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: medium
-  regulatory: medium
-  single_product: medium
+BMY: {}
+BRK B: {}
+BZG2: {}
 CEG:
-  ai_disruption: none
-  geopolitical: low
-  profitability: low
-  regulatory: high
-  single_product: medium
-CFR:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: low
   regulatory: medium
-  single_product: low
-CNR:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: medium
-  single_product: low
-COL:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: medium
-  regulatory: low
-  single_product: low
-CRH:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
-  regulatory: medium
-  single_product: low
+CFR: {}
+CNR: {}
+COL: {}
+CRH: {}
 CRSP:
-  ai_disruption: low
-  geopolitical: low
   profitability: high
-  regulatory: high
-  single_product: high
-CRWV:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: medium
-  regulatory: medium
-  single_product: medium
-CSL:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: high
-  single_product: low
+CRWV: {}
+CSL: {}
 D:
-  ai_disruption: none
-  geopolitical: none
-  profitability: low
-  regulatory: high
-  single_product: low
-D05:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: low
-  regulatory: high
-  single_product: low
-DDOG:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: low
   regulatory: low
-  single_product: low
-DGE:
-  ai_disruption: low
-  geopolitical: medium
-  profitability: medium
-  regulatory: medium
-  single_product: low
+D05: {}
+DDOG: {}
+DGE: {}
 DUK:
-  ai_disruption: none
-  geopolitical: none
-  profitability: low
-  regulatory: high
-  single_product: low
-EMR:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
   regulatory: low
-  single_product: low
-ENI:
-  ai_disruption: low
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: medium
-ENPH:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: low
-  single_product: medium
-ETN:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: low
-  single_product: low
-EXPN:
-  ai_disruption: high
-  geopolitical: low
-  profitability: medium
-  regulatory: high
-  single_product: low
-FSLR:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: low
-  single_product: medium
+EMR: {}
+ENI: {}
+ENPH: {}
+ETN: {}
+EXPN: {}
+FSLR: {}
 GLEN:
-  ai_disruption: low
-  geopolitical: high
-  profitability: medium
-  regulatory: medium
-  single_product: low
+  geopolitical: medium
 GOOG:
   ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: high
-  single_product: low
+  regulatory: medium
 GRAB:
-  ai_disruption: medium
   geopolitical: medium
-  profitability: high
-  regulatory: high
-  single_product: low
-GSBD:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: medium
-  regulatory: medium
-  single_product: medium
+GSBD: {}
 HDB:
-  ai_disruption: medium
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: medium
-HEIA:
-  ai_disruption: low
   geopolitical: low
-  profitability: medium
-  regulatory: low
-  single_product: low
-HII:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: low
-  regulatory: medium
-  single_product: medium
+HEIA: {}
+HII: {}
 HSBA:
-  ai_disruption: medium
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: low
+  geopolitical: medium
 IBM:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: low
-  regulatory: low
-  single_product: low
+  ai_disruption: low
 IBN:
-  ai_disruption: medium
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: medium
+  geopolitical: low
 IMB:
-  ai_disruption: low
-  geopolitical: low
-  profitability: high
-  regulatory: high
-  single_product: high
-INFY:
-  ai_disruption: high
-  geopolitical: low
-  profitability: low
-  regulatory: low
-  single_product: low
-INGA:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: medium
-  regulatory: high
-  single_product: low
+  regulatory: medium
+INFY: {}
+INGA: {}
 IONQ:
-  ai_disruption: low
-  geopolitical: low
   profitability: high
-  regulatory: low
-  single_product: high
 ITC:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
-  regulatory: high
-  single_product: low
-JHX:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
-  regulatory: medium
-  single_product: medium
-LIN:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: medium
-  single_product: low
-LLOY:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: medium
-  regulatory: high
-  single_product: low
-LSEG:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: medium
-  regulatory: high
-  single_product: low
-MC:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: medium
-  regulatory: medium
-  single_product: medium
-MELI:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: low
-  regulatory: medium
-  single_product: low
-MET:
-  ai_disruption: medium
-  geopolitical: none
-  profitability: low
-  regulatory: high
-  single_product: low
-MFC:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: low
-  regulatory: high
-  single_product: low
-MONC:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
   regulatory: low
-  single_product: medium
+JHX: {}
+LIN: {}
+LLOY: {}
+LSEG: {}
+MC: {}
+MELI: {}
+MET: {}
+MFC: {}
+MONC: {}
 MSFT:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: medium
-  single_product: none
-MSTR:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
   regulatory: low
+MSTR:
   single_product: high
 MTN:
-  ai_disruption: medium
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: medium
-NEE:
-  ai_disruption: none
-  geopolitical: none
-  profitability: low
-  regulatory: high
-  single_product: low
-NET:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: low
-  regulatory: low
-  single_product: low
-NFLX:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: low
-  regulatory: medium
-  single_product: medium
-NICE:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: medium
-  single_product: low
-NLY:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
-  regulatory: medium
-  single_product: low
+  geopolitical: medium
+NEE: {}
+NET: {}
+NFLX: {}
+NICE: {}
+NLY: {}
 NNOX:
-  ai_disruption: medium
-  geopolitical: medium
   profitability: medium
-  regulatory: medium
-  single_product: medium
-NOW:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: medium
-  regulatory: medium
-  single_product: low
+NOW: {}
 NPN:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: low
-  regulatory: medium
-  single_product: none
-NTLA:
-  ai_disruption: low
-  geopolitical: low
-  profitability: high
-  regulatory: high
-  single_product: high
-NVDA:
-  ai_disruption: low
-  geopolitical: high
-  profitability: low
-  regulatory: medium
-  single_product: medium
-NVO:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: high
-  single_product: medium
-O:
-  ai_disruption: none
-  geopolitical: none
-  profitability: low
-  regulatory: low
-  single_product: low
-O39:
-  ai_disruption: medium
   geopolitical: medium
-  profitability: low
-  regulatory: high
-  single_product: low
-OMV:
-  ai_disruption: low
-  geopolitical: high
-  profitability: medium
-  regulatory: high
+NTLA:
+  profitability: high
+NVDA:
+  geopolitical: medium
+  regulatory: low
+NVO:
   single_product: medium
+O: {}
+O39: {}
+OMV: {}
 PATH:
   ai_disruption: high
-  geopolitical: low
-  profitability: high
-  regulatory: low
-  single_product: high
 PBR:
-  ai_disruption: low
-  geopolitical: high
-  profitability: low
-  regulatory: high
-  single_product: low
-PHIA:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
-  regulatory: high
-  single_product: low
-PLD:
-  ai_disruption: none
-  geopolitical: none
-  profitability: low
-  regulatory: low
-  single_product: low
-PLTR:
-  ai_disruption: low
-  geopolitical: low
-  profitability: high
-  regulatory: high
-  single_product: medium
+  geopolitical: medium
+PHIA: {}
+PLD: {}
+PLTR: {}
 PRX:
-  ai_disruption: high
-  geopolitical: high
-  profitability: medium
-  regulatory: medium
-  single_product: low
-RACE:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: medium
-  single_product: high
+  geopolitical: medium
+RACE: {}
 RBI:
-  ai_disruption: medium
-  geopolitical: high
-  profitability: medium
-  regulatory: high
-  single_product: low
-REL:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: medium
-  regulatory: low
-  single_product: low
+  geopolitical: medium
+REL: {}
 RGTI:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: medium
-  regulatory: medium
-  single_product: medium
+  profitability: high
 RKLB:
-  ai_disruption: low
-  geopolitical: high
-  profitability: high
-  regulatory: medium
-  single_product: high
-RKT:
-  ai_disruption: low
-  geopolitical: low
   profitability: medium
-  regulatory: medium
-  single_product: low
+RKT: {}
 ROKU:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: high
-  regulatory: medium
-  single_product: medium
-RY:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: low
-  regulatory: high
-  single_product: low
+  profitability: medium
+RY: {}
 SE:
-  ai_disruption: medium
   geopolitical: medium
-  profitability: high
-  regulatory: medium
-  single_product: low
-SFL:
-  ai_disruption: low
-  geopolitical: medium
-  profitability: low
-  regulatory: medium
-  single_product: low
-SHOP:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: medium
-  regulatory: medium
-  single_product: medium
-SMCI:
-  ai_disruption: low
-  geopolitical: high
-  profitability: medium
-  regulatory: medium
-  single_product: high
-SMIN:
-  ai_disruption: low
-  geopolitical: medium
-  profitability: medium
-  regulatory: medium
-  single_product: low
-SNOW:
-  ai_disruption: low
-  geopolitical: low
-  profitability: high
-  regulatory: low
-  single_product: medium
-SOFI:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: high
-  regulatory: high
-  single_product: low
+SFL: {}
+SHOP: {}
+SMCI: {}
+SMIN: {}
+SNOW: {}
+SOFI: {}
 SOL:
-  ai_disruption: low
   geopolitical: medium
-  profitability: medium
-  regulatory: high
-  single_product: medium
-SPOT:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: low
-  regulatory: medium
-  single_product: medium
+SPOT: {}
 SSE:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
-  regulatory: high
-  single_product: medium
+  regulatory: low
 STEM:
-  ai_disruption: low
-  geopolitical: low
-  profitability: high
-  regulatory: low
-  single_product: high
+  profitability: medium
 TER:
-  ai_disruption: low
-  geopolitical: high
-  profitability: medium
-  regulatory: medium
-  single_product: medium
-TEVA:
-  ai_disruption: low
-  geopolitical: medium
-  profitability: high
-  regulatory: high
-  single_product: medium
-TSCO:
-  ai_disruption: medium
   geopolitical: low
-  profitability: medium
-  regulatory: low
-  single_product: low
+TEVA: {}
+TSCO: {}
 TSLA:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: low
-  regulatory: medium
-  single_product: medium
-TSM:
-  ai_disruption: medium
-  geopolitical: high
-  profitability: low
-  regulatory: high
-  single_product: low
-TTD:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: medium
-  regulatory: medium
-  single_product: medium
-UCG:
-  ai_disruption: medium
-  geopolitical: medium
-  profitability: medium
-  regulatory: high
-  single_product: low
-ULVR:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
-  regulatory: medium
-  single_product: low
-UNH:
-  ai_disruption: low
-  geopolitical: low
-  profitability: low
-  regulatory: high
-  single_product: low
-UPST:
-  ai_disruption: high
-  geopolitical: low
-  profitability: high
-  regulatory: high
-  single_product: high
-USB:
-  ai_disruption: medium
-  geopolitical: none
-  profitability: low
-  regulatory: high
-  single_product: low
-VOE:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
-  regulatory: medium
-  single_product: medium
-WBC:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: medium
-  regulatory: high
-  single_product: low
-WDS:
-  ai_disruption: low
-  geopolitical: medium
-  profitability: medium
-  regulatory: high
-  single_product: high
-WKL:
-  ai_disruption: medium
-  geopolitical: low
-  profitability: medium
   regulatory: low
-  single_product: low
-ZS:
-  ai_disruption: low
-  geopolitical: low
-  profitability: medium
+TSM:
+  geopolitical: high
+TTD: {}
+UCG: {}
+ULVR: {}
+UNH:
   regulatory: medium
-  single_product: medium
+UPST: {}
+USB: {}
+VOE: {}
+WBC: {}
+WDS: {}
+WKL: {}
+ZS: {}
