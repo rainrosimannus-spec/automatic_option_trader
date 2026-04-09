@@ -281,7 +281,7 @@ def _assess_structural_risks():
     log.info("structural_risks_yaml_written", symbols=len(clean))
 
     # Apply to DB
-    _RISK_PENALTY = {"none": 0, "low": 5, "medium": 10, "high": 20}
+    _RISK_PENALTY = {"none": 0, "low": 1, "medium": 2, "high": 3}
     from src.core.database import get_engine
     from sqlalchemy import text as _text
     engine = get_engine()

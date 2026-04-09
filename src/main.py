@@ -102,7 +102,7 @@ def _load_portfolio_watchlist():
 
 
 # ── Penalty map: risk level → score penalty ──
-_RISK_PENALTY = {"none": 0, "low": 5, "medium": 10, "high": 20}
+_RISK_PENALTY = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
 
 def _load_structural_risks():
