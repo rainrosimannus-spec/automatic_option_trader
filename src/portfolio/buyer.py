@@ -1351,6 +1351,7 @@ class PortfolioBuyer:
             except Exception:
                 pass
 
+            raw_score = score  # save before penalty
             if risk_penalty > 0 and score > 0:
                 original = score
                 score = max(0, score - risk_penalty)
@@ -1365,6 +1366,7 @@ class PortfolioBuyer:
                     PortfolioWatchlist.symbol == stock.symbol
                 ).first()
                 if entry:
+                    entry.raw_score = round(raw_score, 1)
                     entry.composite_score = round(score, 1)
                     if score > 0 and not entry.buy_signal:
                         entry.buy_signal = True

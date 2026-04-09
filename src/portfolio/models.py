@@ -131,6 +131,7 @@ class PortfolioWatchlist(Base):
     risk_single_product: Mapped[str] = mapped_column(String(10), default="none")
     risk_profitability: Mapped[str] = mapped_column(String(10), default="none")
     risk_total_penalty: Mapped[float] = mapped_column(Float, default=0.0)  # sum of all penalties
+    raw_score: Mapped[float] = mapped_column(Float, default=0.0)  # pre-penalty composite score
 
     # Pending removal flag — set when stock drops off screened universe but has open position
     # Cleared automatically when position is closed or stock re-qualifies
