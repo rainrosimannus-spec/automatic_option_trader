@@ -1254,6 +1254,7 @@ class PortfolioBuyer:
         Runs independently from run_scan() so metrics are always fresh,
         even when margin gate blocks buying.
         """
+        _ensure_event_loop()
         with get_db() as db:
             watchlist = db.query(PortfolioWatchlist).all()
 

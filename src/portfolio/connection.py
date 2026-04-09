@@ -145,7 +145,8 @@ def _connect(max_retries: int = 3) -> IB:
                 log.info("portfolio_account_updates_subscribed",
                          account=cfg.ibkr_account)
             except Exception as e:
-                log.warning("portfolio_account_updates_failed", error=str(e))
+                import traceback
+                log.warning("portfolio_account_updates_failed", error=str(e), tb=traceback.format_exc())
 
             return ib
 
