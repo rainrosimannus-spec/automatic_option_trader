@@ -6,7 +6,7 @@ Read this to know what to do next, what's broken, and what to test first.
 
 ---
 
-## System Status (April 8, 2026)
+## System Status (April 9, 2026)
 
 Both connections stable. App running. Dashboard accessible at http://37.0.30.34:8080
 
@@ -17,7 +17,7 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 | Trader app (port 8080) | Running |
 | Trailing stop monitor | Active, every 15 min |
 | FMP cache | Active, 30-day cache in data/fmp_cache.json |
-| Screener | Fixed — 20 breakthrough / 65 growth / 15 dividend / 50 options |
+| Screener | ✅ WORKING — 20/65/15/50, last run 2026-04-09 06:21 UTC |
 
 ---
 
