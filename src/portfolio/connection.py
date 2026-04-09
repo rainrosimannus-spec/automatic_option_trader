@@ -141,7 +141,7 @@ def _connect(max_retries: int = 3) -> IB:
             # Subscribe to account updates to keep connection alive.
             # Without this, IBKR drops the read-only connection after ~60s idle.
             try:
-                ib.reqAccountUpdates(True, cfg.ibkr_account)
+                ib.reqAccountUpdates(True)
                 log.info("portfolio_account_updates_subscribed",
                          account=cfg.ibkr_account)
             except Exception as e:

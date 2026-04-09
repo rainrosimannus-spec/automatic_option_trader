@@ -125,8 +125,9 @@ class PortfolioAnalyzer:
             contract = Stock(symbol, exchange, currency)
             qualified = self.ib.qualifyContracts(contract)
             if not qualified:
-                log.debug("portfolio_qualify_failed", symbol=symbol)
+                log.warning("portfolio_qualify_failed", symbol=symbol)
                 return None
+            log.info("portfolio_qualify_ok", symbol=symbol, primaryExch=contract.primaryExch)
 
             contract.exchange = "SMART"
 
@@ -135,7 +136,7 @@ class PortfolioAnalyzer:
             bars = self._fetch_bars(contract, max_period)
 
             if not bars or len(bars) < params["sma_period"]:
-                log.debug("portfolio_insufficient_data", symbol=symbol,
+                log.warning("portfolio_insufficient_data", symbol=symbol,
                           bars=len(bars) if bars else 0)
                 return None
 
