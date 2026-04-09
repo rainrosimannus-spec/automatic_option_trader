@@ -286,7 +286,9 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                         added.append(sym)
                     else:
                         # Update scores for existing watchlist entries
-                        w = current_watchlist[sym]
+                        w = existing_wl if existing_wl is not None else current_watchlist.get(sym)
+                        if w is None:
+                            continue
                         # Detect reclassification
                         old_tier = w.tier or w.category or "growth"
                         if old_tier != score.tier:
@@ -386,7 +388,8 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                      suggestions=0)
 
         except Exception as e:
-            log.error("portfolio_monthly_screen_error", error=str(e))
+            import traceback
+            log.error("portfolio_monthly_screen_error", error=str(e), traceback=traceback.format_exc())
             import json as _json
             from pathlib import Path as _Path
             _log_path = _Path("data/screener_last_run.json")
