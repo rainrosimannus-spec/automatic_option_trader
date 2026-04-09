@@ -229,6 +229,34 @@ def refresh_portfolio_account_cache():
             log.warning("accrued_interest_refresh_failed", error=str(e))
 
 
+
+def refresh_accrued_interest_from_flex():
+    """Dedicated daily job: always fetches accrued interest from IBKR Flex,
+    regardless of IBKR connection state, and updates the cache file."""
+    try:
+        from src.portfolio.capital_injections import fetch_accrued_interest_usd, fetch_dividends_ytd_usd
+        interest = fetch_accrued_interest_usd()
+        dividends_ytd = fetch_dividends_ytd_usd()
+        if interest == 0.0 and dividends_ytd == 0.0:
+            log.warning('accrued_interest_flex_returned_zero')
+            return
+        import json as _json, os as _os
+        _os.makedirs(_os.path.dirname(_CACHE_FILE), exist_ok=True)
+        with open(_CACHE_FILE, 'r') as f:
+            _data = _json.load(f)
+        if interest != 0.0:
+            _data['accrued_interest'] = interest
+        if dividends_ytd != 0.0:
+            _data['dividends_ytd'] = dividends_ytd
+        with open(_CACHE_FILE, 'w') as f:
+            _json.dump(_data, f)
+        with _portfolio_cache_lock:
+            _cached_portfolio_account['accrued_interest'] = interest
+            _cached_portfolio_account['dividends_ytd'] = dividends_ytd
+        log.info('accrued_interest_flex_refreshed', interest=round(interest, 2), dividends_ytd=round(dividends_ytd, 2))
+    except Exception as e:
+        log.warning('accrued_interest_flex_failed', error=str(e))
+
 def refresh_portfolio_account_cache_from(ib: IB):
     global _cached_portfolio_account
     try:

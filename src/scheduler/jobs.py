@@ -1306,9 +1306,9 @@ def create_scheduler() -> BackgroundScheduler:
 
         # Daily accrued interest refresh — 8 AM ET
         # IBKR overnight statements reliably settled by 8 AM ET
-        from src.portfolio.connection import refresh_portfolio_account_cache
+        from src.portfolio.connection import refresh_accrued_interest_from_flex
         scheduler.add_job(
-            refresh_portfolio_account_cache,
+            refresh_accrued_interest_from_flex,
             CronTrigger(hour=8, minute=0, timezone=us_tz),
             id="portfolio_interest_refresh",
             name="Portfolio Accrued Interest Refresh",
