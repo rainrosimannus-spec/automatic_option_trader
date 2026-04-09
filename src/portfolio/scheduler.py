@@ -155,6 +155,128 @@ def job_portfolio_update_metrics(cfg: PortfolioConfig):
             log.error("portfolio_metrics_update_error", error=str(e))
 
 
+
+
+
+def _assess_structural_risks():
+    """
+    Call Claude to reassess structural risks for all current watchlist symbols.
+    Rewrites config/structural_risks.yaml completely.
+    Called monthly after screener phase 2.
+    Processes in batches of 50 to avoid token limits.
+    """
+    import requests, json, yaml
+    from pathlib import Path
+    from src.core.config import get_settings
+    from src.core.database import get_db
+    from src.portfolio.models import PortfolioWatchlist
+
+    with get_db() as db:
+        watchlist = db.query(PortfolioWatchlist).all()
+
+    if not watchlist:
+        return
+
+    symbols_info = [
+        {"symbol": w.symbol, "name": w.name or w.symbol, "sector": w.sector or "", "tier": w.tier or "growth"}
+        for w in watchlist
+    ]
+
+    risk_keys = ["ai_disruption", "regulatory", "geopolitical", "single_product", "profitability"]
+    ant_key = get_settings().raw.get("anthropic", {}).get("api_key", "")
+    if not ant_key:
+        log.warning("structural_risks_no_api_key")
+        return
+
+    def _call_claude(batch):
+        prompt_lines = [
+            "You are a structural risk analyst for a long-term equity portfolio.",
+            "Assess the following stocks for structural risks.",
+            "Risk categories: ai_disruption, regulatory, geopolitical, single_product, profitability.",
+            "Each risk level must be exactly one of: none, low, medium, high.",
+            "Return a single JSON object where each key is the stock symbol and value is an object with the 5 risk keys.",
+            "Return raw JSON only — no markdown, no explanation, no code blocks.",
+            "",
+            "Stocks to assess:",
+            json.dumps(batch, indent=2),
+        ]
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": ant_key,
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 4000,
+                "messages": [{"role": "user", "content": "\n".join(prompt_lines)}],
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        text = resp.json()["content"][0]["text"].strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        return json.loads(text.strip())
+
+    # Process in batches of 50
+    valid_levels = {"none", "low", "medium", "high"}
+    clean = {}
+    batch_size = 50
+    for i in range(0, len(symbols_info), batch_size):
+        batch = symbols_info[i:i + batch_size]
+        try:
+            result = _call_claude(batch)
+            for sym, flags in result.items():
+                if not isinstance(flags, dict):
+                    continue
+                clean[sym] = {k: flags.get(k, "none") if flags.get(k, "none") in valid_levels else "none" for k in risk_keys}
+            log.info("structural_risks_batch_done", batch=i // batch_size + 1, symbols=len(result))
+        except Exception as e:
+            log.warning("structural_risks_batch_failed", batch=i // batch_size + 1, error=str(e))
+
+    if not clean:
+        log.warning("structural_risks_no_results")
+        return
+
+    yaml_path = Path("config/structural_risks.yaml")
+    header = (
+        "# ============================================================\n"
+        "# Structural Risk Flags — auto-generated monthly by screener\n"
+        "# ============================================================\n"
+        "# Risk levels: none, low, medium, high\n"
+        "# Penalty: none=0, low=5, medium=10, high=20\n"
+        "# ============================================================\n\n"
+    )
+    yaml_path.write_text(header + yaml.dump(clean, default_flow_style=False, sort_keys=True))
+    log.info("structural_risks_yaml_written", symbols=len(clean))
+
+    _RISK_PENALTY = {"none": 0, "low": 5, "medium": 10, "high": 20}
+    from src.core.database import get_engine
+    from sqlalchemy import text as _text
+    engine = get_engine()
+    updated = 0
+    with engine.connect() as conn:
+        for sym, flags in clean.items():
+            total = sum(_RISK_PENALTY.get(flags.get(k, "none"), 0) for k in risk_keys)
+            result = conn.execute(_text(
+                "UPDATE portfolio_watchlist SET "
+                "risk_ai_disruption = :ai, risk_regulatory = :reg, "
+                "risk_geopolitical = :geo, risk_single_product = :prod, "
+                "risk_profitability = :prof, risk_total_penalty = :penalty "
+                "WHERE symbol = :symbol"
+            ), {"ai": flags.get("ai_disruption","none"), "reg": flags.get("regulatory","none"),
+                "geo": flags.get("geopolitical","none"), "prod": flags.get("single_product","none"),
+                "prof": flags.get("profitability","none"), "penalty": total, "symbol": sym})
+            if result.rowcount > 0:
+                updated += 1
+        conn.commit()
+    log.info("structural_risks_db_updated", updated=updated)
+
+
 def job_portfolio_monthly_screen(cfg: PortfolioConfig):
     """
     Monthly screener — first Monday of each month, 2 AM ET.
@@ -333,6 +455,16 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
             log.info("portfolio_monthly_screen_phase2_done",
                      added=len(added),
                      flagged_removal=len(flagged_removal))
+
+
+            # ══════════════════════════════════════════════════════
+            # PHASE 2.5: Reassess structural risks for full watchlist
+            # ══════════════════════════════════════════════════════
+            try:
+                _assess_structural_risks()
+                log.info('portfolio_monthly_screen_risks_done')
+            except Exception as e:
+                log.warning('portfolio_monthly_screen_risks_failed', error=str(e))
 
             # ══════════════════════════════════════════════════════
             # PHASE 3: Holdings review runs as separate job (job_portfolio_monthly_review)
