@@ -371,3 +371,318 @@ class ProfitTaker:
                     log.debug("roll_no_entry", symbol=symbol)
             except Exception as e:
                 log.error("roll_failed", symbol=symbol, error=str(e))
+
+
+    def check_covered_calls(self) -> list[str]:
+        """
+        Monitor open covered calls and:
+        1. OTM profit-taking: close at 50/65/75% profit captured (mirror of put profit-taker)
+        2. ITM roll-up: when stock > strike * 1.07 and DTE > 2, buy back and sell new call
+           at a higher strike above net cost basis with meaningful premium.
+        Returns list of symbols acted on.
+        """
+        log.info("cc_profit_check_started")
+        acted: list[str] = []
+
+        with get_db() as db:
+            open_calls = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "covered_call",
+                )
+                .all()
+            )
+
+            for pos in open_calls:
+                try:
+                    stock = self.universe.get_stock(pos.symbol)
+                    currency = stock.currency if stock else "USD"
+                    mins_to_open = _minutes_to_market_open(currency)
+                    if mins_to_open > 60:
+                        log.debug("cc_check_skipped_market_closed",
+                                  symbol=pos.symbol, mins_to_open=round(mins_to_open))
+                        continue
+
+                    # Parse DTE
+                    try:
+                        from datetime import datetime as _dt
+                        exp_date = _dt.strptime(pos.expiry, "%Y%m%d").date()
+                        dte = (exp_date - _dt.now().date()).days
+                    except Exception:
+                        dte = 99
+
+                    if dte <= 0:
+                        continue
+
+                    exchange = stock.exchange if stock else "SMART"
+                    opt_exchange = stock.opt_exchange if stock else "SMART"
+
+                    # Get live call price
+                    from src.broker.market_data import get_option_live_price, get_stock_price
+                    live_bid, live_ask = get_option_live_price(
+                        pos.symbol, pos.expiry, pos.strike, "C", opt_exchange, currency
+                    )
+                    if not live_ask or live_ask <= 0:
+                        log.debug("cc_check_no_live_price", symbol=pos.symbol)
+                        continue
+
+                    entry_premium = pos.entry_premium
+                    if not entry_premium or entry_premium <= 0:
+                        continue
+
+                    # ── OTM profit-taking (mirror of put profit-taker) ──
+                    # Skip DTE <= 3 — let expire worthless, not worth fees
+                    if dte > 3:
+                        profit_pct = (entry_premium - live_ask) / entry_premium
+                        if dte > 14:
+                            target = 0.75
+                        elif dte > 7:
+                            target = 0.65
+                        else:
+                            target = 0.50
+
+                        if profit_pct >= target:
+                            log.info("cc_profit_target_hit",
+                                     symbol=pos.symbol, dte=dte,
+                                     target_pct=f"{target:.0%}",
+                                     entry=round(entry_premium, 2),
+                                     current=round(live_ask, 2),
+                                     profit_pct=f"{profit_pct:.0%}")
+                            success = self._close_covered_call(db, pos, live_ask, opt_exchange, currency, reason="profit_take")
+                            if success:
+                                acted.append(pos.symbol)
+                            continue  # don't also check ITM roll on same position
+
+                    # ── ITM roll-up ──
+                    # Only if DTE > 2 (at DTE <= 2 assignment is imminent, rolling too expensive)
+                    if dte <= 2:
+                        continue
+
+                    current_price = get_stock_price(pos.symbol, exchange, currency)
+                    if not current_price or current_price <= 0:
+                        continue
+
+                    itm_threshold = (pos.strike or 0) * 1.07
+                    if current_price <= itm_threshold:
+                        continue
+
+                    log.info("cc_itm_rollup_triggered",
+                             symbol=pos.symbol, stock_price=round(current_price, 2),
+                             strike=pos.strike, threshold=round(itm_threshold, 2), dte=dte)
+
+                    success = self._roll_call_up(db, pos, current_price, live_ask,
+                                                 opt_exchange, exchange, currency)
+                    if success:
+                        acted.append(pos.symbol)
+
+                except Exception as e:
+                    log.error("cc_check_error", symbol=pos.symbol, error=str(e))
+
+        log.info("cc_profit_check_done", acted=acted)
+        return acted
+
+    def _close_covered_call(self, db, pos: Position, ask_price: float,
+                            opt_exchange: str, currency: str, reason: str = "profit_take") -> bool:
+        """Buy to close a covered call. Records trade, position stays open until trade_sync confirms fill."""
+        from src.broker.orders import buy_to_close_call
+        from src.core.models import Trade, TradeType, OrderStatus
+
+        # Cancel any existing submitted close orders first
+        try:
+            existing = db.query(Trade).filter(
+                Trade.position_id == pos.id,
+                Trade.trade_type == TradeType.BUY_CALL,
+                Trade.order_status == OrderStatus.SUBMITTED,
+            ).all()
+            if existing:
+                from src.broker.orders import cancel_order
+                from src.broker.connection import get_ib
+                ib = get_ib()
+                live_trades = ib.trades()
+                for ex in existing:
+                    if ex.order_id:
+                        for lt in live_trades:
+                            if lt.order.orderId == ex.order_id:
+                                try:
+                                    cancel_order(lt)
+                                except Exception as e:
+                                    log.warning("cancel_existing_cc_close_failed",
+                                                symbol=pos.symbol, error=str(e))
+                                break
+                    ex.order_status = OrderStatus.CANCELLED
+        except Exception as e:
+            log.warning("cancel_existing_cc_check_failed", symbol=pos.symbol, error=str(e))
+
+        trade = buy_to_close_call(
+            symbol=pos.symbol,
+            expiry=pos.expiry or "",
+            strike=pos.strike or 0,
+            quantity=pos.quantity,
+            limit_price=round(ask_price, 2),
+            exchange=opt_exchange,
+            currency=currency,
+        )
+        if not trade:
+            return False
+
+        trade_record = Trade(
+            position_id=pos.id,
+            symbol=pos.symbol,
+            trade_type=TradeType.BUY_CALL,
+            strike=pos.strike or 0,
+            expiry=pos.expiry or "",
+            premium=ask_price,
+            quantity=pos.quantity,
+            fill_price=ask_price,
+            order_id=trade.order.orderId,
+            order_status=OrderStatus.SUBMITTED,
+            notes=f"CC {reason} at {ask_price:.2f}",
+        )
+        db.add(trade_record)
+        db.commit()
+        log.info("cc_close_order_placed", symbol=pos.symbol,
+                 reason=reason, order_id=trade.order.orderId,
+                 limit_price=round(ask_price, 2))
+        return True
+
+    def _roll_call_up(self, db, pos: Position, current_price: float, current_ask: float,
+                      opt_exchange: str, exchange: str, currency: str) -> bool:
+        """
+        Roll a deep ITM covered call up and out:
+        1. Buy back current call
+        2. Sell new call at higher strike with meaningful premium
+
+        New strike: max(net_cost_basis * 1.01, current_strike * 1.05)
+        New expiry: shortest DTE >= 7 where premium >= 50% of original, capped at 45 DTE
+        Net debit guard: if net debit > 50% of original premium, surface manual review instead.
+        """
+        from src.strategy.screener import screen_calls
+        from src.broker.orders import sell_covered_call
+        from src.core.models import Trade, TradeType, OrderStatus
+        from src.core.suggestions import create_suggestion
+
+        entry_premium = pos.entry_premium or 0
+
+        # Get stock position to compute net cost basis
+        stock_pos = db.query(Position).filter(
+            Position.symbol == pos.symbol,
+            Position.status == PositionStatus.OPEN,
+            Position.position_type == "stock",
+            Position.is_wheel == True,
+        ).first()
+
+        if stock_pos:
+            net_cost_basis = (stock_pos.cost_basis or 0) - (
+                stock_pos.total_premium_collected / max(stock_pos.quantity, 1)
+            )
+        else:
+            net_cost_basis = pos.strike or 0  # conservative fallback
+
+        # Minimum new strike: above net cost basis AND at least 5% above current strike
+        min_new_strike = max(
+            net_cost_basis * 1.01 if net_cost_basis > 0 else 0,
+            (pos.strike or 0) * 1.05,
+        )
+
+        log.info("cc_rollup_params",
+                 symbol=pos.symbol,
+                 current_strike=pos.strike,
+                 net_cost_basis=round(net_cost_basis, 2),
+                 min_new_strike=round(min_new_strike, 2),
+                 entry_premium=round(entry_premium, 2))
+
+        # Screen for new call above min_new_strike
+        candidate = screen_calls(
+            pos.symbol,
+            exchange=opt_exchange,
+            currency=currency,
+            min_strike=min_new_strike,
+            delta_min_override=0.30,
+            delta_max_override=0.45,
+            stock_exchange=exchange,
+        )
+
+        if not candidate:
+            log.info("cc_rollup_no_candidate", symbol=pos.symbol,
+                     min_strike=round(min_new_strike, 2))
+            create_suggestion(
+                db, pos.symbol, "sell_covered_call_review",
+                notes=f"ITM roll-up: stock at {current_price:.2f} vs strike {pos.strike:.2f}. "
+                      f"No auto candidate found above {min_new_strike:.2f}. Manual review needed."
+            )
+            return False
+
+        # Check new premium is meaningful: >= 50% of original premium
+        new_premium = candidate.bid
+        min_premium = entry_premium * 0.50
+        if new_premium < min_premium:
+            log.info("cc_rollup_premium_too_low",
+                     symbol=pos.symbol, new_premium=round(new_premium, 4),
+                     min_required=round(min_premium, 4))
+            create_suggestion(
+                db, pos.symbol, "sell_covered_call_review",
+                notes=f"ITM roll-up: stock at {current_price:.2f} vs strike {pos.strike:.2f}. "
+                      f"Best candidate strike {candidate.strike} premium {new_premium:.2f} "
+                      f"below 50% threshold ({min_premium:.2f}). Manual review needed."
+            )
+            return False
+
+        # Net debit guard: cost to close current - credit from new call
+        net_debit = current_ask - new_premium
+        max_debit = entry_premium * 0.50
+        if net_debit > max_debit:
+            log.info("cc_rollup_net_debit_too_high",
+                     symbol=pos.symbol, net_debit=round(net_debit, 4),
+                     max_allowed=round(max_debit, 4))
+            create_suggestion(
+                db, pos.symbol, "sell_covered_call_review",
+                notes=f"ITM roll-up: net debit {net_debit:.2f} exceeds limit ({max_debit:.2f}). "
+                      f"Candidate: strike {candidate.strike} expiry {candidate.expiry}. Manual review."
+            )
+            return False
+
+        # All guards passed — execute the roll
+        # Step 1: close current call
+        closed = self._close_covered_call(db, pos, current_ask, opt_exchange, currency, reason="itm_rollup")
+        if not closed:
+            log.warning("cc_rollup_close_failed", symbol=pos.symbol)
+            return False
+
+        # Step 2: sell new call
+        contracts = pos.quantity
+        trade = sell_covered_call(
+            symbol=pos.symbol,
+            expiry=candidate.expiry,
+            strike=candidate.strike,
+            quantity=contracts,
+            limit_price=round(candidate.bid, 2),
+            exchange=opt_exchange,
+            currency=currency,
+        )
+        if not trade:
+            log.warning("cc_rollup_new_call_failed", symbol=pos.symbol)
+            return False
+
+        trade_record = Trade(
+            symbol=pos.symbol,
+            trade_type=TradeType.SELL_CALL,
+            strike=candidate.strike,
+            expiry=candidate.expiry,
+            premium=candidate.bid,
+            quantity=contracts,
+            fill_price=candidate.bid,
+            order_id=trade.order.orderId,
+            order_status=OrderStatus.SUBMITTED,
+            notes=f"ITM roll-up from strike {pos.strike} to {candidate.strike}",
+        )
+        db.add(trade_record)
+        db.commit()
+
+        log.info("cc_rollup_executed",
+                 symbol=pos.symbol,
+                 old_strike=pos.strike, new_strike=candidate.strike,
+                 new_expiry=candidate.expiry,
+                 net_debit=round(net_debit, 4),
+                 new_premium=round(new_premium, 4))
+        return True

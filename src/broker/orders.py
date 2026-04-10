@@ -149,6 +149,51 @@ def buy_to_close_put(
         return trade
 
 
+
+def buy_to_close_call(
+    symbol: str,
+    expiry: str,
+    strike: float,
+    quantity: int = 1,
+    limit_price: Optional[float] = None,
+    exchange: str = "SMART",
+    currency: str = "USD",
+) -> Optional[IBTrade]:
+    """Buy to close a short covered call position."""
+    with get_ib_lock():
+        ib = get_ib()
+        contract = Option(symbol, expiry, strike, "C", exchange, currency=currency)
+        ib.qualifyContracts(contract)
+
+        if limit_price:
+            order = LimitOrder("BUY", quantity, limit_price)
+        else:
+            order = MarketOrder("BUY", quantity)
+
+        order.tif = "DAY"
+
+        log.info("placing_buy_call_close",
+                 symbol=symbol, strike=strike, expiry=expiry,
+                 qty=quantity, exchange=exchange)
+
+        trade = ib.placeOrder(contract, order)
+        ib.sleep(2)
+
+        status = trade.orderStatus.status
+        log_msg = ""
+        if trade.log:
+            log_msg = trade.log[-1].message if trade.log[-1].message else ""
+        log.info("order_status_after_place", symbol=symbol, strike=strike,
+                 expiry=expiry, status=status, action="buy_close_call",
+                 message=log_msg[:200])
+
+        if status in ("Cancelled", "Inactive"):
+            log.error("order_rejected", symbol=symbol, strike=strike,
+                      expiry=expiry, status=status, reason=log_msg[:200])
+            return None
+
+        return trade
+
 def sell_covered_call(
     symbol: str,
     expiry: str,

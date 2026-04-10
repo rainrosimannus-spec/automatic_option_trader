@@ -318,6 +318,7 @@ def job_check_profit():
 
     taker = ProfitTaker()
     taker.check_positions()
+    taker.check_covered_calls()
 
 
 def job_execute_queued():
