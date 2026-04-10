@@ -11,7 +11,6 @@ Tier-aware: different buy criteria for dividend, breakthrough, growth stocks.
 """
 from __future__ import annotations
 
-import asyncio
 import math
 from datetime import datetime
 from typing import Optional
@@ -26,6 +25,7 @@ from src.portfolio.models import (
 )
 from src.portfolio.analyzer import PortfolioAnalyzer, StockAnalysis
 from src.portfolio.config import PortfolioConfig
+from src.portfolio.connection import _ensure_event_loop
 from src.portfolio.ranker import (
     MarketRegime, CashPolicy, RankedSignal,
     rank_signals, detect_market_regime,
@@ -34,11 +34,7 @@ from src.portfolio.ranker import (
 log = get_logger(__name__)
 
 
-def _ensure_event_loop():
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
+# _ensure_event_loop imported from connection.py
 
 
 class PortfolioBuyer:

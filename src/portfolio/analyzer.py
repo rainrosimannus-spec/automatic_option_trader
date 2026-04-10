@@ -16,22 +16,15 @@ Market guard:
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from typing import Optional
 
 from ib_insync import IB, Stock
 
 from src.core.logger import get_logger
+from src.portfolio.connection import _ensure_event_loop
 
 log = get_logger(__name__)
-
-
-def _ensure_event_loop():
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
 
 # ── Tier-specific parameters ─────────────────────────────────
