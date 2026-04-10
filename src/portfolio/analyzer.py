@@ -271,13 +271,13 @@ class PortfolioAnalyzer:
                     whatToShow=what,
                     useRTH=False,
                     formatDate=1,
-                    timeout=10,
+                    timeout=15,
                 )
                 if bars and len(bars) > 50:
                     break
             except Exception:
                 pass
-            self.ib.sleep(0.5)
+            self.ib.sleep(2)  # IBKR pacing: max 60 requests per 10 min
         return bars
 
     @staticmethod
