@@ -120,7 +120,7 @@ class PortfolioAnalyzer:
             if not qualified:
                 log.warning("portfolio_qualify_failed", symbol=symbol)
                 return None
-            log.info("portfolio_qualify_ok", symbol=symbol, primaryExch=contract.primaryExch)
+            log.info("portfolio_qualify_ok", symbol=symbol, primaryExch=getattr(contract, "primaryExchange", "?"))
 
             contract.exchange = "SMART"
 
