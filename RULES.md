@@ -8,8 +8,6 @@ Nothing here changes unless the architecture changes.
 
 ## Working Rules — Non-Negotiable
 
-- **Read code via git link** — always ask the user to paste a raw GitHub URL rather than grepping blindly. Format: `https://raw.githubusercontent.com/rainrosimannus-spec/automatic_option_trader/main/PATH`. User pastes the URL into chat, Claude fetches it with web_fetch. This is the preferred way to read any source file.
-
 - **No heredoc for Python** — `<< 'EOF'` breaks on quotes. Always write patch files using `python3 -c "open('/tmp/patchN.py','w').write(...)"` or via the bash_tool container
 - **No manual file editing** — every code change is a copy-paste ready command in a code block
 - **Read before writing** — fetch or grep the exact current code before writing any replacement. Never assume what code looks like
