@@ -495,6 +495,60 @@ document.addEventListener('DOMContentLoaded', function() {
 
 </div>
 
+
+<- Accrued interest: src/portfolio/scheduler.py — refresh_accrued_interest_from_flex ( Winston Recent Transactions -->
+<div class="mt-6 bg-gray-900 border border-gray-800 rounded-lg p-4">
+    <div class="flex justify-between items-center mb-3">
+        <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider">Winston — Recent Transactions</h2>
+        <a href="/portfolio" class="text-xs text-gray-500 hover:text-gray-300 transition">View all &rarr;</a>
+    </div>
+    <div class="overflow-x-auto max-h-64 overflow-y-auto">
+        {% if recent_portfolio_trades %}
+        <table class="w-full text-xs">
+            <thead class="sticky top-0 bg-gray-900">
+                <tr class="text-gray-500 border-b border-gray-800">
+                    <th class="text-left py-2 px-3">Time</th>
+                    <th class="text-left py-2 px-3">Symbol</th>
+                    <th class="text-left py-2 px-3">Action</th>
+                    <th class="text-left py-2 px-3">Tier</th>
+                    <th class="text-right py-2 px-3">Shares</th>
+                    <th class="text-right py-2 px-3">Price</th>
+                    <th class="text-right py-2 px-3">Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in recent_portfolio_trades %}
+                <tr class="border-b border-gray-800/30 hover:bg-gray-800/20">
+                    <td class="py-2 px-3 text-gray-500">{{ t.created_at.strftime("%m/%d %H:%M") if t.created_at else "" }}</td>
+                    <td class="py-2 px-3 font-medium font-mono">{{ t.symbol }}</td>
+                    <td class="py-2 px-3">
+                        {% if t.action in ("buy", "buy_stock") %}<span class="text-green-400">BUY</span>
+                        {% elif t.action == "sell" %}<span class="text-red-400">SELL</span>
+                        {% elif t.action == "sell_put" %}<span class="text-blue-400">SELL PUT</span>
+                        {% elif t.action == "put_assigned" %}<span class="text-yellow-400">PUT ASSIGNED</span>
+                        {% elif t.action == "put_expired" %}<span class="text-gray-400">PUT EXPIRED</span>
+                        {% elif t.action == "dividend" %}<span class="text-emerald-400">DIVIDEND</span>
+                        {% elif t.action == "interest" %}<span class="text-emerald-300">INTEREST</span>
+                        {% else %}<span class="text-gray-300">{{ t.action|upper }}</span>{% endif %}
+                    </td>
+                    <td class="py-2 px-3">
+                        {% if t.tier == "breakthrough" %}<span class="text-purple-400">bth</span>
+                        {% elif t.tier == "dividend" %}<span class="text-blue-400">div</span>
+                        {% else %}<span class="text-green-400">gro</span>{% endif %}
+                    </td>
+                    <td class="py-2 px-3 text-right font-mono">{{ t.shares if t.shares else "-" }}</td>
+                    <td class="py-2 px-3 text-right font-mono">${{ "%.2f"|format(t.price or 0) }}</td>
+                    <td class="py-2 px-3 text-right text-emerald-400 font-mono">${{ "%.0f"|format(t.amount or 0) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="p-6 text-center text-gray-600 text-sm">No portfolio transactions yet</div>
+        {% endif %}
+    </div>
+</div>
+
 <!-- ═══ Risk Rules Summary ═══ -->
 <div class="mt-6 bg-gray-900 border border-gray-800 rounded-lg p-4">
     <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Active Risk & Strategy Rules</h2>

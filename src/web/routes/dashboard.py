@@ -318,6 +318,15 @@ def dashboard(request: Request):
             recent_trades.append(t)
         recent_trades = recent_trades[:15]
 
+        # Portfolio (Winston) recent transactions
+        from src.portfolio.models import PortfolioTransaction
+        recent_portfolio_trades = (
+            db.query(PortfolioTransaction)
+            .order_by(PortfolioTransaction.created_at.desc())
+            .limit(15)
+            .all()
+        )
+
         # Pending suggestions count — split by source
         from src.core.suggestions import TradeSuggestion
         pending_options = db.query(TradeSuggestion).filter(
@@ -391,6 +400,7 @@ def dashboard(request: Request):
         "daily_theta": round(daily_theta, 2),
         "open_positions": open_positions,
         "recent_trades": recent_trades,
+        "recent_portfolio_trades": recent_portfolio_trades,
         "pending_count": pending_options + pending_portfolio,
         "pending_options": pending_options,
         "pending_portfolio": pending_portfolio,
