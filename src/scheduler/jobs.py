@@ -541,6 +541,20 @@ def job_health_check():
         except Exception:
             pass
 
+    # Refresh Winston open orders cache for dashboard (non-blocking)
+    try:
+        from src.portfolio.connection import refresh_portfolio_open_orders_cache
+        refresh_portfolio_open_orders_cache()
+    except Exception:
+        pass
+
+    # Refresh Winston pending orders cache for dashboard (non-blocking)
+    try:
+        from src.portfolio.connection import refresh_portfolio_pending_orders_cache
+        refresh_portfolio_pending_orders_cache()
+    except Exception:
+        pass
+
     # Reconcile submitted suggestions against live IBKR orders
     # Any submitted suggestion with no matching live order is a ghost — expire it
     if is_connected():

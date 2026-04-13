@@ -316,6 +316,13 @@ async def portfolio_page(request: Request):
     except Exception:
         pass
 
+    portfolio_pending_orders = []
+    try:
+        from src.portfolio.connection import get_cached_portfolio_pending_orders
+        portfolio_pending_orders = get_cached_portfolio_pending_orders()
+    except Exception:
+        pass
+
     return templates.TemplateResponse("portfolio.html", {
         "request": request,
         "holdings": holdings,
@@ -352,6 +359,7 @@ async def portfolio_page(request: Request):
         "top_performers": performers[:5],
         "bottom_performers": list(reversed(performers[-5:])) if len(performers) > 5 else [],
         "portfolio_open_orders": portfolio_open_orders,
+        "portfolio_pending_orders": portfolio_pending_orders,
         "position_cap": position_cap,
         "total_exposure_cap": total_exposure_cap,
         "daily_deployment_cap": daily_deployment_cap,

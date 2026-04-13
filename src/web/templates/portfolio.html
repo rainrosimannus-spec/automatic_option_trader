@@ -495,7 +495,7 @@ function syncInjections() {
     </div>
 
     <!-- ═══ Pending Orders (all asset types, portfolio account) ═══ -->
-    {% set pending = [] %}
+    {% set pending = portfolio_pending_orders %}
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
         <h2 class="text-sm font-medium text-amber-400 uppercase tracking-wider mb-4">
             ⏳ Pending Orders

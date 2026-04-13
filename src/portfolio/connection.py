@@ -464,6 +464,61 @@ def refresh_portfolio_open_orders_cache() -> None:
         log.warning("portfolio_options_cache_failed", error=str(e))
 
 
+
+# ── Cached pending orders for portfolio dashboard (non-blocking) ──
+_cached_portfolio_pending: list = []
+_portfolio_pending_lock = threading.Lock()
+
+
+def refresh_portfolio_pending_orders_cache() -> None:
+    """
+    Fetch genuinely pending (unfilled) orders from portfolio IBKR account.
+    Uses reqAllOpenOrders() which returns ALL orders across all clients,
+    including manually placed orders in TWS. Unlike openTrades() which only
+    returns orders placed by this client.
+    """
+    global _cached_portfolio_pending
+    try:
+        if not is_portfolio_connected():
+            return
+        ib = get_portfolio_ib()
+        with _portfolio_lock:
+            ib.reqAllOpenOrders()
+            ib.sleep(2)
+            trades = ib.openTrades()
+        new_cache = []
+        for oo in trades:
+            try:
+                c = oo.contract
+                new_cache.append({
+                    "symbol": getattr(c, "symbol", "?"),
+                    "sec_type": getattr(c, "secType", ""),
+                    "action": oo.order.action,
+                    "qty": int(oo.order.totalQuantity),
+                    "filled": float(oo.orderStatus.filled or 0),
+                    "remaining": float(oo.orderStatus.remaining or 0),
+                    "limit_price": oo.order.lmtPrice if hasattr(oo.order, "lmtPrice") else None,
+                    "order_type": oo.order.orderType,
+                    "status": oo.orderStatus.status,
+                    "strike": getattr(c, "strike", None),
+                    "expiry": getattr(c, "lastTradeDateOrContractMonth", None),
+                    "right": getattr(c, "right", None),
+                    "order_id": oo.order.orderId,
+                })
+            except Exception:
+                continue
+        with _portfolio_pending_lock:
+            _cached_portfolio_pending = new_cache
+        log.info("portfolio_pending_orders_refreshed", count=len(new_cache))
+    except Exception as e:
+        log.warning("portfolio_pending_orders_failed", error=str(e))
+
+
+def get_cached_portfolio_pending_orders() -> list:
+    """Return cached portfolio pending orders (non-blocking, for dashboard)."""
+    with _portfolio_pending_lock:
+        return list(_cached_portfolio_pending)
+
 def get_cached_portfolio_open_orders() -> list:
     """Return cached portfolio open orders (non-blocking, for dashboard)."""
     with _portfolio_orders_lock:
