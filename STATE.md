@@ -5,7 +5,7 @@ Read this to know what to do next, what's broken, and what to test first.
 
 ---
 
-## System Status (April 11, 2026)
+## System Status (April 13, 2026)
 
 Both connections stable. App running. Dashboard accessible at http://37.0.30.34:8080
 
@@ -17,10 +17,13 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 | Trailing stop monitor | Active, every 15 min |
 | FMP cache | Active, 30-day cache in data/fmp_cache.json |
 | Screener | WORKING — last run 2026-04-09 06:21 UTC |
-| Accrued interest Flex refresh | FIXED — runs daily 08:00 ET via refresh_accrued_interest_from_flex() |
+| Accrued interest Flex refresh | FIXED — runs daily 08:00 ET |
 | Risk assessment | Sonnet, monthly, conservative prompt, 1/2/3 penalties |
-| Watchlist metrics | FIXED — all US/EU stocks updating correctly |
-| CC profit-taking | NEW — OTM profit-take + ITM roll-up, runs inside job_check_profit() |
+| Watchlist metrics | WORKING |
+| CC profit-taking | LIVE — OTM profit-take + ITM roll-up in job_check_profit() |
+| Portfolio pending orders | FIXED — now shows manually placed TWS orders |
+| Portfolio price update | FIXED — non-SMART exchanges keep original exchange code |
+| Portfolio sync transactions | FIXED — new holdings detected via sync now record PortfolioTransaction |
 
 ---
 
@@ -29,47 +32,56 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 **Options account (Maggy):**
 - TTD: assigned at $26.50, stock at ~$20.53, cost basis $25.52. Wheel scanning for covered calls.
 - SHOP, UBER, PANW: assigned March 27, wheel scanning for covered calls
-- PG: covered call April expiry, awaiting fill confirmation
+- PG: covered call April expiry
 
 **Portfolio account (Winston):**
-- 42 holdings, market value ~$874K, invested $498,514
+- 43 holdings (IONQ recently assigned, not in PortfolioTransaction — sync fix will catch next ones)
 - Margin at ~80% — no new buys until margin clears
+- 20 non-US watchlist stocks (SEHK/JSE/SGX/TASE/NSE) should now get prices on next hourly update when their markets are open
 
 ---
 
 ## Top Priority Next Session
 
-1. Monitor CC profit-taker in logs — confirm cc_profit_check_started fires on next job_check_profit() cycle
-2. Verify non-US price data — 20 stocks (SEHK, JSE, NSE, SGX, TASE, ASX) show 0 price when markets closed — verify they populate when markets open
-3. Chronos live test — run nightly forecast job manually to verify it writes to portfolio_forecasts table
+1. Verify non-US watchlist prices populate on next market open (JSE/TASE open during EU hours)
+2. Verify portfolio pending orders show correctly after next health check cycle
+3. Chronos live test — run nightly forecast job manually to verify it writes to portfolio_forecasts
 4. Trailing stop verification — check suggestions have trailing_stop_pct set
+5. Monitor CC profit-taker logs — confirm cc_profit_check_started fires correctly
 
 ---
 
-## What Changed Last Session (April 11, 2026)
+## What Changed Last Session (April 13, 2026)
 
-**New features — covered call profit-taking:**
+**Covered call profit-taking (April 11 work, confirmed live):**
+- buy_to_close_call() in orders.py
+- ProfitTaker.check_covered_calls() — OTM profit-take at 50/65/75% + ITM roll-up at strike*1.07
+- job_check_profit() now calls both check_positions() and check_covered_calls()
 
-- buy_to_close_call() added to src/broker/orders.py — exact mirror of buy_to_close_put(), uses C right and BUY_CALL trade type
-- ProfitTaker.check_covered_calls() added to src/strategy/profit_taker.py:
-  - OTM profit-taking: closes call at 75% profit (DTE>14), 65% (DTE>7), 50% (DTE>3). Skip DTE<=3, let expire worthless.
-  - ITM roll-up trigger: fires when stock_price > strike * 1.07 AND DTE > 2
-  - Uses live IBKR bid/ask via get_option_live_price()
-  - Duplicate close-order guard (cancels existing SUBMITTED orders before placing new one)
-- ProfitTaker._close_covered_call() — shared close logic used by both OTM profit-take and ITM roll-up
-- ProfitTaker._roll_call_up() — full auto roll-up:
-  - New strike = max(net_cost_basis * 1.01, current_strike * 1.05)
-  - net_cost_basis = stock.cost_basis - (stock.total_premium_collected / quantity) — exact same formula as _write_call() in wheel.py
-  - New call screened via screen_calls() with min_strike, delta 0.30-0.45
-  - Premium floor guard: new premium must be >= 50% of original premium, else fall back to manual sell_covered_call_review suggestion
-  - Net debit guard: net debit must be <= 50% of original premium, else fall back to manual review
-  - At DTE <= 2: skip roll, accept assignment
-  - If no candidate found: surface sell_covered_call_review suggestion with details
-- job_check_profit() in src/scheduler/jobs.py — now calls both check_positions() (puts) and check_covered_calls() (calls)
+**Portfolio pending orders fix:**
+- refresh_portfolio_pending_orders_cache() in connection.py using reqAllOpenOrders()
+- Catches manually placed TWS orders across all clients (read-only connection)
+- Wired into job_health_check() in scheduler
+- portfolio.py route passes portfolio_pending_orders to template
+- portfolio.html pending section now uses real data instead of hardcoded empty list
 
-**Theoretical design decisions recorded:**
-- Effective cost basis for wheel = assignment_strike - put_premium - sum(cc_premiums) + fees
-- This is already tracked in Position.total_premium_collected and used correctly
+**Portfolio price update fix (non-SMART exchanges):**
+- buyer.py update_holdings_prices(): stocks on SEHK/JSE/SGX/TASE/NSE/ASX etc. now keep
+  their original exchange instead of being forced to SMART
+- SMART override only applies to US/EU exchanges
+- Blacklist: SEHK, JSE, SGX, TASE, NSE, ASX, BSE, KSE, TWSE, BKK, IDX
+
+**Portfolio sync transaction recording:**
+- sync.py: when a new holding is detected via IBKR sync, records a PortfolioTransaction
+  with action=put_assigned, 3-day dedup window to avoid duplicates on repeated syncs
+- Fixes gap where IONQ assignment appeared in holdings but not in transaction history
+
+**Dashboard cleanup:**
+- Removed Winston Recent Transactions section from options dashboard (dashboard.html)
+- Winston transactions correctly shown on portfolio page only
+
+**Known gap:**
+- IONQ assignment (April 11) has no PortfolioTransaction record — predates sync fix
 
 ---
 
@@ -99,6 +111,9 @@ Key file locations:
 - Buy to close call: src/broker/orders.py — buy_to_close_call()
 - Wheel / covered call writing: src/strategy/wheel.py — write_covered_calls(), _write_call()
 - Call screener: src/strategy/screener.py — screen_calls()
+- Portfolio price update: src/portfolio/buyer.py — update_holdings_prices()
+- Portfolio pending orders cache: src/portfolio/connection.py — refresh_portfolio_pending_orders_cache()
+- Portfolio sync transactions: src/portfolio/sync.py — sync_ibkr_holdings()
 - Watchlist metrics: src/portfolio/buyer.py — update_watchlist_metrics()
 - Analyzer: src/portfolio/analyzer.py — analyze_stock()
 - Risk assessment: src/portfolio/scheduler.py — _assess_structural_risks()
