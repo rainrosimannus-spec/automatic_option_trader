@@ -1457,7 +1457,12 @@ class PortfolioBuyer:
                 try:
                     contract = Stock(h.symbol, h.exchange, h.currency)
                     self.ib.qualifyContracts(contract)
-                    contract.exchange = "SMART"
+                    # Only override to SMART for exchanges that support it
+                    # Non-US/EU/developed exchanges must keep their original exchange
+                    _non_smart_exchanges = {"SEHK", "JSE", "SGX", "TASE", "NSE", "ASX",
+                                            "BSE", "KSE", "TWSE", "BKK", "IDX"}
+                    if h.exchange not in _non_smart_exchanges:
+                        contract.exchange = "SMART"
                     price = None
                     for what in ("TRADES", "MIDPOINT"):
                         try:
