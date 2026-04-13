@@ -98,6 +98,28 @@ def sync_ibkr_holdings(ib: IB) -> int:
                     unrealized_pnl_pct=pnl_pct if total_invested > 0 else None,
                     entry_method="existing",
                 ))
+                # Record transaction for new holding detected via sync
+                # This captures assignments and manual buys not recorded elsewhere
+                from src.portfolio.models import PortfolioTransaction
+                from datetime import datetime, timedelta
+                cutoff = datetime.utcnow() - timedelta(days=3)
+                existing_tx = db.query(PortfolioTransaction).filter(
+                    PortfolioTransaction.symbol == symbol,
+                    PortfolioTransaction.action == "put_assigned",
+                    PortfolioTransaction.created_at >= cutoff,
+                ).first()
+                if not existing_tx:
+                    db.add(PortfolioTransaction(
+                        symbol=symbol,
+                        action="put_assigned",
+                        shares=shares,
+                        price=avg_cost,
+                        amount=total_invested,
+                        currency=contract.currency or "USD",
+                        tier=tier,
+                        notes="Detected via IBKR sync — put assigned or manual buy",
+                        source="sync",
+                    ))
             count += 1
 
         # Zero out stale holdings
