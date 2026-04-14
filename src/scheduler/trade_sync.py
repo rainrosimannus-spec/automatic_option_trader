@@ -187,6 +187,38 @@ def sync_ibkr_trades() -> int:
             existing_ids.add(exec_id)
             imported += 1
 
+            # If this is a close trade (BUY_PUT or BUY_CALL), find and close the matching position
+            if trade_type in (TradeType.BUY_PUT, TradeType.BUY_CALL):
+                pos_type = "short_put" if trade_type == TradeType.BUY_PUT else "covered_call"
+                open_pos = db.query(Position).filter(
+                    Position.symbol == contract.symbol,
+                    Position.strike == strike,
+                    Position.expiry == expiry,
+                    Position.position_type == pos_type,
+                    Position.status == PositionStatus.OPEN,
+                ).first()
+                if not open_pos:
+                    # Also check short_call type
+                    alt_type = "short_call" if pos_type == "covered_call" else None
+                    if alt_type:
+                        open_pos = db.query(Position).filter(
+                            Position.symbol == contract.symbol,
+                            Position.strike == strike,
+                            Position.expiry == expiry,
+                            Position.position_type == alt_type,
+                            Position.status == PositionStatus.OPEN,
+                        ).first()
+                if open_pos:
+                    # Calculate realized P&L: premium collected - cost to close - commissions
+                    realized = (open_pos.entry_premium - fill_price) * open_pos.quantity * 100 - commission
+                    open_pos.status = PositionStatus.CLOSED
+                    open_pos.closed_at = exec_time
+                    open_pos.realized_pnl = round(realized, 2)
+                    log.info("position_closed_by_trade_sync",
+                             symbol=contract.symbol, strike=strike, expiry=expiry,
+                             entry=open_pos.entry_premium, close=fill_price,
+                             realized_pnl=round(realized, 2))
+
             log.info("trade_synced",
                      symbol=contract.symbol,
                      type=trade_type.value,
