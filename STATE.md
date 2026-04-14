@@ -25,6 +25,7 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 | Portfolio price update | FIXED — non-SMART exchanges keep original exchange code |
 | Portfolio sync transactions | FIXED — new holdings detected via sync now record PortfolioTransaction |
 | Bridge event loop | FIXED — bridge.py now imports _ensure_event_loop from connection.py |
+| Trade sync position closure | FIXED — BUY_CALL/BUY_PUT fills now close matching open position with P&L |
 
 ---
 
@@ -33,64 +34,59 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 **Options account (Maggy):**
 - TTD: assigned at $26.50, stock at ~$20.53, cost basis $25.52. Wheel scanning for covered calls.
 - SHOP, UBER, PANW: assigned March 27, wheel scanning for covered calls
+- PANW: covered call rolled from $155 to $162.50 Apr 24 expiry. $155 manually closed, realized loss -$474 recorded manually in DB.
 - PG: covered call April expiry
 
 **Portfolio account (Winston):**
 - 43 holdings
 - Margin at ~80% — no new buys until margin clears
-- Non-US watchlist stocks (SEHK/JSE/SGX/TASE/NSE) should now populate prices on next metrics run
+- Non-US watchlist prices now populating correctly after event loop fix
 
 ---
 
 ## Top Priority Next Session
 
-1. Verify non-US watchlist prices populated (JSE/TASE open during EU hours — check after 09:00 CET)
-2. Chronos live test — run nightly forecast job manually to verify it writes to portfolio_forecasts
-3. Trailing stop verification — check suggestions have trailing_stop_pct set
-4. Monitor CC profit-taker logs — confirm cc_profit_check_started fires correctly
+1. Chronos live test — run nightly forecast job manually to verify it writes to portfolio_forecasts
+2. Trailing stop verification — check suggestions have trailing_stop_pct set
+3. Monitor CC profit-taker logs — confirm cc_profit_check_started fires correctly
+4. Verify trade sync position closure works on next manual close in TWS
 
 ---
 
-## What Changed Last Two Sessions (April 11-14, 2026)
+## What Changed This Session (April 14, 2026)
 
-**Covered call profit-taking:**
-- buy_to_close_call() in orders.py
-- ProfitTaker.check_covered_calls() — OTM profit-take at 50/65/75% + ITM roll-up at strike*1.07
-- ProfitTaker._close_covered_call() — shared close logic
-- ProfitTaker._roll_call_up() — auto roll-up with net_cost_basis, premium floor, net debit guards
-- job_check_profit() now calls both check_positions() (puts) and check_covered_calls() (calls)
+**Trade sync position closure fix:**
+- trade_sync.py: when BUY_CALL or BUY_PUT fill is detected, finds matching open position and closes it
+- Calculates realized P&L: (entry_premium - close_price) * quantity * 100 - commission
+- Handles both covered_call and short_call position types for BUY_CALL
+- Handles short_put for BUY_PUT
+- Previously: manually closed options stayed OPEN in DB until next position reconciliation marked them EXPIRED with no P&L
+- No double-close risk: reconciliation only touches OPEN positions; fill loop closes first
 
-**Portfolio pending orders:**
-- refresh_portfolio_pending_orders_cache() in connection.py using reqAllOpenOrders()
-- Catches manually placed TWS orders across all clients
-- Wired into job_health_check() in scheduler
-- portfolio.py route passes portfolio_pending_orders to template
-- portfolio.html pending section now uses real data
-
-**Portfolio price update (non-SMART exchanges):**
-- buyer.py update_holdings_prices(): non-SMART exchanges keep original exchange
-- analyzer.py: same fix for watchlist metrics
-- Blacklist: SEHK, JSE, SGX, TASE, NSE, ASX, BSE, KSE, TWSE, BKK, IDX
+**PANW $155 call manual DB fix (one-time):**
+- Manually marked CLOSED with realized_pnl = -474.0
+- This was necessary because the fix wasn't in place when the trade happened
+- Future manual closes will be handled automatically by trade_sync
 
 **Event loop fix — portfolio metrics job:**
-- scheduler.py job_portfolio_update_metrics(): portfolio lock released before update_watchlist_metrics()
-- update_watchlist_metrics() makes blocking IBKR calls — must NOT hold portfolio lock
-- This was causing event loop conflict for all non-SMART exchange stocks
+- scheduler.py: portfolio lock released before update_watchlist_metrics()
+- Fixes 'This event loop is already running' for all non-SMART exchange stocks
+- JSE/TASE/SEHK/SGX prices now populating correctly
 
 **Bridge event loop fix:**
-- bridge.py had local _ensure_event_loop() — now imports from connection.py
-- Critical: bridge transfers real money between two IBKR accounts
+- bridge.py: local _ensure_event_loop() replaced with import from connection.py
 
-**Portfolio sync transaction recording:**
-- sync.py: records PortfolioTransaction when new holding detected via IBKR sync
-- 3-day dedup window to avoid duplicates
+**Portfolio pending orders:**
+- refresh_portfolio_pending_orders_cache() using reqAllOpenOrders()
+- Shows manually placed TWS orders on portfolio dashboard
 
-**Dashboard cleanup:**
-- Removed Winston Recent Transactions from options dashboard
-- Winston transactions shown on portfolio page only
+**Portfolio price update (non-SMART exchanges):**
+- buyer.py and analyzer.py: non-SMART exchanges keep original exchange code
+- Blacklist: SEHK, JSE, SGX, TASE, NSE, ASX, BSE, KSE, TWSE, BKK, IDX
 
-**Known gaps:**
-- IONQ assignment (April 11) has no PortfolioTransaction record — predates sync fix
+**CC profit-taking (April 11):**
+- buy_to_close_call(), check_covered_calls(), _close_covered_call(), _roll_call_up()
+- job_check_profit() calls both puts and calls profit-taker
 
 ---
 
@@ -118,6 +114,7 @@ Key file locations:
 - CC profit-taker: src/strategy/profit_taker.py — check_covered_calls(), _close_covered_call(), _roll_call_up()
 - Put profit-taker: src/strategy/profit_taker.py — check_positions()
 - Buy to close call: src/broker/orders.py — buy_to_close_call()
+- Trade sync position closure: src/scheduler/trade_sync.py — BUY_CALL/BUY_PUT handling
 - Wheel / covered call writing: src/strategy/wheel.py — write_covered_calls(), _write_call()
 - Call screener: src/strategy/screener.py — screen_calls()
 - Portfolio price update: src/portfolio/buyer.py — update_holdings_prices()
