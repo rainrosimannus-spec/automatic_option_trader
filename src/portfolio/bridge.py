@@ -327,8 +327,6 @@ class CashBridge:
                 db.add(PortfolioState(key=key, value=value))
 
 
-def _ensure_event_loop():
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
+# _ensure_event_loop imported from connection.py — do not define locally
+# Local versions create a new loop which causes CancelledError on all IBKR calls
+from src.portfolio.connection import _ensure_event_loop
