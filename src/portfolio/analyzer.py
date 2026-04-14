@@ -122,7 +122,11 @@ class PortfolioAnalyzer:
                 return None
             log.info("portfolio_qualify_ok", symbol=symbol, primaryExch=getattr(contract, "primaryExchange", "?"))
 
-            contract.exchange = "SMART"
+            # Only override to SMART for exchanges that support it
+            _non_smart_exchanges = {"SEHK", "JSE", "SGX", "TASE", "NSE", "ASX",
+                                    "BSE", "KSE", "TWSE", "BKK", "IDX"}
+            if exchange not in _non_smart_exchanges:
+                contract.exchange = "SMART"
 
             # Need enough bars for the longest SMA + RSI + some buffer
             max_period = max(params["sma_period"], params["trend_sma_slow"], 252) + 30
