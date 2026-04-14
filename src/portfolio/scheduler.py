@@ -143,16 +143,17 @@ def job_portfolio_update_metrics(cfg: PortfolioConfig):
     if not cfg.enabled:
         return
 
-    with get_portfolio_lock():
-        try:
+    try:
+        with get_portfolio_lock():
             ib = get_portfolio_ib()
             buyer = PortfolioBuyer(ib, cfg)
-            # Always recalc scores from existing DB data first (instant, no IBKR)
-            buyer.recalc_scores_from_db()
-            # Then try to refresh metrics from IBKR (may timeout outside market hours)
-            buyer.update_watchlist_metrics()
-        except Exception as e:
-            log.error("portfolio_metrics_update_error", error=str(e))
+        # recalc_scores_from_db is DB-only — no IBKR calls, no lock needed
+        buyer.recalc_scores_from_db()
+        # update_watchlist_metrics makes blocking IBKR calls — must NOT hold portfolio lock
+        # Each internal IBKR call acquires the lock itself via _ensure_event_loop
+        buyer.update_watchlist_metrics()
+    except Exception as e:
+        log.error("portfolio_metrics_update_error", error=str(e))
 
 
 
