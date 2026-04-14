@@ -5,7 +5,7 @@ Read this to know what to do next, what's broken, and what to test first.
 
 ---
 
-## System Status (April 13, 2026)
+## System Status (April 14, 2026)
 
 Both connections stable. App running. Dashboard accessible at http://37.0.30.34:8080
 
@@ -19,11 +19,12 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 | Screener | WORKING — last run 2026-04-09 06:21 UTC |
 | Accrued interest Flex refresh | FIXED — runs daily 08:00 ET |
 | Risk assessment | Sonnet, monthly, conservative prompt, 1/2/3 penalties |
-| Watchlist metrics | WORKING |
+| Watchlist metrics | FIXED — event loop conflict resolved, non-SMART exchanges now update |
 | CC profit-taking | LIVE — OTM profit-take + ITM roll-up in job_check_profit() |
-| Portfolio pending orders | FIXED — now shows manually placed TWS orders |
+| Portfolio pending orders | WORKING — shows manually placed TWS orders |
 | Portfolio price update | FIXED — non-SMART exchanges keep original exchange code |
 | Portfolio sync transactions | FIXED — new holdings detected via sync now record PortfolioTransaction |
+| Bridge event loop | FIXED — bridge.py now imports _ensure_event_loop from connection.py |
 
 ---
 
@@ -35,52 +36,60 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 - PG: covered call April expiry
 
 **Portfolio account (Winston):**
-- 43 holdings (IONQ recently assigned, not in PortfolioTransaction — sync fix will catch next ones)
+- 43 holdings
 - Margin at ~80% — no new buys until margin clears
-- 20 non-US watchlist stocks (SEHK/JSE/SGX/TASE/NSE) should now get prices on next hourly update when their markets are open
+- Non-US watchlist stocks (SEHK/JSE/SGX/TASE/NSE) should now populate prices on next metrics run
 
 ---
 
 ## Top Priority Next Session
 
-1. Verify non-US watchlist prices populate on next market open (JSE/TASE open during EU hours)
-2. Verify portfolio pending orders show correctly after next health check cycle
-3. Chronos live test — run nightly forecast job manually to verify it writes to portfolio_forecasts
-4. Trailing stop verification — check suggestions have trailing_stop_pct set
-5. Monitor CC profit-taker logs — confirm cc_profit_check_started fires correctly
+1. Verify non-US watchlist prices populated (JSE/TASE open during EU hours — check after 09:00 CET)
+2. Chronos live test — run nightly forecast job manually to verify it writes to portfolio_forecasts
+3. Trailing stop verification — check suggestions have trailing_stop_pct set
+4. Monitor CC profit-taker logs — confirm cc_profit_check_started fires correctly
 
 ---
 
-## What Changed Last Session (April 13, 2026)
+## What Changed Last Two Sessions (April 11-14, 2026)
 
-**Covered call profit-taking (April 11 work, confirmed live):**
+**Covered call profit-taking:**
 - buy_to_close_call() in orders.py
 - ProfitTaker.check_covered_calls() — OTM profit-take at 50/65/75% + ITM roll-up at strike*1.07
-- job_check_profit() now calls both check_positions() and check_covered_calls()
+- ProfitTaker._close_covered_call() — shared close logic
+- ProfitTaker._roll_call_up() — auto roll-up with net_cost_basis, premium floor, net debit guards
+- job_check_profit() now calls both check_positions() (puts) and check_covered_calls() (calls)
 
-**Portfolio pending orders fix:**
+**Portfolio pending orders:**
 - refresh_portfolio_pending_orders_cache() in connection.py using reqAllOpenOrders()
-- Catches manually placed TWS orders across all clients (read-only connection)
+- Catches manually placed TWS orders across all clients
 - Wired into job_health_check() in scheduler
 - portfolio.py route passes portfolio_pending_orders to template
-- portfolio.html pending section now uses real data instead of hardcoded empty list
+- portfolio.html pending section now uses real data
 
-**Portfolio price update fix (non-SMART exchanges):**
-- buyer.py update_holdings_prices(): stocks on SEHK/JSE/SGX/TASE/NSE/ASX etc. now keep
-  their original exchange instead of being forced to SMART
-- SMART override only applies to US/EU exchanges
+**Portfolio price update (non-SMART exchanges):**
+- buyer.py update_holdings_prices(): non-SMART exchanges keep original exchange
+- analyzer.py: same fix for watchlist metrics
 - Blacklist: SEHK, JSE, SGX, TASE, NSE, ASX, BSE, KSE, TWSE, BKK, IDX
 
+**Event loop fix — portfolio metrics job:**
+- scheduler.py job_portfolio_update_metrics(): portfolio lock released before update_watchlist_metrics()
+- update_watchlist_metrics() makes blocking IBKR calls — must NOT hold portfolio lock
+- This was causing event loop conflict for all non-SMART exchange stocks
+
+**Bridge event loop fix:**
+- bridge.py had local _ensure_event_loop() — now imports from connection.py
+- Critical: bridge transfers real money between two IBKR accounts
+
 **Portfolio sync transaction recording:**
-- sync.py: when a new holding is detected via IBKR sync, records a PortfolioTransaction
-  with action=put_assigned, 3-day dedup window to avoid duplicates on repeated syncs
-- Fixes gap where IONQ assignment appeared in holdings but not in transaction history
+- sync.py: records PortfolioTransaction when new holding detected via IBKR sync
+- 3-day dedup window to avoid duplicates
 
 **Dashboard cleanup:**
-- Removed Winston Recent Transactions section from options dashboard (dashboard.html)
-- Winston transactions correctly shown on portfolio page only
+- Removed Winston Recent Transactions from options dashboard
+- Winston transactions shown on portfolio page only
 
-**Known gap:**
+**Known gaps:**
 - IONQ assignment (April 11) has no PortfolioTransaction record — predates sync fix
 
 ---
@@ -112,8 +121,10 @@ Key file locations:
 - Wheel / covered call writing: src/strategy/wheel.py — write_covered_calls(), _write_call()
 - Call screener: src/strategy/screener.py — screen_calls()
 - Portfolio price update: src/portfolio/buyer.py — update_holdings_prices()
+- Portfolio metrics job: src/portfolio/scheduler.py — job_portfolio_update_metrics()
 - Portfolio pending orders cache: src/portfolio/connection.py — refresh_portfolio_pending_orders_cache()
 - Portfolio sync transactions: src/portfolio/sync.py — sync_ibkr_holdings()
+- Bridge (inter-account transfers): src/portfolio/bridge.py
 - Watchlist metrics: src/portfolio/buyer.py — update_watchlist_metrics()
 - Analyzer: src/portfolio/analyzer.py — analyze_stock()
 - Risk assessment: src/portfolio/scheduler.py — _assess_structural_risks()
