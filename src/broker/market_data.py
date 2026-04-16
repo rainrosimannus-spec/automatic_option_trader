@@ -630,6 +630,40 @@ def has_upcoming_earnings(
         return False
 
 
+
+def get_stock_live_price(
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+) -> Optional[float]:
+    """
+    Fetch live last/bid/ask for a stock from IBKR using reqMktData.
+    Returns last traded price, or None if unavailable.
+    Used by CC profit checker for intraday price — get_stock_price returns yesterday close.
+    """
+    try:
+        from src.broker.connection import get_ib_lock
+        _ensure_market_data_type()
+        with get_ib_lock():
+            ib = get_ib()
+            contract = Stock(symbol, exchange, currency)
+            ib.qualifyContracts(contract)
+            ticker = ib.reqMktData(contract, "", False, False)
+            ib.sleep(3)
+            ib.cancelMktData(contract)
+            price = None
+            if ticker.last and ticker.last > 0:
+                price = ticker.last
+            elif ticker.bid and ticker.ask and ticker.bid > 0 and ticker.ask > 0:
+                price = (ticker.bid + ticker.ask) / 2
+            elif ticker.close and ticker.close > 0:
+                price = ticker.close
+            log.debug("stock_live_price_fetched", symbol=symbol, price=price)
+            return price
+    except Exception as e:
+        log.debug("stock_live_price_error", symbol=symbol, error=str(e))
+        return None
+
 def get_option_live_price(
     symbol: str,
     expiry: str,

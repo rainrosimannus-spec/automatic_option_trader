@@ -430,7 +430,8 @@ class ProfitTaker:
                             log.info("cc_check_using_bid_as_ask",
                                      symbol=pos.symbol, bid=round(live_bid, 2))
                         else:
-                            _spot = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
+                            from src.broker.market_data import get_stock_live_price
+                            _spot = get_stock_live_price(pos.symbol, exchange=exchange, currency=currency)
                             _intrinsic = (_spot - (pos.strike or 0)) if _spot and _spot > (pos.strike or 0) else 0
                             if _intrinsic > 0.50:
                                 live_ask = round(_intrinsic, 2)
