@@ -424,8 +424,20 @@ class ProfitTaker:
                         pos.symbol, pos.expiry, pos.strike, "C", opt_exchange, currency
                     )
                     if not live_ask or live_ask <= 0:
-                        log.debug("cc_check_no_live_price", symbol=pos.symbol)
-                        continue
+                        # No live price — check if deeply ITM and estimate intrinsic value
+                        # for roll-up evaluation. Skip OTM profit-taking without live price.
+                        from src.broker.market_data import get_stock_price as _gsp
+                        _spot = _gsp(pos.symbol, exchange, currency)
+                        _intrinsic = (_spot - (pos.strike or 0)) if _spot and _spot > (pos.strike or 0) else 0
+                        if _intrinsic > 0.50:
+                            # Use intrinsic value as estimate for buyback cost
+                            live_ask = round(_intrinsic, 2)
+                            log.info("cc_check_using_intrinsic_value",
+                                     symbol=pos.symbol, spot=round(_spot, 2),
+                                     strike=pos.strike, intrinsic=round(_intrinsic, 2))
+                        else:
+                            log.debug("cc_check_no_live_price", symbol=pos.symbol)
+                            continue
 
                     entry_premium = pos.entry_premium
                     if not entry_premium or entry_premium <= 0:
