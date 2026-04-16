@@ -207,6 +207,7 @@ async def portfolio_page(request: Request):
         watchlist = db.query(PortfolioWatchlist).order_by(
             PortfolioWatchlist.buy_signal.desc(),
             PortfolioWatchlist.composite_score.desc(),
+            PortfolioWatchlist.compound_quality_pct.desc(),
         ).all()
 
         transactions = db.query(PortfolioTransaction).order_by(
