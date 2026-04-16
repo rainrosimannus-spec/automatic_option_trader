@@ -1295,6 +1295,64 @@ class PortfolioBuyer:
 
         log.info("portfolio_metrics_updated", updated=updated, failed=failed, total=len(watchlist))
 
+    def _compute_compound_quality(self) -> None:
+        """
+        Compute compound quality score for all watchlist stocks.
+        Combines growth_score and quality_score with tier-specific weights,
+        then normalizes within each tier to 1-100% based on actual score distance.
+        Stored as compound_quality_pct in portfolio_watchlist.
+        Called before recalc_scores_from_db() so 70/30 blending can use it.
+        """
+        with get_db() as db:
+            all_stocks = db.query(PortfolioWatchlist).all()
+
+            # Tier-specific weights for growth vs quality components
+            # valuation_score excluded — FMP free tier returns 50.0 default too often
+            tier_weights = {
+                "growth":      {"growth": 0.50, "quality": 0.50},
+                "dividend":    {"growth": 0.30, "quality": 0.70},
+                "breakthrough": {"growth": 0.70, "quality": 0.30},
+            }
+
+            # Group by tier
+            by_tier: dict[str, list] = {}
+            for s in all_stocks:
+                by_tier.setdefault(s.tier, []).append(s)
+
+            for tier, stocks in by_tier.items():
+                w = tier_weights.get(tier, tier_weights["growth"])
+
+                # Compute raw compound score per stock
+                raw: dict[str, float] = {}
+                for s in stocks:
+                    g = s.growth_score or 0.0
+                    q = s.quality_score or 0.0
+                    raw[s.symbol] = g * w["growth"] + q * w["quality"]
+
+                if not raw:
+                    continue
+
+                min_raw = min(raw.values())
+                max_raw = max(raw.values())
+                spread = max_raw - min_raw
+
+                for s in stocks:
+                    if spread > 0:
+                        # Normalize: best=100, worst=1, proportional to actual distance
+                        pct = ((raw[s.symbol] - min_raw) / spread) * 99 + 1
+                    else:
+                        # All stocks identical score — give everyone 50
+                        pct = 50.0
+
+                    entry = db.query(PortfolioWatchlist).filter(
+                        PortfolioWatchlist.symbol == s.symbol
+                    ).first()
+                    if entry:
+                        entry.compound_quality_pct = round(pct, 1)
+
+            db.commit()
+        log.info("compound_quality_computed")
+
     def recalc_scores_from_db(self):
         """
         Recalculate composite scores using metrics already in the database.
@@ -1302,6 +1360,9 @@ class PortfolioBuyer:
         Useful when metrics were fetched but scores weren't saved yet.
         """
         from src.portfolio.analyzer import TIER_PARAMS
+
+        # Compute compound quality scores first — needed for 70/30 blending
+        self._compute_compound_quality()
 
         with get_db() as db:
             watchlist = db.query(PortfolioWatchlist).all()
@@ -1364,7 +1425,10 @@ class PortfolioBuyer:
                 ).first()
                 if entry:
                     entry.raw_score = round(raw_score, 1)
-                    entry.composite_score = round(score, 1)
+                    # 70/30 blend: price signal (70%) + compound quality (30%)
+                    quality_pct = entry.compound_quality_pct or 50.0
+                    blended = (score * 0.70) + (quality_pct * 0.30)
+                    entry.composite_score = round(blended, 1)
                     if score > 0 and not entry.buy_signal:
                         entry.buy_signal = True
                         if entry.discount_pct and entry.discount_pct >= min_disc:

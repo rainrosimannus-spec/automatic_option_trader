@@ -106,6 +106,7 @@ class PortfolioWatchlist(Base):
     growth_score: Mapped[float] = mapped_column(Float, default=0.0)
     valuation_score: Mapped[float] = mapped_column(Float, default=0.0)
     quality_score: Mapped[float] = mapped_column(Float, default=0.0)
+    compound_quality_pct: Mapped[float] = mapped_column(Float, default=50.0)  # normalized 1-100, within-tier relative quality
     category: Mapped[str] = mapped_column(String(15), default="growth")  # legacy compat
     screened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
