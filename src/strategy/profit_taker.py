@@ -430,21 +430,7 @@ class ProfitTaker:
                             log.info("cc_check_using_bid_as_ask",
                                      symbol=pos.symbol, bid=round(live_bid, 2))
                         else:
-                            # Last resort: estimate intrinsic value from options stock position
-                            # Avoid get_stock_price — causes event loop conflict in scheduler thread
-                            from src.core.database import get_db as _gdb
-                            from src.core.models import Position as _Pos, PositionStatus as _PS
-                            _spot = 0.0
-                            with _gdb() as _db:
-                                _stock_pos = _db.query(_Pos).filter(
-                                    _Pos.symbol == pos.symbol,
-                                    _Pos.position_type == "stock",
-                                    _Pos.status == _PS.OPEN,
-                                ).first()
-                                if _stock_pos and _stock_pos.cost_basis:
-                                    # Use cost_basis as conservative spot estimate
-                                    # Real price likely higher if call is deeply ITM
-                                    _spot = _stock_pos.cost_basis
+                            _spot = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
                             _intrinsic = (_spot - (pos.strike or 0)) if _spot and _spot > (pos.strike or 0) else 0
                             if _intrinsic > 0.50:
                                 live_ask = round(_intrinsic, 2)
