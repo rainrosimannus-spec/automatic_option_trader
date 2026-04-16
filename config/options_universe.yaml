@@ -43,7 +43,7 @@ stocks:
   name: SHOPIFY INC - CLASS A
   sector: Communications
   exchange: SMART
-  currency: CAD
+  currency: USD
   tier: growth
   options_score: 73.4
   options_liquidity: 72.4
