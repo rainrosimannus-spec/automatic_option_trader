@@ -424,20 +424,36 @@ class ProfitTaker:
                         pos.symbol, pos.expiry, pos.strike, "C", opt_exchange, currency
                     )
                     if not live_ask or live_ask <= 0:
-                        # No live price — check if deeply ITM and estimate intrinsic value
-                        # for roll-up evaluation. Skip OTM profit-taking without live price.
-                        from src.broker.market_data import get_stock_price as _gsp
-                        _spot = _gsp(pos.symbol, exchange, currency)
-                        _intrinsic = (_spot - (pos.strike or 0)) if _spot and _spot > (pos.strike or 0) else 0
-                        if _intrinsic > 0.50:
-                            # Use intrinsic value as estimate for buyback cost
-                            live_ask = round(_intrinsic, 2)
-                            log.info("cc_check_using_intrinsic_value",
-                                     symbol=pos.symbol, spot=round(_spot, 2),
-                                     strike=pos.strike, intrinsic=round(_intrinsic, 2))
+                        # No live ask — try bid first
+                        if live_bid and live_bid > 0:
+                            live_ask = live_bid
+                            log.info("cc_check_using_bid_as_ask",
+                                     symbol=pos.symbol, bid=round(live_bid, 2))
                         else:
-                            log.debug("cc_check_no_live_price", symbol=pos.symbol)
-                            continue
+                            # Last resort: estimate intrinsic value from options stock position
+                            # Avoid get_stock_price — causes event loop conflict in scheduler thread
+                            from src.core.database import get_db as _gdb
+                            from src.core.models import Position as _Pos, PositionStatus as _PS
+                            _spot = 0.0
+                            with _gdb() as _db:
+                                _stock_pos = _db.query(_Pos).filter(
+                                    _Pos.symbol == pos.symbol,
+                                    _Pos.position_type == "stock",
+                                    _Pos.status == _PS.OPEN,
+                                ).first()
+                                if _stock_pos and _stock_pos.cost_basis:
+                                    # Use cost_basis as conservative spot estimate
+                                    # Real price likely higher if call is deeply ITM
+                                    _spot = _stock_pos.cost_basis
+                            _intrinsic = (_spot - (pos.strike or 0)) if _spot and _spot > (pos.strike or 0) else 0
+                            if _intrinsic > 0.50:
+                                live_ask = round(_intrinsic, 2)
+                                log.info("cc_check_using_intrinsic_value",
+                                         symbol=pos.symbol, spot=round(_spot, 2),
+                                         strike=pos.strike, intrinsic=round(_intrinsic, 2))
+                            else:
+                                log.info("cc_check_no_live_price", symbol=pos.symbol)
+                                continue
 
                     entry_premium = pos.entry_premium
                     if not entry_premium or entry_premium <= 0:
@@ -467,15 +483,13 @@ class ProfitTaker:
                             continue  # don't also check ITM roll on same position
 
                     # ── ITM roll-up ──
-                    # Skip if DTE <= 2 AND call is not deeply ITM
-                    # Exception: if stock is deeply ITM (>5% above strike), rolling still makes
-                    # sense even at DTE 1 — intrinsic value is high and new strike can be much better
-                    current_price_check = get_stock_price(pos.symbol, exchange, currency)
-                    deeply_itm = current_price_check and current_price_check > (pos.strike or 0) * 1.05
+                    # Estimate stock price from option intrinsic value: spot ≈ strike + call_ask
+                    # This avoids get_stock_price() which causes event loop conflict in scheduler
+                    current_price = (pos.strike or 0) + live_ask
+                    deeply_itm = current_price > (pos.strike or 0) * 1.05
                     if dte <= 2 and not deeply_itm:
                         continue
 
-                    current_price = get_stock_price(pos.symbol, exchange, currency)
                     if not current_price or current_price <= 0:
                         continue
 
