@@ -5,7 +5,7 @@ Read this to know what to do next, what's broken, and what to test first.
 
 ---
 
-## System Status (April 15, 2026)
+## System Status (April 16, 2026)
 
 Both connections stable. App running. Dashboard accessible at http://37.0.30.34:8080
 
@@ -15,83 +15,61 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 | Portfolio gateway (port 7496) | Running |
 | Trader app (port 8080) | Running |
 | Trailing stop monitor | Active, every 15 min |
-| FMP cache | Active, 30-day cache in data/fmp_cache.json |
-| Screener | WORKING — last run 2026-04-09 06:21 UTC |
-| Accrued interest Flex refresh | FIXED — runs daily 08:00 ET |
-| Risk assessment | Sonnet, monthly, conservative prompt, 1/2/3 penalties |
-| Watchlist metrics | FIXED — event loop conflict resolved, non-SMART exchanges updating |
 | CC profit-taking | LIVE — OTM profit-take + ITM roll-up in job_check_profit() |
-| Portfolio pending orders | WORKING — shows manually placed TWS orders |
-| Portfolio price update | FIXED — non-SMART exchanges keep original exchange code |
-| Portfolio sync transactions | FIXED — new holdings detected via sync now record PortfolioTransaction |
-| Bridge event loop | FIXED — bridge.py imports _ensure_event_loop from connection.py |
+| CC roll-up profitability guard | IMPROVED — strike improvement - net debit - fees > $50 |
+| CC roll-up DTE guard | IMPROVED — allows roll at DTE<=2 if deeply ITM (>5% above strike) |
+| Compound quality score | LIVE — 80/20 price/quality blend in buy strategy |
 | Trade sync position closure | FIXED — BUY_CALL/BUY_PUT fills close matching open position with P&L |
-| Compound quality score | NEW — 80/20 price/quality blend in buy strategy |
+| Portfolio price update | FIXED — non-SMART exchanges keep original exchange code |
+| Bridge event loop | FIXED |
 
 ---
 
 ## Current Positions
 
 **Options account (Maggy):**
-- TTD: assigned at $26.50, stock at ~$20.53, cost basis $25.52. Wheel scanning for covered calls.
-- SHOP, UBER, PANW: assigned March 27, wheel scanning for covered calls
-- PANW: covered call rolled from $155 to $162.50 Apr 24 expiry. Realized loss -$474 recorded.
+- TTD: assigned at $26.50, cost basis $25.52. Wheel scanning for covered calls.
+- SHOP: covered call at $116 expiry Apr 17. Manual order cancelled — watching for auto roll-up trigger.
+- PANW: covered call rolled to $162.50 Apr 24. Realized loss -$474.
+- UBER: wheel scanning for covered calls
 - PG: covered call April expiry
 
 **Portfolio account (Winston):**
-- 43 holdings
-- Margin at ~80% — no new buys until margin clears
-- Market at new highs — no buy signals above 70 threshold currently
-- Non-US watchlist prices populating correctly after event loop fix
+- 43 holdings, margin ~80%, no new buys until margin clears
 
 ---
 
 ## Top Priority Next Session
 
-1. Chronos live test — run nightly forecast job manually to verify it writes to portfolio_forecasts
-2. Trailing stop verification — check suggestions have trailing_stop_pct set
-3. Monitor CC profit-taker logs — confirm cc_profit_check_started fires correctly
-4. Verify trade sync position closure works on next manual close in TWS
+1. Verify CC roll-up trigger fired for SHOP (watching ~3h15m window after manual order cancelled)
+2. Chronos live test
+3. Trailing stop verification
 
 ---
 
-## What Changed This Session (April 15, 2026)
+## What Changed This Session (April 16, 2026)
 
-**Compound quality score for buy strategy:**
-- New field: compound_quality_pct in portfolio_watchlist (1-100, normalized within tier)
-- _compute_compound_quality(): tier-specific weights:
-  - growth: growth 50% + quality 50%
-  - dividend: growth 30% + quality 70%
-  - breakthrough: growth 70% + quality 30%
-- Normalization: best stock = 100%, worst = 1%, proportional to actual score distance
-- 80/20 blend: composite_score = (price_signal * 0.80) + (compound_quality_pct * 0.20)
-- Called automatically in recalc_scores_from_db() before every buy scan
-- Monthly screener unchanged — only buying strategy affected
+**CC roll-up profitability guard:**
+- Single formula: roll_benefit = (new_strike - current_strike) - (buyback - new_premium) - fees
+- Auto-execute only if > $50/contract, reject below
+- Fees estimated $2.60/contract (both legs)
 
-**Design rationale:**
-- Price signal remains dominant (80%) — timing is primary
-- Quality is the differentiator (20%) — when price signals are similar, better companies win
-- Max quality boost = 20 points (PLTR/NVDA can't dominate purely on quality)
-- Prevents buying mediocre stocks just because they're cheap
+**CC roll-up DTE guard:**
+- Now allows roll at DTE<=2 if stock deeply ITM (>5% above strike)
+- Fixes SHOP/PANW case where roll was blocked on expiry day
 
-**Current buy signal scores (post-recalc):**
-- Growth: ULVR 56.4, IMB 54.7, NOW 51.0, TTD 49.7, NICE 49.3
-- Dividend: INFY 49.1, RKT 45.5, CEG 21.1
-- Breakthrough: ZS 48.7, SNOW 47.5, ENPH 41.8
-- No stock above 70 (direct buy threshold) — market at highs, correct behavior
+**CC regime awareness:** decided NOT to implement — roll-up trigger is the right mechanism
+
+**Compound quality (April 15):** 80/20 price/quality blend, compound_quality_pct in DB
 
 ---
 
-## Score Architecture (IMPORTANT)
+## CC Roll-Up Logic
 
-Two completely separate scoring systems:
-
-1. Screener score (FMP fundamentals) — selects top 100 stocks. Lives in screened_universe.yaml ONLY. Never written to DB.
-2. Buy signal score (IBKR price/SMA/RSI) — triggers actual buys. Now blended 80/20 with compound quality:
-   - raw_score = pre-penalty IBKR price signal score
-   - compound_quality_pct = normalized within-tier fundamental quality (1-100)
-   - composite_score = (raw_score * 0.80) + (compound_quality_pct * 0.20) - risk_penalty
-   - Written by recalc_scores_from_db() and _update_watchlist_metrics()
+Trigger: stock > strike * 1.07 AND (DTE > 2 OR stock > strike * 1.05)
+New strike: max(net_cost_basis * 1.01, current_strike * 1.05)
+Profitability: (new_strike - current_strike) - (buyback - new_premium) - fees > $50
+Runs every 5 min inside job_check_profit()
 
 ---
 
@@ -101,23 +79,10 @@ Two completely separate scoring systems:
     Project: ~/automatic_option_trader
     Restart: ~/restart-all.sh
     Dashboard: http://37.0.30.34:8080
-    Repo: github.com/rainrosimannus-spec/automatic_option_trader
 
-Key file locations:
-- Compound quality: src/portfolio/buyer.py — _compute_compound_quality()
-- Buy score blend: src/portfolio/buyer.py — recalc_scores_from_db()
-- CC profit-taker: src/strategy/profit_taker.py — check_covered_calls(), _close_covered_call(), _roll_call_up()
-- Put profit-taker: src/strategy/profit_taker.py — check_positions()
-- Buy to close call: src/broker/orders.py — buy_to_close_call()
-- Trade sync position closure: src/scheduler/trade_sync.py — BUY_CALL/BUY_PUT handling
-- Wheel / covered call writing: src/strategy/wheel.py — write_covered_calls(), _write_call()
-- Call screener: src/strategy/screener.py — screen_calls()
-- Portfolio price update: src/portfolio/buyer.py — update_holdings_prices()
-- Portfolio metrics job: src/portfolio/scheduler.py — job_portfolio_update_metrics()
-- Portfolio pending orders cache: src/portfolio/connection.py — refresh_portfolio_pending_orders_cache()
-- Portfolio sync transactions: src/portfolio/sync.py — sync_ibkr_holdings()
-- Bridge (inter-account transfers): src/portfolio/bridge.py
-- Watchlist metrics: src/portfolio/buyer.py — update_watchlist_metrics()
-- Analyzer: src/portfolio/analyzer.py — analyze_stock()
-- Risk assessment: src/portfolio/scheduler.py — _assess_structural_risks()
-- Accrued interest: src/portfolio/scheduler.py — refresh_accrued_interest_from_flex()
+Key files:
+- CC profit-taker + roll-up: src/strategy/profit_taker.py
+- Compound quality + buy blend: src/portfolio/buyer.py
+- Trade sync closure: src/scheduler/trade_sync.py
+- Wheel / CC writing: src/strategy/wheel.py
+- Analyzer: src/portfolio/analyzer.py
