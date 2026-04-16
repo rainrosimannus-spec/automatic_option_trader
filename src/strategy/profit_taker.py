@@ -455,8 +455,12 @@ class ProfitTaker:
                             continue  # don't also check ITM roll on same position
 
                     # ── ITM roll-up ──
-                    # Only if DTE > 2 (at DTE <= 2 assignment is imminent, rolling too expensive)
-                    if dte <= 2:
+                    # Skip if DTE <= 2 AND call is not deeply ITM
+                    # Exception: if stock is deeply ITM (>5% above strike), rolling still makes
+                    # sense even at DTE 1 — intrinsic value is high and new strike can be much better
+                    current_price_check = get_stock_price(pos.symbol, exchange, currency)
+                    deeply_itm = current_price_check and current_price_check > (pos.strike or 0) * 1.05
+                    if dte <= 2 and not deeply_itm:
                         continue
 
                     current_price = get_stock_price(pos.symbol, exchange, currency)
@@ -613,33 +617,30 @@ class ProfitTaker:
             )
             return False
 
-        # Check new premium is meaningful: >= 50% of original premium
+        # Profitability guard: the roll only makes sense if
+        # strike improvement - (buyback cost - new premium) - estimated fees > $50/contract
+        # Formula: (new_strike - current_strike) - (buyback_cost - new_premium) - fees > $0.50/share
         new_premium = candidate.bid
-        min_premium = entry_premium * 0.50
-        if new_premium < min_premium:
-            log.info("cc_rollup_premium_too_low",
-                     symbol=pos.symbol, new_premium=round(new_premium, 4),
-                     min_required=round(min_premium, 4))
-            create_suggestion(
-                db, pos.symbol, "sell_covered_call_review",
-                notes=f"ITM roll-up: stock at {current_price:.2f} vs strike {pos.strike:.2f}. "
-                      f"Best candidate strike {candidate.strike} premium {new_premium:.2f} "
-                      f"below 50% threshold ({min_premium:.2f}). Manual review needed."
-            )
-            return False
+        strike_improvement = candidate.strike - (pos.strike or 0)
+        net_debit = current_ask - new_premium  # positive = net cost, negative = net credit
+        # Estimate fees: ~$1.30 per contract per leg = $2.60 total for two legs
+        estimated_fees_per_share = 2.60 / 100.0
+        roll_benefit_per_share = strike_improvement - net_debit - estimated_fees_per_share
+        roll_benefit_dollars = roll_benefit_per_share * 100  # per contract
 
-        # Net debit guard: cost to close current - credit from new call
-        net_debit = current_ask - new_premium
-        max_debit = entry_premium * 0.50
-        if net_debit > max_debit:
-            log.info("cc_rollup_net_debit_too_high",
-                     symbol=pos.symbol, net_debit=round(net_debit, 4),
-                     max_allowed=round(max_debit, 4))
-            create_suggestion(
-                db, pos.symbol, "sell_covered_call_review",
-                notes=f"ITM roll-up: net debit {net_debit:.2f} exceeds limit ({max_debit:.2f}). "
-                      f"Candidate: strike {candidate.strike} expiry {candidate.expiry}. Manual review."
-            )
+        log.info("cc_rollup_profitability_check",
+                 symbol=pos.symbol,
+                 strike_improvement=round(strike_improvement, 2),
+                 buyback=round(current_ask, 2),
+                 new_premium=round(new_premium, 4),
+                 net_debit=round(net_debit, 4),
+                 roll_benefit=round(roll_benefit_dollars, 2))
+
+        if roll_benefit_dollars < 50.0:
+            log.info("cc_rollup_not_profitable",
+                     symbol=pos.symbol,
+                     roll_benefit=round(roll_benefit_dollars, 2),
+                     min_required=50.0)
             return False
 
         # All guards passed — execute the roll
