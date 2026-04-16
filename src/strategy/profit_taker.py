@@ -618,6 +618,8 @@ class ProfitTaker:
             delta_min_override=0.30,
             delta_max_override=0.45,
             stock_exchange=exchange,
+            stock_price_override=current_price,
+            max_dte_override=14,
         )
 
         if not candidate:

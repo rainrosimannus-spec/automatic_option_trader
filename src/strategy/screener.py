@@ -322,23 +322,28 @@ def screen_calls(
     delta_min_override: float | None = None,
     delta_max_override: float | None = None,
     stock_exchange: str | None = None,
+    stock_price_override: float | None = None,
+    max_dte_override: int | None = None,
 ) -> Optional[ScoredContract]:
     """
     Screen and rank call contracts for covered call writing.
     delta_min/max_override: for progressive strike management.
+    stock_price_override: use live price instead of get_stock_price (yesterday close).
+    max_dte_override: cap DTE for roll-up scenarios (e.g. 14 days).
     Uses Black-Scholes theoretical pricing from historical IV data.
     """
     from src.broker.connection import ensure_main_event_loop
     ensure_main_event_loop()
     cfg = get_settings().strategy
     stk_exchange = stock_exchange or exchange
+    dte_max = max_dte_override if max_dte_override is not None else cfg.cc_dte_max
 
     contracts = get_call_contracts(
         symbol,
         exchange=exchange,
         currency=currency,
         min_dte=cfg.cc_dte_min,
-        max_dte=cfg.cc_dte_max,
+        max_dte=dte_max,
         min_strike=min_strike,
     )
 
@@ -346,7 +351,7 @@ def screen_calls(
         log.debug("no_call_contracts", symbol=symbol)
         return None
 
-    stock_price = get_stock_price(symbol, exchange=stk_exchange, currency=currency)
+    stock_price = stock_price_override if stock_price_override and stock_price_override > 0 else get_stock_price(symbol, exchange=stk_exchange, currency=currency)
     if not stock_price or stock_price <= 0:
         log.debug("no_stock_price_for_call_screening", symbol=symbol)
         return None
