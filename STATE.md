@@ -5,7 +5,7 @@ Read this to know what to do next, what's broken, and what to test first.
 
 ---
 
-## System Status (April 14, 2026)
+## System Status (April 15, 2026)
 
 Both connections stable. App running. Dashboard accessible at http://37.0.30.34:8080
 
@@ -19,13 +19,14 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 | Screener | WORKING — last run 2026-04-09 06:21 UTC |
 | Accrued interest Flex refresh | FIXED — runs daily 08:00 ET |
 | Risk assessment | Sonnet, monthly, conservative prompt, 1/2/3 penalties |
-| Watchlist metrics | FIXED — event loop conflict resolved, non-SMART exchanges now update |
+| Watchlist metrics | FIXED — event loop conflict resolved, non-SMART exchanges updating |
 | CC profit-taking | LIVE — OTM profit-take + ITM roll-up in job_check_profit() |
 | Portfolio pending orders | WORKING — shows manually placed TWS orders |
 | Portfolio price update | FIXED — non-SMART exchanges keep original exchange code |
 | Portfolio sync transactions | FIXED — new holdings detected via sync now record PortfolioTransaction |
-| Bridge event loop | FIXED — bridge.py now imports _ensure_event_loop from connection.py |
-| Trade sync position closure | FIXED — BUY_CALL/BUY_PUT fills now close matching open position with P&L |
+| Bridge event loop | FIXED — bridge.py imports _ensure_event_loop from connection.py |
+| Trade sync position closure | FIXED — BUY_CALL/BUY_PUT fills close matching open position with P&L |
+| Compound quality score | NEW — 80/20 price/quality blend in buy strategy |
 
 ---
 
@@ -34,13 +35,14 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 **Options account (Maggy):**
 - TTD: assigned at $26.50, stock at ~$20.53, cost basis $25.52. Wheel scanning for covered calls.
 - SHOP, UBER, PANW: assigned March 27, wheel scanning for covered calls
-- PANW: covered call rolled from $155 to $162.50 Apr 24 expiry. $155 manually closed, realized loss -$474 recorded manually in DB.
+- PANW: covered call rolled from $155 to $162.50 Apr 24 expiry. Realized loss -$474 recorded.
 - PG: covered call April expiry
 
 **Portfolio account (Winston):**
 - 43 holdings
 - Margin at ~80% — no new buys until margin clears
-- Non-US watchlist prices now populating correctly after event loop fix
+- Market at new highs — no buy signals above 70 threshold currently
+- Non-US watchlist prices populating correctly after event loop fix
 
 ---
 
@@ -53,40 +55,30 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 
 ---
 
-## What Changed This Session (April 14, 2026)
+## What Changed This Session (April 15, 2026)
 
-**Trade sync position closure fix:**
-- trade_sync.py: when BUY_CALL or BUY_PUT fill is detected, finds matching open position and closes it
-- Calculates realized P&L: (entry_premium - close_price) * quantity * 100 - commission
-- Handles both covered_call and short_call position types for BUY_CALL
-- Handles short_put for BUY_PUT
-- Previously: manually closed options stayed OPEN in DB until next position reconciliation marked them EXPIRED with no P&L
-- No double-close risk: reconciliation only touches OPEN positions; fill loop closes first
+**Compound quality score for buy strategy:**
+- New field: compound_quality_pct in portfolio_watchlist (1-100, normalized within tier)
+- _compute_compound_quality(): tier-specific weights:
+  - growth: growth 50% + quality 50%
+  - dividend: growth 30% + quality 70%
+  - breakthrough: growth 70% + quality 30%
+- Normalization: best stock = 100%, worst = 1%, proportional to actual score distance
+- 80/20 blend: composite_score = (price_signal * 0.80) + (compound_quality_pct * 0.20)
+- Called automatically in recalc_scores_from_db() before every buy scan
+- Monthly screener unchanged — only buying strategy affected
 
-**PANW $155 call manual DB fix (one-time):**
-- Manually marked CLOSED with realized_pnl = -474.0
-- This was necessary because the fix wasn't in place when the trade happened
-- Future manual closes will be handled automatically by trade_sync
+**Design rationale:**
+- Price signal remains dominant (80%) — timing is primary
+- Quality is the differentiator (20%) — when price signals are similar, better companies win
+- Max quality boost = 20 points (PLTR/NVDA can't dominate purely on quality)
+- Prevents buying mediocre stocks just because they're cheap
 
-**Event loop fix — portfolio metrics job:**
-- scheduler.py: portfolio lock released before update_watchlist_metrics()
-- Fixes 'This event loop is already running' for all non-SMART exchange stocks
-- JSE/TASE/SEHK/SGX prices now populating correctly
-
-**Bridge event loop fix:**
-- bridge.py: local _ensure_event_loop() replaced with import from connection.py
-
-**Portfolio pending orders:**
-- refresh_portfolio_pending_orders_cache() using reqAllOpenOrders()
-- Shows manually placed TWS orders on portfolio dashboard
-
-**Portfolio price update (non-SMART exchanges):**
-- buyer.py and analyzer.py: non-SMART exchanges keep original exchange code
-- Blacklist: SEHK, JSE, SGX, TASE, NSE, ASX, BSE, KSE, TWSE, BKK, IDX
-
-**CC profit-taking (April 11):**
-- buy_to_close_call(), check_covered_calls(), _close_covered_call(), _roll_call_up()
-- job_check_profit() calls both puts and calls profit-taker
+**Current buy signal scores (post-recalc):**
+- Growth: ULVR 56.4, IMB 54.7, NOW 51.0, TTD 49.7, NICE 49.3
+- Dividend: INFY 49.1, RKT 45.5, CEG 21.1
+- Breakthrough: ZS 48.7, SNOW 47.5, ENPH 41.8
+- No stock above 70 (direct buy threshold) — market at highs, correct behavior
 
 ---
 
@@ -95,10 +87,11 @@ Both connections stable. App running. Dashboard accessible at http://37.0.30.34:
 Two completely separate scoring systems:
 
 1. Screener score (FMP fundamentals) — selects top 100 stocks. Lives in screened_universe.yaml ONLY. Never written to DB.
-2. Buy signal score (IBKR price/SMA/RSI) — triggers actual buys. Stored as:
-   - raw_score = pre-penalty IBKR score
-   - composite_score = raw_score minus penalties
-   - Both fields in portfolio_watchlist DB
+2. Buy signal score (IBKR price/SMA/RSI) — triggers actual buys. Now blended 80/20 with compound quality:
+   - raw_score = pre-penalty IBKR price signal score
+   - compound_quality_pct = normalized within-tier fundamental quality (1-100)
+   - composite_score = (raw_score * 0.80) + (compound_quality_pct * 0.20) - risk_penalty
+   - Written by recalc_scores_from_db() and _update_watchlist_metrics()
 
 ---
 
@@ -111,6 +104,8 @@ Two completely separate scoring systems:
     Repo: github.com/rainrosimannus-spec/automatic_option_trader
 
 Key file locations:
+- Compound quality: src/portfolio/buyer.py — _compute_compound_quality()
+- Buy score blend: src/portfolio/buyer.py — recalc_scores_from_db()
 - CC profit-taker: src/strategy/profit_taker.py — check_covered_calls(), _close_covered_call(), _roll_call_up()
 - Put profit-taker: src/strategy/profit_taker.py — check_positions()
 - Buy to close call: src/broker/orders.py — buy_to_close_call()
