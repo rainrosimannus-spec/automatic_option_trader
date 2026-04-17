@@ -104,6 +104,33 @@ def sell_put(
         return trade
 
 
+
+def _verify_short_position(symbol: str, expiry: str, strike: float,
+                           right: str, quantity: int) -> bool:
+    """
+    Safety check: verify IBKR account shows a matching short position
+    before any buy-to-close. Prevents accidental naked-long positions
+    from DB/reality drift.
+
+    Returns True only if: symbol + expiry + strike + right match AND
+    position.position < 0 AND abs(position.position) >= quantity.
+    """
+    try:
+        ib = get_ib()
+        for p in ib.positions():
+            c = p.contract
+            if (c.symbol == symbol
+                and getattr(c, "right", "") == right
+                and float(getattr(c, "strike", 0) or 0) == float(strike)
+                and getattr(c, "lastTradeDateOrContractMonth", "") == expiry
+                and p.position < 0
+                and abs(p.position) >= quantity):
+                return True
+        return False
+    except Exception as e:
+        log.error("verify_short_position_exception", symbol=symbol, error=str(e))
+        return False
+
 def buy_to_close_put(
     symbol: str,
     expiry: str,
@@ -114,6 +141,10 @@ def buy_to_close_put(
     currency: str = "USD",
 ) -> Optional[IBTrade]:
     """Buy to close a short put position."""
+    if not _verify_short_position(symbol, expiry, strike, "P", quantity):
+        log.error("buy_to_close_put_BLOCKED_no_matching_short",
+                  symbol=symbol, expiry=expiry, strike=strike, quantity=quantity)
+        return None
     with get_ib_lock():
         ib = get_ib()
         contract = Option(symbol, expiry, strike, "P", exchange, currency=currency)
@@ -160,6 +191,10 @@ def buy_to_close_call(
     currency: str = "USD",
 ) -> Optional[IBTrade]:
     """Buy to close a short covered call position."""
+    if not _verify_short_position(symbol, expiry, strike, "C", quantity):
+        log.error("buy_to_close_call_BLOCKED_no_matching_short",
+                  symbol=symbol, expiry=expiry, strike=strike, quantity=quantity)
+        return None
     with get_ib_lock():
         ib = get_ib()
         contract = Option(symbol, expiry, strike, "C", exchange, currency=currency)
@@ -239,6 +274,7 @@ def sell_covered_call(
             return None
 
         return trade
+
 
 
 def cancel_order(trade: IBTrade) -> None:
