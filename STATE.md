@@ -1,117 +1,162 @@
 # Maggy & Winston — STATE
+
 This file is updated at the end of every session.
 It describes the system exactly as it stands RIGHT NOW.
 Read this to know what to do next, what's broken, and what to test first.
 
 ---
 
-## System Status (April 16, 2026)
+## System Status (April 17, 2026)
 
-Both connections stable. App running. Dashboard accessible at http://37.0.30.34:8080
+Both connections stable. App running. Dashboard at <http://37.0.30.34:8080>.
+
+**Auto-execution is OFF** after today's incident. Do not re-enable without market-open sanity watch.
 
 | Component | Status |
-|-----------|--------|
+| --- | --- |
 | Options gateway (port 4001) | Running |
 | Portfolio gateway (port 7496) | Running |
 | Trader app (port 8080) | Running |
+| Auto-execute | **DISABLED (suggestion mode)** |
 | Trailing stop monitor | Active, every 15 min |
-| CC profit-taking | LIVE — OTM profit-take + ITM roll-up working |
-| CC roll-up | TESTED — SHOP rolled from $116 to $135 May 15 successfully today |
-| Compound quality score | LIVE — 80/20 price/quality blend |
-| Trade sync position closure | FIXED — BUY_CALL/BUY_PUT fills close matching position |
-| Portfolio price update | FIXED — non-SMART exchanges correct |
-| Bridge event loop | FIXED |
+| CC profit-taking | LIVE (see new safeguards) |
+| CC roll-up | LIVE (see new safeguards) |
+| BS-derived order pricing | **ELIMINATED everywhere** |
 
 ---
 
 ## Current Positions
 
 **Options account (Maggy):**
-- TTD: assigned at $26.50, cost basis $25.52. Wheel scanning for covered calls.
-- SHOP: rolled from $116 Apr17 to $135 May15. Realized loss on $116 call: -$798.
-- UBER: wheel scanning for covered calls
-- PANW: covered call $162.50 Apr 24
-- PG: covered call $146 Apr 24
+- TTD: assigned at $26.50, cost basis $25.52. Short CC $26 May 8 @ $0.86 (synced by IBKR).
+- SHOP: 100 shares + short CC $135 May 15 @ $9.20 (manually sold today after incident).
+- UBER: wheel scanning for covered calls.
+- PANW: short CC $162.50 Apr 24 @ $5.47.
+- PG: 100 shares + short CC $146 Apr 24 @ $2.74. Stock ~$147 at session end; real buyback ~$3.02.
 
-**Portfolio account (Winston):**
-- 43 holdings, margin ~75%, no new buys until margin clears
-
----
-
-## Top Priority Next Session
-
-1. Investigate why trade sync didn't auto-close SHOP $116 position after BUY_CALL fill — had to close manually. Check if `ib.fills()` loses fills after restart.
-2. Chronos live test
-3. Trailing stop verification
+**Portfolio account (Winston):** 43 holdings, margin ~75%, no new buys until margin clears.
 
 ---
 
-## What Changed This Session (April 16, 2026)
+## TODAY'S INCIDENT — April 17, 2026
 
-**CC roll-up fully working — SHOP proved it:**
-- SHOP $116 call (stock at $128) rolled automatically to $135 May15 at $7.15 premium
-- Roll benefit: ($135-$116) - ($12.90-$7.15) - fees = $13.22/share = $1,322/contract
+**Damage:** $202 loss on SHOP from duplicate buy-to-close fills at bad prices.
 
-**get_stock_live_price() added to market_data.py:**
-- Uses reqMktData for intraday price (get_stock_price returns yesterday's close — wrong for ITM calls)
-- Used in CC profit checker fallback when get_option_live_price returns None
+**Root causes (in order of contribution):**
 
-**screen_calls() upgraded:**
-- stock_price_override parameter — passes live price to Black-Scholes instead of stale close
-- max_dte_override parameter — roll-up uses 14-day cap (was going to 29 days)
-- If no candidate within 14 days → skip roll, let original call expire, wheel writes new one
-
-**SHOP currency fix:**
-- options_universe.yaml: SHOP currency CAD → USD (was causing Error 200 on option lookup)
-
-**CC roll-up DTE guard:**
-- DTE <= 2 AND deeply ITM (>5% above strike) → still evaluates roll
-- Fixes case where stock runs late in option's life
-
-**CC roll-up profitability guard:**
-- roll_benefit = (new_strike - current_strike) - (buyback - new_premium) - fees
-- Must be > $50/contract to auto-execute, else skip entirely
-
-**Known issues:**
-- Trade sync doesn't close covered_call positions after restart (fills lost from session)
-- UBER, PANW, TTD, PG not in options_universe.yaml — get_option_live_price uses defaults
-- These stocks rely on get_stock_live_price fallback for roll-up trigger
+1. **`current_price = pos.strike + live_ask`** — the roll-up derived "stock price" from `strike + call_ask` instead of calling for real stock price. When call ask snapped up momentarily, system believed stock was at $144.50 when reality was ~$133 all day.
+2. **Bid-as-ask fallback in `check_covered_calls`** — when live ask unavailable, substituted live bid. For a deep-ITM call: bid was $1.19, real ask was $3.02. System thought PG was at 57% profit when it was at a loss. Fired 15 buy orders in one day.
+3. **BS-derived prices reaching real orders** — multiple paths (screener, put profit-taker, portfolio put-entry, hedge) fell back to Black-Scholes theoretical prices when live IBKR quotes failed, then used those prices as real order limits.
+4. **No naked-buy guard** — buy-to-close fired a second time on SHOP even after the first had already closed the short position.
+5. **No roll-up re-entry guard** — previous roll's SELL leg sitting unfilled did not prevent a new roll from starting.
 
 ---
 
-## CC Roll-Up Logic (Complete)
+## Eight commits shipped today
 
-Trigger: stock > strike * 1.07 AND (DTE > 2 OR stock > strike * 1.05)
-Stock price: get_option_live_price first, fallback to get_stock_live_price (reqMktData)
-New strike: max(net_cost_basis * 1.01, current_strike * 1.05)
-New expiry: screen_calls() with max_dte=14, live stock price
-Profitability: (new_strike - current_strike) - (buyback - new_premium) - fees > $50/contract
-No candidate within 14 days → skip, let expire, wheel writes fresh call
-Runs every 5 min inside job_check_profit()
+| Phase | Commit | Change |
+| --- | --- | --- |
+| 2 | `706bd43` | `check_covered_calls`: removed bid-as-ask fallback AND intrinsic-value fallback. No live ask → skip cycle, log `cc_check_no_live_price`. |
+| 3a | `8bbb3b9` | Put profit-taker: removed BS fallback for buy-to-close price. No live ask → return False. Dropped unused greeks import. |
+| 3f | `685851b` | CC roll-up trigger: `current_price` now from `get_stock_live_price()` instead of `strike + call_ask`. No live price → skip. |
+| 3b+3c | `f15d82c` | Both screeners (`screen_puts`, `screen_calls`): removed BS fallback for order prices. Now iterate **top 2 candidates by score**, return first with valid live quote AND passing fee floor. If both fail → return None. |
+| 3d | `43d1084` | Hedge: removed BS fallback for SPY put ask. No live → return None. Dropped unused greeks import. |
+| 3e | `54f04c0` | Portfolio put-entry (`buyer.py`): added `reqMktData` snapshot + `_ensure_market_data_type()`. Replaced `greeks.bid` with live bid. No live → return False. Deleted dead `_bs_put_price` helper + unused `math` import. |
+| 5 | `307e970` | `buy_to_close_call` / `buy_to_close_put`: pre-flight check via new `_verify_short_position()` helper. Calls `ib.positions()`, verifies matching (symbol, expiry, strike, right) with `position.position < 0 AND abs(position) >= quantity`. If no match → log `buy_to_close_{call,put}_BLOCKED_no_matching_short` and return None. |
+| 6 | `0eef4a6` | `_roll_call_up`: at function top, scans `ib.openTrades()` for any pending SELL_CALL on same symbol (PreSubmitted/Submitted/PendingSubmit). If found → log `cc_rollup_skipped_prior_sell_pending` and return False. |
 
----
-
-## Score Architecture
-
-1. Screener score — selects watchlist. screened_universe.yaml only. Never in DB.
-2. Buy signal score — 80/20 blend:
-   - raw_score = IBKR price signal
-   - compound_quality_pct = normalized within-tier fundamental quality
-   - composite_score = (raw_score * 0.80) + (compound_quality_pct * 0.20) - penalty
+**Core principle enforced:** Black-Scholes is allowed for selection/ranking/delta-filtering, never for a price that becomes an order limit or a profit-take comparison.
 
 ---
 
-## Architecture Quick Reference
+## DB CLEANUP PERFORMED
 
-    Server: rain@37.0.30.34
-    Project: ~/automatic_option_trader
-    Restart: ~/restart-all.sh
-    Dashboard: http://37.0.30.34:8080
+During today's session:
+- All SUBMITTED Trade rows manually marked CANCELLED (PG phantom + SHOP phantom $149 rolls + pre-incident churn).
+- SHOP $135 covered_call Position row marked CLOSED.
+- SHOP position now reconciled via IBKR trade_sync (real positions: 100 shares + new short $135 May 15 @ $9.20).
+
+---
+
+## CONCURRENCY REVIEW (post-patch)
+
+Verified: today's commits do NOT introduce new lock/event-loop issues.
+- All new IBKR calls run inside existing `_scan_lock` (scheduler-level) or `get_ib_lock` (which is an `RLock` — reentrant, deadlock-safe for nested acquires).
+- Phase 3b+3c's top-2 iteration can block up to 4s (vs previous 2s) on one scan cycle. Well within scheduler timeouts (60-300s).
+- Portfolio side uses `get_ib_lock` only, no `_scan_lock` — consistent with pre-existing architecture.
+
+---
+
+## TOP PRIORITY — START OF NEXT SESSION
+
+1. **Sanity watch after re-enabling auto-exec.** Monday open. Watch first 2-3 cycles per ticker. Confirm:
+   - `cc_profit_check_done acted=[]` fires cleanly
+   - No `buy_to_close_*_BLOCKED_no_matching_short` on legitimate positions
+   - `cc_check_no_live_price` fires rarely (if it's firing every cycle, data feed is wrong)
+   - `call_candidates_exhausted_no_live` fires rarely
+2. **Investigate trade_sync position reconciliation.** Today's incident showed trade_sync can leave DB trades SUBMITTED when IBKR has moved on. Needs a periodic "reconcile SUBMITTED trades against actual IBKR order state" job.
+3. **Clean up STATE.md.** It's been accumulating. Tighter summary, less sprawl.
+
+---
+
+## STRATEGIC ASSESSMENT — TEST RUN Feb 20 to Apr 17, 2026
+
+**NLV return chart:** steady +5-10% through Feb 20 to Mar 18 (low VIX, sideways-up market). Crashed to -16% around Mar 24-29 (Iran war shock). Recovered to +10% by Apr 17. Above 24% annualized target line at session end.
+
+**What worked:** strategy performs reliably in calm markets. Steady premium income, low drawdown, consistent above-target pacing during Feb 20-Mar 18.
+
+**What didn't work:** entering turbulence. Drawdown wasn't the HALT (VIX>30) kicking in — it was damage accumulating as VIX rose from 15 to 25 while the system was still trading aggressively. By the time HALT triggered, losses were locked in. Recovery was market-shape-dependent, not system-driven.
+
+### Candidate improvements for turbulence handling (backlog, not this week)
+
+Ordered by impact/simplicity:
+
+1. **Smooth VIX throttle, not just HALT.** Current: aggressive <20, moderate 20-30, halt >30. Better: progressive reduction of delta, DTE, and position count as VIX moves from 15 → 25. By VIX=25 system should be nearly flat, not still trading.
+2. **VIX rate of change.** `dVIX/dt` matters more than absolute level. Fast spike (14→22 in two days) should trigger defensive mode before any level threshold.
+3. **Slower SPY trend filter.** Current TREND_BEARISH uses SPY MA10 < MA20 — noisy. Add a SPY-below-MA50 check for regime detection that's less jumpy.
+4. **Sector concentration check.** Don't stack 3+ short puts in the same sector. Geopolitical shocks hit correlated names together.
+5. **Earnings week derisking.** Count watchlist names reporting in the next 5 trading days. Above threshold → scan defensively.
+6. **Assignment-rate feedback.** Clustering of recent assignments = market moving against you. Auto-reduce aggressiveness.
+7. **Realized-vol-scaled position sizing.** After a -5% day, next day's scan cuts position size automatically.
+
+**Avoid:** ML-based regime detection, complex vol-of-vol triggers, option-pricing-model regime inference. Simple rules that degrade gracefully beat clever rules that fail unpredictably.
+
+### Strategic question raised today but not resolved
+
+**CC strategy mismatch with "exit ASAP" goal.** Current CC playbook (delta 0.30-0.45, OTM profit-take, ITM roll-up) is optimized for *premium-maximization on held stock*. But the stated goal for wheel-assigned stocks is *exit at zero damage ASAP* — which calls for higher delta (0.40-0.55), let-expire-rather-than-profit-take, and no roll-up (assignment is the win).
+
+Proposed design: per-position `wheel_exit_mode` flag, gating profit-take + roll-up checks. Default on for wheel-assigned stocks, off for stocks intentionally held. Not implemented yet. Worth building if assignment cycles continue to tie up capital at 6-8% margin interest.
+
+### Capital efficiency note
+
+15k account accruing $100+ interest today while shares sit. Margin interest ~6-8% annualized. Every day a wheel-assigned stock sits uncalled is opportunity cost vs. fresh put-selling. Quantifies why "exit ASAP" is the right frame for CC writing on wheel-assigned shares.
+
+---
+
+## Architecture Quick Reference (unchanged)
+
+```
+Server: rain@37.0.30.34
+Project: ~/automatic_option_trader
+Restart: ~/restart-all.sh
+Dashboard: http://37.0.30.34:8080
+```
 
 Key files:
-- CC profit-taker + roll-up: src/strategy/profit_taker.py
-- Live stock price: src/broker/market_data.py — get_stock_live_price()
-- Call screener: src/strategy/screener.py — screen_calls()
-- Compound quality + buy blend: src/portfolio/buyer.py
-- Trade sync closure: src/scheduler/trade_sync.py
-- Wheel / CC writing: src/strategy/wheel.py
+- CC profit-taker + roll-up + duplicate guard: `src/strategy/profit_taker.py`
+- Live stock price: `src/broker/market_data.py — get_stock_live_price()`
+- Call/put screener (top-2 iteration, live-only): `src/strategy/screener.py`
+- Compound quality + buy blend: `src/portfolio/buyer.py` (now live-bid-only)
+- Trade sync closure: `src/scheduler/trade_sync.py`
+- Wheel / CC writing: `src/strategy/wheel.py`
+- Naked-buy guard: `src/broker/orders.py — _verify_short_position()`
+
+---
+
+## Known Bugs / Not Fixed Yet
+
+1. **NLV staleness 16:00-20:00 ET** — `accountValues()` push stops after idle. Not investigated.
+2. **Structlog not writing to `logs/trader.log`** — only stdlib logging writes to file. Low priority. (Today's session confirmed this is still true — we used `tmux capture-pane` throughout.)
+3. **TimesFM GPU device bug** — workaround in place, Chronos preferred.
+4. **Trade sync leaves SUBMITTED rows when IBKR orders die.** Seen today — phantom $149 SHOP rows required manual cleanup. Needs a periodic reconciliation job.
+5. **CC strategy not aligned with exit-ASAP goal** (see Strategic Assessment above).
