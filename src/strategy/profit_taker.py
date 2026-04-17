@@ -406,7 +406,7 @@ class ProfitTaker:
                     opt_exchange = stock.opt_exchange if stock else "SMART"
 
                     # Get live call price
-                    from src.broker.market_data import get_option_live_price, get_stock_price
+                    from src.broker.market_data import get_option_live_price, get_stock_price, get_stock_live_price
                     live_bid, live_ask = get_option_live_price(
                         pos.symbol, pos.expiry, pos.strike, "C", opt_exchange, currency
                     )
@@ -443,9 +443,11 @@ class ProfitTaker:
                             continue  # don't also check ITM roll on same position
 
                     # ── ITM roll-up ──
-                    # Estimate stock price from option intrinsic value: spot ≈ strike + call_ask
-                    # This avoids get_stock_price() which causes event loop conflict in scheduler
-                    current_price = (pos.strike or 0) + live_ask
+                    # Real stock price. No derived/estimated values.
+                    current_price = get_stock_live_price(pos.symbol, exchange=exchange, currency=currency)
+                    if not current_price or current_price <= 0:
+                        log.info("cc_rollup_no_stock_price", symbol=pos.symbol)
+                        continue
                     deeply_itm = current_price > (pos.strike or 0) * 1.05
                     if dte <= 2 and not deeply_itm:
                         continue
