@@ -11,7 +11,6 @@ Tier-aware: different buy criteria for dividend, breakthrough, growth stocks.
 """
 from __future__ import annotations
 
-import math
 from datetime import datetime
 from typing import Optional
 
@@ -625,23 +624,18 @@ class PortfolioBuyer:
             if not qualified or opt.conId <= 0:
                 return False
 
-            # Get option price using Black-Scholes from historical IV
-            from src.broker.greeks import compute_put_greeks, get_current_iv
-            iv = get_current_iv(self.ib, stock.symbol, exchange=stock.exchange, currency=stock.currency)
-            if iv and iv > 0:
-                from datetime import datetime as dt
-                exp_date = dt.strptime(best_exp, "%Y%m%d").date()
-                T = max((exp_date - today).days, 1) / 365.0
-                greeks = compute_put_greeks(analysis.current_price, best_strike, T, iv)
-                if greeks:
-                    sell_price = greeks.bid  # use bid for selling
-                else:
-                    log.debug("portfolio_no_option_price", symbol=stock.symbol)
-                    return False
-            else:
-                log.debug("portfolio_no_iv_for_option", symbol=stock.symbol)
+            # Live bid only — no BS. Snapshot quote for the option we are about to sell.
+            from src.broker.market_data import _ensure_market_data_type
+            _ensure_market_data_type()
+            ticker = self.ib.reqMktData(opt, "", True, False)
+            self.ib.sleep(2)
+            self.ib.cancelMktData(opt)
+            real_bid = ticker.bid
+            if not real_bid or real_bid <= 0 or real_bid == float("inf") or real_bid == -1.0:
+                log.info("portfolio_no_live_bid_skipping", symbol=stock.symbol,
+                         strike=best_strike, expiry=best_exp)
                 return False
-
+            sell_price = round(real_bid, 2)
             if sell_price < 0.05:
                 return False
 
@@ -894,20 +888,6 @@ class PortfolioBuyer:
         # Auto re-sell if enabled (will happen on next scan cycle)
         if self.cfg.put_entry.auto_resell:
             log.info("portfolio_put_will_resell", symbol=entry.symbol)
-
-    # ── Black-Scholes helper ─────────────────────────────────
-    @staticmethod
-    def _bs_put_price(S: float, K: float, T: float, r: float, sigma: float) -> float:
-        """Black-Scholes put price."""
-        if T <= 0 or sigma <= 0 or S <= 0:
-            return 0.0
-        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-
-        def N(x):
-            return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-
-        return K * math.exp(-r * T) * N(-d2) - S * N(-d1)
 
     # ── Buy amount calculation ───────────────────────────────
     def _check_total_exposure(self, net_liq: float) -> bool:
