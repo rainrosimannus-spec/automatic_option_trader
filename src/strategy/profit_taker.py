@@ -424,23 +424,9 @@ class ProfitTaker:
                         pos.symbol, pos.expiry, pos.strike, "C", opt_exchange, currency
                     )
                     if not live_ask or live_ask <= 0:
-                        # No live ask — try bid first
-                        if live_bid and live_bid > 0:
-                            live_ask = live_bid
-                            log.info("cc_check_using_bid_as_ask",
-                                     symbol=pos.symbol, bid=round(live_bid, 2))
-                        else:
-                            from src.broker.market_data import get_stock_live_price
-                            _spot = get_stock_live_price(pos.symbol, exchange=exchange, currency=currency)
-                            _intrinsic = (_spot - (pos.strike or 0)) if _spot and _spot > (pos.strike or 0) else 0
-                            if _intrinsic > 0.50:
-                                live_ask = round(_intrinsic, 2)
-                                log.info("cc_check_using_intrinsic_value",
-                                         symbol=pos.symbol, spot=round(_spot, 2),
-                                         strike=pos.strike, intrinsic=round(_intrinsic, 2))
-                            else:
-                                log.info("cc_check_no_live_price", symbol=pos.symbol)
-                                continue
+                        log.info("cc_check_no_live_price", symbol=pos.symbol,
+                                 reason="skipping -- no live ask, no BS/bid/intrinsic fallback")
+                        continue
 
                     entry_premium = pos.entry_premium
                     if not entry_premium or entry_premium <= 0:
