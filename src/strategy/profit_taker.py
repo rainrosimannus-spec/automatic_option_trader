@@ -571,6 +571,23 @@ class ProfitTaker:
         from src.broker.orders import sell_covered_call
         from src.core.models import Trade, TradeType, OrderStatus
         from src.core.suggestions import create_suggestion
+        from src.broker.connection import get_ib
+
+        # Duplication guard: if IBKR has any pending SELL_CALL on this symbol
+        # from a prior roll attempt, skip. Prevents duplicate SELL legs when
+        # a previous roll's SELL has not filled yet. Wait for it to resolve.
+        ib = get_ib()
+        for t in ib.openTrades():
+            c = t.contract
+            if (c.symbol == pos.symbol
+                and getattr(c, "right", "") == "C"
+                and t.order.action == "SELL"
+                and t.orderStatus.status in ("PreSubmitted", "Submitted", "PendingSubmit")):
+                log.info("cc_rollup_skipped_prior_sell_pending",
+                         symbol=pos.symbol,
+                         pending_order_id=t.order.orderId,
+                         pending_status=t.orderStatus.status)
+                return False
 
         entry_premium = pos.entry_premium or 0
 
