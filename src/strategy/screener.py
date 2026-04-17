@@ -257,61 +257,69 @@ def screen_puts(
                  min_premium=cfg.min_premium, min_bid=cfg.min_bid)
         return None
 
-    best = max(candidates, key=lambda c: c.score)
+    # Try top 2 candidates by score; return first that gets live quote AND passes fee floor.
+    # BS is for selection only -- never return BS prices as order prices.
+    sorted_candidates = sorted(candidates, key=lambda c: c.score, reverse=True)[:2]
 
-    # For short-DTE options, fetch real market quote instead of BS theoretical
-    # BS pricing is unreliable near expiry — actual market bid can differ 50%+
-    exp_date = datetime.strptime(best.expiry, "%Y%m%d").date()
-    best_dte = (exp_date - today).days
-    if best_dte >= 0:  # always fetch real market quote — more accurate than Black-Scholes
+    for idx, candidate in enumerate(sorted_candidates):
         try:
             ib = get_ib()
-            ticker = ib.reqMktData(best.contract, "", True, False)  # snapshot
+            ticker = ib.reqMktData(candidate.contract, "", True, False)
             ib.sleep(2)
-            ib.cancelMktData(best.contract)
+            ib.cancelMktData(candidate.contract)
 
             real_bid = ticker.bid
             real_ask = ticker.ask
 
-            if real_bid and real_bid > 0 and real_bid != float('inf') and real_bid != -1.0:
-                real_mid = round((real_bid + real_ask) / 2, 2) if (real_ask and real_ask > 0 and real_ask != float('inf') and real_ask != -1.0) else real_bid
-                log.info("market_quote_fetched", symbol=symbol, strike=best.strike,
-                         bs_bid=round(best.bid, 2), real_bid=round(real_bid, 2),
-                         real_ask=round(real_ask, 2) if real_ask and real_ask > 0 else None)
-                # Update the candidate with real market prices
-                best = ScoredContract(
-                    contract=best.contract,
-                    strike=best.strike,
-                    expiry=best.expiry,
-                    delta=best.delta,
-                    bid=round(real_bid, 2),
-                    ask=round(real_ask, 2) if (real_ask and real_ask > 0 and real_ask != float('inf') and real_ask != -1.0) else best.ask,
-                    mid=real_mid,
-                    iv=best.iv,
-                    open_interest=best.open_interest,
-                    score=best.score,
-                )
-            else:
-                log.info("market_quote_unavailable_using_bs", symbol=symbol,
-                         strike=best.strike, bs_bid=round(best.bid, 2))
+            valid_bid = real_bid and real_bid > 0 and real_bid != float('inf') and real_bid != -1.0
+            valid_ask = real_ask and real_ask > 0 and real_ask != float('inf') and real_ask != -1.0
+
+            if not valid_bid:
+                log.info("put_candidate_no_live_quote_trying_next",
+                         symbol=symbol, strike=candidate.strike, rank=idx + 1)
+                continue
+
+            real_mid = round((real_bid + real_ask) / 2, 2) if valid_ask else real_bid
+
+            best = ScoredContract(
+                contract=candidate.contract,
+                strike=candidate.strike,
+                expiry=candidate.expiry,
+                delta=candidate.delta,
+                bid=round(real_bid, 2),
+                ask=round(real_ask, 2) if valid_ask else candidate.ask,
+                mid=real_mid,
+                iv=candidate.iv,
+                open_interest=candidate.open_interest,
+                score=candidate.score,
+            )
+
+            if not _passes_fee_floor(best.bid, 100, currency, cfg.contracts_per_stock):
+                log.info("put_candidate_fails_fee_floor_trying_next",
+                         symbol=symbol, strike=best.strike, bid=best.bid, rank=idx + 1)
+                continue
+
+            log.info(
+                "put_screened",
+                symbol=symbol,
+                exchange=exchange,
+                strike=best.strike,
+                expiry=best.expiry,
+                delta=round(best.delta, 3),
+                mid=round(best.mid, 2),
+                iv=round(best.iv, 3),
+                rank=idx + 1,
+            )
+            return best
+
         except Exception as e:
-            log.warning("market_quote_fetch_failed", symbol=symbol, error=str(e))
+            log.warning("put_candidate_quote_exception",
+                        symbol=symbol, strike=candidate.strike, error=str(e))
+            continue
 
-    log.info(
-        "put_screened",
-        symbol=symbol,
-        exchange=exchange,
-        strike=best.strike,
-        expiry=best.expiry,
-        delta=round(best.delta, 3),
-        mid=round(best.mid, 2),
-        iv=round(best.iv, 3),
-    )
-
-    if not _passes_fee_floor(best.bid, 100, currency, cfg.contracts_per_stock):
-        return None
-
-    return best
+    log.info("put_candidates_exhausted_no_live",
+             symbol=symbol, candidates_tried=len(sorted_candidates))
+    return None
 
 
 def screen_calls(
@@ -420,53 +428,66 @@ def screen_calls(
         log.debug("no_qualifying_calls", symbol=symbol)
         return None
 
-    best = max(candidates, key=lambda c: c.score)
+    # Try top 2 candidates by score; return first that gets live quote AND passes fee floor.
+    # BS is for selection only -- never return BS prices as order prices.
+    sorted_candidates = sorted(candidates, key=lambda c: c.score, reverse=True)[:2]
 
-    # Fetch real market quote — BS pricing can differ significantly from actual market
-    try:
-        ib = get_ib()
-        ticker = ib.reqMktData(best.contract, "", True, False)  # snapshot
-        ib.sleep(2)
-        ib.cancelMktData(best.contract)
+    for idx, candidate in enumerate(sorted_candidates):
+        try:
+            ib = get_ib()
+            ticker = ib.reqMktData(candidate.contract, "", True, False)
+            ib.sleep(2)
+            ib.cancelMktData(candidate.contract)
 
-        real_bid = ticker.bid
-        real_ask = ticker.ask
+            real_bid = ticker.bid
+            real_ask = ticker.ask
 
-        if real_bid and real_bid > 0 and real_bid != float('inf') and real_bid != -1.0:
-            real_mid = round((real_bid + real_ask) / 2, 2) if (real_ask and real_ask > 0 and real_ask != float('inf') and real_ask != -1.0) else real_bid
-            log.info("call_market_quote_fetched", symbol=symbol, strike=best.strike,
-                     bs_bid=round(best.bid, 2), real_bid=round(real_bid, 2),
-                     real_ask=round(real_ask, 2) if real_ask and real_ask > 0 else None)
+            valid_bid = real_bid and real_bid > 0 and real_bid != float('inf') and real_bid != -1.0
+            valid_ask = real_ask and real_ask > 0 and real_ask != float('inf') and real_ask != -1.0
+
+            if not valid_bid:
+                log.info("call_candidate_no_live_quote_trying_next",
+                         symbol=symbol, strike=candidate.strike, rank=idx + 1)
+                continue
+
+            real_mid = round((real_bid + real_ask) / 2, 2) if valid_ask else real_bid
+
             best = ScoredContract(
-                contract=best.contract,
+                contract=candidate.contract,
+                strike=candidate.strike,
+                expiry=candidate.expiry,
+                delta=candidate.delta,
+                bid=round(real_bid, 2),
+                ask=round(real_ask, 2) if valid_ask else candidate.ask,
+                mid=real_mid,
+                iv=candidate.iv,
+                open_interest=candidate.open_interest,
+                score=candidate.score,
+            )
+
+            if not _passes_fee_floor(best.bid, 100, currency, 1):
+                log.info("call_candidate_fails_fee_floor_trying_next",
+                         symbol=symbol, strike=best.strike, bid=best.bid, rank=idx + 1)
+                continue
+
+            log.info(
+                "call_screened",
+                symbol=symbol,
+                exchange=exchange,
                 strike=best.strike,
                 expiry=best.expiry,
-                delta=best.delta,
-                bid=round(real_bid, 2),
-                ask=round(real_ask, 2) if (real_ask and real_ask > 0 and real_ask != float('inf') and real_ask != -1.0) else best.ask,
-                mid=real_mid,
-                iv=best.iv,
-                open_interest=best.open_interest,
-                score=best.score,
+                delta=round(best.delta, 3),
+                mid=round(best.mid, 2),
+                iv=round(best.iv, 3),
+                rank=idx + 1,
             )
-        else:
-            log.info("call_market_quote_unavailable_using_bs", symbol=symbol,
-                     strike=best.strike, bs_bid=round(best.bid, 2))
-    except Exception as e:
-        log.warning("call_market_quote_fetch_failed", symbol=symbol, error=str(e))
+            return best
 
-    log.info(
-        "call_screened",
-        symbol=symbol,
-        exchange=exchange,
-        strike=best.strike,
-        expiry=best.expiry,
-        delta=round(best.delta, 3),
-        mid=round(best.mid, 2),
-        iv=round(best.iv, 3),
-    )
+        except Exception as e:
+            log.warning("call_candidate_quote_exception",
+                        symbol=symbol, strike=candidate.strike, error=str(e))
+            continue
 
-    if not _passes_fee_floor(best.bid, 100, currency, 1):
-        return None
-
-    return best
+    log.info("call_candidates_exhausted_no_live",
+             symbol=symbol, candidates_tried=len(sorted_candidates))
+    return None
