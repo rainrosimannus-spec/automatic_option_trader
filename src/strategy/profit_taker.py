@@ -500,19 +500,36 @@ class ProfitTaker:
         return acted
 
     def _close_covered_call(self, db, pos: Position, ask_price: float,
-                            opt_exchange: str, currency: str, reason: str = "profit_take") -> bool:
-        """Buy to close a covered call. Records trade, position stays open until trade_sync confirms fill."""
+                          opt_exchange: str, currency: str, reason: str = "profit_take") -> bool:
+        """Buy to close a covered call. Records trade, position stays open until trade_sync confirms fill.
+
+        Order pricing: ask * 1.02 (floor ask + 0.05) to absorb stale-feed error.
+        Churn prevention: skip if existing SUBMITTED order is within 10% of new target price.
+        """
         from src.broker.orders import buy_to_close_call
         from src.core.models import Trade, TradeType, OrderStatus
 
-        # Cancel any existing submitted close orders first
-        try:
-            existing = db.query(Trade).filter(
-                Trade.position_id == pos.id,
-                Trade.trade_type == TradeType.BUY_CALL,
-                Trade.order_status == OrderStatus.SUBMITTED,
-            ).all()
-            if existing:
+        # Pad the price: buy slightly above ask to improve fill probability
+        target_price = round(max(ask_price * 1.02, ask_price + 0.05), 2)
+
+        existing = db.query(Trade).filter(
+            Trade.position_id == pos.id,
+            Trade.trade_type == TradeType.BUY_CALL,
+            Trade.order_status == OrderStatus.SUBMITTED,
+        ).all()
+
+        if existing:
+            for ex in existing:
+                ex_price = ex.premium or 0
+                if ex_price > 0 and abs(target_price - ex_price) / ex_price < 0.10:
+                    log.info("cc_close_skip_replace_within_10pct",
+                             symbol=pos.symbol,
+                             existing_order_id=ex.order_id,
+                             existing_price=round(ex_price, 2),
+                             new_target=target_price)
+                    return False
+
+            try:
                 from src.broker.orders import cancel_order
                 from src.broker.connection import get_ib
                 ib = get_ib()
@@ -525,18 +542,19 @@ class ProfitTaker:
                                     cancel_order(lt)
                                 except Exception as e:
                                     log.warning("cancel_existing_cc_close_failed",
-                                                symbol=pos.symbol, error=str(e))
+                                            symbol=pos.symbol, error=str(e))
                                 break
                     ex.order_status = OrderStatus.CANCELLED
-        except Exception as e:
-            log.warning("cancel_existing_cc_check_failed", symbol=pos.symbol, error=str(e))
+                db.commit()
+            except Exception as e:
+                log.warning("cancel_existing_cc_check_failed", symbol=pos.symbol, error=str(e))
 
         trade = buy_to_close_call(
             symbol=pos.symbol,
             expiry=pos.expiry or "",
             strike=pos.strike or 0,
             quantity=pos.quantity,
-            limit_price=round(ask_price, 2),
+            limit_price=target_price,
             exchange=opt_exchange,
             currency=currency,
         )
@@ -549,18 +567,18 @@ class ProfitTaker:
             trade_type=TradeType.BUY_CALL,
             strike=pos.strike or 0,
             expiry=pos.expiry or "",
-            premium=ask_price,
+            premium=target_price,
             quantity=pos.quantity,
-            fill_price=ask_price,
+            fill_price=target_price,
             order_id=trade.order.orderId,
             order_status=OrderStatus.SUBMITTED,
-            notes=f"CC {reason} at {ask_price:.2f}",
+            notes=f"CC {reason} at {target_price:.2f} (ask was {ask_price:.2f})",
         )
         db.add(trade_record)
         db.commit()
         log.info("cc_close_order_placed", symbol=pos.symbol,
                  reason=reason, order_id=trade.order.orderId,
-                 limit_price=round(ask_price, 2))
+                 ask=round(ask_price, 2), limit_price=target_price)
         return True
 
     def _roll_call_up(self, db, pos: Position, current_price: float, current_ask: float,
