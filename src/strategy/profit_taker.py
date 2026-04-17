@@ -9,7 +9,6 @@ from datetime import datetime
 import pytz
 
 from src.broker.market_data import get_stock_price
-from src.broker.greeks import compute_put_greeks, get_current_iv
 from src.broker.orders import buy_to_close_put
 from src.core.config import get_settings
 from src.core.database import get_db
@@ -213,21 +212,9 @@ class ProfitTaker:
                       live_bid=live_bid, live_ask=live_ask)
             current_ask = live_ask
         else:
-            log.warning("profit_check_no_live_price_using_bs", symbol=pos.symbol)
-            # Fallback to Black-Scholes
-            stock_price = get_stock_price(pos.symbol, exchange=exchange, currency=currency)
-            if not stock_price:
-                return False
-            from src.broker.connection import get_ib
-            ib = get_ib()
-            iv = get_current_iv(ib, pos.symbol, exchange=exchange, currency=currency)
-            if not iv or iv <= 0:
-                return False
-            T = max(dte, 1) / 365.0
-            greeks = compute_put_greeks(stock_price, pos.strike, T, iv)
-            if not greeks:
-                return False
-            current_ask = greeks.ask
+            log.info("profit_check_no_live_price", symbol=pos.symbol,
+                     reason="skipping -- no live ask, no BS fallback")
+            return False
         entry_premium = pos.entry_premium
         if entry_premium <= 0:
             return False
