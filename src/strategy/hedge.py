@@ -19,7 +19,6 @@ from ib_insync import Stock, Option as IBOption
 
 from src.broker.connection import get_ib
 from src.broker.market_data import get_stock_price, get_put_contracts
-from src.broker.greeks import compute_put_greeks, get_current_iv
 from src.core.config import get_settings
 from src.core.database import get_db
 from src.core.models import Position, Trade, PositionStatus, TradeType, OrderStatus
@@ -181,18 +180,11 @@ class TailHedge:
         ib.sleep(2)
         ib.cancelMktData(opt)
 
-        # Try streaming ask first, fall back to Black-Scholes
+        # Live ask only -- no BS fallback
         ask = ticker.ask if ticker.ask and ticker.ask > 0 else None
         if not ask:
-            iv = get_current_iv(ib, "SPY", exchange="SMART", currency="USD")
-            if iv and iv > 0:
-                exp_date_calc = datetime.strptime(best_exp, "%Y%m%d").date()
-                T = max((exp_date_calc - today).days, 1) / 365.0
-                greeks = compute_put_greeks(spy_price, best_strike, T, iv)
-                if greeks:
-                    ask = greeks.ask
-            if not ask:
-                return None
+            log.info("hedge_no_live_ask", strike=best_strike, expiry=best_exp)
+            return None
 
         exp_date = datetime.strptime(best_exp, "%Y%m%d").date()
         actual_dte = (exp_date - today).days
