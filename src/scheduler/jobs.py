@@ -1620,7 +1620,9 @@ def _job_trade_sync():
     if not _ensure_connected():
         return
     try:
-        from src.broker.trade_sync import sync_ibkr_trades, sync_ibkr_positions
+        from src.broker.trade_sync import (
+            sync_ibkr_trades, sync_ibkr_positions, reconcile_submitted_trades
+        )
         imported = sync_ibkr_trades()
         if imported:
             log.info("trade_sync_job_done", imported=imported)
@@ -1628,6 +1630,10 @@ def _job_trade_sync():
         pos_changes = sync_ibkr_positions()
         if pos_changes:
             log.info("position_sync_job_done", changes=pos_changes)
+        # Reconcile phantom SUBMITTED rows (orders that died at IBKR without a fill)
+        reconciled = reconcile_submitted_trades()
+        if reconciled:
+            log.info("trade_sync_reconciled_phantoms", count=reconciled)
     except Exception as e:
         log.error("trade_sync_job_error", error=str(e))
 

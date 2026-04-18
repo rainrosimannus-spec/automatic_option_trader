@@ -398,6 +398,54 @@ def sync_ibkr_trades_extended() -> int:
     return count
 
 
+def reconcile_submitted_trades(grace_minutes: int = 10) -> int:
+    """
+    Find Trade rows stuck in SUBMITTED status whose IBKR order no longer exists.
+    Mark them CANCELLED with a reason note. Skip rows newer than grace_minutes
+    to avoid false-cancelling legitimately-live new orders.
+
+    Returns number of rows reconciled.
+    """
+    from datetime import datetime, timedelta
+    cutoff = datetime.utcnow() - timedelta(minutes=grace_minutes)
+
+    # Snapshot live IBKR order IDs (inside lock)
+    try:
+        with get_ib_lock():
+            ib = get_ib()
+            live_order_ids = {t.order.orderId for t in ib.openTrades()}
+    except Exception as e:
+        log.warning("reconcile_submitted_trades_skipped_ib_error", error=str(e))
+        return 0
+
+    reconciled = 0
+    with get_db() as db:
+        stuck = db.query(Trade).filter(
+            Trade.order_status == OrderStatus.SUBMITTED,
+            Trade.order_id.isnot(None),
+            Trade.created_at < cutoff,
+        ).all()
+
+        for t in stuck:
+            if t.order_id in live_order_ids:
+                continue  # Still live at IBKR, leave alone
+            # Phantom row — IBKR has no record of this order anymore
+            t.order_status = OrderStatus.CANCELLED
+            note_addition = "Reconciled: order no longer at IBKR"
+            t.notes = (t.notes + " | " + note_addition) if t.notes else note_addition
+            reconciled += 1
+            log.info("phantom_trade_reconciled",
+                     trade_id=t.id,
+                     symbol=t.symbol,
+                     order_id=t.order_id,
+                     trade_type=str(t.trade_type))
+
+        if reconciled:
+            db.commit()
+
+    return reconciled
+
+
 def sync_ibkr_positions() -> int:
     """
     Sync open positions from IBKR into the Position table.
