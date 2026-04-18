@@ -247,20 +247,6 @@ def dashboard(request: Request):
         spy_ma50 = _get_state_val(db, "spy_ma50")
         spy_distance_below_ma50 = _get_state_val(db, "spy_distance_below_ma50")
         drawdown_5d = _get_state_val(db, "drawdown_5d")
-        # Count positions in wheel exit mode
-        try:
-            exit_mode_count = (
-                db.query(Position)
-                .filter(
-                    Position.status == PositionStatus.OPEN,
-                    Position.position_type == "stock",
-                    Position.is_wheel == True,
-                    Position.wheel_exit_mode == True,
-                )
-                .count()
-            )
-        except Exception:
-            exit_mode_count = 0
         paused_state = _get_state_val(db, "paused")
         spy_bullish = _get_state_val(db, "spy_bullish")
         spy_fast_ma = _get_state_val(db, "spy_fast_ma")
@@ -403,7 +389,6 @@ def dashboard(request: Request):
         "spy_ma50": float(spy_ma50) if spy_ma50 else None,
         "spy_distance_below_ma50": float(spy_distance_below_ma50) if spy_distance_below_ma50 else None,
         "drawdown_5d": float(drawdown_5d) if drawdown_5d else None,
-        "exit_mode_count": exit_mode_count,
         "spy_bullish": spy_bullish == "true" if spy_bullish else None,
         "spy_fast_ma": float(spy_fast_ma) if spy_fast_ma else None,
         "spy_slow_ma": float(spy_slow_ma) if spy_slow_ma else None,
