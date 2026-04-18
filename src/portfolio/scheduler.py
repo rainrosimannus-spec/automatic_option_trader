@@ -1521,7 +1521,14 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                             except Exception:
                                 stock_price = 0
 
-                            if stock_price > 0 and stock_price > strike:
+                            # Fail-closed: refuse to classify when price fetch failed.
+                            # Better to miss a record than misclassify expired vs assigned.
+                            if stock_price <= 0:
+                                log.warning("portfolio_put_classification_skipped_no_price",
+                                            symbol=symbol, strike=strike,
+                                            note="stock price fetch failed — skipping; reconcile manually")
+                                continue
+                            if stock_price > strike:
                                 # Stock is above strike — put expired worthless OTM
                                 action = "expired"
                                 price = 0.0
@@ -1556,7 +1563,14 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                             except Exception:
                                 stock_price = 0
 
-                            if stock_price > 0 and stock_price < strike:
+                            # Fail-closed: refuse to classify when price fetch failed.
+                            # Better to miss a record than misclassify expired vs assigned.
+                            if stock_price <= 0:
+                                log.warning("portfolio_call_classification_skipped_no_price",
+                                            symbol=symbol, strike=strike,
+                                            note="stock price fetch failed — skipping; reconcile manually")
+                                continue
+                            if stock_price < strike:
                                 # Stock below strike — call expired worthless OTM
                                 action = "call_expired"
                                 price = 0.0
