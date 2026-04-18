@@ -589,25 +589,31 @@ document.addEventListener('DOMContentLoaded', function() {
     <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Active Risk & Strategy Rules</h2>
     <div class="flex flex-wrap gap-2 text-xs">
         <!-- Risk gates — gray -->
-        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">VIX &gt; 30 → halt</span>
-        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">SPY MA10 &lt; MA20 → 50% reduction</span>
-        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 10 trades/day (scales with NLV)</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">VIX tier (spike-aware + MA50 clamp)</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">SPY trend filter (MA10/20 + MA50)</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 10 trades/day (NLV + drawdown scaling)</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Adaptive position size by NLV</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 30% per sector</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Market hours gate (±60 min)</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Correlation gate (avg &gt; 0.85 blocked)</span>
         <!-- Adaptive strategy — emerald -->
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">VIX-adaptive IV rank</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Dynamic delta by VIX regime</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">DTE-adaptive delta widening</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Skip earnings within 3 days</span>
-        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Dynamic profit targets (50/65/75% by DTE)</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Dynamic CC profit targets (50/65/75% by DTE)</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Wheel on assignment</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">VIX-adaptive DTE selection</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">0-3 DTE positions expire — no early close</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">40% below 52-week high — no new puts</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Wheel exit-ASAP mode (new assignments)</span>
         <!-- Structural — blue -->
-        <span class="px-2.5 py-1 rounded bg-blue-900/40 text-blue-300">Progressive CC strikes</span>
+        <span class="px-2.5 py-1 rounded bg-blue-900/40 text-blue-300">CC strikes ≥ net cost basis (realized)</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-500">SPY tail hedge — disabled</span>
+        <!-- Safety guards — red -->
+        <span class="px-2.5 py-1 rounded bg-red-900/40 text-red-300">Live-only option prices (no BS fallback)</span>
+        <span class="px-2.5 py-1 rounded bg-red-900/40 text-red-300">Naked-buy broker guard</span>
+        <span class="px-2.5 py-1 rounded bg-red-900/40 text-red-300">Roll-up duplicate-SELL guard</span>
         <!-- Portfolio intelligence — purple -->
         <span class="px-2.5 py-1 rounded bg-purple-900/40 text-purple-300">Portfolio-aware ranking</span>
         <span class="px-2.5 py-1 rounded bg-purple-900/40 text-purple-300">Margin on capitulation/stabilization</span>
