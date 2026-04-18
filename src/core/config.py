@@ -138,6 +138,11 @@ class RiskConfig(BaseModel):
     drawdown_threshold_mid: float = 0.05     # drawdown > this -> 50% of base cap
     drawdown_threshold_severe: float = 0.10  # drawdown > this -> 25% of base cap
     drawdown_min_cap: int = 2                # floor - never scale below this many trades/day
+    # Wheel exit-ASAP mode (for stocks received via put assignment — prioritize exit over premium)
+    wheel_exit_mode_enabled: bool = True          # master switch — when True, new wheel assignments flag as exit mode
+    wheel_exit_delta_min: float = 0.35            # closer-to-money than normal 0.30
+    wheel_exit_delta_max: float = 0.55            # accepts deeper ITM than normal 0.45
+    wheel_exit_margin_rate_annual: float = 0.07   # margin interest rate for surcharge in min_strike
 
 
 class ScheduleConfig(BaseModel):

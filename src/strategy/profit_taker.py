@@ -383,6 +383,21 @@ class ProfitTaker:
 
             for pos in open_calls:
                 try:
+                    # Skip profit-take / roll-up entirely if underlying stock is in wheel exit mode
+                    stock_pos = (
+                        db.query(Position)
+                        .filter(
+                            Position.symbol == pos.symbol,
+                            Position.position_type == "stock",
+                            Position.status == PositionStatus.OPEN,
+                            Position.is_wheel == True,
+                        )
+                        .first()
+                    )
+                    if stock_pos and stock_pos.wheel_exit_mode:
+                        log.info("cc_profit_check_skipped_exit_mode", symbol=pos.symbol)
+                        continue
+
                     stock = self.universe.get_stock(pos.symbol)
                     currency = stock.currency if stock else "USD"
                     mins_to_open = _minutes_to_market_open(currency)
@@ -572,6 +587,22 @@ class ProfitTaker:
         from src.core.models import Trade, TradeType, OrderStatus
         from src.core.suggestions import create_suggestion
         from src.broker.connection import get_ib
+
+        # Exit mode guard: if the underlying stock is in wheel exit mode,
+        # do not roll. Assignment is the goal — let it happen.
+        stock_pos_check = (
+            db.query(Position)
+            .filter(
+                Position.symbol == pos.symbol,
+                Position.position_type == "stock",
+                Position.status == PositionStatus.OPEN,
+                Position.is_wheel == True,
+            )
+            .first()
+        )
+        if stock_pos_check and stock_pos_check.wheel_exit_mode:
+            log.info("cc_rollup_skipped_exit_mode", symbol=pos.symbol)
+            return False
 
         # Duplication guard: if IBKR has any pending SELL_CALL on this symbol
         # from a prior roll attempt, skip. Prevents duplicate SELL legs when

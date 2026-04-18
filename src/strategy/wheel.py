@@ -110,6 +110,8 @@ class WheelManager:
 
         # Create stock position (cost basis = strike - premium received)
         cost_basis = (put_pos.strike or 0) - put_pos.entry_premium
+        from src.core.config import get_settings as _gs
+        exit_mode_enabled = _gs().risk.wheel_exit_mode_enabled
         stock_pos = Position(
             symbol=symbol,
             status=PositionStatus.OPEN,
@@ -118,8 +120,12 @@ class WheelManager:
             quantity=100 * put_pos.quantity,
             total_premium_collected=put_pos.total_premium_collected,
             is_wheel=True,
+            wheel_exit_mode=exit_mode_enabled,
         )
         db.add(stock_pos)
+        if exit_mode_enabled:
+            log.info("wheel_exit_mode_activated", symbol=symbol,
+                     cost_basis=round(cost_basis, 2))
 
     def _handle_expiry_worthless(self, db, put_pos: Position) -> None:
         """Put expired worthless — full premium is profit."""
@@ -253,16 +259,36 @@ class WheelManager:
 
         # Net cost basis = true breakeven including all premiums collected
         net_cost_basis = (cost_basis or 0) - (stock_pos.total_premium_collected / max(stock_pos.quantity, 1))
-        min_strike = net_cost_basis if self.cfg.cc_above_cost_basis and net_cost_basis > 0 else None
 
-        # Wheel covered calls: goal is to get called away and return to cash
-        # Use fixed delta range regardless of market regime — sell close to money
-        # above cost basis, maximize fill probability and premium collection
-        cc_delta_min, cc_delta_max = 0.30, 0.45
+        # Exit mode: bump delta range, add interest surcharge to min_strike
+        from src.core.config import get_settings as _gs
+        risk_cfg = _gs().risk
+        interest_surcharge = 0.0
+        if stock_pos.wheel_exit_mode:
+            # Days held since assignment (opened_at is assignment time for wheel positions)
+            try:
+                from datetime import datetime as _dt
+                days_held = (_dt.utcnow() - stock_pos.opened_at).days
+            except Exception:
+                days_held = 0
+            interest_surcharge = max(days_held, 0) * (risk_cfg.wheel_exit_margin_rate_annual / 365.0) * (cost_basis or 0)
+            cc_delta_min = risk_cfg.wheel_exit_delta_min
+            cc_delta_max = risk_cfg.wheel_exit_delta_max
+        else:
+            # Wheel covered calls: goal is to get called away and return to cash
+            # Use fixed delta range regardless of market regime — sell close to money
+            # above cost basis, maximize fill probability and premium collection
+            cc_delta_min, cc_delta_max = 0.30, 0.45
+
+        # min_strike = net basis plus interest surcharge (exit mode) or net basis alone (normal)
+        min_strike_value = net_cost_basis + interest_surcharge
+        min_strike = min_strike_value if self.cfg.cc_above_cost_basis and min_strike_value > 0 else None
 
         log.info("covered_call_params", symbol=symbol,
+                 exit_mode=stock_pos.wheel_exit_mode,
                  cost_basis=round(cost_basis, 2) if cost_basis else None,
                  net_cost_basis=round(net_cost_basis, 2),
+                 interest_surcharge=round(interest_surcharge, 4),
                  min_strike=round(min_strike, 2) if min_strike else None,
                  current_price=round(current_price, 2) if current_price else None,
                  delta_range=(cc_delta_min, cc_delta_max))

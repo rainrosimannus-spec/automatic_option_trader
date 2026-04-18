@@ -90,6 +90,7 @@ class Position(Base):
     expiry: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     entry_premium: Mapped[float] = mapped_column(Float, default=0.0)
     cost_basis: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # for stock after assignment
+    wheel_exit_mode: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # exit-ASAP mode for wheel-assigned stocks
     quantity: Mapped[int] = mapped_column(Integer, default=1)  # contracts or shares (100x)
     total_premium_collected: Mapped[float] = mapped_column(Float, default=0.0)
     realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
