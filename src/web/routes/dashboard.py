@@ -249,7 +249,6 @@ def dashboard(request: Request):
         drawdown_5d = _get_state_val(db, "drawdown_5d")
         # Count positions in wheel exit mode
         try:
-            from src.core.models import Position, PositionStatus
             exit_mode_count = (
                 db.query(Position)
                 .filter(
