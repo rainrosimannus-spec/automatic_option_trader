@@ -291,11 +291,55 @@ class RiskManager:
             )
         return RiskCheck(True)
 
+    def _get_recent_nlv_drawdown(self) -> float:
+        """
+        Compute NLV drawdown over the lookback window.
+        drawdown = (peak_of_prior_days - current) / peak_of_prior_days
+        Positive value means we are below recent peak (= in drawdown).
+        Returns 0.0 if insufficient data or no drawdown.
+        """
+        try:
+            from src.core.models import AccountSnapshot
+            lookback = self.cfg.drawdown_lookback_days
+            with get_db() as db:
+                rows = (
+                    db.query(AccountSnapshot)
+                    .order_by(AccountSnapshot.date.desc())
+                    .limit(lookback + 1)
+                    .all()
+                )
+            if not rows or len(rows) < 2:
+                return 0.0
+            # rows[0] is most recent (today or last snapshot); rest are prior days
+            current = rows[0].net_liquidation
+            prior = [r.net_liquidation for r in rows[1:] if r.net_liquidation > 0]
+            if not prior or current <= 0:
+                return 0.0
+            peak = max(prior)
+            if peak <= 0:
+                return 0.0
+            drawdown = (peak - current) / peak
+            return max(drawdown, 0.0)
+        except Exception as e:
+            log.debug("drawdown_calc_failed", error=str(e))
+            return 0.0
+
+    def _drawdown_cap_multiplier(self, drawdown: float) -> float:
+        """Return multiplier on daily position cap based on drawdown size."""
+        if drawdown > self.cfg.drawdown_threshold_severe:
+            return 0.25
+        if drawdown > self.cfg.drawdown_threshold_mid:
+            return 0.50
+        if drawdown > self.cfg.drawdown_threshold_light:
+            return 0.75
+        return 1.0
+
     def _get_dynamic_daily_limit(self) -> int:
         """
-        Calculate daily position limit based on portfolio size.
+        Calculate daily position limit based on portfolio size, scaled down
+        if the account is in recent NLV drawdown.
         Base: 10 trades for first 100K. Then +1 per additional 100K.
-        Capped at max_daily_positions_cap.
+        Capped at max_daily_positions_cap. Floored at drawdown_min_cap.
         """
         try:
             summary = get_account_summary()
@@ -308,11 +352,23 @@ class RiskManager:
         cap = self.cfg.max_daily_positions_cap
 
         if net_liq <= step:
-            return base
+            size_limit = base
+        else:
+            extra = int((net_liq - step) / step)
+            size_limit = min(base + extra, cap)
 
-        extra = int((net_liq - step) / step)
-        limit = min(base + extra, cap)
-        return limit
+        # Drawdown scaling
+        drawdown = self._get_recent_nlv_drawdown()
+        multiplier = self._drawdown_cap_multiplier(drawdown)
+        if multiplier < 1.0:
+            scaled = max(int(size_limit * multiplier), self.cfg.drawdown_min_cap)
+            log.info("drawdown_scaling_applied",
+                     drawdown=round(drawdown, 4),
+                     multiplier=multiplier,
+                     base_limit=size_limit,
+                     scaled_limit=scaled)
+            return scaled
+        return size_limit
 
     def check_daily_limit(self) -> RiskCheck:
         """Enforce max N new positions per day (scales with portfolio size)."""

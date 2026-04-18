@@ -132,6 +132,12 @@ class RiskConfig(BaseModel):
     # SPY MA50 regime clamp (prevents de-escalation while trend is broken)
     spy_ma50_clamp_mid_pct: float = 0.0     # SPY below MA50 by this -> clamp tier >= mid
     spy_ma50_clamp_high_pct: float = 0.03   # SPY below MA50 by 3%+ -> clamp tier >= high
+    # Drawdown-based daily position sizing (scales max_daily_positions)
+    drawdown_lookback_days: int = 5
+    drawdown_threshold_light: float = 0.02   # drawdown > this -> 75% of base cap
+    drawdown_threshold_mid: float = 0.05     # drawdown > this -> 50% of base cap
+    drawdown_threshold_severe: float = 0.10  # drawdown > this -> 25% of base cap
+    drawdown_min_cap: int = 2                # floor - never scale below this many trades/day
 
 
 class ScheduleConfig(BaseModel):
