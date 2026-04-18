@@ -129,6 +129,9 @@ class RiskConfig(BaseModel):
     # VIX rate-of-change (spike) escalation
     vix_spike_bump_1_tier: float = 4.0   # spike > this -> treat VIX as one tier higher
     vix_spike_bump_2_tiers: float = 6.0  # spike > this -> treat as two tiers higher
+    # SPY MA50 regime clamp (prevents de-escalation while trend is broken)
+    spy_ma50_clamp_mid_pct: float = 0.0     # SPY below MA50 by this -> clamp tier >= mid
+    spy_ma50_clamp_high_pct: float = 0.03   # SPY below MA50 by 3%+ -> clamp tier >= high
 
 
 class ScheduleConfig(BaseModel):

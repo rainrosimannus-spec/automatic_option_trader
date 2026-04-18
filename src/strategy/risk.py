@@ -55,6 +55,8 @@ class MarketRegime:
     spy_bullish: bool | None = None
     spy_fast_ma: float | None = None
     spy_slow_ma: float | None = None
+    spy_ma50: float | None = None                  # 50-day SMA (slower trend filter)
+    spy_distance_below_ma50: float | None = None   # + when below MA50, - when above
     spy_price: float | None = None
     eu_bullish: bool | None = None   # FEZ (Euro Stoxx 50 ETF)
     eu_price: float | None = None
@@ -114,6 +116,8 @@ class RiskManager:
                     regime.spy_bullish = spy_data["is_bullish"]
                     regime.spy_fast_ma = spy_data["fast_ma"]
                     regime.spy_slow_ma = spy_data["slow_ma"]
+                    regime.spy_ma50 = spy_data.get("ma50")
+                    regime.spy_distance_below_ma50 = spy_data.get("distance_below_ma50")
                     regime.spy_price = spy_data["spy_price"]
             except Exception as e:
                 log.warning("spy_ma_fetch_error", error=str(e))
@@ -990,6 +994,23 @@ class RiskManager:
                 bump = 1
 
         effective_idx = min(base_tier_idx + bump, 2)  # cap at high
+
+        # MA50 clamp: if SPY is below MA50, don't de-escalate below mid/high
+        dist = regime.spy_distance_below_ma50
+        if dist is not None and dist > 0:
+            if dist > self.cfg.spy_ma50_clamp_high_pct:
+                ma50_min_idx = 2  # high
+            elif dist > self.cfg.spy_ma50_clamp_mid_pct:
+                ma50_min_idx = 1  # mid
+            else:
+                ma50_min_idx = 0
+            if ma50_min_idx > effective_idx:
+                log.info("ma50_clamp_applied",
+                         raw_tier=["low","mid","high"][effective_idx],
+                         clamped_tier=["low","mid","high"][ma50_min_idx],
+                         distance_below_ma50=round(dist, 4))
+                effective_idx = ma50_min_idx
+
         return ["low", "mid", "high"][effective_idx]
 
     # ── Scaling safeguards ─────────────────────────────────

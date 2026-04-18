@@ -403,11 +403,14 @@ def get_call_contracts(
 def get_spy_moving_averages(
     fast_period: int = 10,
     slow_period: int = 20,
+    trend_period: int = 50,
 ) -> Optional[dict]:
     """
     Fetch SPY daily bars and compute simple moving averages.
-    Returns {"fast_ma": float, "slow_ma": float, "spy_price": float, "is_bullish": bool}
-    or None if data unavailable.
+    Returns dict with fast_ma, slow_ma, ma50 (trend filter), spy_price,
+    is_bullish (fast>slow), ma50 (may be None if insufficient history),
+    distance_below_ma50 (positive = below MA50, negative = above).
+    Returns None if data fully unavailable.
     """
     try:
         with get_ib_lock():
@@ -416,7 +419,9 @@ def get_spy_moving_averages(
             contract = Stock("SPY", "SMART", "USD")
             ib.qualifyContracts(contract)
 
-            duration = f"{slow_period + 5} D"
+            # Need enough bars for the longest MA
+            longest = max(slow_period, trend_period)
+            duration = f"{longest + 5} D"
             bars = ib.reqHistoricalData(
                 contract,
                 endDateTime="",
@@ -425,7 +430,7 @@ def get_spy_moving_averages(
                 whatToShow="TRADES",
                 useRTH=False,
                 formatDate=1,
-                timeout=10,  # hard timeout in seconds
+                timeout=15,  # hard timeout in seconds (longer for 50D)
             )
 
             if not bars or len(bars) < slow_period:
@@ -439,17 +444,30 @@ def get_spy_moving_averages(
         spy_price = closes[-1]
         is_bullish = fast_ma > slow_ma
 
+        # MA50 if we have enough bars
+        if len(closes) >= trend_period:
+            ma50 = sum(closes[-trend_period:]) / trend_period
+            distance_below_ma50 = (ma50 - spy_price) / ma50  # + when below, - when above
+        else:
+            ma50 = None
+            distance_below_ma50 = None
+            log.warning("insufficient_bars_for_ma50", have=len(closes), need=trend_period)
+
         log.info(
             "spy_ma_calculated",
             spy_price=round(spy_price, 2),
             fast_ma=round(fast_ma, 2),
             slow_ma=round(slow_ma, 2),
+            ma50=round(ma50, 2) if ma50 is not None else None,
+            distance_below_ma50=round(distance_below_ma50, 4) if distance_below_ma50 is not None else None,
             trend="bullish" if is_bullish else "bearish",
         )
 
         return {
             "fast_ma": round(fast_ma, 2),
             "slow_ma": round(slow_ma, 2),
+            "ma50": round(ma50, 2) if ma50 is not None else None,
+            "distance_below_ma50": round(distance_below_ma50, 4) if distance_below_ma50 is not None else None,
             "spy_price": round(spy_price, 2),
             "is_bullish": is_bullish,
         }
