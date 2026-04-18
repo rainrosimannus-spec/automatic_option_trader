@@ -26,6 +26,34 @@ from src.strategy.universe import UniverseManager
 log = get_logger(__name__)
 
 
+def _realized_cc_premium_per_share(db, stock_pos) -> float:
+    """
+    Sum realized_pnl from CLOSED covered call positions on this stock since
+    assignment. Returns a per-share figure.
+
+    Unlike total_premium_collected (optimistic, at-write turnover tracker),
+    this reflects actual realized premium after buybacks/assignments/expiry.
+    Used for net_cost_basis calculations that drive strike selection.
+    """
+    closed_ccs = (
+        db.query(Position)
+        .filter(
+            Position.symbol == stock_pos.symbol,
+            Position.position_type == "covered_call",
+            Position.status.in_([
+                PositionStatus.CLOSED,
+                PositionStatus.ASSIGNED,
+                PositionStatus.EXPIRED,
+            ]),
+            Position.opened_at >= stock_pos.opened_at,
+        )
+        .all()
+    )
+    cc_total = sum((p.realized_pnl or 0) for p in closed_ccs)
+    shares = max(stock_pos.quantity, 1)
+    return cc_total / shares
+
+
 class WheelManager:
     """Manages the wheel: assignment detection → covered call writing."""
 
@@ -257,8 +285,11 @@ class WheelManager:
         from src.broker.market_data import get_stock_price
         current_price = get_stock_price(symbol, exchange, currency)
 
-        # Net cost basis = true breakeven including all premiums collected
-        net_cost_basis = (cost_basis or 0) - (stock_pos.total_premium_collected / max(stock_pos.quantity, 1))
+        # Net cost basis = true breakeven including realized CC premiums.
+        # Uses realized_pnl from closed CCs (honest) rather than total_premium_collected
+        # (optimistic turnover figure) so loss-on-buyback is reflected.
+        realized_cc_per_share = _realized_cc_premium_per_share(db, stock_pos)
+        net_cost_basis = (cost_basis or 0) - realized_cc_per_share
 
         # Exit mode: bump delta range, add interest surcharge to min_strike
         from src.core.config import get_settings as _gs

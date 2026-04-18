@@ -631,9 +631,9 @@ class ProfitTaker:
         ).first()
 
         if stock_pos:
-            net_cost_basis = (stock_pos.cost_basis or 0) - (
-                stock_pos.total_premium_collected / max(stock_pos.quantity, 1)
-            )
+            from src.strategy.wheel import _realized_cc_premium_per_share
+            realized_cc_per_share = _realized_cc_premium_per_share(db, stock_pos)
+            net_cost_basis = (stock_pos.cost_basis or 0) - realized_cc_per_share
         else:
             net_cost_basis = pos.strike or 0  # conservative fallback
 
