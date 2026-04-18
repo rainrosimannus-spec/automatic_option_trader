@@ -86,6 +86,84 @@
     </div>
 </div>
 
+<!-- ═══ Strategy Guardrails Panel (Phase 7-10) ═══ -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+
+    <!-- MA50 Status -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-3">
+        <div class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">SPY vs MA50</div>
+        {% if spy_distance_below_ma50 is not none %}
+            {% if spy_distance_below_ma50 > 0.03 %}
+                <div class="text-lg font-mono font-bold text-red-400">-{{ "%.1f"|format(spy_distance_below_ma50 * 100) }}%</div>
+                <div class="text-xs text-red-400">below (strong)</div>
+            {% elif spy_distance_below_ma50 > 0 %}
+                <div class="text-lg font-mono font-bold text-amber-400">-{{ "%.1f"|format(spy_distance_below_ma50 * 100) }}%</div>
+                <div class="text-xs text-amber-400">below</div>
+            {% else %}
+                <div class="text-lg font-mono font-bold text-emerald-400">+{{ "%.1f"|format(-spy_distance_below_ma50 * 100) }}%</div>
+                <div class="text-xs text-emerald-400">above</div>
+            {% endif %}
+        {% else %}
+            <div class="text-lg font-mono text-gray-600">—</div>
+            <div class="text-xs text-gray-600">warming up</div>
+        {% endif %}
+    </div>
+
+    <!-- 5-day Drawdown -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-3">
+        <div class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">5-day Drawdown</div>
+        {% if drawdown_5d is not none and drawdown_5d > 0 %}
+            {% if drawdown_5d > 0.10 %}
+                <div class="text-lg font-mono font-bold text-red-400">-{{ "%.1f"|format(drawdown_5d * 100) }}%</div>
+                <div class="text-xs text-red-400">cap × 0.25</div>
+            {% elif drawdown_5d > 0.05 %}
+                <div class="text-lg font-mono font-bold text-red-400">-{{ "%.1f"|format(drawdown_5d * 100) }}%</div>
+                <div class="text-xs text-red-400">cap × 0.50</div>
+            {% elif drawdown_5d > 0.02 %}
+                <div class="text-lg font-mono font-bold text-amber-400">-{{ "%.1f"|format(drawdown_5d * 100) }}%</div>
+                <div class="text-xs text-amber-400">cap × 0.75</div>
+            {% else %}
+                <div class="text-lg font-mono font-bold text-emerald-400">-{{ "%.1f"|format(drawdown_5d * 100) }}%</div>
+                <div class="text-xs text-gray-500">no scaling</div>
+            {% endif %}
+        {% else %}
+            <div class="text-lg font-mono font-bold text-emerald-400">0%</div>
+            <div class="text-xs text-gray-500">no scaling</div>
+        {% endif %}
+    </div>
+
+    <!-- Exit Mode Positions -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-3">
+        <div class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Exit-Mode Wheel</div>
+        {% if exit_mode_count and exit_mode_count > 0 %}
+            <div class="text-lg font-mono font-bold text-orange-400">{{ exit_mode_count }}</div>
+            <div class="text-xs text-orange-400">positions exiting</div>
+        {% else %}
+            <div class="text-lg font-mono text-gray-600">0</div>
+            <div class="text-xs text-gray-600">none</div>
+        {% endif %}
+    </div>
+
+    <!-- Effective Tier -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-3">
+        <div class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Effective Tier</div>
+        {% if effective_vix_tier %}
+            <div class="text-lg font-mono font-bold
+                {% if effective_vix_tier == 'halt' %}text-red-400
+                {% elif effective_vix_tier == 'high' %}text-red-400
+                {% elif effective_vix_tier == 'mid' %}text-amber-400
+                {% else %}text-emerald-400{% endif %}">
+                {{ effective_vix_tier | upper }}
+            </div>
+            <div class="text-xs text-gray-500">delta / DTE tier</div>
+        {% else %}
+            <div class="text-lg font-mono text-gray-600">—</div>
+            <div class="text-xs text-gray-600">no data</div>
+        {% endif %}
+    </div>
+
+</div>
+
 <!-- ═══ Market Regime Panel ═══ -->
 <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
 
@@ -95,10 +173,13 @@
             <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">VIX</span>
             {% if current_vix %}
             <span class="text-xs px-2 py-0.5 rounded-full
-                {% if current_vix > 30 %}bg-red-900/60 text-red-300
+                {% if effective_vix_tier == 'halt' %}bg-red-900/60 text-red-300
+                {% elif effective_vix_tier == 'high' %}bg-red-900/60 text-red-300
+                {% elif effective_vix_tier == 'mid' %}bg-amber-900/60 text-amber-300
+                {% elif current_vix > 30 %}bg-red-900/60 text-red-300
                 {% elif current_vix > 20 %}bg-amber-900/60 text-amber-300
                 {% else %}bg-emerald-900/60 text-emerald-300{% endif %}">
-                {% if current_vix > 30 %}HALT{% elif current_vix > 20 %}ELEVATED{% else %}NORMAL{% endif %}
+                {% if effective_vix_tier %}{{ effective_vix_tier | upper }}{% elif current_vix > 30 %}HALT{% elif current_vix > 20 %}ELEVATED{% else %}NORMAL{% endif %}
             </span>
             {% endif %}
         </div>
@@ -110,7 +191,14 @@
             {% else %}text-emerald-400{% endif %}">
             {{ "%.1f"|format(current_vix) if current_vix else '—' }}
         </div>
-        <div class="text-xs text-gray-500 mt-1">Threshold: 30.0</div>
+        <div class="text-xs text-gray-500 mt-1">
+            Threshold: 30.0
+            {% if vix_spike and vix_spike > 4 %}
+            <span class="ml-2 text-red-400">↑ spike +{{ "%.1f"|format(vix_spike) }}</span>
+            {% elif vix_spike %}
+            <span class="ml-2 text-gray-600">Δ24h {{ "%+.1f"|format(vix_spike) }}</span>
+            {% endif %}
+        </div>
     </div>
 
     <!-- SPY Trend -->

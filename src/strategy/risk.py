@@ -216,17 +216,32 @@ class RiskManager:
             else:
                 regime_label = "normal"
 
+            # Compute derived fields for dashboard display
+            try:
+                eff_tier = self.effective_vix_tier(regime)
+            except Exception:
+                eff_tier = ""
+            try:
+                drawdown_5d = self._get_recent_nlv_drawdown()
+            except Exception:
+                drawdown_5d = 0.0
+
             pairs = {
                 "market_regime": regime_label,
                 "current_vix": str(regime.vix) if regime.vix else "",
+                "vix_spike": str(round(regime.vix_spike, 2)) if regime.vix_spike is not None else "",
+                "effective_vix_tier": eff_tier,
                 "spy_bullish": str(regime.spy_bullish).lower() if regime.spy_bullish is not None else "",
                 "spy_fast_ma": str(regime.spy_fast_ma) if regime.spy_fast_ma else "",
                 "spy_slow_ma": str(regime.spy_slow_ma) if regime.spy_slow_ma else "",
+                "spy_ma50": str(regime.spy_ma50) if regime.spy_ma50 else "",
+                "spy_distance_below_ma50": str(round(regime.spy_distance_below_ma50, 4)) if regime.spy_distance_below_ma50 is not None else "",
                 "spy_price": str(regime.spy_price) if regime.spy_price else "",
                 "eu_bullish": str(regime.eu_bullish).lower() if regime.eu_bullish is not None else "",
                 "eu_price": str(regime.eu_price) if regime.eu_price else "",
                 "asia_bullish": str(regime.asia_bullish).lower() if regime.asia_bullish is not None else "",
                 "asia_price": str(regime.asia_price) if regime.asia_price else "",
+                "drawdown_5d": str(round(drawdown_5d, 4)),
             }
             for key, value in pairs.items():
                 if not value:
