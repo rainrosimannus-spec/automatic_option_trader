@@ -147,13 +147,14 @@ class PutSeller:
         log.info("put_scan_completed", market=market_label, trades=len(traded), symbols=traded)
         return traded
 
-    def _resolve_dte(self, current_vix: float | None, currency: str) -> tuple[int, int] | None:
+    def _resolve_dte(self, currency: str) -> tuple[int, int] | None:
         """Return (dte_min, dte_max) based on VIX tier (spike-aware) and currency. None = halt."""
         tiers = self.cfg.dte_tiers
-        if current_vix is None:
+        regime = self.risk.get_regime()
+        if regime.vix is None:
             return (7, 14)  # fail-open: no VIX data, use mid tier
         # Use effective tier from risk manager (accounts for VIX rate-of-change spike)
-        tier = self.risk.effective_vix_tier(self.risk.get_regime())
+        tier = self.risk.effective_vix_tier(regime)
         if tier == "halt":
             return None
         if tier == "low":
@@ -267,7 +268,7 @@ class PutSeller:
         delta_range = self.risk.get_dynamic_delta_range()
 
         # Resolve DTE range based on VIX and currency
-        dte_range = self._resolve_dte(current_vix, currency)
+        dte_range = self._resolve_dte(currency)
         if dte_range is None:
             log.info("vix_halt_dte", symbol=symbol, vix=current_vix)
             return False
