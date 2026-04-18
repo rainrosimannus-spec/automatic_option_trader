@@ -362,10 +362,15 @@ class ProfitTaker:
 
     def check_covered_calls(self) -> list[str]:
         """
-        Monitor open covered calls and:
-        1. OTM profit-taking: close at 50/65/75% profit captured (mirror of put profit-taker)
-        2. ITM roll-up: when stock > strike * 1.07 and DTE > 2, buy back and sell new call
-           at a higher strike above net cost basis with meaningful premium.
+        Monitor open covered calls on wheel-assigned stocks.
+
+        Iron logic (Phase 16): if the CC is 80%+ profitable, close it.
+        The wheel scheduler writes a fresh closer-to-money CC next cycle
+        so the strike tracks the stock down, improving exit probability.
+
+        No ITM roll-up — assignment IS the goal for wheel-assigned stocks.
+        Skip DTE <= 3 — let expire worthless, not worth the fees.
+
         Returns list of symbols acted on.
         """
         log.info("cc_profit_check_started")
@@ -383,21 +388,6 @@ class ProfitTaker:
 
             for pos in open_calls:
                 try:
-                    # Skip profit-take / roll-up entirely if underlying stock is in wheel exit mode
-                    stock_pos = (
-                        db.query(Position)
-                        .filter(
-                            Position.symbol == pos.symbol,
-                            Position.position_type == "stock",
-                            Position.status == PositionStatus.OPEN,
-                            Position.is_wheel == True,
-                        )
-                        .first()
-                    )
-                    if stock_pos and stock_pos.wheel_exit_mode:
-                        log.info("cc_profit_check_skipped_exit_mode", symbol=pos.symbol)
-                        continue
-
                     stock = self.universe.get_stock(pos.symbol)
                     currency = stock.currency if stock else "USD"
                     mins_to_open = _minutes_to_market_open(currency)
@@ -434,54 +424,26 @@ class ProfitTaker:
                     if not entry_premium or entry_premium <= 0:
                         continue
 
-                    # ── OTM profit-taking (mirror of put profit-taker) ──
-                    # Skip DTE <= 3 — let expire worthless, not worth fees
+                    # ── Iron-logic CC exit (Phase 16) ──
+                    # Single rule: if CC is 80%+ profitable, close it. Next wheel cycle
+                    # writes a fresh closer-to-money CC at lower strike, tracking the
+                    # stock down to improve exit probability.
+                    # Skip DTE <= 3 — let expire worthless, not worth the fees.
+                    # No ITM roll-up — assignment IS the goal for wheel-assigned stocks.
+                    # _roll_call_up function remains in the file but is no longer invoked.
                     if dte > 3:
                         profit_pct = (entry_premium - live_ask) / entry_premium
-                        if dte > 14:
-                            target = 0.75
-                        elif dte > 7:
-                            target = 0.65
-                        else:
-                            target = 0.50
-
-                        if profit_pct >= target:
+                        threshold = self.cfg.wheel_cc_profit_threshold
+                        if profit_pct >= threshold:
                             log.info("cc_profit_target_hit",
                                      symbol=pos.symbol, dte=dte,
-                                     target_pct=f"{target:.0%}",
+                                     threshold_pct=f"{threshold:.0%}",
                                      entry=round(entry_premium, 2),
                                      current=round(live_ask, 2),
                                      profit_pct=f"{profit_pct:.0%}")
                             success = self._close_covered_call(db, pos, live_ask, opt_exchange, currency, reason="profit_take")
                             if success:
                                 acted.append(pos.symbol)
-                            continue  # don't also check ITM roll on same position
-
-                    # ── ITM roll-up ──
-                    # Real stock price. No derived/estimated values.
-                    current_price = get_stock_live_price(pos.symbol, exchange=exchange, currency=currency)
-                    if not current_price or current_price <= 0:
-                        log.info("cc_rollup_no_stock_price", symbol=pos.symbol)
-                        continue
-                    deeply_itm = current_price > (pos.strike or 0) * 1.05
-                    if dte <= 2 and not deeply_itm:
-                        continue
-
-                    if not current_price or current_price <= 0:
-                        continue
-
-                    itm_threshold = (pos.strike or 0) * 1.07
-                    if current_price <= itm_threshold:
-                        continue
-
-                    log.info("cc_itm_rollup_triggered",
-                             symbol=pos.symbol, stock_price=round(current_price, 2),
-                             strike=pos.strike, threshold=round(itm_threshold, 2), dte=dte)
-
-                    success = self._roll_call_up(db, pos, current_price, live_ask,
-                                                 opt_exchange, exchange, currency)
-                    if success:
-                        acted.append(pos.symbol)
 
                 except Exception as e:
                     log.error("cc_check_error", symbol=pos.symbol, error=str(e))
