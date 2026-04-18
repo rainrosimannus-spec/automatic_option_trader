@@ -148,18 +148,20 @@ class PutSeller:
         return traded
 
     def _resolve_dte(self, current_vix: float | None, currency: str) -> tuple[int, int] | None:
-        """Return (dte_min, dte_max) based on VIX and currency. None = halt."""
+        """Return (dte_min, dte_max) based on VIX tier (spike-aware) and currency. None = halt."""
         tiers = self.cfg.dte_tiers
         if current_vix is None:
             return (7, 14)  # fail-open: no VIX data, use mid tier
-        if current_vix > tiers.mid_vix["vix_max"]:
-            return None     # VIX > 30: halt
-        if current_vix < tiers.low_vix["vix_max"]:
+        # Use effective tier from risk manager (accounts for VIX rate-of-change spike)
+        tier = self.risk.effective_vix_tier(self.risk.get_regime())
+        if tier == "halt":
+            return None
+        if tier == "low":
             if currency == "USD":
                 return (tiers.low_vix["dte_min_usd"], tiers.low_vix["dte_max_usd"])
             else:
                 return (tiers.low_vix["dte_min_other"], tiers.low_vix["dte_max_other"])
-        # VIX 20-30: mid tier, same for everyone
+        # mid tier (tier == "mid" or escalated from low)
         if currency == "USD":
             return (tiers.mid_vix["dte_min_usd"], tiers.mid_vix["dte_max_usd"])
         else:

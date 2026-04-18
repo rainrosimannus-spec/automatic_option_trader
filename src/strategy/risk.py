@@ -50,6 +50,8 @@ class RiskCheck:
 class MarketRegime:
     """Snapshot of current market conditions for risk decisions."""
     vix: float | None = None
+    vix_prev_day: float | None = None   # yesterday's VIX close (from SystemState)
+    vix_spike: float | None = None      # today - yesterday (None if no prev)
     spy_bullish: bool | None = None
     spy_fast_ma: float | None = None
     spy_slow_ma: float | None = None
@@ -90,6 +92,16 @@ class RiskManager:
             regime.vix = self._get_last_known("current_vix")
             if regime.vix is not None:
                 log.info("vix_using_cached", vix=regime.vix)
+
+        # Pull yesterday's VIX close for rate-of-change computation
+        regime.vix_prev_day = self._get_last_known("vix_prev_day")
+        if regime.vix is not None and regime.vix_prev_day is not None:
+            regime.vix_spike = regime.vix - regime.vix_prev_day
+            if regime.vix_spike > self.cfg.vix_spike_bump_1_tier:
+                log.info("vix_spike_detected",
+                         vix=round(regime.vix, 2),
+                         vix_prev=round(regime.vix_prev_day, 2),
+                         spike=round(regime.vix_spike, 2))
 
         # Try SPY MA — may also fail outside US hours
         if self.cfg.spy_ma_enabled:
@@ -163,7 +175,36 @@ class RiskManager:
 
     def _store_regime(self, regime: MarketRegime) -> None:
         """Persist regime data to SystemState for dashboard display."""
+        from datetime import date as _date
         with get_db() as db:
+            # Promote current_vix -> vix_prev_day if stored date is not today
+            if regime.vix is not None:
+                today_str = _date.today().isoformat()
+                stored_date = db.query(SystemState).filter(
+                    SystemState.key == "current_vix_date"
+                ).first()
+                stored_vix = db.query(SystemState).filter(
+                    SystemState.key == "current_vix"
+                ).first()
+                if (stored_date and stored_vix
+                        and stored_date.value != today_str
+                        and stored_vix.value):
+                    # Yesterday's VIX becomes vix_prev_day
+                    prev = db.query(SystemState).filter(
+                        SystemState.key == "vix_prev_day"
+                    ).first()
+                    if prev:
+                        prev.value = stored_vix.value
+                    else:
+                        db.add(SystemState(key="vix_prev_day", value=stored_vix.value))
+                    log.info("vix_prev_day_promoted",
+                             prev_date=stored_date.value,
+                             prev_vix=stored_vix.value)
+                # Update or create current_vix_date
+                if stored_date:
+                    stored_date.value = today_str
+                else:
+                    db.add(SystemState(key="current_vix_date", value=today_str))
             if regime.vix is not None and regime.vix > self.cfg.vix_pause_threshold:
                 regime_label = "halt"
             elif regime.spy_bullish is False:
@@ -875,31 +916,81 @@ class RiskManager:
         if vix is None:
             return (strat_cfg.delta_min, strat_cfg.delta_max)
 
-        # TREND_BEARISH + high VIX: tightest range
-        if spy_bearish and vix >= 25:
-            delta_range = (0.08, 0.15)
-            log.debug("dynamic_delta", vix=vix, regime="bearish+high_vix", delta_range=delta_range)
+        # Spike-aware tier (can escalate beyond raw VIX level)
+        tier = self.effective_vix_tier(regime)
 
-        # TREND_BEARISH: force at least high-VIX range regardless of VIX number
+        # TREND_BEARISH + high tier: tightest range
+        if spy_bearish and tier in ("high", "halt"):
+            delta_range = (0.08, 0.15)
+            log.debug("dynamic_delta", vix=vix, spike=regime.vix_spike,
+                      regime="bearish+high_tier", delta_range=delta_range)
+
+        # TREND_BEARISH: force at least high-VIX range
         elif spy_bearish:
             delta_range = (strat_cfg.delta_vix_high, strat_cfg.delta_vix_high_max)
-            log.debug("dynamic_delta", vix=vix, regime="bearish", delta_range=delta_range)
+            log.debug("dynamic_delta", vix=vix, spike=regime.vix_spike,
+                      regime="bearish", delta_range=delta_range)
 
-        # Normal VIX-based tiers
-        elif vix < 20:
+        # Tier-based
+        elif tier == "low":
             delta_range = (strat_cfg.delta_vix_low, strat_cfg.delta_vix_low_max)
-            log.debug("dynamic_delta", vix=vix, regime="low", delta_range=delta_range)
-        elif vix < 25:
+            log.debug("dynamic_delta", vix=vix, spike=regime.vix_spike,
+                      regime="low", delta_range=delta_range)
+        elif tier == "mid":
             delta_range = (strat_cfg.delta_vix_mid, strat_cfg.delta_vix_mid_max)
-            log.debug("dynamic_delta", vix=vix, regime="mid", delta_range=delta_range)
-        else:
+            log.debug("dynamic_delta", vix=vix, spike=regime.vix_spike,
+                      regime="mid", delta_range=delta_range)
+        else:  # high or halt
             delta_range = (strat_cfg.delta_vix_high, strat_cfg.delta_vix_high_max)
-            log.debug("dynamic_delta", vix=vix, regime="high", delta_range=delta_range)
+            log.debug("dynamic_delta", vix=vix, spike=regime.vix_spike,
+                      regime=tier, delta_range=delta_range)
 
         # Note: DTE-specific delta widening is handled in the screener per-contract.
         # This method provides the base delta range from VIX level and trend regime.
 
         return delta_range
+
+    # ── VIX tier helper ─────────────────────────────────────
+    def effective_vix_tier(self, regime: MarketRegime) -> str:
+        """
+        Return current VIX tier accounting for rate-of-change spike.
+        Returns one of: "low", "mid", "high", "halt".
+
+        Base tiers from raw VIX:
+            < 20 -> low
+            20-25 -> mid
+            25-30 -> high
+            > 30 -> halt
+
+        Spike escalation (never de-escalates):
+            spike > vix_spike_bump_2_tiers -> two tiers higher (forces high)
+            spike > vix_spike_bump_1_tier  -> one tier higher
+        """
+        vix = regime.vix
+        if vix is None:
+            return "low"  # permissive default when no data
+        if vix > self.cfg.vix_pause_threshold:
+            return "halt"
+
+        # Base tier from raw VIX
+        if vix < 20:
+            base_tier_idx = 0  # low
+        elif vix < 25:
+            base_tier_idx = 1  # mid
+        else:
+            base_tier_idx = 2  # high
+
+        # Spike escalation
+        bump = 0
+        spike = regime.vix_spike
+        if spike is not None and spike > 0:
+            if spike > self.cfg.vix_spike_bump_2_tiers:
+                bump = 2
+            elif spike > self.cfg.vix_spike_bump_1_tier:
+                bump = 1
+
+        effective_idx = min(base_tier_idx + bump, 2)  # cap at high
+        return ["low", "mid", "high"][effective_idx]
 
     # ── Scaling safeguards ─────────────────────────────────
     def check_total_exposure(self) -> RiskCheck:

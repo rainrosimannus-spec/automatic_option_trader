@@ -126,6 +126,9 @@ class RiskConfig(BaseModel):
     spy_ma_fast: int = 10
     spy_ma_slow: int = 20
     spy_bearish_reduction: float = 0.50
+    # VIX rate-of-change (spike) escalation
+    vix_spike_bump_1_tier: float = 4.0   # spike > this -> treat VIX as one tier higher
+    vix_spike_bump_2_tiers: float = 6.0  # spike > this -> treat as two tiers higher
 
 
 class ScheduleConfig(BaseModel):
