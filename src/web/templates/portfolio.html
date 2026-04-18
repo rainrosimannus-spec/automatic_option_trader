@@ -431,7 +431,7 @@ function syncInjections() {
     {% endif %}
 
     <!-- ═══ Open Options Positions (live from IBKR portfolio account) ═══ -->
-    {% set open_opts_live = portfolio_open_orders | selectattr("sec_type", "equalto", "OPT") | selectattr("status", "equalto", "Open") | list %}
+    {% set open_opts_live = portfolio_open_orders | selectattr("sec_type", "equalto", "OPT") | selectattr("status", "equalto", "Open") | sort(attribute="expiry") | list %}
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
         <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">
             📊 Open Options Positions
