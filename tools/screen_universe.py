@@ -905,8 +905,9 @@ class UniverseScreener:
         print(f"PHASE 3: Building portfolio universe")
         print(f"{'='*60}")
 
-        dividend_candidates = [s for s in all_scores if s.dividend_yield > 2.5 and s.tier != "breakthrough"]
-        growth_candidates = [s for s in all_scores if s.dividend_yield <= 2.5 and s.tier != "breakthrough"]
+        _dividend_pool_symbols = {str(sym) for pool in DIVIDEND_CANDIDATES.values() for sym in pool["symbols"]}
+        dividend_candidates = [s for s in all_scores if s.tier != "breakthrough" and (s.symbol in _dividend_pool_symbols or s.dividend_yield > 2.5)]
+        growth_candidates = [s for s in all_scores if s.tier != "breakthrough" and s.symbol not in _dividend_pool_symbols and s.dividend_yield <= 2.5]
 
         dividend_candidates.sort(key=lambda s: s.dividend_total_return_score, reverse=True)
         growth_candidates.sort(key=lambda s: s.portfolio_score, reverse=True)
