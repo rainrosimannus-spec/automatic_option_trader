@@ -13,9 +13,9 @@ from pydantic import BaseModel
 
 class TierAllocation(BaseModel):
     """Configurable tier proportions. Must sum to 1.0."""
-    dividend: float = 0.25
+    dividend: float = 0.15
     breakthrough: float = 0.25
-    growth: float = 0.50
+    growth: float = 0.60
 
 
 class PutEntryConfig(BaseModel):
@@ -53,9 +53,9 @@ class PortfolioConfig(BaseModel):
     tier_allocation: TierAllocation = TierAllocation()
 
     # Target stock counts per tier
-    tier_count_dividend: int = 25
+    tier_count_dividend: int = 15
     tier_count_breakthrough: int = 25
-    tier_count_growth: int = 50
+    tier_count_growth: int = 60
 
     # Put-entry mechanism
     put_entry: PutEntryConfig = PutEntryConfig()
