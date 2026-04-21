@@ -1214,7 +1214,7 @@ class PortfolioBuyer:
                 entry.rsi_14 = analysis.rsi_14
                 entry.buy_signal = analysis.buy_signal
                 entry.signal_type = analysis.signal_type if analysis.buy_signal else None
-                entry.composite_score = analysis.composite_score
+                entry.raw_score = round(analysis.composite_score, 1)
                 entry.updated_at = datetime.utcnow()
 
                 if analysis.composite_score > 0:
