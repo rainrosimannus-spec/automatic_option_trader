@@ -979,10 +979,38 @@ class UniverseScreener:
                 pass
         if not price or price <= 0:
             return None
+        # IBKR reports GBP stock prices in pence — convert to pounds
+        # (same convention as src/broker/trade_sync.py:318-321)
+        if currency == "GBP":
+            price = price / 100.0
         score.price = float(price)
         score.market_cap = self._estimate_market_cap(contract, price)
 
         fmp = _get_fmp_fundamentals(symbol)
+
+        # IBKR fundamentals fallback — covers LSE/AEB/HKEX/etc. where FMP
+        # returns nothing, and overrides FMP fields known to be broken
+        # (payout_ratio always 0, dividend_cagr_* always None).
+        try:
+            from src.portfolio.ibkr_fundamentals import get_ibkr_fundamentals
+            ibkr = get_ibkr_fundamentals(self.ib, contract, current_price=price)
+        except Exception:
+            ibkr = {}
+        if ibkr:
+            # Prefer IBKR for fields where FMP is known unreliable
+            for k in ("payout_ratio", "dividend_cagr_3yr", "dividend_cagr_5yr"):
+                if k in ibkr and ibkr[k] is not None:
+                    fmp[k] = ibkr[k]
+            # dividend_cut: prefer IBKR (its detection is actual DPS-based, not yield-based)
+            if "dividend_cut" in ibkr:
+                fmp["dividend_cut"] = ibkr["dividend_cut"]
+            # dividend_yield: fill in when FMP returned 0 or missing
+            if ibkr.get("dividend_yield") and not fmp.get("dividend_yield"):
+                fmp["dividend_yield"] = ibkr["dividend_yield"]
+            # Revenue: fill in when FMP missing
+            for k in ("revenue_yoy_pct", "revenue_avg_pct"):
+                if k in ibkr and not fmp.get(k):
+                    fmp[k] = ibkr[k]
         score.growth_score = _score_growth(fmp)
         score.valuation_score = _score_valuation(fmp)
         score.quality_score = _score_quality(fmp)
