@@ -29,7 +29,7 @@
         </div>
     </div>
 
-    <div id="run-now-result" class="mb-4"></div>
+    <div id="run-now-result" class="mb-4">{% if screener_running %}<div class="bg-emerald-900/30 border border-emerald-700 rounded-lg p-4"><div class="text-emerald-400 font-medium">🔍 Monthly screener running in background</div><div class="text-sm text-gray-400 mt-1">This takes 30-60 minutes. This box will disappear automatically when the run finishes.</div></div>{% endif %}</div>
 
     {% if not universe_exists %}
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-8 text-center">

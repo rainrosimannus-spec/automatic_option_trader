@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -23,6 +24,41 @@ router = APIRouter()
 RUN_LOG_PATH = Path("data/screener_last_run.json")
 SCREENED_UNIVERSE_PATH = Path("config/screened_universe.yaml")
 OPTIONS_UNIVERSE_PATH = Path("config/options_universe.yaml")
+RUNNING_FLAG_PATH = Path("data/screener_running.flag")
+STALE_AFTER_SECONDS = 2 * 3600  # 2 hours — clear stale flag if thread died
+
+
+def _set_running_flag() -> None:
+    try:
+        RUNNING_FLAG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RUNNING_FLAG_PATH.write_text(str(int(time.time())))
+    except Exception as e:
+        log.warning("screener_flag_write_failed", error=str(e))
+
+
+def _clear_running_flag() -> None:
+    try:
+        RUNNING_FLAG_PATH.unlink(missing_ok=True)
+    except Exception as e:
+        log.warning("screener_flag_clear_failed", error=str(e))
+
+
+def _is_screener_running() -> bool:
+    """True if flag file exists AND is not stale (>2h old)."""
+    if not RUNNING_FLAG_PATH.exists():
+        return False
+    try:
+        started_at = int(RUNNING_FLAG_PATH.read_text().strip())
+        age = time.time() - started_at
+        if age > STALE_AFTER_SECONDS:
+            log.warning("screener_flag_stale_clearing", age_seconds=int(age))
+            _clear_running_flag()
+            return False
+        return True
+    except Exception:
+        # Unreadable flag — clear it
+        _clear_running_flag()
+        return False
 
 
 def _load_run_log() -> dict:
@@ -85,6 +121,7 @@ async def screener_page(request: Request):
         "universe_counts": universe_counts,
         "options_count": options_count,
         "universe_exists": SCREENED_UNIVERSE_PATH.exists(),
+        "screener_running": _is_screener_running(),
     })
 
 
@@ -95,12 +132,29 @@ async def run_screener_now(request: Request):
     if not cfg.enabled:
         return HTMLResponse('<div class="text-red-400">Portfolio not enabled.</div>')
 
+    if _is_screener_running():
+        return HTMLResponse("""
+        <div class="bg-amber-900/30 border border-amber-700 rounded-lg p-4">
+            <div class="text-amber-400 font-medium">⏳ Screener is already running</div>
+            <div class="text-sm text-gray-400 mt-1">
+                A run is already in progress. Please wait for it to finish.
+            </div>
+        </div>
+        """)
+
+    _set_running_flag()
+
     def _run():
-        from src.portfolio.connection import get_portfolio_lock, _ensure_event_loop
-        from src.portfolio.scheduler import job_portfolio_monthly_screen
-        _ensure_event_loop()
-        with get_portfolio_lock():
-            job_portfolio_monthly_screen(cfg)
+        try:
+            from src.portfolio.connection import get_portfolio_lock, _ensure_event_loop
+            from src.portfolio.scheduler import job_portfolio_monthly_screen
+            _ensure_event_loop()
+            with get_portfolio_lock():
+                job_portfolio_monthly_screen(cfg)
+        except Exception as e:
+            log.error("screener_thread_failed", error=str(e))
+        finally:
+            _clear_running_flag()
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
