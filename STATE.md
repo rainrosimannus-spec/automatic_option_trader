@@ -118,6 +118,17 @@ Concerning: BZG2 and MC show composite 32 with Q=0, G=0 — stale data or uncove
 
 ## Open Questions / TODO Next Session
 
+### PRIORITY — breakthrough tier quality audit
+
+XXII (22nd Century Group — $2 tobacco micro-cap, 1-for-15 reverse split pending, $7.1M cash, Series A + warrant dilution) surfaced in breakthrough tier at composite 55. This violates the breakthrough thesis entirely. Breakthrough was scoped for structural/fundamental multi-decade shifts — transformative technology (quantum, AI, solid-state batteries), demographic inflections, climate/energy transition, biotech breakthroughs. Low-nicotine cigarettes don't qualify.
+
+Investigate next session:
+- How did XXII enter the breakthrough candidate pool? Manually in CANDIDATE_POOLS / DIVIDEND_CANDIDATES, or via Claude Sonnet's breakthrough scan?
+- What prompt is used for breakthrough scan in src/portfolio/ (or wherever it lives)? Has it drifted from the original thesis?
+- Review the full current breakthrough tier: are there other stocks that don't fit the thesis?
+- Consider: add cash-runway / dilution check to the scorer, or tighten breakthrough prompt criteria.
+
+
 1. Restart the app to activate metrics-order fix. After restart, wait 2 minutes, verify ABT/RTX/GE/CRM/SOFI have composite > 0. ABT should blend to ~74.9.
 2. Push commit 2a95c7b when GitHub TCP unblocks. Currently local-only.
 3. Optional: trigger a screener run to populate the 9 NULL dividend_total_return_score rows via Phase 2b.
