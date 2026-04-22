@@ -342,7 +342,7 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
             regions = [r.strip() for r in cfg.rescreen_regions.split(",") if r.strip()] or None
 
             screener = UniverseScreener(ib)
-            portfolio_universe, options_universe = screener.screen_all(
+            portfolio_universe, options_universe, all_scores = screener.screen_all(
                 regions=regions,
                 min_market_cap=cfg.rescreen_min_market_cap,
                 growth_count=cfg.tier_count_growth,
@@ -479,6 +479,61 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                             # Safe to remove — no open position
                             db.delete(wl_entry)
                             flagged_removal.append(sym)
+
+                # ── Phase 2b: refresh scores for held holdings not in top-100 ──
+                # Stocks held with open positions that fell off the new universe
+                # would otherwise keep stale scores. Refresh from all_scores when
+                # the screener has data, else compute fresh via _score_stock.
+                all_scores_by_sym = {s.symbol: s for s in all_scores}
+                refreshed_from_pool = 0
+                refreshed_via_live = 0
+
+                for sym in open_positions:
+                    if sym in new_symbols:
+                        continue  # already updated by main Phase 2 loop
+                    wl_entry = current_watchlist.get(sym)
+                    if wl_entry is None:
+                        continue
+
+                    if sym in all_scores_by_sym:
+                        # Cheap path — screener already scored this
+                        score = all_scores_by_sym[sym]
+                        wl_entry.growth_score = score.growth_score
+                        wl_entry.valuation_score = score.valuation_score
+                        wl_entry.quality_score = score.quality_score
+                        wl_entry.dividend_total_return_score = (
+                            score.dividend_total_return_score
+                            if wl_entry.tier == "dividend"
+                            else None
+                        )
+                        wl_entry.screened_at = datetime.utcnow()
+                        refreshed_from_pool += 1
+                    else:
+                        # Off-pool held stock — needs explicit live scoring
+                        try:
+                            score = screener._score_stock(
+                                sym,
+                                wl_entry.exchange or "SMART",
+                                wl_entry.currency or "USD",
+                            )
+                            if score is not None:
+                                wl_entry.growth_score = score.growth_score
+                                wl_entry.valuation_score = score.valuation_score
+                                wl_entry.quality_score = score.quality_score
+                                wl_entry.dividend_total_return_score = (
+                                    score.dividend_total_return_score
+                                    if wl_entry.tier == "dividend"
+                                    else None
+                                )
+                                wl_entry.screened_at = datetime.utcnow()
+                                refreshed_via_live += 1
+                        except Exception as e:
+                            log.warning("phase2b_score_failed", symbol=sym, error=str(e))
+
+                log.info("portfolio_monthly_screen_phase2b_done",
+                         refreshed_from_pool=refreshed_from_pool,
+                         refreshed_via_live=refreshed_via_live,
+                         total_refreshed=refreshed_from_pool + refreshed_via_live)
 
             log.info("portfolio_monthly_screen_phase2_done",
                      added=len(added),

@@ -940,7 +940,7 @@ class UniverseScreener:
         print(f"  Options-eligible: {len(options_eligible)}")
         print(f"  Options universe: {len(options_universe)}")
 
-        return portfolio_universe, options_universe
+        return portfolio_universe, options_universe, all_scores
 
     def _score_stock(self, symbol: str, exchange: str, currency: str) -> Optional[StockScore]:
         contract = Stock(symbol, exchange, currency)
@@ -1176,7 +1176,7 @@ def main():
         ib.connect("127.0.0.1", args.port, clientId=99)
         print(f"✅ Connected to IBKR on port {args.port}")
         screener = UniverseScreener(ib)
-        portfolio_universe, options_universe = screener.screen_all(
+        portfolio_universe, options_universe, all_scores = screener.screen_all(
             regions=regions,
             min_market_cap=args.min_mcap,
             growth_count=args.growth,
