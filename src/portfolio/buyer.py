@@ -1290,7 +1290,7 @@ class PortfolioBuyer:
             # valuation_score excluded — FMP free tier returns 50.0 default too often
             tier_weights = {
                 "growth":      {"growth": 0.50, "quality": 0.50},
-                "dividend":    {"growth": 0.30, "quality": 0.70},
+                "dividend":    {"growth": 0.00, "quality": 1.00},  # dividend: quality_score holds dividend_total_return_score
                 "breakthrough": {"growth": 0.70, "quality": 0.30},
             }
 
