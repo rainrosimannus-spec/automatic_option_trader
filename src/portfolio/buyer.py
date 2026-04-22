@@ -1278,21 +1278,21 @@ class PortfolioBuyer:
     def _compute_compound_quality(self) -> None:
         """
         Compute compound quality score for all watchlist stocks.
-        Combines growth_score and quality_score with tier-specific weights,
-        then normalizes within each tier to 1-100% based on actual score distance.
+        Each tier uses a tier-appropriate raw quality metric, then normalizes
+        within-tier to 1-100 based on actual score distance (best=100, worst=1).
         Stored as compound_quality_pct in portfolio_watchlist.
-        Called before recalc_scores_from_db() so 70/30 blending can use it.
+
+        Tier formulas:
+          growth / breakthrough: raw = 0.40*growth + 0.25*valuation + 0.35*quality
+            (matches screener's portfolio_score formula exactly, so compound
+            ranks stocks on the same basis the screener selected them on)
+          dividend: raw = dividend_total_return_score
+            (the screener's dividend-specific ranking metric)
+
+        Called by recalc_scores_from_db() before the 80/20 composite blend.
         """
         with get_db() as db:
             all_stocks = db.query(PortfolioWatchlist).all()
-
-            # Tier-specific weights for growth vs quality components
-            # valuation_score excluded — FMP free tier returns 50.0 default too often
-            tier_weights = {
-                "growth":      {"growth": 0.50, "quality": 0.50},
-                "dividend":    {"growth": 0.00, "quality": 1.00},  # dividend: quality_score holds dividend_total_return_score
-                "breakthrough": {"growth": 0.70, "quality": 0.30},
-            }
 
             # Group by tier
             by_tier: dict[str, list] = {}
@@ -1300,14 +1300,18 @@ class PortfolioBuyer:
                 by_tier.setdefault(s.tier, []).append(s)
 
             for tier, stocks in by_tier.items():
-                w = tier_weights.get(tier, tier_weights["growth"])
-
-                # Compute raw compound score per stock
+                # Compute tier-specific raw score per stock
                 raw: dict[str, float] = {}
                 for s in stocks:
-                    g = s.growth_score or 0.0
-                    q = s.quality_score or 0.0
-                    raw[s.symbol] = g * w["growth"] + q * w["quality"]
+                    if tier == "dividend":
+                        # Dividend tier ranks on dividend_total_return_score only
+                        raw[s.symbol] = s.dividend_total_return_score or 0.0
+                    else:
+                        # Growth and breakthrough use portfolio_score formula
+                        g = s.growth_score or 0.0
+                        v = s.valuation_score or 0.0
+                        q = s.quality_score or 0.0
+                        raw[s.symbol] = g * 0.40 + v * 0.25 + q * 0.35
 
                 if not raw:
                     continue
