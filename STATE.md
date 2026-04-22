@@ -142,6 +142,9 @@ Investigate next session:
 
 ---
 
+
+- Dashboard shows sma_200 for all tiers, but discount_pct is computed against tier-specific SMA (200-dividend / 100-growth / 50-breakthrough). The math is correct; the display is misleading. Cosmetic fix: dashboard should show the tier-appropriate SMA, or label both clearly.
+
 ## Operational Facts
 
 - Server: rain@octoserver-genoax2:~/automatic_option_trader
