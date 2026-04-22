@@ -147,11 +147,15 @@ def job_portfolio_update_metrics(cfg: PortfolioConfig):
         with get_portfolio_lock():
             ib = get_portfolio_ib()
             buyer = PortfolioBuyer(ib, cfg)
-        # recalc_scores_from_db is DB-only — no IBKR calls, no lock needed
-        buyer.recalc_scores_from_db()
+        # Order matters: fetch fresh metrics FIRST, then recalc composite.
+        # Previous order (recalc then fetch) left newly-added stocks with
+        # composite=0 because recalc skips stocks with NULL discount/rsi,
+        # and fresh metrics arriving after recalc triggered no second recalc.
         # update_watchlist_metrics makes blocking IBKR calls — must NOT hold portfolio lock
         # Each internal IBKR call acquires the lock itself via _ensure_event_loop
         buyer.update_watchlist_metrics()
+        # recalc_scores_from_db is DB-only — uses the now-fresh metrics
+        buyer.recalc_scores_from_db()
     except Exception as e:
         log.error("portfolio_metrics_update_error", error=str(e))
 
