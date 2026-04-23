@@ -580,7 +580,9 @@ function syncInjections() {
                     {% for w in watchlist %}
                     <tr class="hover:bg-gray-800/50 {% if w.buy_signal %}bg-emerald-950/20 border-l-2 border-emerald-500{% else %}border-l-2 border-transparent{% endif %}">
                         <td class="px-3 py-2">
-                            <div class="font-medium text-white">{{w.symbol}}</div>
+                            <div class="font-medium text-white">
+                                {{w.symbol}}{% if w.metrics_stale %} <span class="text-yellow-400 text-xs" title="Metrics stale — last successful update >24h ago">⏱</span>{% endif %}
+                            </div>
                             <div class="text-xs text-gray-500">{{w.name[:25]}} · {{w.exchange}}</div>
                         </td>
                         <td class="px-3 py-2">

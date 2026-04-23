@@ -1216,6 +1216,8 @@ class PortfolioBuyer:
                 entry.signal_type = analysis.signal_type if analysis.buy_signal else None
                 entry.raw_score = round(analysis.composite_score, 1)
                 entry.updated_at = datetime.utcnow()
+                entry.last_metrics_success = datetime.utcnow()
+                entry.metrics_stale = False
 
                 if analysis.composite_score > 0:
                     log.info("portfolio_score_saved",
@@ -1273,7 +1275,24 @@ class PortfolioBuyer:
         if failed > updated and updated == 0:
             self.recalc_scores_from_db()
 
-        log.info("portfolio_metrics_updated", updated=updated, failed=failed, total=len(watchlist))
+        # Mark stocks stale when last_metrics_success is older than 24h.
+        # Stocks whose analyze just succeeded already had metrics_stale=False set
+        # by _update_watchlist_metrics; this pass catches stocks that failed or
+        # were skipped and are past the staleness threshold.
+        from datetime import timedelta
+        stale_cutoff = datetime.utcnow() - timedelta(hours=24)
+        stale_count = 0
+        with get_db() as db:
+            entries = db.query(PortfolioWatchlist).all()
+            for e in entries:
+                if e.last_metrics_success is None or e.last_metrics_success < stale_cutoff:
+                    if not e.metrics_stale:
+                        e.metrics_stale = True
+                        stale_count += 1
+
+        log.info("portfolio_metrics_updated",
+                 updated=updated, failed=failed, total=len(watchlist),
+                 newly_stale=stale_count)
 
     def _compute_compound_quality(self) -> None:
         """

@@ -140,6 +140,10 @@ class PortfolioWatchlist(Base):
     pending_removal: Mapped[bool] = mapped_column(Boolean, default=False)
     pending_removal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Metrics staleness — set when analyze_stock fails repeatedly (>24h without refresh)
+    metrics_stale: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_metrics_success: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
