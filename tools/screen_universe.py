@@ -798,6 +798,57 @@ class StockScore:
     notes: list[str] = field(default_factory=list)
 
 
+def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0) -> tuple[bool, str]:
+    """
+    For breakthrough-tier candidates ONLY: validate against quality floors.
+    Returns (eligible, reason_if_not).
+
+    Filters:
+    - Reject ETFs (isEtf=true in FMP profile)
+    - Reject if market_cap < 500M (use FMP profile mktCap as backup if score has 0)
+    - Reject if any reverse stock split in the last 18 months
+    """
+    from datetime import datetime, timedelta
+
+    # ── Profile: ETF check + market cap backup ──
+    profile = _fmp_get("profile", symbol)
+    if profile and len(profile) >= 1:
+        try:
+            p = profile[0]
+            if p.get("isEtf") is True:
+                return False, "ETF (isEtf=true)"
+            mcap = p.get("mktCap") or 0
+            if mcap and (not score_market_cap or score_market_cap == 0):
+                score_market_cap = float(mcap)
+        except Exception:
+            pass
+
+    if score_market_cap and score_market_cap < 500_000_000:
+        return False, f"market_cap=${score_market_cap/1e6:.0f}M below $500M floor"
+
+    # ── Stock splits: reverse split detection ──
+    splits = _fmp_get("historical-stock-splits", symbol)
+    if splits and isinstance(splits, list):
+        cutoff = datetime.utcnow() - timedelta(days=18 * 30)
+        for s in splits:
+            try:
+                date_str = s.get("date") or ""
+                if not date_str:
+                    continue
+                split_date = datetime.strptime(date_str[:10], "%Y-%m-%d")
+                if split_date < cutoff:
+                    continue
+                num = float(s.get("numerator") or 0)
+                den = float(s.get("denominator") or 0)
+                if num > 0 and den > 0 and num < den:
+                    label = s.get("label") or f"{int(num)}-for-{int(den)}"
+                    return False, f"reverse split {label} on {date_str[:10]}"
+            except Exception:
+                continue
+
+    return True, ""
+
+
 class UniverseScreener:
     def __init__(self, ib: IB):
         self.ib = ib
@@ -885,6 +936,10 @@ class UniverseScreener:
                     currency=candidate.get("currency", "USD"),
                 )
                 if score:
+                    eligible, reject_reason = _check_breakthrough_eligibility(symbol, score.market_cap)
+                    if not eligible:
+                        print(f"  ⛔  {symbol:8s} | REJECTED: {reject_reason}")
+                        continue
                     score.tier = "breakthrough"
                     score.megatrend = candidate.get("megatrend", "")
                     score.rationale = candidate.get("rationale", "")
