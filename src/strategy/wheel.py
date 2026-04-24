@@ -436,19 +436,23 @@ class WheelManager:
             today = datetime.now().strftime("%Y%m%d")
 
             for call_pos in open_calls:
-                if call_pos.expiry and call_pos.expiry < today:
+                if call_pos.expiry and call_pos.expiry <= today:
                     symbol = call_pos.symbol
                     shares = stock_positions.get(symbol, 0)
 
-                    if shares < 100:
-                        # Stock was called away
+                    if shares < 100 * call_pos.quantity:
+                        # Stock was called away (early exercise OR post-expiry assignment).
+                        # IBKR confirms via shares dropping below covered amount.
                         self._handle_called_away(db, call_pos, symbol)
                         called.append(symbol)
                     else:
-                        # Call expired worthless, keep stock
-                        call_pos.status = PositionStatus.EXPIRED
-                        call_pos.closed_at = datetime.utcnow()
-                        call_pos.realized_pnl = call_pos.total_premium_collected
+                        # Stock still held — call has NOT been exercised.
+                        # Do NOT mark expired locally; trade_sync is the sole
+                        # source of truth for worthless expiry. This avoids
+                        # flipping status repeatedly while IBKR still has the
+                        # contract open (especially intra-day on expiry date).
+                        log.debug("call_expiry_pending_ibkr_confirmation",
+                                  symbol=symbol, strike=call_pos.strike, expiry=call_pos.expiry)
 
         return called
 
