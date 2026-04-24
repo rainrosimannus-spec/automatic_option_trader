@@ -436,7 +436,7 @@ class WheelManager:
             today = datetime.now().strftime("%Y%m%d")
 
             for call_pos in open_calls:
-                if call_pos.expiry and call_pos.expiry <= today:
+                if call_pos.expiry and call_pos.expiry < today:
                     symbol = call_pos.symbol
                     shares = stock_positions.get(symbol, 0)
 
