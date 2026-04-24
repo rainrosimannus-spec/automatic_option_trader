@@ -973,6 +973,15 @@ class UniverseScreener:
         for s in dividend_candidates:
             s.tier = "dividend"
 
+        # Dedup: a stock can be in CANDIDATE_POOLS (scored as growth/dividend) AND
+        # returned by Claude's breakthrough scan. Without dedup, the same symbol
+        # ends up in two tiers and Phase 2 reclassifies it back-and-forth in the
+        # same run. Breakthrough wins — Claude's curated thesis assignment is
+        # more specific than the pool-membership default.
+        breakthrough_symbols = {s.symbol for s in breakthrough_scores}
+        growth_candidates = [s for s in growth_candidates if s.symbol not in breakthrough_symbols]
+        dividend_candidates = [s for s in dividend_candidates if s.symbol not in breakthrough_symbols]
+
         selected_growth = growth_candidates[:growth_count]
         selected_dividend = dividend_candidates[:dividend_count]
         selected_breakthrough = breakthrough_scores[:breakthrough_count]
