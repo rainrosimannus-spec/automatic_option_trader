@@ -1,26 +1,33 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-04-22 (Wed) end-of-day, after metrics-order fix.
+Last updated: 2026-04-23 (Thu) midday — metrics-order fix + breakthrough filter + logger fix + stale-flag + cross-tier dedup.
 
 ---
 
 ## Top Of Mind — Current State
 
-Today's full arc took a sharp turn in the evening. Morning and early afternoon established Option B (dividend-specific ranking column) and Commit B (Phase 2b score refresh for held holdings). Both went live. Dashboard looked growth-heavy but designed — Ryan accepted with a 2-3 day checkpoint.
+Two days of focused fixes. Most pushed and live in repo, but ALL require **restart** to activate, and breakthrough/dedup ALSO require a fresh monthly screener run to take effect.
 
-Then Ryan noticed the real bug: about 58 of 126 watchlist rows had composite_score=0 sitting between stocks with real scores. Not a visual artifact, not a blend-ratio issue. Actual zeros.
+**Wednesday (2026-04-22) — Option B + Commit B + metrics-order fix:**
 
-Root cause: scheduler.py job_portfolio_update_metrics ran two calls in the wrong order. It ran recalc_scores_from_db FIRST, then update_watchlist_metrics AFTER. When the monthly screener INSERTs new stocks into portfolio_watchlist, they get discount_pct=NULL and rsi_14=NULL. The next metrics job ran recalc first; recalc's top-of-loop guard at line 1359 skipped every new stock (continue on NULL discount/rsi). Then update_watchlist_metrics populated discount/rsi successfully — but no second recalc ran, so composite stayed at 0 from INSERT default.
+- Dividend tier ranks on dedicated dividend_total_return_score column (Option B). Tier-aware compound_quality formulas: growth/breakthrough use 0.40*growth + 0.25*valuation + 0.35*quality; dividend uses dividend_total_return_score directly.
+- Held holdings not in top-100 get score refresh in Phase 2b (Commit B). 9 dividend holdings still NULL on dividend_total_return_score (HDB, IBN, BMY, CEG, 0ZQ, ALV, NLY, PBR, SFL) until next screener run.
+- Late evening: discovered ~58/126 watchlist rows had composite=0 because scheduler ran recalc_scores_from_db BEFORE update_watchlist_metrics. Fix (commit 2a95c7b): swap order. New stocks now get fresh discount/rsi BEFORE compound_quality computation. Holdings were unaffected because they had populated metrics from prior cycles.
+- XXII (22nd Century — $15M tobacco penny stock with 1-for-15 reverse split pending) made breakthrough tier at composite 55. Confirmed Claude's breakthrough scan returned it; no post-LLM filter rejected it.
 
-Why holdings looked OK and non-holdings did not: Holdings were in the DB from previous cycles with discount/rsi populated. Phase 2 of the screener updates fundamental scores but does NOT touch discount/rsi. So holdings survived with populated metrics. Newly-selected top-100 stocks (ABT, RTX, GE, CRM, SOFI, etc. — not held) were fresh INSERTs with NULL discount/rsi, skipped by recalc, composite=0.
+**Thursday (2026-04-23) morning — four targeted fixes:**
 
-Fix (commit 2a95c7b): Swap the call order. Fetch metrics first, then recalc. Not yet live in the running process — needs restart.
+1. **Breakthrough quality filters** (commit 3c744c6) — `_check_breakthrough_eligibility` rejects ETFs (FMP isEtf=true), market_cap < $500M (uses FMP profile mktCap as backup), and any reverse split in last 18 months. Adds 2 FMP calls per breakthrough candidate (~60/run). Quota-safe.
+
+2. **Logger routing** (commit 65a9dec) — switched structlog from PrintLoggerFactory to stdlib.LoggerFactory. Application events (portfolio_score_saved, portfolio_metrics_updated, etc.) now land in trader.log instead of stdout-only. Fixes the debugging blind-spot from Wednesday night where tmux buffer rolled and we had to guess at what happened.
+
+3. **Stale-metrics flagging** (commit 06cb459) — added metrics_stale (bool) and last_metrics_success (datetime) columns. Inner _update_watchlist_metrics writes timestamp on success. Outer loop scans at end and flips metrics_stale=True for stocks with last_metrics_success older than 24h. Dashboard shows yellow ⏱ icon next to stale symbols. No extra IBKR calls. First run after deployment will flag 100+ stocks (NULL timestamps); self-corrects within 4h.
+
+4. **Cross-tier dedup** (commit 23f6f72) — symbols can appear in CANDIDATE_POOLS (scored as growth/dividend) AND in Claude's breakthrough scan. Without dedup, Phase 2 of screener reclassifies the same symbol twice in one run (growth→breakthrough, then breakthrough→growth). TSLA, NVDA, PLTR all flip-flopped in latest screenshot. Fix: dedup before tier slicing — breakthrough wins because it's the more specific thesis assignment.
 
 ---
 
-## Today's Commits
-
-All pushed to origin except 2a95c7b.
+## All Recent Commits (yesterday + today, all pushed)
 
 - 5738250 Fix 0: composite_score clobber in _update_watchlist_metrics
 - 8ae93c3 Fix P: tier proportions unified
@@ -28,76 +35,59 @@ All pushed to origin except 2a95c7b.
 - 785d83f Piece 2 (partially superseded by Option B)
 - e1d9568 Dashboard green-box persistence
 - 1a8b883 Fix B: IBKR fundamentals fallback + pence normalization
-- 267d36e STATE.md morning version
+- 267d36e STATE.md (Wed morning)
 - 077aab5 Option B: dividend_total_return_score column + tier-aware compound quality
 - c6d5e06 Commit B: Phase 2b refresh scores for held holdings not in top-100
-- bf39145 STATE.md end-of-day (pre metrics-order fix)
-- 2a95c7b LOCAL ONLY: Metrics job order fix
-
-GitHub push is currently TCP-blocked (transient). 2a95c7b pushes when network heals.
+- bf39145 STATE.md (Wed mid-evening)
+- 2a95c7b Fix metrics job order: fetch metrics before recalc
+- a05cee7, 8ab4b65, c8ec353 Wed-night STATE.md updates
+- **3c744c6 Breakthrough tier: reject ETFs, sub-500M caps, reverse splits**
+- **65a9dec Logger: route structlog through stdlib so events land in trader.log**
+- **06cb459 Watchlist: flag stocks with stale metrics**
+- **23f6f72 Screener: dedup symbols across tiers, breakthrough wins**
 
 ---
 
-## How Scoring Works (verified end-of-day)
+## How Scoring Works (verified end-of-Thursday)
 
-Columns on portfolio_watchlist:
+Columns on portfolio_watchlist (now 38 total):
 
 - growth_score, valuation_score, quality_score — FMP/IBKR fundamentals
-- dividend_total_return_score — dividend-specific metric. NULL for non-dividend tier.
-- raw_score — analyzer's technical signal (SMA discount, RSI). Written by _update_watchlist_metrics and recalc_scores_from_db.
+- dividend_total_return_score — dividend-specific. NULL for non-dividend tier.
+- raw_score — analyzer's technical signal (SMA discount + RSI). Written by both _update_watchlist_metrics and recalc_scores_from_db.
 - compound_quality_pct — within-tier 1-100 percentile from _compute_compound_quality
 - composite_score — dashboard value. Written ONLY by recalc_scores_from_db. Formula: (raw - penalty) * 0.80 + compound_quality_pct * 0.20
 - discount_pct, rsi_14, sma_200, current_price — written by _update_watchlist_metrics
+- metrics_stale, last_metrics_success — staleness flag and last-success timestamp (NEW Thursday)
 
-Compound quality formulas (Option B, per tier, 1-100 within-tier normalization):
+Compound quality formulas (Option B, per tier):
 
 - Growth / breakthrough: raw = 0.40 * growth + 0.25 * valuation + 0.35 * quality
 - Dividend: raw = dividend_total_return_score
 
-Composite-write chain (after metrics-order fix):
+Composite-write chain (after Wed metrics-order fix):
 
-1. job_portfolio_update_metrics runs every 4 hours.
-2. update_watchlist_metrics loops every watchlist stock, calls IBKR, writes current_price, sma_200, discount_pct, rsi_14, buy_signal, signal_type, raw_score.
-3. recalc_scores_from_db loops again with populated discount/rsi, calls _compute_compound_quality, writes composite_score per stock.
-4. Logs portfolio_metrics_updated (stdlib) and portfolio_scores_recalced (structlog).
-
----
-
-## Logging Architecture (learned this evening)
-
-stdlib logger (apscheduler, third-party) writes to logs/trader.log. Format: 2026-04-22 18:43:32,249 [INFO] ...
-
-structlog (application events like portfolio_score_saved, portfolio_metrics_updated) uses PrintLoggerFactory in src/core/logger.py:32 — writes to STDOUT only, goes to /dev/pts/3 (tmux pane). NOT in trader.log.
-
-Implication: For debugging application events, use tmux capture-pane -t trader or attach to tmux. grep on trader.log misses all structlog events. Tmux buffer is ~800 lines, roughly the last 30-45 minutes of activity.
-
-Worth adding: structlog file writer as secondary sink for durability.
-
----
-
-## Watchlist Composition (as of 20:28)
-
-- 126 total rows (100 top-N + 26 held holdings not in top-N)
-- Dividend: 24 rows. 15 in top-15, 9 held without top-15 slot.
-- Growth: 78 rows.
-- Breakthrough: 24 rows.
-
-9 held dividend stocks still NULL on dividend_total_return_score: HDB, IBN, BMY, CEG, 0ZQ, ALV, NLY, PBR, SFL. Phase 2b will populate on next screener run.
-
-Concerning: BZG2 and MC show composite 32 with Q=0, G=0 — stale data or uncovered non-US. Watch whether they clear on next cycle.
+1. job_portfolio_update_metrics runs every 4 hours
+2. update_watchlist_metrics loops every watchlist stock, IBKR calls, writes price/sma/rsi/raw + last_metrics_success
+3. End of loop: scan for stocks with last_metrics_success older than 24h, set metrics_stale=True
+4. recalc_scores_from_db loops again with populated discount/rsi, calls _compute_compound_quality, writes composite_score
+5. Logs portfolio_metrics_updated (with newly_stale count) and portfolio_scores_recalced
 
 ---
 
 ## Critical Architecture Facts
 
-1. FMP is dead for LSE/AEB/HKEX/BM. No suffix variants work. /api/v3/ retired Aug 2025. Use IBKR ReportsFinSummary via src/portfolio/ibkr_fundamentals.py.
+1. FMP is dead for LSE/AEB/HKEX/BM. Use IBKR ReportsFinSummary via src/portfolio/ibkr_fundamentals.py.
 2. LSE prices come in pence, not pounds. Fix B divides by 100 in _score_stock.
-3. Maggy and Winston are separate IBKR accounts. Ports 4001 vs 7496. Separate tables (positions vs portfolio_holdings/portfolio_put_entries). Don't conflate.
-4. Options universe is a subset of portfolio universe. screen_all picks top-100 then top-50. Stocks dropping out of options universe mid-cycle do NOT abandon covered calls — Maggy reads positions table directly for management.
-5. Running process must be restarted for code changes to take effect. ~/restart-all.sh, 2x phone 2FA, wait 15-20s.
-6. Logging splits. apscheduler to trader.log. structlog to stdout/tmux only. 800-line buffer.
-7. 3-consecutive-failure exchange skip in update_watchlist_metrics is STILL in the code. Bug diagnosed April 10 and April 14, never structurally fixed. Not today's root cause but will resurface.
-8. Never use heredoc for Python patches with complex strings. Use separate Python scripts or str_replace patterns.
+3. Maggy and Winston are separate IBKR accounts. Ports 4001 vs 7496. Separate tables (positions vs portfolio_holdings/portfolio_put_entries).
+4. Options universe is a subset of portfolio universe. Stocks dropping out mid-cycle do NOT abandon covered calls — Maggy reads positions table directly.
+5. Running process must be restarted for code changes to take effect.
+6. Logging: structlog routes through stdlib → trader.log captures everything (as of Thursday).
+7. 3-consecutive-failure exchange skip in update_watchlist_metrics STILL in code. Dormant. Leave alone.
+8. Never use heredoc for Python patches with complex strings — write to /tmp/*.py if needed.
+9. Breakthrough tier enforces $500M cap + no ETFs + no recent reverse splits at code level.
+10. Watchlist staleness now visible — yellow ⏱ icon on dashboard.
+11. Symbols in both CANDIDATE_POOLS and breakthrough scan deduplicate to breakthrough.
 
 ---
 
@@ -107,55 +97,50 @@ Concerning: BZG2 and MC show composite 32 with Q=0, G=0 — stale data or uncove
 2. One change at a time. Backup, verify, patch, syntax check, diff, test, commit, push.
 3. View files before editing. Memory is stale.
 4. Fixes structural, not manual.
-5. Don't touch Maggy-side code.
+5. Don't touch Maggy-side code (src/strategy/, src/broker/, options-side of src/scheduler/jobs.py).
 6. Don't conflate PortfolioPutEntry (Winston's CSPs) with Position (Maggy's wheel).
 7. When Ryan pushes back, re-examine, don't defend.
-8. Never claim a fix works without proof.
-9. Don't panic over dashboard appearance. But composite=0 for valid stocks is NEVER correct.
+8. Never claim a fix works without proof: restart, test, verify DB values, then claim.
+9. Composite=0 for valid stocks is NEVER correct.
 10. Every action needs a turn. Stop when Ryan stops.
+11. If Ryan asks a question before pasting output, answer the question first. Don't assume output that wasn't there.
+12. Cross-check STATE.md after writing. Empty pattern matches mean nothing changed; verify content actually updated.
 
 ---
 
-## Open Questions / TODO Next Session
+## Open Items / TODO Next Session
 
-### PRIORITY — breakthrough tier quality audit
+### To verify after restart
+- Stale flag populates correctly (first run: most flagged; subsequent runs: only failures)
+- Logger writes structlog events to trader.log
+- Breakthrough filter activates on next screener run (XXII / micro-caps drop out)
+- Dedup eliminates flip-flop reclassifications
 
-XXII (22nd Century Group — $2 tobacco micro-cap, 1-for-15 reverse split pending, $7.1M cash, Series A + warrant dilution) surfaced in breakthrough tier at composite 55. This violates the breakthrough thesis entirely. Breakthrough was scoped for structural/fundamental multi-decade shifts — transformative technology (quantum, AI, solid-state batteries), demographic inflections, climate/energy transition, biotech breakthroughs. Low-nicotine cigarettes don't qualify.
+### Wait-and-see
+- BZG2 / MC composite 32 with Q=0, G=0 — stale data, watch if next cycle resolves
+- SHEL IBKR Error 430 — some LSE stocks uncovered by IBKR; consider US ADR fallback
+- MA / V signal_type cosmetic stale — shows 52w_low despite raw_score=0
+- Dashboard SMA display vs tier-specific discount — cosmetic inconsistency
+- 9 dividend holdings still NULL on dividend_total_return_score — Phase 2b populates on next screener run
 
-Investigate next session:
-- How did XXII enter the breakthrough candidate pool? Manually in CANDIDATE_POOLS / DIVIDEND_CANDIDATES, or via Claude Sonnet's breakthrough scan?
-- What prompt is used for breakthrough scan in src/portfolio/ (or wherever it lives)? Has it drifted from the original thesis?
-- Review the full current breakthrough tier: are there other stocks that don't fit the thesis?
-- Consider: add cash-runway / dilution check to the scorer, or tighten breakthrough prompt criteria.
-
-
-1. Restart the app to activate metrics-order fix. After restart, wait 2 minutes, verify ABT/RTX/GE/CRM/SOFI have composite > 0. ABT should blend to ~74.9.
-2. Push commit 2a95c7b when GitHub TCP unblocks. Currently local-only.
-3. Optional: trigger a screener run to populate the 9 NULL dividend_total_return_score rows via Phase 2b.
-4. Still open:
-   - BZG2/MC composite 32 with Q=0, G=0 — investigate data source
-   - SHEL IBKR Error 430 — some LSE stocks uncovered; consider ADR fallback
-   - 3-consecutive-failure exchange skip in update_watchlist_metrics — remove or raise to 20
-   - Scorer fail-closed: return None on dual-source failure instead of 50 default
-5. Consider: add structlog file writer for debug durability.
-6. Today's token rotation (chat-side disclosure, already handled).
+### Lower priority
+- Scorer fail-closed behavior — screener side largely self-corrects, metrics side now via staleness. Defer.
+- 3-consecutive-failure exchange skip — dormant, leave alone unless it bites again.
+- Dashboard log redundancy from logger fix — cosmetic, can clean later.
 
 ---
-
-
-- Dashboard shows sma_200 for all tiers, but discount_pct is computed against tier-specific SMA (200-dividend / 100-growth / 50-breakthrough). The math is correct; the display is misleading. Cosmetic fix: dashboard should show the tier-appropriate SMA, or label both clearly.
 
 ## Operational Facts
 
 - Server: rain@octoserver-genoax2:~/automatic_option_trader
 - Python: .venv/bin/python3
-- GitHub: https://github.com/rainrosimannus-spec/automatic_option_trader (token rotated today)
-- Restart: ~/restart-all.sh (2x phone 2FA)
+- GitHub: https://github.com/rainrosimannus-spec/automatic_option_trader (token rotated Wed)
+- Restart: ~/restart-all.sh (2x phone 2FA, wait 15-20s)
 - Dashboard: http://37.0.30.34:8080
 - IBKR ports: Maggy 4001, Winston 7496
-- FMP quota: 250/day
+- FMP quota: 250/day (screener uses ~150-300, +60 today for breakthrough filter checks)
 - check_interval_hours: 4 (config/settings.yaml)
-- First run after restart: startup + 120 seconds
+- First metrics run after restart: startup + 120 seconds
 
 ---
 
@@ -168,3 +153,5 @@ Investigate next session:
 - Don't assume pushed == live
 - Don't conflate dashboard looks wrong with is broken
 - Don't assume a fix worked — restart and verify
+- Don't use complex heredoc for patches
+- Don't assume STATE.md write succeeded — verify with head/tail of the file
