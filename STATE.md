@@ -34,6 +34,14 @@ First commit (dd16ec6) changed `<=` to `<` — would have skipped early-exercise
 
 After restart: PG/PANW/UBER stay OPEN through expiry day. trade_sync detects assignment or worthless expiry from IBKR's portfolio state at/after market close.
 
+**Cleanup applied live:** the buggy expiry handler had set realized_pnl on the three OPEN positions (PG=274, UBER=132, PANW=543) — phantom values matching premium collected. Cleared to 0.0 via direct UPDATE. Schema enforces NOT NULL so 0.0 not NULL. Dashboard wasn't displaying these because realized P&L queries filter to status IN (CLOSED, EXPIRED, ASSIGNED), but the dirty values would have caused incorrect accounting on actual close.
+
+**Trade_sync reopen logic still incomplete:** at trade_sync.py:625-630 the reopen flips status and clears closed_at but does NOT clear realized_pnl. With wheel.py fixed, reopen shouldn't trigger for valid OPEN positions anymore — but if it ever does fire, the same bug returns. Defense-in-depth fix would be a one-line addition (set realized_pnl=0 on reopen). Deferred.
+
+**Cleanup applied live:** the buggy expiry handler had set realized_pnl on the three OPEN positions (PG=274, UBER=132, PANW=543) — phantom values matching premium collected. Cleared to 0.0 via direct UPDATE. Schema enforces NOT NULL so 0.0 not NULL. Dashboard wasn't displaying these because realized P&L queries filter to status IN (CLOSED, EXPIRED, ASSIGNED), but the dirty values would have caused incorrect accounting on actual close.
+
+**Trade_sync reopen logic still incomplete:** at trade_sync.py:625-630 the reopen flips status and clears closed_at but does NOT clear realized_pnl. With wheel.py fixed, reopen shouldn't trigger for valid OPEN positions anymore — but if it ever does fire, the same bug returns. Defense-in-depth fix would be a one-line addition (set realized_pnl=0 on reopen). Deferred.
+
 ---
 
 ---
