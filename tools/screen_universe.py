@@ -795,6 +795,7 @@ class StockScore:
     tier: str = "growth"
     megatrend: str = ""
     rationale: str = ""
+    fundamentals_complete: bool = True  # False when growth/val/quality all defaulted to 50 (no FMP+IBKR data)
     notes: list[str] = field(default_factory=list)
 
 
@@ -1078,6 +1079,15 @@ class UniverseScreener:
         score.growth_score = _score_growth(fmp)
         score.valuation_score = _score_valuation(fmp)
         score.quality_score = _score_quality(fmp)
+
+        # Detect complete-fundamentals-missing: when all three scorers returned
+        # the exact default 50.0, neither FMP nor IBKR had fundamental data for
+        # this stock. Flag so the dashboard can surface the uncertainty (stocks
+        # can still score well on technical signal, but without quality verification).
+        if (score.growth_score == 50.0 and score.valuation_score == 50.0
+                and score.quality_score == 50.0):
+            score.fundamentals_complete = False
+
         score.dividend_yield = fmp.get("dividend_yield", 0)
         score.dividend_total_return_score = _score_dividend_total_return(fmp, score.growth_score)
 

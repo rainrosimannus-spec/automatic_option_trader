@@ -144,6 +144,10 @@ class PortfolioWatchlist(Base):
     metrics_stale: Mapped[bool] = mapped_column(Boolean, default=False)
     last_metrics_success: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # Fundamentals completeness — False when growth/valuation/quality all defaulted to 50
+    # (means FMP and IBKR fundamentals both failed to return data)
+    fundamentals_complete: Mapped[bool] = mapped_column(Boolean, default=True)
+
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

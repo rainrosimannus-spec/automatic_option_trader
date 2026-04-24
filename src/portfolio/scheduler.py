@@ -433,6 +433,7 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                             growth_score=score.growth_score,
                             valuation_score=score.valuation_score,
                             quality_score=score.quality_score,
+                            fundamentals_complete=score.fundamentals_complete,
                             dividend_total_return_score=score.dividend_total_return_score if score.tier == "dividend" else None,
                             category=new_category,
                             screened_at=datetime.utcnow(),
@@ -460,6 +461,7 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                         w.growth_score = score.growth_score
                         w.valuation_score = score.valuation_score
                         w.quality_score = score.quality_score
+                        w.fundamentals_complete = score.fundamentals_complete
                         w.dividend_total_return_score = score.dividend_total_return_score if score.tier == "dividend" else None
                         w.screened_at = datetime.utcnow()
                         # Clear pending_removal if stock re-qualifies
@@ -505,6 +507,7 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                         wl_entry.growth_score = score.growth_score
                         wl_entry.valuation_score = score.valuation_score
                         wl_entry.quality_score = score.quality_score
+                        wl_entry.fundamentals_complete = score.fundamentals_complete
                         wl_entry.dividend_total_return_score = (
                             score.dividend_total_return_score
                             if wl_entry.tier == "dividend"
@@ -524,6 +527,7 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                                 wl_entry.growth_score = score.growth_score
                                 wl_entry.valuation_score = score.valuation_score
                                 wl_entry.quality_score = score.quality_score
+                                wl_entry.fundamentals_complete = score.fundamentals_complete
                                 wl_entry.dividend_total_return_score = (
                                     score.dividend_total_return_score
                                     if wl_entry.tier == "dividend"
