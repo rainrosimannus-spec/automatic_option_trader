@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-04-23 (Thu) midday — metrics-order fix + breakthrough filter + logger fix + stale-flag + cross-tier dedup.
+Last updated: 2026-04-24 (Fri) pre-close — metrics-order fix + breakthrough filter + logger fix + stale-flag + cross-tier dedup.
 
 ---
 
@@ -25,6 +25,17 @@ Two days of focused fixes. Most pushed and live in repo, but ALL require **resta
 
 4. **Cross-tier dedup** (commit 23f6f72) — symbols can appear in CANDIDATE_POOLS (scored as growth/dividend) AND in Claude's breakthrough scan. Without dedup, Phase 2 of screener reclassifies the same symbol twice in one run (growth→breakthrough, then breakthrough→growth). TSLA, NVDA, PLTR all flip-flopped in latest screenshot. Fix: dedup before tier slicing — breakthrough wins because it's the more specific thesis assignment.
 
+
+**Friday (2026-04-24) pre-market — wheel.py covered-call expiry bug:**
+
+Investigating dashboard showing PG, PANW, UBER calls as expired pre-close, system trying to write new calls on positions still open in IBKR. Found wheel.py:439 used `expiry <= today` to mark covered calls EXPIRED — fired pre-market on expiry day while shares were still held. trade_sync (every 15 min) saw IBKR still had the contracts, reopened them. Repeating cycle. Window between flip-out and reopen exposed `wheel.write_covered_calls()` to thinking the lot was uncovered → phantom new calls.
+
+First commit (dd16ec6) changed `<=` to `<` — would have skipped early-exercise detection same-day. **Reverted via better fix (b41e39a)**: keep `<=` to catch same-day events, but only mark `called_away` when IBKR confirms via shares dropping below covered amount. Otherwise defer to trade_sync (the proper authority for "is contract still alive at IBKR"). Mirrors the put-side defensive pattern at wheel.py:99 which already does this correctly.
+
+After restart: PG/PANW/UBER stay OPEN through expiry day. trade_sync detects assignment or worthless expiry from IBKR's portfolio state at/after market close.
+
+---
+
 ---
 
 ## All Recent Commits (yesterday + today, all pushed)
@@ -45,6 +56,8 @@ Two days of focused fixes. Most pushed and live in repo, but ALL require **resta
 - **65a9dec Logger: route structlog through stdlib so events land in trader.log**
 - **06cb459 Watchlist: flag stocks with stale metrics**
 - **23f6f72 Screener: dedup symbols across tiers, breakthrough wins**
+- **dd16ec6 Wheel: don't mark calls EXPIRED on expiry day (incomplete fix, superseded)**
+- **b41e39a Wheel: defer call-expired status to trade_sync, detect early exercise via shares drop**
 
 ---
 
