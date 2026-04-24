@@ -390,17 +390,35 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
     if ratios and len(ratios) >= 1:
         try:
             r = ratios[0]
-            result["pe_ratio"] = r.get("priceEarningsRatio") or 0
-            result["peg_ratio"] = r.get("priceEarningsToGrowthRatio") or 0
-            result["payout_ratio"] = (r.get("payoutRatio") or 0) * 100
+            # FMP renamed these fields (priceEarningsRatio → priceToEarningsRatio etc.)
+            # Accept both old and new names for forward/backward compatibility.
+            result["pe_ratio"] = (r.get("priceToEarningsRatio")
+                                  or r.get("priceEarningsRatio") or 0)
+            result["peg_ratio"] = (r.get("priceToEarningsGrowthRatio")
+                                   or r.get("priceEarningsToGrowthRatio") or 0)
+            # FMP renamed payoutRatio → dividendPayoutRatio. Accept both.
+            result["payout_ratio"] = ((r.get("dividendPayoutRatio")
+                                       or r.get("payoutRatio") or 0) * 100)
             result["dividend_yield"] = (r.get("dividendYield") or 0) * 100
-            result["roe"] = (r.get("returnOnEquity") or 0) * 100  # return on equity
+            # ROE no longer in /ratios — fetched separately from /key-metrics below
+            result["roe"] = (r.get("returnOnEquity") or 0) * 100  # fallback only
             if len(ratios) >= 2:
                 prev_yield = (ratios[1].get("dividendYield") or 0) * 100
                 curr_yield = result["dividend_yield"]
                 result["dividend_cut"] = (prev_yield > 0.5 and curr_yield < prev_yield * 0.7)
             else:
                 result["dividend_cut"] = False
+        except Exception:
+            pass
+
+    # ── Key metrics: ROE (moved out of /ratios in FMP update) ──
+    km = _fmp_get("key-metrics", symbol, {"limit": 1})
+    if km and len(km) >= 1:
+        try:
+            roe_raw = km[0].get("returnOnEquity")
+            if roe_raw is not None:
+                # returnOnEquity comes as a decimal (0.76 = 76%), convert to pct
+                result["roe"] = roe_raw * 100
         except Exception:
             pass
 
