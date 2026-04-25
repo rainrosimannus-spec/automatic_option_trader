@@ -44,6 +44,37 @@ After restart: PG/PANW/UBER stay OPEN through expiry day. trade_sync detects ass
 
 ---
 
+
+**Saturday (2026-04-25) early morning — realized_pnl on covered-call assignments:**
+
+Dashboard showed Realized P&L = -$36,779.24 after PG/PANW/UBER assignments at expiry. Investigation found the loss was approximately the sum of stock sale proceeds at strike — meaning sale proceeds were being recorded as a loss instead of offsetting the assignment cost basis.
+
+**Three accounting bugs found:**
+
+1. **trade_sync.py:580-595** stock-close formula included ASSIGNMENT and CALLED_AWAY trade types in the realized P&L sum. These are IBKR accounting markers alongside the underlying BUY_STOCK/SELL_STOCK rows — not separate cash flows. Including them double-counted on the cost side and off-by-strike on the proceeds side.
+
+2. **trade_sync.py timing race:** the code marked stock CLOSED in the sync that detected the IBKR position disappear, but the matching SELL_STOCK trade often arrived in a *later* sync. Realized got computed with only BUY_STOCK present, freezing at `-cost_basis`. Never recomputed afterward.
+
+3. **wheel.py `_handle_called_away`** wrote its own realized_pnl with formula `(sale - cost + total_premium)`. But `cost_basis` was already net of put premium, AND `total_premium_collected` had already been realized when each option closed. Triple-counted on the premium side, undercounted on the put-strike side.
+
+**Fix (commit 2e9708c):**
+- trade_sync.py: sum only BUY_STOCK and SELL_STOCK (commission inclusive). Defer marking the position CLOSED until a matching SELL_STOCK trade is present in the DB. Single sweep handles both timing and accounting.
+- wheel.py: stop writing realized_pnl in `_handle_called_away`. Just mark CLOSED. trade_sync owns the calculation. Single source of truth.
+
+**Accounting model confirmed (per Ryan):**
+- Total wheel-cycle realized = collected_premium + (call_strike − put_strike) × 100 − fees
+- Stored on call positions (EXPIRED): the collected_premium portion (net of any roll buy-backs)
+- Stored on stock positions (CLOSED): the strike-difference portion only
+
+**Manual cleanup applied to today's three positions:**
+- PG stock (id 130): -$421.24 (sold 146, bought 150, plus -$21 14-share roundtrip)
+- UBER stock (id 134): -$100.00 (sold 74, bought 75)
+- PANW stock (id 135): $0.00 (sold 162.5, bought 162.5)
+- Call positions (id 131, 138, 139): kept at $539/$242/$543 — those were already correct
+- Total historical realized after cleanup: $1,708.26
+
+---
+
 ---
 
 ## All Recent Commits (yesterday + today, all pushed)
