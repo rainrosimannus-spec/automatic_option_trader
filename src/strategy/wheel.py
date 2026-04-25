@@ -475,21 +475,19 @@ class WheelManager:
             .first()
         )
         if stock_pos:
-            # Calculate total P&L for the wheel cycle
-            sale_proceeds = (call_pos.strike or 0) * stock_pos.quantity
-            cost = (stock_pos.cost_basis or 0) * stock_pos.quantity
-            total_premium = stock_pos.total_premium_collected
-            realized = sale_proceeds - cost + total_premium
-
+            # Mark stock position CLOSED. Do NOT compute realized_pnl here —
+            # trade_sync owns that calculation from BUY_STOCK/SELL_STOCK trades.
+            # The previous formula (sale - cost + total_premium) double-counted
+            # the put premium because cost_basis is already net of put premium,
+            # AND total_premium_collected was already realized when each option
+            # closed. Result was wildly negative realized values on assignments.
             stock_pos.status = PositionStatus.CLOSED
             stock_pos.closed_at = datetime.utcnow()
-            stock_pos.realized_pnl = realized
-
             log.info(
                 "wheel_cycle_complete",
                 symbol=symbol,
-                realized_pnl=round(realized, 2),
-                total_premium=round(total_premium, 2),
+                total_premium=round(stock_pos.total_premium_collected, 2),
+                note="realized_pnl computed by trade_sync from stock trades",
             )
 
         # Record the trade

@@ -565,37 +565,49 @@ def sync_ibkr_positions() -> int:
                          symbol=pos.symbol, strike=pos.strike,
                          expiry=pos.expiry, realized_pnl=pos.realized_pnl)
 
-        # Close stock positions no longer in IBKR
+        # Close stock positions no longer in IBKR.
+        # Realized P&L is computed from BUY_STOCK and SELL_STOCK trades only.
+        # ASSIGNMENT and CALLED_AWAY are accounting markers (they double the cash
+        # flow already captured in the BUY_STOCK/SELL_STOCK rows IBKR creates).
+        # If a matching SELL_STOCK trade is not yet present in the DB, defer
+        # closing the position to a later sync to avoid the timing race where
+        # we mark CLOSED before the SELL_STOCK row arrives (which would freeze
+        # realized_pnl at -cost_only and never recompute).
         open_stock_positions = db.query(Position).filter(
             Position.status == PositionStatus.OPEN,
             Position.position_type == "stock",
         ).all()
         for pos in open_stock_positions:
-            if pos.symbol not in ibkr_stock_positions or ibkr_stock_positions[pos.symbol] == 0:
-                pos.status = PositionStatus.CLOSED
-                pos.closed_at = datetime.utcnow()
-                # Calculate realized PnL from stock trades
-                stock_trades = db.query(Trade).filter(
-                    Trade.symbol == pos.symbol,
-                    Trade.order_status == OrderStatus.FILLED,
-                    Trade.trade_type.in_([
-                        TradeType.BUY_STOCK, TradeType.SELL_STOCK,
-                        TradeType.ASSIGNMENT, TradeType.CALLED_AWAY,
-                    ]),
-                ).all()
-                realized = 0.0
-                for t in stock_trades:
-                    qty = t.quantity or 1
-                    price = t.fill_price or t.premium or 0
-                    commission = t.commission or 0
-                    if t.trade_type in (TradeType.SELL_STOCK, TradeType.CALLED_AWAY):
-                        realized += price * qty - commission
-                    elif t.trade_type in (TradeType.BUY_STOCK, TradeType.ASSIGNMENT):
-                        realized -= price * qty + commission
-                pos.realized_pnl = round(realized, 2)
-                changes += 1
-                log.info("stock_position_closed_by_sync",
-                         symbol=pos.symbol, realized_pnl=pos.realized_pnl)
+            if pos.symbol in ibkr_stock_positions and ibkr_stock_positions[pos.symbol] != 0:
+                continue
+            # Stock no longer in IBKR. Look for the SELL_STOCK trade.
+            stock_trades = db.query(Trade).filter(
+                Trade.symbol == pos.symbol,
+                Trade.order_status == OrderStatus.FILLED,
+                Trade.trade_type.in_([TradeType.BUY_STOCK, TradeType.SELL_STOCK]),
+            ).all()
+            sells = [t for t in stock_trades if t.trade_type == TradeType.SELL_STOCK]
+            if not sells:
+                # Defer — sell hasn't synced yet
+                log.info("stock_close_deferred_no_sell_trade",
+                         symbol=pos.symbol)
+                continue
+            realized = 0.0
+            for t in stock_trades:
+                qty = t.quantity or 1
+                price = t.fill_price or t.premium or 0
+                commission = t.commission or 0
+                if t.trade_type == TradeType.SELL_STOCK:
+                    realized += price * qty - commission
+                elif t.trade_type == TradeType.BUY_STOCK:
+                    realized -= price * qty + commission
+            pos.status = PositionStatus.CLOSED
+            pos.closed_at = datetime.utcnow()
+            pos.realized_pnl = round(realized, 2)
+            changes += 1
+            log.info("stock_position_closed_by_sync",
+                     symbol=pos.symbol, realized_pnl=pos.realized_pnl,
+                     trade_count=len(stock_trades))
 
         for key, data in ibkr_positions.items():
             if key in tracked_keys:
