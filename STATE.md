@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-04-24 (Fri) pre-close — metrics-order fix + breakthrough filter + logger fix + stale-flag + cross-tier dedup.
+Last updated: 2026-04-27 (Mon) afternoon — DTE bypass fix in _evaluate_symbol — metrics-order fix + breakthrough filter + logger fix + stale-flag + cross-tier dedup.
 
 ---
 
@@ -102,10 +102,27 @@ Result: IPO Date Calendar Scan job (8 AM ET daily) had been failing for at least
 
 ---
 
+**Monday (2026-04-27) afternoon — DTE bypass fix in _evaluate_symbol:**
+
+Ryan noticed put_seller had filled four orders at wrong DTE: NVDA May 6 (9 DTE), PLTR/RKLB/DXCM May 8 (11 DTE). Config says 0-3 DTE for USD at low/mid VIX — these were way out of bounds. QCOM order also tried, canceled by IBKR.
+
+**Root cause** (commit 63f68c6): `_evaluate_symbol` called `screen_puts()` without `dte_min`/`dte_max`. `screen_puts()` then fell back to `getattr(cfg, 'dte_min', 5)` and `getattr(cfg, 'dte_max', 14)` — but current `settings.yaml` has no `dte_min`/`dte_max` keys (only `.bak` does), so the hardcoded defaults 5-14 were used. That window perfectly covers May 6 (9 DTE) and May 8 (11 DTE).
+
+`_process_symbol` had been correct all along — it called `_resolve_dte()` and passed both values into `screen_puts`. Only `_evaluate_symbol` was buggy. Fix mirrors `_process_symbol`: resolve DTE via `_resolve_dte(currency)`, halt on VIX-halt return, pass `dte_min=dte_min, dte_max=dte_max` into `screen_puts`. Both scan paths now correctly enforce DTE.
+
+**Margin guard verified during investigation:** initial suspicion was margin guard had failed because account hit 68% margin used. False alarm. Logs showed ranks 1-6 passed with legitimate headroom ($12,171 down to $1,776), ranks 8-20 correctly rejected with `expired_no_margin`. The 4 fills consumed margin proportionally; the 68% used is the correct downstream result of those approved orders, not a guard failure.
+
+**check_position_size cosmetic note (no code change):** variable named `estimated_margin` is misleading — it's notional concentration (price × 100), not margin. Real margin enforcement happens via `get_whatif_margin` in put_seller. Docstring already says this. Rename deferred to a future session.
+
+**SHOP fully closed:** Ryan manually bought back $135 May15 call and sold 100 shares earlier today. Frees Maggy capacity once the four mistaken puts close.
+
+**The 4 mistaken puts kept open:** NVDA May 6, PLTR/RKLB/DXCM May 8. Bug was upstream — these are filled, premium collected, accounting fine. Decision: let them ride. With DTE fix in place, no new violations from next scan onward. Monitor as expirations approach; close early if margin pressure forces it.
+
 ---
 
 ## All Recent Commits (yesterday + today, all pushed)
 
+- 63f68c6 Fix: pass DTE range to screen_puts in _evaluate_symbol (was using hardcoded 5-14 fallback)
 - 5738250 Fix 0: composite_score clobber in _update_watchlist_metrics
 - 8ae93c3 Fix P: tier proportions unified
 - d9821da Fix A narrow: pool-aware dividend routing
