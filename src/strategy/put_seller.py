@@ -183,7 +183,14 @@ class PutSeller:
         contract_size = self.universe.get_contract_size(symbol)
         delta_range = self.risk.get_dynamic_delta_range()
 
-        candidate = screen_puts(symbol, exchange=opt_exchange, currency=currency, delta_override=delta_range, stock_exchange=exchange)
+        # Resolve DTE range based on VIX and currency
+        dte_range = self._resolve_dte(currency)
+        if dte_range is None:
+            log.info("vix_halt_dte", symbol=symbol, vix=current_vix)
+            return None
+        dte_min, dte_max = dte_range
+
+        candidate = screen_puts(symbol, exchange=opt_exchange, currency=currency, delta_override=delta_range, stock_exchange=exchange, dte_min=dte_min, dte_max=dte_max)
         if not candidate:
             return None
 
