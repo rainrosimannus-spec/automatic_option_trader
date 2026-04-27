@@ -446,10 +446,18 @@ class RiskManager:
         else:
             max_pos = 40
 
+        # Count only "slot-consuming" positions: short_put (cash committed) and
+        # stock (capital deployed). Covered calls don't consume an additional slot
+        # — they're bound to an existing stock position. Counting them double-blocks
+        # the wheel: a stock + its covered call would consume 2/4 slots when really
+        # it's one wheel cycle.
         with get_db() as db:
             open_count = (
                 db.query(Position)
-                .filter(Position.status == PositionStatus.OPEN)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type.in_(["short_put", "stock"]),
+                )
                 .count()
             )
 
@@ -1227,12 +1235,18 @@ class RiskManager:
     # ── Master check ────────────────────────────────────────
     def can_open_put(self, symbol: str, market: str | None = None) -> RiskCheck:
         """Run all pre-trade checks for selling a put."""
+        # Order matters: cheap, definitive blockers first. If position_limit
+        # or duplicate_position fires, no IBKR/FMP calls were made → the put_seller
+        # scanner's "elapsed > 10s" heuristic correctly classifies risk-blocks
+        # as fast (not connection failures). Slow checks (IBKR account state,
+        # FMP earnings/IV) run only after the cheap ones pass.
         checks = [
-            self.check_vix_gate(),
+            self.check_position_limit(),       # DB read — instant
+            self.check_duplicate_position(symbol),  # DB read — instant
+            self.check_daily_limit(),          # DB read — instant
+            self.check_vix_gate(),             # cached — instant
             self.check_margin_usage(),
-            self.check_daily_limit(),
             self.check_daily_deployment(),
-            self.check_position_limit(),
             self.check_position_size(symbol),
             self.check_total_exposure(),
             self.check_intraday_loss(),
@@ -1240,7 +1254,6 @@ class RiskManager:
             self.check_correlation(symbol),
             self.check_delta_exposure(symbol),
             self.check_buying_power(),
-            self.check_duplicate_position(symbol),
             self.check_earnings(symbol),
             self.check_iv_rank(symbol),
         ]
