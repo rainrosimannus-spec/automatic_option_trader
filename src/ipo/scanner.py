@@ -165,7 +165,6 @@ def scan_ipo_calendar():
                     entry.expected_ticker = match["cal_symbol"]
                 # Auto-set lockup date = IPO date + 180 days if not already set
                 if match.get("cal_date") and not entry.lockup_date:
-                    from datetime import timedelta
                     try:
                         ipo_dt = datetime.strptime(match["cal_date"], "%Y-%m-%d")
                         entry.lockup_date = (ipo_dt + timedelta(days=180)).strftime("%Y-%m-%d")
