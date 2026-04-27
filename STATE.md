@@ -75,6 +75,33 @@ Dashboard showed Realized P&L = -$36,779.24 after PG/PANW/UBER assignments at ex
 
 ---
 
+
+**Monday (2026-04-27) — put_seller stuck + IPO scanner silently broken:**
+
+Ryan noticed put_seller making no suggestions despite 24% margin used and Asian/EU markets open. Two issues found:
+
+**1. position_limit double-counting** (commit 3cb2930) — `check_position_limit` counted ALL Position rows including covered_call entries. A wheel cycle (stock + covered call) consumed 2 of 4 slots when it should consume 1. Account at NLV $15.5k has cap=4; with 2 wheels open the cap appeared full. Fix: count only `short_put` and `stock` types. Covered calls are bound to existing stock positions, don't take a slot.
+
+**2. risk check order** (same commit) — position_limit was 5th in the check list. The first 4 checks made IBKR/FMP calls (~7s each), so a position-limit block took ~28s. The put_seller scanner classified any None-result that took >10s as a "connection failure" and aborted after 3 in a row (`scan_aborted_connection_dead`). Reorder: cheap DB-read checks (position_limit, duplicate, daily_limit, vix_gate) run FIRST. Slow IBKR/FMP checks only run if cheap ones pass. Risk-blocks now return in <1s, no more false connection-dead aborts.
+
+**3. IPO scanner timedelta UnboundLocalError** (commit 5607adc) — `scan_ipo_calendar()` had `from datetime import datetime, timedelta` at module level (line 18) AND a redundant `from datetime import timedelta` inside a nested if-branch (line 168). Python's scope rules mark `timedelta` as a local variable for the entire function, masking the module-level binding. Line 92 (which uses timedelta unconditionally near top of function) errors before line 168 ever runs.
+
+Result: IPO Date Calendar Scan job (8 AM ET daily) had been failing for at least 2 days with `cannot access local variable 'timedelta'`. Finnhub data never reached `expected_date` column on `ipo_watchlist`. IPO Ticker Scan loop's `if not ipo.expected_date: continue` guard skipped every row. Scan completed in 10ms doing nothing, every 5 minutes. Fix: remove the redundant local import.
+
+**Post-restart verification (10:30 UTC scan):**
+- Position-limit reorder works: scan completes in seconds with honest blocking reasons
+- Current put_seller correctly blocked by cash-reserve constraint ($1,355 cash vs $2,328 reserve floor) and sector-concentration limit (Communications 100% > 88%)
+- These are correct constraints for the current account state, not bugs
+- IPO date scan will run at 8 AM ET (12:00 UTC) tomorrow — should populate expected_date for Kraken (KRKN), Lambda (LMDA), Dataiku (DIKU), Xanadu (XNDU) all with expected_date='2026-06-01' and now ~35 days out (still beyond the 1-day scan trigger window, but data flow restored)
+
+**Discussion outcome on scoring (no code change):**
+- Quality formula has been silently broken since FMP rename — valuation_score=50.0 for all 127 stocks because PE/PEG fields renamed in /ratios. Fixed Friday (commit 1905e04). Effect on next screener run.
+- Composite formula 0.80×raw + 0.20×CQ% means max possible composite = 76. 70+ requires both timing AND quality alignment — rare by design.
+- HCLTech surfaced at top despite 50/50/50 fundamentals. Backfilled fundamentals_complete=False on 13 NSE Indian stocks + 1 FWB2 dividend. Dashboard ⚠ icon now shows them as unverified.
+- Ryan's $11M deployment concern: scoring is calibrated for "buy good companies on dips" (wheel-friendly). Not for steady accumulation of quality at fair value. Separate accumulate-signal would need different scoring (60-70% quality, 20-30% own-history valuation, 10-20% timing). Deferred.
+
+---
+
 ---
 
 ## All Recent Commits (yesterday + today, all pushed)
