@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-04-27 (Mon) afternoon — DTE bypass fix in _evaluate_symbol — metrics-order fix + breakthrough filter + logger fix + stale-flag + cross-tier dedup.
+Last updated: 2026-04-28 (Tue) — account merge: U23886415 decommissioned, this server runs Maggy+Winston on U17562704.
 
 ---
 
@@ -117,6 +117,43 @@ Ryan noticed put_seller had filled four orders at wrong DTE: NVDA May 6 (9 DTE),
 **SHOP fully closed:** Ryan manually bought back $135 May15 call and sold 100 shares earlier today. Frees Maggy capacity once the four mistaken puts close.
 
 **The 4 mistaken puts kept open:** NVDA May 6, PLTR/RKLB/DXCM May 8. Bug was upstream — these are filled, premium collected, accounting fine. Decision: let them ride. With DTE fix in place, no new violations from next scan onward. Monitor as expirations approach; close early if margin pressure forces it.
+
+**Tuesday (2026-04-28) — account merge: this server now runs both Maggy and Winston on portfolio account:**
+
+Test account U23886415 was decommissioned on this server and migrated to a clone codebase running on the same machine under user `nexbit` (Ryan's son). This server now runs Maggy and Winston code against U17562704 only, on the portfolio gateway (port 7496). Suggestion mode kept on for both, auto-approve toggle OFF for options (Ryan flipped it off Monday after the 4 unintended NVDA/PLTR/RKLB/DXCM fills).
+
+**Config-only changes (no application code touched):**
+
+- `config/settings.yaml` ibkr block: `port: 4001` → `7496`, `account: "U23886415"` → `"U17562704"`. Comments updated to flag merged mode.
+- `~/restart-all.sh`: dropped the `tmux new-session -d -s options ...` block + 35s sleep. Added a "MERGED MODE" banner. Defensive `tmux kill-session -t options` in the kill block left in place (harmless cleanup).
+- `~/watchdog-trader.sh`: commented out the options-gateway respawn block with a DISABLED note. Cron still runs the watchdog every 5 min, just skips options now. Portfolio + trader checks unchanged.
+
+Both `~/restart-all.sh` and `~/watchdog-trader.sh` live outside the repo (in `$HOME`); `config/settings.yaml` is gitignored due to API keys. Backups stored as `~/restart-all.sh.pre-merge-2026-04-28` and `~/watchdog-trader.sh.pre-merge-2026-04-28` for clean revert when the new dedicated options account arrives.
+
+**Migration sequence (executed):**
+
+1. settings.yaml patched (matches found: 1, written)
+2. restart-all.sh patched (matches found: 1, written)
+3. ~/restart-all.sh executed — one 2FA tap on phone, portfolio gateway came up on 7496
+4. Trader app started, both Maggy code and Winston code connected to U17562704 (clientId 12 and 97 respectively)
+5. Son started clone server, took over U23886415
+
+**Hiccup during cutover — son couldn't log in:**
+
+Watchdog cron (`*/5 * * * *`) respawned the killed options tmux session within 3 minutes, holding the U23886415 IBKR session and locking son out. Patched watchdog to skip the options check, killed the respawned options session, son immediately logged in to U23886415 on his clone. 2FA prompts to son's phone (from this server's repeated respawn attempts) stopped after the watchdog patch.
+
+**Open issues from the merged setup (non-blocking, deferred to next session):**
+
+- `'Position' object has no attribute 'unrealized_pnl'` — fires on every put_seller scan (ISRG, CRWD, CNR, AVGO, SOFI, NFLX, etc.). Maggy code expects an attribute the U17562704 Position objects don't have. Likely a 2-line `getattr(pos, 'unrealized_pnl', 0)` fix once we read the code.
+- `trade_sync_fetch_error 'This event loop is already running'` + `'There is no current event loop in thread Thread-2'` — asyncio contention. Two ib_insync clients (id 12 + 97) on one Python process amplifies the existing event-loop fragility.
+- `reconcile_submitted_trades_skipped_ib_error "name 'get_ib_lock' is not defined"` — missing import surfaced by the merge.
+- `portfolio_account_updates_failed` (TimeoutError on `reqAccountUpdates`) — fired once at startup. May be one-time, watch for recurrence.
+
+None of these block the merged setup operationally because Maggy is in suggestion mode with auto-approve OFF — at worst, no options suggestions reach the dashboard. Winston (read-only) is unaffected.
+
+**Architecture note for next dedicated options account:**
+
+To re-split: revert the three patches above (port back to 4001, account back to new ID, restart-all.sh options block restored, watchdog options block uncommented), point at new gateway, run restart-all.sh. All three backup files preserved on disk for direct comparison.
 
 ---
 
