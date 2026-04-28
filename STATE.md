@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-04-28 (Tue) — account merge: U23886415 decommissioned, this server runs Maggy+Winston on U17562704.
+Last updated: 2026-04-28 (Tue) evening — caddy reverse proxy + basic auth + localhost lockdown for dashboard.
 
 ---
 
@@ -154,6 +154,38 @@ None of these block the merged setup operationally because Maggy is in suggestio
 **Architecture note for next dedicated options account:**
 
 To re-split: revert the three patches above (port back to 4001, account back to new ID, restart-all.sh options block restored, watchdog options block uncommented), point at new gateway, run restart-all.sh. All three backup files preserved on disk for direct comparison.
+
+**Tuesday (2026-04-28) evening — dashboard authentication + localhost lockdown:**
+
+Dashboard at http://37.0.30.34:8080/ was publicly accessible with no authentication. Anyone with the URL could see positions, NLV, suggestions. Closed via Caddy reverse proxy with HTTP basic auth + self-signed HTTPS cert.
+
+**Architecture:**
+
+- Caddy 2.11.2 installed from official repo (apt) — public-facing reverse proxy on ports 80 and 443
+- Self-signed TLS cert auto-generated for 37.0.30.34 (caddy `tls internal`) — browser warns once per device, click through, remembered after
+- Basic auth user `maggycian` (bcrypt cost 14, hash stored in /etc/caddy/Caddyfile)
+- HTTP (80) redirects to HTTPS (443)
+- Caddy reverse-proxies authenticated requests to localhost:8080 (the trader app)
+- Trader app web binding moved from `0.0.0.0:8080` to `127.0.0.1:8080` — localhost only — so the world cannot bypass Caddy by hitting `:8080` directly
+- ufw firewall: ports 80 and 443 added (were missing — caused initial "can't connect" from Safari until added)
+
+**Files modified:**
+
+- `/etc/caddy/Caddyfile` — caddy config (root-owned, sudo to edit). Backup at `/etc/caddy/Caddyfile.default-2026-04-28`
+- `/var/log/caddy/dashboard-access.log` — access log (caddy:caddy ownership)
+- `config/settings.yaml` web block: `host: "0.0.0.0"` to `"127.0.0.1"` with merge-mode comment
+
+**New URL:** https://37.0.30.34/ — username `maggycian`, password set via `caddy hash-password`.
+**Old URL dead from outside:** http://37.0.30.34:8080/ — connection refused for non-localhost. Caddy still uses it internally.
+
+**Verification confirmed:**
+
+- `ss -tlnp` shows `127.0.0.1:8080` (python), `*:443` (caddy), `*:80` (caddy)
+- `curl -k -i https://37.0.30.34/` without credentials returns `HTTP/2 401 Unauthorized` (auth enforced)
+- `curl http://37.0.30.34:8080/` from outside times out (lockdown enforced)
+- Authenticated access via Safari + curl works end to end
+
+**Known cosmetic issue:** Safari may hang on first visit to the self-signed cert page until cache is cleared or page is reopened. Other browsers behave normally.
 
 ---
 
