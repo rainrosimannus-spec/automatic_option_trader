@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from src.broker.connection import get_ib, is_connected
+from src.broker.connection import get_ib, get_ib_lock, is_connected
 from src.core.database import get_db
 from src.core.models import Trade, TradeType, OrderStatus, Position, PositionStatus
 from src.core.logger import get_logger
