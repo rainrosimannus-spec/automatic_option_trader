@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-04-28 (Tue) evening — caddy reverse proxy + basic auth + localhost lockdown for dashboard.
+Last updated: 2026-04-29 (Wed) — Bug B fix + Stages 1-5 portfolio lock supervisor for merged-account asyncio race.
 
 ---
 
@@ -187,10 +187,63 @@ Dashboard at http://37.0.30.34:8080/ was publicly accessible with no authenticat
 
 **Known cosmetic issue:** Safari may hang on first visit to the self-signed cert page until cache is cleared or page is reopened. Other browsers behave normally.
 
+**Wednesday (2026-04-29) — KSPI fill-claiming clarification + watchlist metrics asyncio fix (Bug B + Stages 1-5):**
+
+KSPI buy-back triggered a discovery: post-merge fill-claiming. Then a deeper investigation revealed the watchlist metrics job had been silently failing every 4h since the merge. Five commits address it.
+
+**KSPI fill-claiming (architectural note, no code change):**
+
+Ryan placed a manual buy-back limit order on a long-standing Winston cash-secured put (KSPI 70 strike, June 18 expiry). Order filled at 0.88. Phone notified, but the buy-back showed only on Maggy's trade history, not Winston's transactions or trade-history pages. Winston's open-position counter correctly went 53 to 52, but the realized P&L of 888 landed in positions (Maggy's table) instead of portfolio_put_entries (Winston's table).
+
+Root cause: post-merge, all IBKR fills arrive on the same shared connection with no strategy tag. Whichever sync code runs first claims the fill. Maggy's trade_sync runs every ~5 min; Winston's runs every 4 hours. Maggy almost always wins. The KSPI position was originally placed manually in IBKR (not via dashboard), so Winston never had a portfolio_put_entries record — only the open-counter knew about it. Maggy's sync ran first after the merge, found the open IBKR position with no DB match, created a fresh positions row claiming it as Maggy's. Today's buy-back closed Maggy's record cleanly. Display split is annoying, accounting is correct.
+
+Decision: not fixing now. Real fix would tag fills by strategy at sync time — non-trivial. Listed in deferred bugs. Will be moot once the new options account arrives and the strategies separate again.
+
+**Bug B fixed — get_ib_lock missing import in trade_sync (commit 877426d):**
+
+reconcile_submitted_trades() at line 414 of src/broker/trade_sync.py called "with get_ib_lock():" but the import at line 14 only imported get_ib and is_connected. NameError on every reconcile run, swallowed by except as reconcile_submitted_trades_skipped_ib_error. Surfaced post-merge because trade_sync now runs more frequently against the shared gateway.
+
+Fix: added get_ib_lock to the import. Verified clean by absence of the error in 14:25, 14:40 reconcile cycles after restart.
+
+**Watchlist metrics investigation:**
+
+User asked to verify update_watchlist_metrics was running on schedule. Found it WAS — every 4h at 00:43, 04:52, 08:54, 12:54 — but the last 3 of those failed catastrophically: failed=124 updated=0. All 124 watchlist symbols failing in lockstep meant a connection-wide issue. Confirmed via "event loop is already running", "no current event loop in thread Thread-2", spy_ma_fetch_error, price_fetch_error errors clustering around the failed runs.
+
+Root cause: post-merge, two ib_insync clients (Maggy clientId 12, Winston clientId 97) hit the same gateway through the same Python process. Pre-merge they had separate gateways; collisions were physically impossible. Post-merge, every overlapping IBKR call is a race.
+
+Maggy already had _ib_lock infrastructure used consistently. Winston had _portfolio_lock defined but barely used — only at 2 sites in connection.py and 6 sites in scheduler.py. Roughly 26 IBKR call sites across connection.py, buyer.py, analyzer.py, forecaster.py, sync.py, ibkr_fundamentals.py, bridge.py were unlocked.
+
+Two-layer fix architecture:
+- Layer 1 (Stages 1-3): Wrap every Winston IBKR call site with get_portfolio_lock(). Winston serializes its own calls.
+- Layer 2 (Stages 4-5): For the merge period, get_portfolio_lock() returns a supervisor that acquires Maggy's ib_lock FIRST, then Winston's _portfolio_lock. Cross-strategy serialization without touching Maggy code.
+
+**Stage 1 (commit ff631e2) — connection.py:** Wrapped refresh_portfolio_account_cache_from() accountValues() and refresh_brkb_history() reqHistoricalData(). Connection-setup code at lines 115/144 intentionally not wrapped (no contention possible).
+
+**Stage 2 (commit baa533d) — buyer.py:** 21 IBKR call sites wrapped as 16 lock blocks (per logical operation). Sites: VIX/SPY regime fetch, option chain discovery, option qualify+live bid sequence, place put order, assignment check, place stock buy, cash park sequence, three account-value queries, holdings update loop.
+
+**Stage 3 (commit 59b3197) — analyzer.py, forecaster.py, sync.py, ibkr_fundamentals.py, bridge.py:** 8 lock blocks across 5 files. After Stage 3, every Winston IBKR call site holds the portfolio lock during the call.
+
+**Stage 4+5 (commit 392369b) — Cross-strategy supervisor:** Replaced get_portfolio_lock() with a context-manager-returning function. When merged (detected once at module import by comparing settings.ibkr.host/port/account vs settings.portfolio.ibkr_host/ibkr_port/ibkr_account), it acquires Maggy's ib_lock FIRST, then _portfolio_lock. When split, returns plain _portfolio_lock. Lock acquisition order is fixed (ib_lock then portfolio_lock) and Maggy never acquires portfolio_lock, so no deadlock. Logged at startup as portfolio_lock_mode merged=True.
+
+When the new options account arrives and ports diverge, _detect_merged_with_options() returns False automatically. Supervisor becomes a no-op without code change. Removal instructions for permanent re-split are inline in connection.py under the MERGE-ONLY header.
+
+**Verification:** Restart at 19:46:10 logged portfolio_lock_mode merged=True confirming supervisor is active. Next watchlist metrics run is at ~23:46. If failed=0 updated=124, asyncio race is dead.
+
+**Open issues (still deferred):**
+
+- "Position object has no attribute unrealized_pnl" in put_seller — Maggy code expects an attribute U17562704 Position objects don't have. Harmless (suggestion mode + auto-approve off), but log noise.
+- KSPI-style fill claiming — first-sync-wins behavior across strategies. Real fix is per-strategy fill tagging. Will be moot post-re-split.
+- portfolio_account_updates_failed (TimeoutError on reqAccountUpdates) — still seen at startup. May or may not be lock-related.
+
 ---
 
 ## All Recent Commits (yesterday + today, all pushed)
 
+- 392369b Stage 4+5: cross-strategy lock supervisor for merged accounts
+- 59b3197 Stage 3: lock IBKR calls in analyzer, forecaster, sync, fundamentals, bridge
+- baa533d Stage 2: lock IBKR calls in portfolio/buyer.py
+- ff631e2 Stage 1: lock IBKR calls in portfolio/connection.py
+- 877426d Fix: import get_ib_lock in trade_sync.py
 - 63f68c6 Fix: pass DTE range to screen_puts in _evaluate_symbol (was using hardcoded 5-14 fallback)
 - 5738250 Fix 0: composite_score clobber in _update_watchlist_metrics
 - 8ae93c3 Fix P: tier proportions unified
