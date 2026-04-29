@@ -24,7 +24,7 @@ from src.portfolio.models import (
 )
 from src.portfolio.analyzer import PortfolioAnalyzer, StockAnalysis
 from src.portfolio.config import PortfolioConfig
-from src.portfolio.connection import _ensure_event_loop
+from src.portfolio.connection import _ensure_event_loop, get_portfolio_lock
 from src.portfolio.ranker import (
     MarketRegime, CashPolicy, RankedSignal,
     rank_signals, detect_market_regime,
@@ -435,12 +435,13 @@ class PortfolioBuyer:
             # Get VIX
             from ib_insync import Index
             vix_contract = Index("VIX", "CBOE", "USD")
-            self.ib.qualifyContracts(vix_contract)
-            vix_bars = self.ib.reqHistoricalData(
-                vix_contract, endDateTime="", durationStr="15 D",
-                barSizeSetting="1 day", whatToShow="TRADES",
-                useRTH=False, formatDate=1, timeout=8,
-            )
+            with get_portfolio_lock():
+                self.ib.qualifyContracts(vix_contract)
+                vix_bars = self.ib.reqHistoricalData(
+                    vix_contract, endDateTime="", durationStr="15 D",
+                    barSizeSetting="1 day", whatToShow="TRADES",
+                    useRTH=False, formatDate=1, timeout=8,
+                )
             if vix_bars:
                 vix = float(vix_bars[-1].close)
                 # VIX 10 days ago for stabilization detection
@@ -452,12 +453,13 @@ class PortfolioBuyer:
         try:
             # Get SPY data
             spy_contract = Stock("SPY", "SMART", "USD")
-            self.ib.qualifyContracts(spy_contract)
-            spy_bars = self.ib.reqHistoricalData(
-                spy_contract, endDateTime="", durationStr="260 D",
-                barSizeSetting="1 day", whatToShow="TRADES",
-                useRTH=False, formatDate=1, timeout=10,
-            )
+            with get_portfolio_lock():
+                self.ib.qualifyContracts(spy_contract)
+                spy_bars = self.ib.reqHistoricalData(
+                    spy_contract, endDateTime="", durationStr="260 D",
+                    barSizeSetting="1 day", whatToShow="TRADES",
+                    useRTH=False, formatDate=1, timeout=10,
+                )
             if spy_bars and len(spy_bars) >= 200:
                 closes = [b.close for b in spy_bars]
                 highs = [b.high for b in spy_bars]
@@ -578,11 +580,12 @@ class PortfolioBuyer:
 
             # Find available option chain
             contract = Stock(stock.symbol, stock.exchange, stock.currency)
-            self.ib.qualifyContracts(contract)
+            with get_portfolio_lock():
+                self.ib.qualifyContracts(contract)
 
-            chains = self.ib.reqSecDefOptParams(
-                stock.symbol, '', 'STK', contract.conId
-            )
+                chains = self.ib.reqSecDefOptParams(
+                    stock.symbol, '', 'STK', contract.conId
+                )
             if not chains:
                 log.debug("portfolio_no_option_chains", symbol=stock.symbol)
                 return False
@@ -620,16 +623,18 @@ class PortfolioBuyer:
             # Create and qualify the option contract
             opt = Option(stock.symbol, best_exp, best_strike, 'P',
                          chain.exchange, currency=stock.currency)
-            qualified = self.ib.qualifyContracts(opt)
+            with get_portfolio_lock():
+                qualified = self.ib.qualifyContracts(opt)
             if not qualified or opt.conId <= 0:
                 return False
 
             # Live bid only — no BS. Snapshot quote for the option we are about to sell.
             from src.broker.market_data import _ensure_market_data_type
             _ensure_market_data_type()
-            ticker = self.ib.reqMktData(opt, "", True, False)
-            self.ib.sleep(2)
-            self.ib.cancelMktData(opt)
+            with get_portfolio_lock():
+                ticker = self.ib.reqMktData(opt, "", True, False)
+                self.ib.sleep(2)
+                self.ib.cancelMktData(opt)
             real_bid = ticker.bid
             if not real_bid or real_bid <= 0 or real_bid == float("inf") or real_bid == -1.0:
                 log.info("portfolio_no_live_bid_skipping", symbol=stock.symbol,
@@ -682,8 +687,9 @@ class PortfolioBuyer:
             order = LimitOrder('SELL', contracts, round(sell_price, 2))
             order.tif = 'GTC'  # Good till cancelled — we want this to fill
             order.outsideRth = True  # allow extended hours fills
-            trade = self.ib.placeOrder(opt, order)
-            self.ib.sleep(2)
+            with get_portfolio_lock():
+                trade = self.ib.placeOrder(opt, order)
+                self.ib.sleep(2)
 
             # Record in database
             effective_cost = best_strike - sell_price
@@ -764,7 +770,8 @@ class PortfolioBuyer:
 
                 if today > exp_date:
                     # Expired — check if assigned by looking at portfolio positions
-                    positions = self.ib.positions()
+                    with get_portfolio_lock():
+                        positions = self.ib.positions()
                     assigned = any(
                         p.contract.symbol == entry.symbol and
                         p.position > 0 and
@@ -1052,14 +1059,16 @@ class PortfolioBuyer:
 
             # Live mode — place actual order
             contract = Stock(stock.symbol, stock.exchange, stock.currency)
-            self.ib.qualifyContracts(contract)
+            with get_portfolio_lock():
+                self.ib.qualifyContracts(contract)
 
             order = LimitOrder("BUY", shares, limit_price)
             order.tif = "DAY"
             order.outsideRth = True
 
-            trade = self.ib.placeOrder(contract, order)
-            self.ib.sleep(2)
+            with get_portfolio_lock():
+                trade = self.ib.placeOrder(contract, order)
+                self.ib.sleep(2)
 
             log.info("portfolio_buy_placed",
                      symbol=stock.symbol,
@@ -1111,14 +1120,15 @@ class PortfolioBuyer:
                 self.cfg.cash_yield_exchange,
                 self.cfg.cash_yield_currency,
             )
-            self.ib.qualifyContracts(contract)
-            contract.exchange = "SMART"
-            bars = self.ib.reqHistoricalData(
-                contract, endDateTime="",
-                durationStr="2 D", barSizeSetting="1 day",
-                whatToShow="TRADES", useRTH=False,
-                formatDate=1, timeout=8,
-            )
+            with get_portfolio_lock():
+                self.ib.qualifyContracts(contract)
+                contract.exchange = "SMART"
+                bars = self.ib.reqHistoricalData(
+                    contract, endDateTime="",
+                    durationStr="2 D", barSizeSetting="1 day",
+                    whatToShow="TRADES", useRTH=False,
+                    formatDate=1, timeout=8,
+                )
 
             price = float(bars[-1].close) if bars else None
             if not price or price <= 0:
@@ -1131,8 +1141,9 @@ class PortfolioBuyer:
             order = LimitOrder("BUY", shares, round(price * 1.001, 2))
             order.tif = "DAY"
             order.outsideRth = True
-            self.ib.placeOrder(contract, order)
-            self.ib.sleep(1)
+            with get_portfolio_lock():
+                self.ib.placeOrder(contract, order)
+                self.ib.sleep(1)
 
             log.info("portfolio_cash_parked", symbol=self.cfg.cash_yield_symbol,
                      shares=shares, amount=round(shares * price, 2))
@@ -1147,7 +1158,8 @@ class PortfolioBuyer:
     def _get_available_cash(self) -> float | None:
         try:
             _ensure_event_loop()
-            values = self.ib.accountValues()
+            with get_portfolio_lock():
+                values = self.ib.accountValues()
             for item in values:
                 if item.tag == "AvailableFunds" and item.currency in ("EUR", "BASE"):
                     return float(item.value)
@@ -1162,7 +1174,8 @@ class PortfolioBuyer:
     def _get_net_liquidation(self) -> float | None:
         try:
             _ensure_event_loop()
-            values = self.ib.accountValues()
+            with get_portfolio_lock():
+                values = self.ib.accountValues()
             for item in values:
                 if item.tag == "NetLiquidation":
                     return float(item.value)
@@ -1174,7 +1187,8 @@ class PortfolioBuyer:
         """Get current maintenance margin requirement from IBKR."""
         try:
             _ensure_event_loop()
-            values = self.ib.accountValues()
+            with get_portfolio_lock():
+                values = self.ib.accountValues()
             for item in values:
                 if item.tag == "MaintMarginReq" and item.currency in ("EUR", "BASE"):
                     return float(item.value)
@@ -1523,7 +1537,8 @@ class PortfolioBuyer:
             for h in holdings:
                 try:
                     contract = Stock(h.symbol, h.exchange, h.currency)
-                    self.ib.qualifyContracts(contract)
+                    with get_portfolio_lock():
+                        self.ib.qualifyContracts(contract)
                     # Only override to SMART for exchanges that support it
                     # Non-US/EU/developed exchanges must keep their original exchange
                     _non_smart_exchanges = {"SEHK", "JSE", "SGX", "TASE", "NSE", "ASX",
@@ -1533,12 +1548,13 @@ class PortfolioBuyer:
                     price = None
                     for what in ("TRADES", "MIDPOINT"):
                         try:
-                            bars = self.ib.reqHistoricalData(
-                                contract, endDateTime="",
-                                durationStr="2 D", barSizeSetting="1 day",
-                                whatToShow=what, useRTH=False,
-                                formatDate=1, timeout=8,
-                            )
+                            with get_portfolio_lock():
+                                bars = self.ib.reqHistoricalData(
+                                    contract, endDateTime="",
+                                    durationStr="2 D", barSizeSetting="1 day",
+                                    whatToShow=what, useRTH=False,
+                                    formatDate=1, timeout=8,
+                                )
                             if bars:
                                 price = float(bars[-1].close)
                                 break
