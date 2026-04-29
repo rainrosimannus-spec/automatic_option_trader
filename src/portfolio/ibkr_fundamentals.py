@@ -114,7 +114,9 @@ def get_ibkr_fundamentals(ib, contract, current_price: Optional[float] = None) -
 
     # ReportsFinSummary — dividend history, EPS, revenue
     try:
-        xml = ib.reqFundamentalData(contract, "ReportsFinSummary")
+        from src.portfolio.connection import get_portfolio_lock
+        with get_portfolio_lock():
+            xml = ib.reqFundamentalData(contract, "ReportsFinSummary")
     except Exception as e:
         log.warning("ibkr_fundamentals_finsummary_failed", symbol=contract.symbol, error=str(e))
         return result

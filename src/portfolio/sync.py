@@ -22,13 +22,16 @@ def sync_ibkr_holdings(ib: IB) -> int:
     Returns count of synced positions.
     """
     from src.portfolio.models import PortfolioHolding, PortfolioWatchlist
+    from src.portfolio.connection import get_portfolio_lock
 
-    ib.reqPositions()
-    ib.sleep(2)
-    portfolio_items = ib.portfolio()
+    with get_portfolio_lock():
+        ib.reqPositions()
+        ib.sleep(2)
+        portfolio_items = ib.portfolio()
 
     if not portfolio_items:
-        positions = ib.positions()
+        with get_portfolio_lock():
+            positions = ib.positions()
         if not positions:
             log.warning("no_ibkr_positions_found")
             return 0

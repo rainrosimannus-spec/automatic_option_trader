@@ -22,7 +22,7 @@ from typing import Optional
 from ib_insync import IB, Stock
 
 from src.core.logger import get_logger
-from src.portfolio.connection import _ensure_event_loop
+from src.portfolio.connection import _ensure_event_loop, get_portfolio_lock
 
 log = get_logger(__name__)
 
@@ -116,7 +116,8 @@ class PortfolioAnalyzer:
 
         try:
             contract = Stock(symbol, exchange, currency)
-            qualified = self.ib.qualifyContracts(contract)
+            with get_portfolio_lock():
+                qualified = self.ib.qualifyContracts(contract)
             if not qualified:
                 log.warning("portfolio_qualify_failed", symbol=symbol)
                 return None
@@ -267,16 +268,17 @@ class PortfolioAnalyzer:
         bars = None
         for what in ("TRADES", "MIDPOINT"):
             try:
-                bars = self.ib.reqHistoricalData(
-                    contract,
-                    endDateTime="",
-                    durationStr=f"{max_period} D",
-                    barSizeSetting="1 day",
-                    whatToShow=what,
-                    useRTH=False,
-                    formatDate=1,
-                    timeout=15,
-                )
+                with get_portfolio_lock():
+                    bars = self.ib.reqHistoricalData(
+                        contract,
+                        endDateTime="",
+                        durationStr=f"{max_period} D",
+                        barSizeSetting="1 day",
+                        whatToShow=what,
+                        useRTH=False,
+                        formatDate=1,
+                        timeout=15,
+                    )
                 if bars and len(bars) > 50:
                     break
             except Exception:
@@ -369,15 +371,16 @@ class PortfolioAnalyzer:
 
         try:
             contract = Stock("SPY", "SMART", "USD")
-            self.ib.qualifyContracts(contract)
+            with get_portfolio_lock():
+                self.ib.qualifyContracts(contract)
 
-            bars = self.ib.reqHistoricalData(
-                contract,
-                endDateTime="",
-                durationStr="220 D",
-                barSizeSetting="1 day",
-                whatToShow="TRADES",
-                useRTH=False,
+                bars = self.ib.reqHistoricalData(
+                    contract,
+                    endDateTime="",
+                    durationStr="220 D",
+                    barSizeSetting="1 day",
+                    whatToShow="TRADES",
+                    useRTH=False,
                 formatDate=1,
                 timeout=10,
             )

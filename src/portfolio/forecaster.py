@@ -46,13 +46,15 @@ def _fetch_prices(ib, symbol: str, exchange: str, currency: str) -> np.ndarray |
     """Fetch 6 months of daily closing prices from IBKR."""
     try:
         from ib_insync import Stock
+        from src.portfolio.connection import get_portfolio_lock
         contract = Stock(symbol, exchange, currency)
-        ib.qualifyContracts(contract)
-        bars = ib.reqHistoricalData(
-            contract,
-            endDateTime="",
-            durationStr="180 D",
-            barSizeSetting="1 day",
+        with get_portfolio_lock():
+            ib.qualifyContracts(contract)
+            bars = ib.reqHistoricalData(
+                contract,
+                endDateTime="",
+                durationStr="180 D",
+                barSizeSetting="1 day",
             whatToShow="CLOSE",
             useRTH=True,
             timeout=10,

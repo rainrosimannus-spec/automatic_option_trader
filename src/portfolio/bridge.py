@@ -170,8 +170,10 @@ class CashBridge:
     def _get_account_net_liquidation(self, account: str) -> Optional[float]:
         """Get net liquidation value for a specific account."""
         try:
+            from src.portfolio.connection import get_portfolio_lock
             _ensure_event_loop()
-            values = self.ib.accountValues(account=account)
+            with get_portfolio_lock():
+                values = self.ib.accountValues(account=account)
             for item in values:
                 if (item.tag == "NetLiquidation" and
                         item.currency in (self.cfg.currency, "BASE")):
