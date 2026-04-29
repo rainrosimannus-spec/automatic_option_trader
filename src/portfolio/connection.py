@@ -263,7 +263,8 @@ def refresh_portfolio_account_cache_from(ib: IB):
     try:
         if ib is None or not ib.isConnected():
             return
-        values = ib.accountValues()
+        with _portfolio_lock:
+            values = ib.accountValues()
         if not values:
             return
         data = {}
@@ -369,12 +370,13 @@ def refresh_brkb_history(ib: IB):
     try:
         from ib_insync import Stock as _Stock
         _brkb = _Stock("BRK B", "SMART", "USD")
-        _bars = ib.reqHistoricalData(
-            _brkb, endDateTime="",
-            durationStr="365 D", barSizeSetting="1 day",
-            whatToShow="TRADES", useRTH=True,
-            formatDate=1, timeout=15,
-        )
+        with _portfolio_lock:
+            _bars = ib.reqHistoricalData(
+                _brkb, endDateTime="",
+                durationStr="365 D", barSizeSetting="1 day",
+                whatToShow="TRADES", useRTH=True,
+                formatDate=1, timeout=15,
+            )
         if _bars:
             brkb_data = {str(b.date): float(b.close) for b in _bars}
             with _portfolio_cache_lock:
