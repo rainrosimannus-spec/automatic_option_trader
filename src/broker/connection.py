@@ -97,16 +97,22 @@ def _connect(max_retries: int = 3) -> IB:
 
     for attempt in range(1, max_retries + 1):
         try:
-            ib.connect(
-                host=cfg.host, port=cfg.port,
-                clientId=cfg.client_id,
-                timeout=cfg.timeout,
-                readonly=cfg.readonly,
-                account=cfg.account or "",
-            )
-            ib.RequestTimeout = 15
-            ib.reqMarketDataType(4)
-            ib.sleep(2)
+            # Hold _ib_lock during connect to avoid asyncio reentry collisions
+            # with in-flight Winston calls (which acquire _ib_lock via the
+            # merge-period supervisor in src/portfolio/connection.py).
+            # _ib_lock is an RLock so this is safe even if already held by
+            # the calling thread.
+            with _ib_lock:
+                ib.connect(
+                    host=cfg.host, port=cfg.port,
+                    clientId=cfg.client_id,
+                    timeout=cfg.timeout,
+                    readonly=cfg.readonly,
+                    account=cfg.account or "",
+                )
+                ib.RequestTimeout = 15
+                ib.reqMarketDataType(4)
+                ib.sleep(2)
 
             # Store the event loop so other threads can use it
             global _main_loop
