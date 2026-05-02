@@ -233,10 +233,27 @@ class PortfolioAnalyzer:
                              original_score=round(original_score, 1),
                              penalty=risk_penalty)
 
+            # Read compound_quality_pct from DB and blend with raw signal.
+            # Same formula as recalc_scores_from_db: 30% raw + 70% quality.
+            quality_pct = 50.0
+            try:
+                from sqlalchemy import text as sa_text2
+                from src.core.database import get_engine as get_engine2
+                with get_engine2().connect() as conn:
+                    row = conn.execute(sa_text2(
+                        "SELECT compound_quality_pct FROM portfolio_watchlist WHERE symbol = :sym"
+                    ), {"sym": symbol}).fetchone()
+                    if row and row[0] is not None:
+                        quality_pct = float(row[0])
+            except Exception:
+                pass
+
+            blended_composite = (score * 0.30) + (quality_pct * 0.70)
+            analysis.composite_score = round(blended_composite, 1)
+            analysis.signal_strength = min(100, blended_composite)
+
             if score > 0:
                 analysis.buy_signal = True
-                analysis.composite_score = score
-                analysis.signal_strength = min(100, score)
 
                 # Determine primary signal type for logging
                 analysis.signal_type = self._primary_signal_type(analysis, params)
@@ -301,6 +318,18 @@ class PortfolioAnalyzer:
         """
         score = 0.0
         triggered = False
+
+        # ── Fair-price base (0-24 points) ──
+        # Stocks within ±5% of SMA score points even without panic-level
+        # signals. Gives quality-screened watchlist stocks a foot in the
+        # door at fair valuation. Saturates around min_discount where the
+        # existing gated SMA signal takes over.
+        if analysis.discount_pct is not None:
+            if analysis.discount_pct >= -5:
+                triggered = True
+                # -5%: 0 pts. 0% (at SMA): 12 pts. +5% (below SMA): 24 pts.
+                fair_base = max(0, min(24, (analysis.discount_pct + 5) * 2.4))
+                score += fair_base
 
         # ── SMA discount signal (0-40 points) ──
         if analysis.discount_pct is not None:

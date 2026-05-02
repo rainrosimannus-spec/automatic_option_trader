@@ -1442,9 +1442,11 @@ class PortfolioBuyer:
                 ).first()
                 if entry:
                     entry.raw_score = round(raw_score, 1)
-                    # 80/20 blend: price signal (80%) + compound quality (20%)
+                    # 30/70 blend: raw signal (30%) + compound quality (70%).
+                    # Buffett-style: quality screened upstream, fair price
+                    # is the dominant factor, panic adds urgency.
                     quality_pct = entry.compound_quality_pct or 50.0
-                    blended = (score * 0.80) + (quality_pct * 0.20)
+                    blended = (score * 0.30) + (quality_pct * 0.70)
                     entry.composite_score = round(blended, 1)
                     if score > 0 and not entry.buy_signal:
                         entry.buy_signal = True
