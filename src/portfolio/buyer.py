@@ -695,6 +695,13 @@ class PortfolioBuyer:
                 trade = self.ib.placeOrder(opt, order)
                 self.ib.sleep(2)
 
+            # Refresh dashboard cache so new order appears immediately
+            try:
+                from src.portfolio.connection import refresh_portfolio_pending_orders_cache
+                refresh_portfolio_pending_orders_cache()
+            except Exception:
+                pass
+
             # Record in database
             effective_cost = best_strike - sell_price
             with get_db() as db:
@@ -1074,6 +1081,13 @@ class PortfolioBuyer:
                 trade = self.ib.placeOrder(contract, order)
                 self.ib.sleep(2)
 
+            # Refresh dashboard cache so new order appears immediately
+            try:
+                from src.portfolio.connection import refresh_portfolio_pending_orders_cache
+                refresh_portfolio_pending_orders_cache()
+            except Exception:
+                pass
+
             log.info("portfolio_buy_placed",
                      symbol=stock.symbol,
                      tier=stock.tier,
@@ -1148,6 +1162,13 @@ class PortfolioBuyer:
             with get_portfolio_lock():
                 self.ib.placeOrder(contract, order)
                 self.ib.sleep(1)
+
+            # Refresh dashboard cache so new order appears immediately
+            try:
+                from src.portfolio.connection import refresh_portfolio_pending_orders_cache
+                refresh_portfolio_pending_orders_cache()
+            except Exception:
+                pass
 
             log.info("portfolio_cash_parked", symbol=self.cfg.cash_yield_symbol,
                      shares=shares, amount=round(shares * price, 2))
