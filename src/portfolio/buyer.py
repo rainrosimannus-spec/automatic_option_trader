@@ -526,7 +526,7 @@ class PortfolioBuyer:
 
         Rules:
         - If put-entry is disabled → always direct buy
-        - Composite score > 70 (very strong signal) → direct buy
+        - Composite score > 75 (very strong signal) → direct buy
         - Deep discount (>15% below SMA) → direct buy (rare opportunity)
         - RSI < 20 → direct buy (extreme oversold, grab it)
         - Volume surge + trend healthy → direct buy (capitulation in uptrend)
@@ -536,7 +536,11 @@ class PortfolioBuyer:
             return "direct_buy"
 
         # Very strong composite signal → buy now
-        if analysis.composite_score > 70:
+        # Threshold 75 chosen post-rebalance: under the new 30/70 raw/quality
+        # blend, composite=75 requires raw_score>=15, ensuring direct-buy
+        # candidates always have at least some price-side entry signal,
+        # not just high quality at exact-SMA pricing. Below 75 → CSP path.
+        if analysis.composite_score > 75:
             log.info("portfolio_direct_buy_strong_signal", symbol=stock.symbol,
                      score=round(analysis.composite_score, 1))
             return "direct_buy"
