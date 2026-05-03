@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-04-29 (Wed) — Bug B fix + Stages 1-5 portfolio lock supervisor for merged-account asyncio race.
+Last updated: 2026-05-03 (Sat) — reconnect-race fix; Buffett-style scoring rebalance (30/70 blend, fair-price base, floor 40, threshold 75); pending orders dashboard fix.
 
 ---
 
@@ -235,10 +235,93 @@ When the new options account arrives and ports diverge, _detect_merged_with_opti
 - KSPI-style fill claiming — first-sync-wins behavior across strategies. Real fix is per-strategy fill tagging. Will be moot post-re-split.
 - portfolio_account_updates_failed (TimeoutError on reqAccountUpdates) — still seen at startup. May or may not be lock-related.
 
+**Saturday (2026-05-03) — reconnect-race fix + scoring rebalance + pending orders fix:**
+
+Three lines of work today, all pushed.
+
+**1. Reconnect-race fix (commit b734cf7):**
+
+Yesterday's lock work proved itself: 03:49 watchlist metrics run logged failed=0 updated=124. Asyncio race against the metrics job is dead.
+
+But discovered a related bug overnight. IBC restarted the gateway at midnight UTC; trader reconnected cleanly at 00:01, ran 03:49 metrics fine, then connection dropped around 05:46. Reconnect attempts started failing with "This event loop is already running" every 5/10/20s, looped for 47 min until manual restart at 06:35. 195 failed-reconnect log entries.
+
+Root cause: _connect() in src/broker/connection.py calls ib.connect() which internally invokes asyncio.get_event_loop().run_until_complete(...). If a Winston thread is mid-call holding _ib_lock via the merge-period supervisor, the new asyncio task can't run. Yesterday's lock work protected Winston's CALLS but not Maggy's RECONNECT against Winston's calls.
+
+Fix: wrapped ib.connect() plus the post-connect setup (RequestTimeout, reqMarketDataType, sleep) in "with _ib_lock:". Lock is RLock so safe even if called from a thread already holding it. Reconnect now waits for any in-flight Winston operation to release the lock before grabbing the event loop.
+
+**2. Scoring rebalance — Buffett-style (commits a25ccb1, 45e6d72, f65b9d4):**
+
+User concern: dashboard top sat at 45-65 score range, never reaching 70+ direct-buy threshold except in panic. 75 of 124 stocks at raw_score=0, 25 at exactly 40. Top stable for days. System effectively "panic-buy or never."
+
+Architecture investigation revealed: the screener (tools/screen_universe.py) already does Buffett-style work properly — _score_growth (40%, revenue + gross margin level + trend), _score_valuation (25%, PEG-first with PE fallback), _score_quality (35%, D/E + FCF consistency + FCF margin trend). Composite 0.40*growth + 0.25*valuation + 0.35*quality. Already calibrated for "wonderful business at fair price." OFF-LIMITS to changes per explicit user guardrail.
+
+The downstream scoring was the problem. analyzer.py:_compute_composite_score was purely a panic detector (SMA-discount + RSI-oversold + 52w-low gates). If no gate fired, returned 0. Most quality stocks at fair valuation hit no gates, scored 0. The composite blend was 80% raw + 20% quality, so quality couldn't lift them. And analyzer.py was setting composite_score = score directly without ANY blend — discrepancy with recalc_scores_from_db which used 80/20.
+
+Three changes restored Buffett-style behavior:
+
+a25ccb1 — Two simultaneous changes:
+- Added a fair-price base of 0-24 points to _compute_composite_score, scaled across discount_pct from -5% (above SMA, 0pts) to +5% (below SMA, 24pts). Saturates exactly where the existing gated SMA signal takes over. Stocks at fair valuation now have a foot in the door even without panic-level signals. Anti-chase guard at -20% still blocks deeply overpriced stocks.
+- Composite blend: 80% raw + 20% quality to 30% raw + 70% quality. Applied symmetrically in _evaluate_symbol (was no blend at all — discrepancy fixed) and recalc_scores_from_db.
+
+45e6d72 — Composite floor: stocks below MIN_COMPOSITE_FOR_ACTION = 40.0 don't get buy_signal=True. Filters out fair-priced stocks with weak quality (whose composite was lifted only by fair-price base). At score=0, the 0.70*quality_pct term means floor=40 is roughly quality_pct >= 57. Below that, watchlist-only, no CSP suggestion.
+
+f65b9d4 — Direct-buy threshold bumped from 70 to 75. Under the new 30/70 blend, composite=70 was reachable by top-quality stock at exact-SMA price (zero technical signal). Bumping to 75 ensures every direct-buy candidate has raw_score >= 15 — some real price-side reason to act, not pure quality lift.
+
+**Resulting action mapping:**
+- Below 40: watchlist member, no action
+- 40-75: sell CSP at target strike (get paid to wait — most fair-priced quality stocks land here)
+- Above 75: direct buy (rare, requires both real signal AND high quality)
+- Override gates (deep_discount > 15%, RSI < 20, volume_surge + trend_healthy) still promote to direct_buy regardless
+
+**3. Pending orders dashboard fix (commit 2c161a8):**
+
+User wanted Pending Orders view to reflect IBKR state in near-real-time, with order lifecycle (Submitted, PartiallyFilled, Filled disappears to Holdings, Cancelled disappears entirely) handled cleanly.
+
+Audit revealed most of the lifecycle infrastructure already exists:
+- refresh_portfolio_pending_orders_cache() captures all the right fields (status, filled, remaining, order_id, etc.)
+- Uses reqAllOpenOrders() so it sees orders from all clients including manually placed TWS orders
+- trade_sync handles fills (moves to Holdings/Open Options) and ghost detection (rejected to CANCELLED)
+- Dashboard renders the table with status column
+
+Two real issues found:
+1. Template variable mismatch: {{o.quantity}} in portfolio.html, but cache stores it as 'qty'. Qty column silently empty on dashboard.
+2. Cache refreshed only every 15 min (inline with _job_trade_sync). Freshly placed orders invisible for up to 15 minutes.
+
+Fixes (commit 2c161a8):
+- Template: {{o.quantity}} to {{o.qty}}
+- Trigger refresh_portfolio_pending_orders_cache() immediately after each placeOrder + sleep block. Three sites: CSP (line 695), direct buy (line 1074), cash park (line 1149). Wrapped in try/except so dashboard issues never break order placement.
+
+Result: newly placed orders appear on the dashboard within ~2 seconds.
+
+**Architectural state confirmation (no change, but worth recording):**
+
+Portfolio IBKR connection (clientId 97) remains in **read-only mode at IBKR level** — even if app-level suggestion_mode is flipped off, IBKR rejects placeOrder at the protocol level. This is a deliberate two-layer safety:
+- IBKR side: read-only (protocol-level lockout)
+- App side: suggestion_mode + auto-approve OFF
+
+For Winston to ever execute, BOTH switches need to be flipped deliberately. Today's scoring/lifecycle work prepares for that future state but doesn't enable it.
+
+**Deferred (still on the list):**
+
+- DB-write timing in buyer.py: holdings/transactions row written at submission time, before fill confirmation. If IBKR rejects, DB has phantom row until trade_sync's next reconcile cycle (15 min). Real fix is to write only on fill. Not blocking under current read-only/suggestion-mode operation. Worth fixing before any auto-approve live mode.
+- "Position object has no attribute unrealized_pnl" in put_seller — Maggy code expects an attribute that U17562704 Position objects don't have. Currently swallowed by try/except, log noise only. Trace which decisions read it before live mode for Maggy.
+- KSPI-style fill claiming — first-sync-wins post-merge. Per-strategy fill tagging needed. Will be moot post-re-split.
+
+**Verification:**
+
+- 21:22 trader restart logged clean: ibkr_connected, portfolio_connection_established, portfolio_ibkr_ready. Lock supervisor still active (merged=True from yesterday).
+- First metrics + recalc cycle after the scoring change runs at ~01:22 UTC, then 05:22, 09:22, 13:22 etc.
+- Tomorrow's first verification: sqlite3 query on portfolio_watchlist ordered by composite_score DESC, expected top 60-90 range (vs yesterday 45-65), quality leaders dominate, possibly 0-3 direct-buy candidates if any pass the 75 threshold. Pending Orders dashboard view: when a manual order is placed in IBKR by Ryan, should appear within ~2 seconds, Qty column showing actual quantity.
+
 ---
 
 ## All Recent Commits (yesterday + today, all pushed)
 
+- 2c161a8 pending orders: fix qty template var + trigger refresh after placeOrder
+- f65b9d4 scoring: bump direct-buy threshold from 70 to 75
+- 45e6d72 scoring: add composite floor of 40 for buy_signal trigger
+- a25ccb1 scoring: rebalance composite to 30% raw + 70% quality, add fair-price base
+- b734cf7 fix: hold _ib_lock during ib.connect() to avoid reconnect-vs-Winston race
 - 392369b Stage 4+5: cross-strategy lock supervisor for merged accounts
 - 59b3197 Stage 3: lock IBKR calls in analyzer, forecaster, sync, fundamentals, bridge
 - baa533d Stage 2: lock IBKR calls in portfolio/buyer.py
