@@ -252,7 +252,12 @@ class PortfolioAnalyzer:
             analysis.composite_score = round(blended_composite, 1)
             analysis.signal_strength = min(100, blended_composite)
 
-            if score > 0:
+            # Composite floor for action: stocks below MIN_COMPOSITE_FOR_ACTION
+            # do not get buy_signal set, so they don't enter the candidate pool.
+            # Filters out fair-priced stocks with weak quality (whose composite
+            # is dragged up by fair-price base alone).
+            MIN_COMPOSITE_FOR_ACTION = 40.0
+            if score > 0 and blended_composite >= MIN_COMPOSITE_FOR_ACTION:
                 analysis.buy_signal = True
 
                 # Determine primary signal type for logging

@@ -1448,7 +1448,8 @@ class PortfolioBuyer:
                     quality_pct = entry.compound_quality_pct or 50.0
                     blended = (score * 0.30) + (quality_pct * 0.70)
                     entry.composite_score = round(blended, 1)
-                    if score > 0 and not entry.buy_signal:
+                    # Composite floor — see analyzer.py MIN_COMPOSITE_FOR_ACTION
+                    if score > 0 and blended >= 40.0 and not entry.buy_signal:
                         entry.buy_signal = True
                         if entry.discount_pct and entry.discount_pct >= min_disc:
                             entry.signal_type = "below_sma"
