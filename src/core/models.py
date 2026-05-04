@@ -94,6 +94,7 @@ class Position(Base):
     quantity: Mapped[int] = mapped_column(Integer, default=1)  # contracts or shares (100x)
     total_premium_collected: Mapped[float] = mapped_column(Float, default=0.0)
     realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    unrealized_pnl: Mapped[Optional[float]] = mapped_column(Float, nullable=True, default=0.0)
     is_wheel: Mapped[bool] = mapped_column(Boolean, default=False)
     opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
