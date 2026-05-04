@@ -414,14 +414,18 @@ class RiskManager:
     def check_position_limit(self) -> RiskCheck:
         """
         Adaptive max open positions based on NLV.
-        Small accounts: 4 positions (concentrated, high conviction).
-        Large accounts: up to 20 positions (diversified).
+        Small accounts: concentrated, high conviction.
+        Large accounts: up to 40 positions (diversified).
 
         Tiers:
-          NLV < $50K   → 4 positions
-          NLV < $200K  → 8 positions
+          NLV < $25K   → 4 positions
+          NLV < $50K   → 6 positions
+          NLV < $100K  → 8 positions
+          NLV < $200K  → 10 positions
           NLV < $500K  → 15 positions
-          NLV >= $500K → 20 positions
+          NLV < $2M    → 20 positions
+          NLV < $5M    → 30 positions
+          NLV >= $5M   → 40 positions
         """
         try:
             summary = get_account_summary()
@@ -433,10 +437,14 @@ class RiskManager:
         if net_liq <= 0:
             return RiskCheck(True)
 
-        if net_liq < 50_000:
+        if net_liq < 25_000:
             max_pos = 4
-        elif net_liq < 200_000:
+        elif net_liq < 50_000:
+            max_pos = 6
+        elif net_liq < 100_000:
             max_pos = 8
+        elif net_liq < 200_000:
+            max_pos = 10
         elif net_liq < 500_000:
             max_pos = 15
         elif net_liq < 2_000_000:
