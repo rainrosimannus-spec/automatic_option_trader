@@ -1206,9 +1206,12 @@ class RiskManager:
 
     def check_intraday_loss(self) -> RiskCheck:
         """
-        Halt new trades if unrealized loss exceeds intraday_loss_halt_pct of NLV.
+        Halt new trades if unrealized loss exceeds the binding threshold.
         Reads total unrealized P&L from all open positions in DB.
-        Scales with NLV — no ceiling, pain threshold scales with account size.
+
+        Threshold = max(intraday_loss_halt_pct * NLV, intraday_loss_halt_floor).
+        Floor binds at small NLV (effectively dormant); pct binds above the
+        crossover NLV (= floor / pct, ~$2M with defaults).
         """
         try:
             summary = get_account_summary()
@@ -1216,7 +1219,9 @@ class RiskManager:
         except Exception:
             return RiskCheck(True)
 
-        halt_threshold = net_liq * self.cfg.intraday_loss_halt_pct
+        pct_threshold = net_liq * self.cfg.intraday_loss_halt_pct
+        halt_threshold = max(pct_threshold, self.cfg.intraday_loss_halt_floor)
+        binding = "floor" if halt_threshold == self.cfg.intraday_loss_halt_floor else "pct"
 
         with get_db() as db:
             open_puts = (
@@ -1236,7 +1241,9 @@ class RiskManager:
             return RiskCheck(
                 False,
                 f"Intraday loss ${abs(total_unrealized):,.0f} exceeds halt threshold "
-                f"${halt_threshold:,.0f} ({self.cfg.intraday_loss_halt_pct:.0%} of NLV ${net_liq:,.0f})",
+                f"${halt_threshold:,.0f} (binding={binding}: "
+                f"max of {self.cfg.intraday_loss_halt_pct:.1%} of NLV ${net_liq:,.0f} "
+                f"or floor ${self.cfg.intraday_loss_halt_floor:,.0f})",
             )
         return RiskCheck(True)
 

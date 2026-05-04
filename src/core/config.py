@@ -113,7 +113,8 @@ class RiskConfig(BaseModel):
     max_total_exposure: float = 2000000.0    # hard ceiling total open collateral
     daily_deployment_pct: float = 0.03       # max new collateral per day as % of NLV
     max_daily_deployment: float = 500000.0   # hard ceiling new collateral per day
-    intraday_loss_halt_pct: float = 0.02     # halt if unrealized loss > 2% of NLV
+    intraday_loss_halt_pct: float = 0.025    # halt if unrealized loss > 2.5% of NLV (Option C: max of pct or floor)
+    intraday_loss_halt_floor: float = 50000.0  # absolute $ floor; halt = max(pct * NLV, floor)
     # Correlation gate (skip if NLV < 50K or fewer than 3 open positions)
     max_correlation: float = 0.85        # block if avg pairwise correlation > this
     correlation_nlv_threshold: float = 50000.0
