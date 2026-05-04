@@ -501,6 +501,7 @@ def sync_ibkr_positions() -> int:
                 "avg_cost": avg_cost,
                 "position_size": item.position,
                 "market_value": item.marketValue,
+                "unrealized_pnl": float(item.unrealizedPNL) if hasattr(item, 'unrealizedPNL') and item.unrealizedPNL else 0.0,
             }
         elif contract.secType == "STK":
             symbol = contract.symbol
@@ -634,6 +635,8 @@ def sync_ibkr_positions() -> int:
                 Position.position_type == pos_type,
             ).first()
             if existing:
+                # Refresh unrealized P&L on every sync (drives intraday-loss check)
+                existing.unrealized_pnl = data.get("unrealized_pnl", 0.0)
                 # If it exists but was expired, reopen it
                 if existing.status != PositionStatus.OPEN:
                     existing.status = PositionStatus.OPEN
@@ -678,6 +681,7 @@ def sync_ibkr_positions() -> int:
                 entry_premium=premium_per_share,
                 quantity=data["quantity"],
                 total_premium_collected=premium_per_share * data["quantity"] * 100,
+                unrealized_pnl=data.get("unrealized_pnl", 0.0),
                 is_wheel=True,
                 opened_at=datetime.utcnow(),
             )
