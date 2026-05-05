@@ -69,6 +69,8 @@ def _migrate_columns(engine):
         ("trade_suggestions", "trailing_peak_price", "REAL"),
         # Intraday-loss halt support (May 2026)
         ("positions", "unrealized_pnl", "REAL DEFAULT 0.0"),
+        # Per-account capital injections (May 2026)
+        ("portfolio_capital_injections", "account_id", "VARCHAR(20)"),
     ]
     from sqlalchemy import text
     with engine.connect() as conn:
@@ -92,6 +94,8 @@ def _migrate_columns(engine):
             ("portfolio_watchlist", "raw_score", "0.0"),
             # Intraday-loss halt support (May 2026)
             ("positions", "unrealized_pnl", "0.0"),
+            # Per-account capital injections (May 2026)
+            ("portfolio_capital_injections", "account_id", "'U17562704'"),
         ]
         for table, column, default_val in risk_backfills:
             try:

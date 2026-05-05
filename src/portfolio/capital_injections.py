@@ -151,7 +151,7 @@ def _get_fx_rate_to_usd(currency: str, date_str: str) -> float:
     return 1.0
 
 
-def sync_injections_from_ibkr() -> int:
+def sync_injections_from_ibkr(account_id: str | None = None) -> int:
     """
     Pull deposit history from IBKR Flex, convert to USD, upsert into DB.
     Returns count of new rows added.
@@ -159,6 +159,8 @@ def sync_injections_from_ibkr() -> int:
     from src.core.config import get_settings
 
     cfg = get_settings().portfolio
+    if account_id is None:
+        account_id = getattr(cfg, "ibkr_account", "") or None
     flex_token = getattr(cfg, "flex_token", None)
     flex_query_id = getattr(cfg, "flex_query_id", None)
 
@@ -191,23 +193,27 @@ def sync_injections_from_ibkr() -> int:
                 amount_usd=dep["amount_original"] * rate,
                 notes=dep["notes"],
                 source="ibkr_flex",
+                account_id=account_id,
             )
             db.add(inj)
             added += 1
 
         db.commit()
 
-    log.info("injections_synced", added=added)
+    log.info("injections_synced", added=added, account_id=account_id)
     return added
 
 
-def get_total_invested_usd() -> float:
+def get_total_invested_usd(account_id: str | None = None) -> float:
     """
     Total capital injected in USD. Uses injections table or falls back to seed.
     """
     try:
         with get_db() as db:
-            rows = db.query(PortfolioCapitalInjection).all()
+            q = db.query(PortfolioCapitalInjection)
+            if account_id is not None:
+                q = q.filter(PortfolioCapitalInjection.account_id == account_id)
+            rows = q.all()
             if rows:
                 total = sum(r.amount_usd for r in rows)
                 if total > 0:
@@ -215,7 +221,7 @@ def get_total_invested_usd() -> float:
     except Exception as e:
         log.warning("get_total_invested_usd_failed", error=str(e))
 
-    return SEED_USD
+    return 0.0 if account_id is not None else SEED_USD
 
 
 def fetch_accrued_interest_usd() -> float:

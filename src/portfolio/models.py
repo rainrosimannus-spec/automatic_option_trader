@@ -211,6 +211,7 @@ class PortfolioCapitalInjection(Base):
     amount_usd: Mapped[float] = mapped_column(Float, nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(String(20), default="manual")
+    account_id: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class PortfolioForecast(Base):

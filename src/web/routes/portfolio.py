@@ -40,7 +40,9 @@ def _build_portfolio_performance() -> dict:
     from src.portfolio.capital_injections import get_total_invested_usd
     from datetime import date as date_type
 
-    total_invested_usd = get_total_invested_usd()
+    from src.core.config import get_settings
+    cfg = get_settings()
+    total_invested_usd = get_total_invested_usd(account_id=cfg.portfolio.ibkr_account)
     today_str = str(date_type.today())
 
     with get_db() as db:
@@ -226,7 +228,7 @@ async def portfolio_page(request: Request):
     # Pre-fetch all FX rates in one API call
     currencies = list(set(h.currency for h in holdings if h.currency not in ("USD", None)))
     fx_rates = _get_fx_rates(currencies)
-    total_invested = get_total_invested_usd()
+    total_invested = get_total_invested_usd(account_id=cfg.portfolio.ibkr_account)
     total_value = sum(_to_usd(h.market_value or 0, h.currency, fx_rates) for h in holdings)
     ibkr_unrealized_pnl = None
     try:

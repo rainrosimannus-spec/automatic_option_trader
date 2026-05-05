@@ -13,6 +13,7 @@ from src.web.template_engine import templates
 from src.core.database import get_db
 from src.core.models import Position, Trade, PositionStatus, SystemState, TradeType, OrderStatus
 from src.broker.connection import is_connected
+from src.portfolio.capital_injections import get_total_invested_usd
 
 router = APIRouter()
 
@@ -88,7 +89,21 @@ def _get_performance_data() -> dict:
         actual_line = []
         target_line = []
 
-        first_nlv = snapshots[0].net_liquidation
+        # Capital-aware return: (NLV / total_invested - 1) × 100, anchored to 0%
+        # Mirrors _build_portfolio_performance() in routes/portfolio.py — when capital
+        # is injected, total_invested grows in lockstep, so the curve doesn't jump.
+        from src.core.config import get_settings
+        options_account = get_settings().ibkr.account
+        total_invested = get_total_invested_usd(account_id=options_account)
+        if total_invested <= 0:
+            total_invested = snapshots[0].net_liquidation or 1
+
+        # Compute raw returns, then anchor first point to 0%
+        raw_returns = []
+        for snap in snapshots:
+            nlv_return = (snap.net_liquidation / total_invested - 1) * 100
+            raw_returns.append(nlv_return)
+        anchor = raw_returns[0] if raw_returns else 0
 
         # Always start from inception date, even if first snapshot is later
         if snapshots[0].date > start_date_str:
@@ -96,12 +111,9 @@ def _get_performance_data() -> dict:
             actual_line.append(0)
             target_line.append(0)
 
-        for snap in snapshots:
+        for snap, raw in zip(snapshots, raw_returns):
             labels.append(snap.date)
-
-            # NLV-based return — the true portfolio performance
-            nlv_return = ((snap.net_liquidation - first_nlv) / first_nlv) * 100 if first_nlv > 0 else 0
-            actual_line.append(round(nlv_return, 2))
+            actual_line.append(round(raw - anchor, 2))
 
             snap_date = datetime.strptime(snap.date, "%Y-%m-%d")
             days = max((snap_date - start_date).days, 0)
