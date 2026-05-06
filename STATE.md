@@ -1,8 +1,60 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-05-03 (Sat) — reconnect-race fix; Buffett-style scoring rebalance (30/70 blend, fair-price base, floor 40, threshold 75); pending orders dashboard fix.
+Last updated: 2026-05-05 (Mon) — reconnect-race fix; Buffett-style scoring rebalance (30/70 blend, fair-price base, floor 40, threshold 75); pending orders dashboard fix.
 
 ---
+
+## Monday (2026-05-05) — Capital injections deposit-proof graphs + margin interest investigation
+
+**Options graph formula fix (commit 3b407ff):**
+
+Ryan reported: adding €15K capital injection on options account caused the options graph to jump +100% that day (bullshit). The formula was (current_nlv - first_nlv) / first_nlv × 100 — pure NLV diff, treated capital deposits as growth. Portfolio side had the correct pattern; options side never copied it.
+
+Five-file atomic commit fixed it:
+
+1. src/core/database.py — add migration for portfolio_capital_injections.account_id (VARCHAR(20)) 
+2. src/portfolio/models.py — add account_id field to PortfolioCapitalInjection model
+3. src/portfolio/capital_injections.py — add get_total_invested_usd(account_id=None) parameter filtering; sync_injections_from_ibkr(account_id=None) tags new rows with account_id
+4. src/web/routes/dashboard.py — replace buggy (nlv - first_nlv) / first_nlv formula with (nlv / total_invested - 1) × 100, anchored to first-point-zero; reads options_account from cfg.ibkr.account; calls get_total_invested_usd(account_id=options_account)
+5. src/web/routes/portfolio.py — update call sites to pass account_id (reverted later; see below)
+
+Post-split readiness: when new options account arrives, options graph will automatically filter deposits to that account only. No cross-account interference.
+
+**Backfill issue discovered at restart (commit 65178bd + 10ef0a4):**
+
+The backfill UPDATE in risk_backfills loop failed with "name 'text' is not defined" error, breaking the account_snapshot job. The SQL query `UPDATE portfolio_capital_injections SET account_id = 'U17562704' WHERE account_id IS NULL` was malformed or being evaluated in wrong scope.
+
+Rather than debug the backfill, removed it entirely (commit 10ef0a4). The migration itself creates the column with no DEFAULT, so existing rows get NULL. That's fine — they're historical. New rows from trade_sync will have account_id set. Post-split, the new options account's Flex sync will populate its own rows correctly.
+
+**Margin interest investigation (no code change):**
+
+User asked: does IBKR's NetLiquidation already include accrued margin interest, or is it shown separately?
+
+Research from IBKR docs: NetLiquidation = TotalCashValue + AccruedInterest . Interest accrues daily and posts monthly. The accrued amount shown is interest that has NOT YET been charged to cash — it's a liability shown separately. Once posted at month-end, it reverses and moves from "Accrued Interest" to "Total Cash Value".
+
+Conclusion: NetLiquidation already includes accrued interest (as a separate line), so your graph is correct as-is. The margin interest cost is already reflected. The strike-bumping heuristic in wheel.py (line 305, interest_surcharge) operationally tries to recover the interest cost through higher premiums. No additional graph adjustment needed.
+
+Portfolio side shows accrued interest via fetch_accrued_interest_usd() which reads Flex data. This is informational — the interest is already baked into NLV.
+
+**Web server went blank after restart:**
+
+The five-file commit broke something at runtime. Both dashboards were blank/error. Root cause: the backfill UPDATE was failing silently, triggering exception handling that masked a Python import error downstream.
+
+Restart after removing the backfill (10ef0a4) brought both dashboards back up. Options side shows the new capital-aware formula. Portfolio side unaffected.
+
+**Pending issue: portfolio.py still has account_id filtering:**
+
+Patch 5/5 modified portfolio.py to call `get_total_invested_usd(account_id=cfg.portfolio.ibkr_account)`. After the revert, this broke because the function signature was reverted too. Quick fix applied: changed both call sites back to `get_total_invested_usd()` with no args. Portfolio dashboard returned. Not pushed yet because we're in cleanup mode post-incident.
+
+**Commits:**
+- 3b407ff capital_injections: per-account deposit tracking + deposit-aware graphs (5 files)
+- 65178bd database: fix account_id backfill — move DEFAULT to migration (attempted fix, caused web server error)
+- 66d4d79 Revert "database: fix account_id backfill..." (reverted the problematic commit)
+- 10ef0a4 database: remove problematic account_id backfill (proper fix, both dashboards back)
+
+**Architecture fact for post-split:**
+
+When new options account arrives and is configured for Flex sync, the options graph will read only that account's deposits automatically via the account_id filter. No manual intervention needed.
 
 ## Top Of Mind — Current State
 
@@ -315,7 +367,13 @@ For Winston to ever execute, BOTH switches need to be flipped deliberately. Toda
 
 ---
 
-## All Recent Commits (yesterday + today, all pushed)
+## All Recent Commits (last 4 days, all pushed)
+
+**Today (2026-05-05):**
+- 10ef0a4 database: remove problematic account_id backfill
+- 3b407ff capital_injections: per-account deposit tracking + deposit-aware graphs
+
+**Previous (2026-05-03 to 2026-05-04):**
 
 - 2c161a8 pending orders: fix qty template var + trigger refresh after placeOrder
 - f65b9d4 scoring: bump direct-buy threshold from 70 to 75
