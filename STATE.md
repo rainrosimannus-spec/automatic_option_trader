@@ -514,3 +514,46 @@ Composite-write chain (after Wed metrics-order fix):
 - Don't assume a fix worked — restart and verify
 - Don't use complex heredoc for patches
 - Don't assume STATE.md write succeeded — verify with head/tail of the file
+
+## Thursday (2026-05-07) — earnings gate, LSE pence, JSON history export, two open items for son's clone
+
+**Four commits pushed, restart pending:**
+
+1. `974b538` — Added `EarningsCache` model (symbol PK, status, next_earnings_date, fetched_at) for 24h cache backing the earnings gate. Auto-creates via `Base.metadata.create_all` at next startup.
+2. `4cf7630` — Added `get_next_earnings_date(ib, contract)` in `src/portfolio/ibkr_fundamentals.py`. Mirrors existing `ReportsFinSummary` pattern — same lock acquisition (`get_portfolio_lock`), same XML parse, same exception shape. Calls `ib.reqFundamentalData(contract, "CalendarReport")`. Returns `EarningsResult(next_date, status)` with three explicit states: `found`, `none_scheduled`, `fetch_failed`. Tries `<EarningsAnnouncement Date="...">` first, falls back to `<EPSDate>` children if format differs.
+3. `58c6a55` — Replaced the always-False `has_upcoming_earnings()` stub in `src/broker/market_data.py` with real implementation. **Fail-CLOSED on missing data** (no IB / qualify failure / fetch failure / parse failure all return True = block). 24h DB cache; cached entries auto-invalidated when their date passes. Three states from `get_next_earnings_date` map to: `found` + within 3 days → block, `found` + outside window → allow, `none_scheduled` → allow, `fetch_failed` → block.
+4. `95f7d67` — LSE pence normalization at source in `src/portfolio/analyzer.py`. IBKR returns LSE prices in pence; analyzer was storing raw pence into `analysis.current_price`, `sma_*`, `52w_high/low`. Now normalized once where `closes`/`highs`/`lows` are extracted from bars, before any computation. All downstream metrics inherit correct units. AZN was the symptom (showed 13552 instead of 135.52); fix is universal for any GBP symbol. **Eight other GBP-handling sites** in the codebase exist (screener.py:35, put_seller.py:440, trade_sync.py:321, etc.) — surgical fix at this site, no centralization. Centralization deferred.
+
+**Architecture note: earnings gate is now fail-CLOSED, opposite to most gates.** Rationale: earnings is the single most predictable cause of overnight gap risk on a CSP. Better to skip a trade than mis-trade through earnings. VIX gate, MA gate, and most others remain fail-OPEN.
+
+**JSON history export built (not committed to repo, lives at /tmp/options_history_export.json + ~/options_history_export.json):**
+
+`tools/export_options_history.py` (drafted, run from /tmp): exports pre-merge Maggy-side data from your DB for handoff to son's clone. Window 2026-02-22 to 2026-04-28, FILLED trades only. Trades scoped by (symbol, strike, expiry) match against in-window positions because `Trade.position_id` was unpopulated on most historical rows (only 7 of 92 had FK link). Output: 37 positions, 92 trades, 127 events with running realized P&L, total $2,964.76. JSON file ~126 KB, ready to hand off to son.
+
+Import script (Script B) **not yet written** — waiting for son's schema diagnostic + existing-rows snapshot. He will run two read-only checks on his clone, paste output, then we write the import tailored to his actual schema (since his fork may have diverged).
+
+**Investigations that did not become commits:**
+
+- **Asia/EU put scan question (deferred to son's clone)**: This server's diagnostic shows scans run correctly, hit AEB and LSE, evaluate ASM/ASML/AZN — but every symbol gets blocked by `Position limit reached: 23/15`. Not a bug per se on this server, but the cross-strategy position-counting on the merged Maggy+Winston `positions` table makes the diagnostic meaningless for the real options-trader account. Son's clone (clean U23886415, separate `positions` table) is the only place this can be validated. Diagnostic prepared and ready to forward.
+- **NVDA realized P&L = 0 on son's dashboard (deferred to son's clone)**: His DB has only `BUY_PUT @ 0.0` (the IBKR expiry-recognition row), no SELL_PUT, because the original April 27 sale fell in your server's gateway session and never reached his `ib.fills()` after cutover. trade_sync's expiry handler queried the Trade ledger, summed to 0, wrote 0. Once written, no recovery path. Possible defensive fixes (defer-marking-EXPIRED-when-no-SELL, fallback to total_premium_collected, defer-position-synthesis-when-avg_cost-zero) discussed and rejected: would not have prevented son's specific case (no SELL row anywhere) and would risk corrupting your already-correct data. JSON history import is the right path for son. **No code change made on your server for this.**
+- **Watchlist staleness alarm**: Investigated. All 129 rows have `metrics_stale=0`, last update 2.9h ago — well within 4h cycle. The "looks stale" feeling is the new May 3 30/70 scoring blend producing stable scores dominated by slow-moving quality (70% weight), correctly per design. The 06:56 and 12:13 partial-failure metrics cycles were restart artifacts (manual restarts that day), not regressions of the asyncio race fix.
+- **Six historical positions with realized_pnl=0, total_premium_collected>0**: Surfaced during CRWV review. PANW/UBER/SHOP/TTD ASSIGNED puts on March 29 (predate April 25 commit 2e9708c stock-close fix), PANW stock CLOSED on April 25 (possibly correct at break-even), COIN covered_call EXPIRED on March 9 (pre-everything). ~$1,339 in unrecognized P&L on the dashboard. **Decision: do not fix on this server.** Merged-mode data is mixed pre-merge Maggy + post-merge Winston; manual UPDATEs now would risk correcting numbers that should be on the other side of the future re-split. Wait for new options account, separate the data, re-evaluate.
+- **CRWV id=152 stuck OPEN despite May 6 buy-back**: Identified but not pursued; same merged-mode-data caveat applies.
+
+**Two open items for son's clone (priority order for next session):**
+
+1. **Asia/EU put scan validation**: needs his diagnostic on U23886415 to confirm whether scans produce zero suggestions due to legitimate market mechanics (live-quote gate, position limits, etc.) or due to a real bug (universe filter mismatch, market label issue, gate firing only against US data).
+2. **NVDA P&L recovery**: needs JSON history import (Script B, to be written after his schema diagnostic). Will rewrite his NVDA Position row with realized_pnl=196 from your export.
+
+**Bundle for son contains:**
+- `~/options_history_export.json` (126 KB, the JSON export)
+- Schema-check + existing-rows diagnostic (drafted, ready to send)
+- Asia/EU scan diagnostic (drafted, ready to send)
+- Note that import script Script B is coming once he sends his schema output
+
+**Verification queue when restart happens:**
+- earnings_cache table auto-creates ✓ check `sqlite_master`
+- `has_upcoming_earnings('DDOG')` returns True via real CalendarReport ✓ check verification block
+- DDOG cache row populated with valid status ✓ check earnings_cache
+- AZN current_price normalizes to ~135.52 on next 4h metrics cycle (not immediately at restart)
+- Watchlist log entries should show clean cycles after restart, no asyncio race
