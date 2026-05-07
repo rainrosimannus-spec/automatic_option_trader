@@ -436,7 +436,7 @@ def _get_breakthrough_candidates() -> list[dict]:
                 "max_tokens": 8000,
                 "messages": [{"role": "user", "content": BREAKTHROUGH_PROMPT}],
             },
-            timeout=30,
+            timeout=120,  # new BREAKTHROUGH_PROMPT response is ~80s
         )
         resp.raise_for_status()
         data = resp.json()
