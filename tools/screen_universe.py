@@ -271,10 +271,37 @@ CANDIDATE_POOLS = {
     },
 }
 
-BREAKTHROUGH_PROMPT = """Generate a portfolio of up to 30 publicly listed companies for a 10-15 year
+def _build_breakthrough_prompt() -> str:
+    """
+    Build the breakthrough prompt with the current CANDIDATE_POOLS and
+    DIVIDEND_CANDIDATES injected as 'do not return' exclusion list.
+    Forces Claude to surface names OUTSIDE the hand-curated growth/dividend
+    pool, since those names will be scored separately and don't need a
+    breakthrough slot.
+    """
+    excluded = sorted(
+        {sym for pool in CANDIDATE_POOLS.values() for sym in pool["symbols"]}
+        | {sym for pool in DIVIDEND_CANDIDATES.values() for sym in pool["symbols"]}
+    )
+    excluded_str = ", ".join(excluded)
+    return BREAKTHROUGH_PROMPT_TEMPLATE.format(excluded_symbols=excluded_str)
+
+
+BREAKTHROUGH_PROMPT_TEMPLATE = """Generate a portfolio of up to 30 publicly listed companies for a 10-15 year
 holding period, optimized to produce 2-4 names that deliver >=10x returns.
 The remainder will likely underperform — that is acceptable. The goal is
 portfolio shape, not 30 winners.
+
+## ALREADY-COVERED UNIVERSE — DO NOT RETURN THESE NAMES:
+
+The following names are already in the growth/dividend tier of our
+portfolio universe. The breakthrough scan exists to find names OUTSIDE
+this set. Do not return any of these:
+
+{excluded_symbols}
+
+If you would have selected one of these names, surface a comparable but
+NOT-already-covered alternative instead.
 
 ## MEGATRENDS (assign each company to ONE primary):
 
@@ -306,8 +333,7 @@ portfolio shape, not 30 winners.
 ## REQUIRED DISTRIBUTION:
 
 **Megatrend spread:** Maximum 3 names per megatrend. Aim for at least 12 of
-the 17 megatrends represented. Concentrating in 4-5 themes defeats the
-purpose.
+the 17 megatrends represented.
 
 **Risk-tier barbell (this is non-negotiable — most 10x returns come from
 asymmetric bets, but most asymmetric bets fail; the portfolio must have
@@ -328,8 +354,7 @@ both):**
   to these examples — surface other genuinely under-priced theses.
   Accept that 4-5 of these 6 may go to zero. The point is asymmetric upside.
 
-- The remaining ~6 names span mid-conviction megatrends: energy transition,
-  AI/compute applications, genomics/biotech, critical minerals, space.
+- The remaining ~6 names span mid-conviction megatrends.
 
 This barbell is the central design: most allocation in trends already in
 motion (high hit-rate), but explicit allocation to speculative trends that
@@ -341,36 +366,65 @@ consensus is underweighting (where the actual 10-baggers historically hide).
 - 6 names: picks-and-shovels (selling tools/components to whoever wins)
 - 6 names: unloved sectors (boring industries with secular tailwinds —
   fertilizer, aggregates, midstream, industrial REITs, specialty chemicals)
-- 6 names: underdog geographies (non-US listings — see geographic spread)
+- 6 names: underdog geographies (non-USD-currency listings — see geographic
+  spread below). At least 4 names must end up in this category.
 
 **Size distribution:**
-- 12 names: $1B-$10B market cap (early — 10x to mid-cap is plausible)
-- 10 names: $10B-$50B market cap (mid — 10x requires becoming a giant)
-- 8 names: $50B-$500B market cap (late — 10x requires top-20-globally
-  outcomes, which are rare)
+- 12 names: $1B-$10B market cap
+- 10 names: $10B-$50B market cap
+- 8 names: $50B-$500B market cap
 
 **Geographic spread:**
-- 8+ non-US-listed names. Native listing strongly preferred over ADR for
-  the underdog-geography slot.
-- At least 5 from underweighted markets: Japan, Korea, India, Brazil, Israel,
-  Eastern Europe, Nordics. NOT just well-known European mega-caps.
-- US/ADR remain useful for many slots — do NOT default to US-listed
-  exclusively.
+- 5+ names with currency != USD (count by currency, not by exchange label).
+- For ANY US-listed name (NYSE/NASDAQ/AMEX/Pink), use exchange="SMART" and
+  currency="USD". This is our internal convention. Do NOT return NYSE or
+  NASDAQ as an exchange code.
+- Among the 5+ non-USD names, include at least 3 from underweighted
+  markets: Japan (TSEJ, JPY), Korea (KSE, KRW), India (NSE, INR), Brazil
+  (BVMF, BRL), Israel (TASE, ILS), Eastern Europe (WSE, BUX, etc.),
+  Nordics (HEX, OSE, SFB, CSE).
 
 ## EXCLUSIONS:
 
-**Hard exclusions:**
-- ETFs and funds
-- Companies whose 10x to current market cap implies >$2T at year 12
-  (math doesn't work — would exceed share of global GDP)
-- The top 20 companies globally by market cap as of today (consensus is
-  already pricing them; 10x is structurally improbable)
-- Recent reverse stock splits (last 18 months) — distress signal
+**HARD EXCLUSIONS — REJECT BEFORE RETURNING:**
 
-**Soft exclusions (avoid unless strong specific thesis):**
-- Single-product biotech companies whose entire value depends on one trial
-- Companies whose primary moat is access to a single key customer
-  (>50% revenue concentration)
+1. The top 20 companies globally by market cap as of today. Specifically
+   reject these names if considered: Apple (AAPL), Microsoft (MSFT),
+   Nvidia (NVDA), Alphabet (GOOGL), Amazon (AMZN), Meta (META), Tesla
+   (TSLA), Eli Lilly (LLY), Berkshire Hathaway (BRK.B), Saudi Aramco (2222),
+   JPMorgan (JPM), Walmart (WMT), Visa (V), Mastercard (MA), TSMC (TSM),
+   Broadcom (AVGO), ExxonMobil (XOM), Costco (COST), UnitedHealth (UNH),
+   Oracle (ORCL). These cannot 10x at current cap (would exceed share of
+   global GDP).
+
+2. ETFs and funds. Reject any ticker pattern matching ETF/FND/INDEX/FUND
+   in the name. Reject any company whose primary product is exposure to
+   a basket of stocks. Specific examples to avoid: Defiance Quantum ETF
+   (QTUM), iShares anything, Vanguard anything, ARK anything.
+
+3. Companies whose 10x to current market cap implies >$2T at year 12.
+
+4. Recent reverse stock splits (last 18 months).
+
+**SOFT EXCLUSIONS:**
+- Single-product biotech with binary trial dependence
+- Companies with >50% revenue from a single customer
+
+## EXISTENCE CHECK — VERIFY EACH TICKER:
+
+For each ticker you return, verify the symbol matches a real company —
+not a ticker conflation with a different company.
+
+Examples of conflations to avoid:
+- WCN is Waste Connections, NOT Welltower (Welltower is WELL).
+- DHER is Delivery Hero (Frankfurt FSE), NOT John Deere (Deere is DE).
+- BYD on NYSE is Boyd Gaming; the EV company BYD trades as 1211 on HKEX.
+- LIN is Linde; many "lin"/"li" prefixes are unrelated.
+
+When in doubt about a ticker, return fewer companies rather than wrong
+tickers. If a name comes to mind that you suspect is private (e.g., TAE
+Technologies for fusion, Stripe for payments), do NOT return it — only
+public listings with verifiable tickers.
 
 ## REQUIRED OUTPUT FIELDS PER COMPANY:
 
@@ -386,36 +440,35 @@ JSON array. Each entry must include:
 - megatrend: which of the 17 megatrends above (use the number + name).
   For speculative entries that don't fit the 17, use the literal name of
   the speculative trend.
-- risk_tier: one of {in_motion, mid_conviction, speculative}
-- category: one of {category_creator, incumbent_replacer, picks_and_shovels,
-  unloved_sector, underdog_geography}
-- size_bucket: one of {early, mid, late}
+- risk_tier: one of {{in_motion, mid_conviction, speculative}}
+- category: one of {{category_creator, incumbent_replacer, picks_and_shovels,
+  unloved_sector, underdog_geography}}
+- size_bucket: one of {{early, mid, late}}
 - thesis: 25-35 words. WHY this company is a 10-bagger candidate. State
   the specific mechanism (revenue growth, margin expansion, multiple
   re-rating, market share capture). Vague theses are rejected.
-- mortality_risk: ONE specific failure mode in 10-15 words. "Competitor
-  outperforms" is too vague. "Lithography breakthrough makes their etch
-  tool obsolete" is specific.
+- mortality_risk: ONE specific failure mode in 10-15 words.
 - year_4_check: 8-15 words describing what observable signal at year 4
-  would confirm the thesis is on track. (If this stock did nothing for
-  4 years and then 10x'd in years 5-12, what at year 4 tells me to hold?)
+  would confirm the thesis is on track.
 
 ## VALIDATION CHECKLIST (before returning):
 
 Verify all of:
+- No name from the ALREADY-COVERED list above
 - Each megatrend <=3 names
-- Risk-tier barbell: at least 18 in_motion, at least 6 speculative, the rest
-  mid_conviction
-- Category split: 6/6/6/6/6 (= 30) — adjust counts if returning fewer total
-- Size split roughly 12/10/8 — proportional if fewer total
-- 8+ non-US-listed
-- 5+ from underweighted markets per the list
-- No name in the global top-20 by market cap
-- Each thesis is specific (mentions a mechanism), not vague
-- Each mortality risk is specific (mentions a failure mode), not generic
-- Mortality risks are spread — no more than 5 names share the same primary
-  failure mode (e.g., "China-Taiwan war" should not be the mortality risk
-  for 10 names)
+- Risk-tier barbell: at least 18 in_motion, at least 6 speculative
+- Category split target 6/6/6/6/6 (adjust if returning fewer total)
+- Size split roughly 12/10/8 (proportional if fewer total)
+- 5+ names with currency != USD
+- 3+ from underweighted markets
+- No name in the global top 20 by market cap
+- No ETFs / funds / index products
+- Each ticker verified — do not return private companies or wrong-ticker
+  conflations
+- Each thesis is specific (mechanism stated), not vague
+- Each mortality risk is specific (failure mode stated), not generic
+- Mortality risks spread — no more than 5 names share the same primary
+  failure mode
 
 Return raw JSON array only. No markdown, no surrounding prose, no commentary."""
 
@@ -434,7 +487,7 @@ def _get_breakthrough_candidates() -> list[dict]:
             json={
                 "model": "claude-sonnet-4-20250514",
                 "max_tokens": 8000,
-                "messages": [{"role": "user", "content": BREAKTHROUGH_PROMPT}],
+                "messages": [{"role": "user", "content": _build_breakthrough_prompt()}],
             },
             timeout=120,  # new BREAKTHROUGH_PROMPT response is ~80s
         )
