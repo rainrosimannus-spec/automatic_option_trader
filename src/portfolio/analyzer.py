@@ -143,6 +143,17 @@ class PortfolioAnalyzer:
             lows = [b.low for b in bars]
             volumes = [b.volume for b in bars]
 
+            # IBKR returns LSE/GBP prices in pence — normalize to pounds at the
+            # source so all downstream metrics (SMAs, 52w high/low, share-count
+            # math in buyer.py) are in consistent units. Same pattern as the
+            # seven other GBP-handling sites in the codebase
+            # (screener.py:35, put_seller.py:440, trade_sync.py:321, etc.).
+            if currency == "GBP":
+                closes = [c / 100.0 for c in closes]
+                highs = [h / 100.0 for h in highs]
+                lows = [l / 100.0 for l in lows]
+                # volumes are share-counts, NOT prices — leave untouched
+
             # Current price
             analysis.current_price = closes[-1]
 
