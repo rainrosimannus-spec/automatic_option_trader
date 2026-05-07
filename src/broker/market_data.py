@@ -618,34 +618,100 @@ def has_upcoming_earnings(
     within_days: int = 3,
 ) -> bool:
     """
-    Check if a stock has earnings within N days.
-    Uses a lightweight approach: checks if near-term option IV is
-    abnormally elevated compared to the stock's recent IV.
-    Returns False (allow trading) if data is unavailable — fail open.
+    Block puts on stocks with imminent earnings.
+
+    FAIL-CLOSED: if we cannot determine the next earnings date for any
+    reason (no IB connection, qualify failure, fetch error, parse error),
+    return True (block the trade). Earnings is the most predictable cause
+    of overnight gap risk on a CSP — better to skip a trade than mis-trade
+    through earnings.
+
+    Backed by IBKR CalendarReport via src.portfolio.ibkr_fundamentals.
+    Result cached for 24h in the earnings_cache table; cached entries whose
+    date has passed are auto-invalidated and refetched.
     """
+    from datetime import date, datetime, timedelta
+    from src.core.database import get_db
+    from src.core.models import EarningsCache
+    from src.portfolio.ibkr_fundamentals import get_next_earnings_date
+
+    today = date.today()
+    cache_cutoff = datetime.utcnow() - timedelta(hours=24)
+
+    # 1. Cache check
+    with get_db() as db:
+        cached = db.query(EarningsCache).filter(EarningsCache.symbol == symbol).first()
+        if cached and cached.fetched_at >= cache_cutoff:
+            if cached.status == "found" and cached.next_earnings_date:
+                try:
+                    cached_date = date.fromisoformat(cached.next_earnings_date)
+                    if cached_date >= today:
+                        days_until = (cached_date - today).days
+                        is_imminent = days_until <= within_days
+                        log.debug("earnings_cache_hit",
+                                  symbol=symbol, date=cached.next_earnings_date,
+                                  days_until=days_until, blocked=is_imminent)
+                        return is_imminent
+                    # cached date is past — fall through to refetch
+                except ValueError:
+                    pass  # malformed cache — fall through to refetch
+            elif cached.status == "none_scheduled":
+                log.debug("earnings_cache_hit_none_scheduled", symbol=symbol)
+                return False
+            elif cached.status == "fetch_failed":
+                log.warning("earnings_cache_hit_fetch_failed_blocking",
+                            symbol=symbol)
+                return True  # FAIL-CLOSED
+
+    # 2. Live fetch
     try:
         ib = get_ib()
+        if ib is None or not ib.isConnected():
+            log.warning("earnings_check_no_ib_blocking", symbol=symbol)
+            return True  # FAIL-CLOSED
         contract = _make_stock_contract(symbol, exchange, currency)
         qualified = ib.qualifyContracts(contract)
         if not qualified:
-            return False
-
-        # Quick check: get option chains and look for very short-dated
-        # options with abnormal IV. This is lightweight — just chain metadata.
-        chains = ib.reqSecDefOptParams(contract.symbol, "", contract.secType, contract.conId)
-        if not chains:
-            return False  # no options = no earnings concern for us
-
-        # For now, return False (allow trading).
-        # The IV rank filter already naturally reduces entries around earnings
-        # because IV rank will be elevated, pushing us further OTM via dynamic delta.
-        # A full earnings calendar integration requires a data subscription
-        # that may not be available on all IBKR account types.
-        return False
-
+            log.warning("earnings_qualify_failed_blocking", symbol=symbol)
+            return True  # FAIL-CLOSED
     except Exception as e:
-        log.debug("earnings_check_failed", symbol=symbol, error=str(e))
+        log.warning("earnings_check_setup_failed_blocking",
+                    symbol=symbol, error=str(e))
+        return True  # FAIL-CLOSED
+
+    result = get_next_earnings_date(ib, contract)
+
+    # 3. Write cache
+    iso = result.next_date.isoformat() if result.next_date else None
+    with get_db() as db:
+        existing = db.query(EarningsCache).filter(EarningsCache.symbol == symbol).first()
+        if existing:
+            existing.next_earnings_date = iso
+            existing.status = result.status
+            existing.fetched_at = datetime.utcnow()
+        else:
+            db.add(EarningsCache(
+                symbol=symbol,
+                next_earnings_date=iso,
+                status=result.status,
+                fetched_at=datetime.utcnow(),
+            ))
+
+    # 4. Decide
+    if result.status == "found" and result.next_date:
+        days_until = (result.next_date - today).days
+        is_imminent = 0 <= days_until <= within_days
+        log.info("earnings_check",
+                 symbol=symbol, date=result.next_date.isoformat(),
+                 days_until=days_until, within_days=within_days,
+                 blocked=is_imminent)
+        return is_imminent
+    elif result.status == "none_scheduled":
+        log.debug("earnings_none_scheduled", symbol=symbol)
         return False
+    else:  # fetch_failed
+        log.warning("earnings_fetch_failed_blocking", symbol=symbol)
+        return True  # FAIL-CLOSED
 
 
 
