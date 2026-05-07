@@ -129,3 +129,13 @@ class AccountSnapshot(Base):
     portfolio_invested: Mapped[float] = mapped_column(Float, default=0.0)
     portfolio_market_value: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class EarningsCache(Base):
+    """24h cache of next-earnings-date per symbol from IBKR CalendarReport."""
+    __tablename__ = "earnings_cache"
+
+    symbol: Mapped[str] = mapped_column(String(15), primary_key=True)
+    next_earnings_date: Mapped[str | None] = mapped_column(String(10), nullable=True)  # ISO date, NULL if no earnings
+    status: Mapped[str] = mapped_column(String(20), default="found")  # 'found' / 'none_scheduled' / 'fetch_failed'
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
