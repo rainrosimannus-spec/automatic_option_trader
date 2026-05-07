@@ -271,22 +271,153 @@ CANDIDATE_POOLS = {
     },
 }
 
-BREAKTHROUGH_PROMPT = """Based on technological (genomics/biotech, AI/compute, nuclear fusion, space, 
-advanced materials, quantum computing), demographic, climate, and resource megatrends 
-(water scarcity, energy transition, critical minerals), which early-stage companies 
-with over $1B market valuation do you see having the fastest growing or most explosive 
-returns in a 10-15 year perspective?
+BREAKTHROUGH_PROMPT = """Generate a portfolio of up to 30 publicly listed companies for a 10-15 year
+holding period, optimized to produce 2-4 names that deliver >=10x returns.
+The remainder will likely underperform — that is acceptable. The goal is
+portfolio shape, not 30 winners.
 
-Return ONLY a JSON array of up to 30 companies. Each entry must have:
-- symbol: stock ticker symbol (US listed preferred, or ADR)
+## MEGATRENDS (assign each company to ONE primary):
+
+1. AI/compute applications (end-user AI products, AI-enabled SaaS)
+2. Compute infrastructure (chips, packaging, networking, data center power
+   and cooling, memory, specialty fab supplies)
+3. Genomics & medical biotech (gene editing, AI drug discovery, cell therapy)
+4. GLP-1 & preventive consumer health (metabolic, mental health, wearables,
+   continuous monitoring, age-related joint/vision/hearing)
+5. Aging populations & elder care (Japanese/European demographic crisis;
+   robotics for elder care, longevity therapeutics, senior housing)
+6. Energy transition (solar, wind, batteries, EVs, hydrogen)
+7. Energy bridge (gas, nuclear/SMR, uranium — what powers the transition)
+8. Climate adaptation (water, cooling, flood defense, drought-resistant
+   agriculture, irrigation, weather modeling)
+9. Critical minerals & advanced materials (lithium, rare earths, specialty
+   chemicals, battery thermal management)
+10. Defense & sovereignty (drones, sensors, shipbuilding, NATO/Korean/Japanese
+    defense primes, supply-chain reshoring components)
+11. Reindustrialization & automation (factory automation, electrical
+    infrastructure, industrial REITs, specialty industrial)
+12. Cybersecurity & digital sovereignty
+13. Quantum computing
+14. Space (launch, satellites, ground systems)
+15. Nuclear fusion (early-stage, accept high mortality)
+16. EM digital finance & fintech (unbanked populations coming online)
+17. Frontier biotech / synthetic biology in industrial applications
+
+## REQUIRED DISTRIBUTION:
+
+**Megatrend spread:** Maximum 3 names per megatrend. Aim for at least 12 of
+the 17 megatrends represented. Concentrating in 4-5 themes defeats the
+purpose.
+
+**Risk-tier barbell (this is non-negotiable — most 10x returns come from
+asymmetric bets, but most asymmetric bets fail; the portfolio must have
+both):**
+
+- AT LEAST 18 names in trends already in motion (consensus-or-near-consensus
+  is acceptable for these — they pay the bills and occasionally produce a
+  10x via execution): aging populations, energy bridge, defense/sovereignty,
+  climate adaptation, compute infrastructure, GLP-1/preventive health,
+  reindustrialization, cybersecurity, EM digital finance.
+
+- AT LEAST 6 names in genuinely speculative / contrarian megatrends where
+  consensus has NOT arrived: nuclear fusion, quantum computing, true
+  longevity therapeutics, room-temperature superconductors, sovereign-cloud
+  infrastructure, ammonia as marine fuel, deep geothermal at tokamak scale,
+  AGI agent platforms, deep-sea mineral extraction, frontier synthetic
+  biology, novel space economy applications. The 6 should NOT be limited
+  to these examples — surface other genuinely under-priced theses.
+  Accept that 4-5 of these 6 may go to zero. The point is asymmetric upside.
+
+- The remaining ~6 names span mid-conviction megatrends: energy transition,
+  AI/compute applications, genomics/biotech, critical minerals, space.
+
+This barbell is the central design: most allocation in trends already in
+motion (high hit-rate), but explicit allocation to speculative trends that
+consensus is underweighting (where the actual 10-baggers historically hide).
+
+**Category shape (assign each company to ONE):**
+- 6 names: category-creators (companies building markets that don't yet exist)
+- 6 names: incumbent-replacers (taking share in $50B+ existing TAMs)
+- 6 names: picks-and-shovels (selling tools/components to whoever wins)
+- 6 names: unloved sectors (boring industries with secular tailwinds —
+  fertilizer, aggregates, midstream, industrial REITs, specialty chemicals)
+- 6 names: underdog geographies (non-US listings — see geographic spread)
+
+**Size distribution:**
+- 12 names: $1B-$10B market cap (early — 10x to mid-cap is plausible)
+- 10 names: $10B-$50B market cap (mid — 10x requires becoming a giant)
+- 8 names: $50B-$500B market cap (late — 10x requires top-20-globally
+  outcomes, which are rare)
+
+**Geographic spread:**
+- 8+ non-US-listed names. Native listing strongly preferred over ADR for
+  the underdog-geography slot.
+- At least 5 from underweighted markets: Japan, Korea, India, Brazil, Israel,
+  Eastern Europe, Nordics. NOT just well-known European mega-caps.
+- US/ADR remain useful for many slots — do NOT default to US-listed
+  exclusively.
+
+## EXCLUSIONS:
+
+**Hard exclusions:**
+- ETFs and funds
+- Companies whose 10x to current market cap implies >$2T at year 12
+  (math doesn't work — would exceed share of global GDP)
+- The top 20 companies globally by market cap as of today (consensus is
+  already pricing them; 10x is structurally improbable)
+- Recent reverse stock splits (last 18 months) — distress signal
+
+**Soft exclusions (avoid unless strong specific thesis):**
+- Single-product biotech companies whose entire value depends on one trial
+- Companies whose primary moat is access to a single key customer
+  (>50% revenue concentration)
+
+## REQUIRED OUTPUT FIELDS PER COMPANY:
+
+JSON array. Each entry must include:
+
+- symbol: ticker
 - name: company name
-- exchange: SMART for US, or specific exchange code
-- currency: USD for US/ADR
-- sector: primary sector
-- megatrend: which megatrend drives this (1-3 words)
-- rationale: why explosive potential (1 sentence max)
+- exchange: SMART for US, native exchange code for non-US (LSE, AEB,
+  BVME, TSEJ, KSE, NSE, BVMF, TASE, BIT, etc.)
+- currency: USD/EUR/GBP/JPY/KRW/INR/BRL/ILS as appropriate
+- market_cap_usd: approximate, in billions, current
+- sector: GICS-style primary sector
+- megatrend: which of the 17 megatrends above (use the number + name).
+  For speculative entries that don't fit the 17, use the literal name of
+  the speculative trend.
+- risk_tier: one of {in_motion, mid_conviction, speculative}
+- category: one of {category_creator, incumbent_replacer, picks_and_shovels,
+  unloved_sector, underdog_geography}
+- size_bucket: one of {early, mid, late}
+- thesis: 25-35 words. WHY this company is a 10-bagger candidate. State
+  the specific mechanism (revenue growth, margin expansion, multiple
+  re-rating, market share capture). Vague theses are rejected.
+- mortality_risk: ONE specific failure mode in 10-15 words. "Competitor
+  outperforms" is too vague. "Lithography breakthrough makes their etch
+  tool obsolete" is specific.
+- year_4_check: 8-15 words describing what observable signal at year 4
+  would confirm the thesis is on track. (If this stock did nothing for
+  4 years and then 10x'd in years 5-12, what at year 4 tells me to hold?)
 
-Keep rationale under 8 words. Return raw JSON only, no markdown, no explanation."""
+## VALIDATION CHECKLIST (before returning):
+
+Verify all of:
+- Each megatrend <=3 names
+- Risk-tier barbell: at least 18 in_motion, at least 6 speculative, the rest
+  mid_conviction
+- Category split: 6/6/6/6/6 (= 30) — adjust counts if returning fewer total
+- Size split roughly 12/10/8 — proportional if fewer total
+- 8+ non-US-listed
+- 5+ from underweighted markets per the list
+- No name in the global top-20 by market cap
+- Each thesis is specific (mentions a mechanism), not vague
+- Each mortality risk is specific (mentions a failure mode), not generic
+- Mortality risks are spread — no more than 5 names share the same primary
+  failure mode (e.g., "China-Taiwan war" should not be the mortality risk
+  for 10 names)
+
+Return raw JSON array only. No markdown, no surrounding prose, no commentary."""
 
 
 def _get_breakthrough_candidates() -> list[dict]:
@@ -302,7 +433,7 @@ def _get_breakthrough_candidates() -> list[dict]:
             },
             json={
                 "model": "claude-sonnet-4-20250514",
-                "max_tokens": 4000,
+                "max_tokens": 8000,
                 "messages": [{"role": "user", "content": BREAKTHROUGH_PROMPT}],
             },
             timeout=30,
