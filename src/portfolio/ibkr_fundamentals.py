@@ -219,3 +219,101 @@ def get_ibkr_fundamentals(ib, contract, current_price: Optional[float] = None) -
                     result["revenue_avg_pct"] = avg_cagr
 
     return result
+
+# ─────────────────────────────────────────────────────────────────────
+# Earnings calendar — uses IBKR CalendarReport (same fundamentals subscription
+# as ReportsFinSummary). Pure fetch+parse here; caching done by caller in
+# src/broker/market_data.py:has_upcoming_earnings().
+# ─────────────────────────────────────────────────────────────────────
+
+from typing import NamedTuple
+from datetime import date as _date
+
+
+class EarningsResult(NamedTuple):
+    """Three-state result from earnings lookup.
+
+    status='found'           -> next_date is the upcoming earnings date
+    status='none_scheduled'  -> CalendarReport parsed cleanly but no
+                                EarningsAnnouncement node (e.g. ETF, ADR
+                                without coverage). Caller should treat as
+                                'no earnings imminent' = allow trade.
+    status='fetch_failed'    -> network error, parse error, or no data.
+                                Caller should fail-CLOSED = block trade.
+    """
+    next_date: _date | None
+    status: str
+
+
+def get_next_earnings_date(ib, contract) -> EarningsResult:
+    """
+    Fetch next earnings date from IBKR CalendarReport.
+
+    Args:
+        ib: connected ib_insync IB instance
+        contract: qualified Stock contract
+
+    Returns:
+        EarningsResult with three explicit states (see class docstring).
+
+    Note: uses get_portfolio_lock() to serialize against other Winston/Maggy
+    IBKR calls during merge period. Same pattern as get_ibkr_fundamentals.
+    """
+    try:
+        from src.portfolio.connection import get_portfolio_lock
+        with get_portfolio_lock():
+            xml = ib.reqFundamentalData(contract, "CalendarReport")
+    except Exception as e:
+        log.warning("ibkr_calendarreport_fetch_failed",
+                    symbol=getattr(contract, "symbol", "?"), error=str(e))
+        return EarningsResult(next_date=None, status="fetch_failed")
+
+    if not xml:
+        return EarningsResult(next_date=None, status="fetch_failed")
+
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError as e:
+        log.warning("ibkr_calendarreport_parse_failed",
+                    symbol=getattr(contract, "symbol", "?"), error=str(e))
+        return EarningsResult(next_date=None, status="fetch_failed")
+
+    # CalendarReport structure (per IBKR docs):
+    #   <Calendar><CalendarItems><EarningsAnnouncement Date="2026-05-08" .../>
+    # Some payloads use <EPSDates><EPSDate>...</EPSDate></EPSDates> instead.
+    # Try both.
+    raw = None
+    node = root.find(".//EarningsAnnouncement")
+    if node is not None:
+        raw = node.get("Date") or (node.text or "").strip() or None
+
+    if raw is None:
+        # Fallback: <EPSDate> children
+        eps_dates = root.findall(".//EPSDate")
+        if eps_dates:
+            # Find the earliest future date
+            today = _date.today()
+            future = []
+            for n in eps_dates:
+                txt = (n.text or "").strip()[:10]
+                try:
+                    d = _date.fromisoformat(txt)
+                    if d >= today:
+                        future.append(d)
+                except (ValueError, TypeError):
+                    continue
+            if future:
+                return EarningsResult(next_date=min(future), status="found")
+
+    if raw is None:
+        # Report parsed cleanly but no earnings node found
+        return EarningsResult(next_date=None, status="none_scheduled")
+
+    try:
+        earnings_date = _date.fromisoformat(raw[:10])
+        return EarningsResult(next_date=earnings_date, status="found")
+    except (ValueError, TypeError) as e:
+        log.warning("ibkr_calendarreport_date_parse_failed",
+                    symbol=getattr(contract, "symbol", "?"), raw=raw, error=str(e))
+        return EarningsResult(next_date=None, status="fetch_failed")
+
