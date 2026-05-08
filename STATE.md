@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-05-05 (Mon) — reconnect-race fix; Buffett-style scoring rebalance (30/70 blend, fair-price base, floor 40, threshold 75); pending orders dashboard fix.
+Last updated: 2026-05-08 (Fri) — Forward-growth scoring landed + augmentation pipeline complete (22 commits today); son's clone import script delivered.
 
 ---
 
@@ -469,23 +469,21 @@ Composite-write chain (after Wed metrics-order fix):
 
 ## Open Items / TODO Next Session
 
-### To verify after restart
-- Stale flag populates correctly (first run: most flagged; subsequent runs: only failures)
-- Logger writes structlog events to trader.log
-- Breakthrough filter activates on next screener run (XXII / micro-caps drop out)
-- Dedup eliminates flip-flop reclassifications
+### Augmentation feature — next steps
+- **Live test (highest priority)** — flip `AUGMENTATION_ENABLED = True` in `tools/screen_universe.py`, manually trigger one screener run via dashboard "Run now". Cost ~$0.40 Anthropic API + ~50 FMP calls. First time the prompt exercises real data. Watch for: prompt issues, JSON parse edge cases, scoring-time exceptions on proposed symbols. Verify `augmentation_audit` table fills with rows; verify `discovered_pool.yaml` gets accepted symbols.
+- **Optional Commit N** — `--dry-run-augmentation` flag: invoke Claude proposals + scoring without persistence/audit writes. Useful for prompt iteration without polluting audit/yaml. Nice-to-have, not required.
 
-### Wait-and-see
-- BZG2 / MC composite 32 with Q=0, G=0 — stale data, watch if next cycle resolves
-- SHEL IBKR Error 430 — some LSE stocks uncovered by IBKR; consider US ADR fallback
-- MA / V signal_type cosmetic stale — shows 52w_low despite raw_score=0
-- Dashboard SMA display vs tier-specific discount — cosmetic inconsistency
-- 9 dividend holdings still NULL on dividend_total_return_score — Phase 2b populates on next screener run
+### Carry-over from forward-growth work
+- **Commit E** — flip `portfolio_score` formula to use `forward_growth_score`. Currently the field is computed and stored but `portfolio_score` still uses old `40g + 25v + 35q`. Deliberate observation period — accumulate runs to compare old vs new ranking before flipping. Earliest sensible: after 2-3 more screener runs.
+
+### Other
+- **Breakthrough prompt v4 — geographic spread fix.** Today's screener returned only 1 non-USD listing (Sony 6758) vs target 5+. Need stricter geographic distribution constraint in the prompt.
+- **Watchlist dividend NULL backfill** — 9 dividend holdings still NULL on `dividend_total_return_score`. Phase 2b populates on next screener run; verify after augmentation live test.
 
 ### Lower priority
 - Scorer fail-closed behavior — screener side largely self-corrects, metrics side now via staleness. Defer.
 - 3-consecutive-failure exchange skip — dormant, leave alone unless it bites again.
-- Dashboard log redundancy from logger fix — cosmetic, can clean later.
+- GBP centralization — 8+ separate sites in codebase divide by 100 for GBP. Surgical fix landed at analyzer.py on May 7; centralization deferred.
 
 ---
 
@@ -557,3 +555,81 @@ Import script (Script B) **not yet written** — waiting for son's schema diagno
 - DDOG cache row populated with valid status ✓ check earnings_cache
 - AZN current_price normalizes to ~135.52 on next 4h metrics cycle (not immediately at restart)
 - Watchlist log entries should show clean cycles after restart, no asyncio race
+
+## Friday (2026-05-08) — Forward-growth scoring landed + augmentation pipeline complete (22 commits)
+
+**Big day. Two major themes:** built the 5-component forward-growth scoring system (Path A refactor) and the full Claude-driven augmentation pipeline. Plus son's clone JSON import script delivered.
+
+### Forward-growth scoring (commits f55d8b2 → 940507a, ed76fad)
+
+Replaces the old `40g + 25v + 35q` portfolio score formula with a Buffett-style composite weighted across 5 sub-components: revenue durability (25%), compounding quality (25%), operating leverage (20%), innovation investment (15%), capital efficiency (15%). **Hard cap at 30** if a name has 3+ years negative net income AND 3+ years negative FCF over a 5-year window.
+
+Implementation in 4 commits (Path A):
+- `d5dedf6` — Commit A: extended `_get_fmp_fundamentals()` to extract 5-year history fields (operating_margin, R&D intensity, share dilution, ROIC sustained, goodwill stability, FCF trend, neg-NI/neg-FCF year counts). NO new API calls — all derived from existing income/balance/key-metrics responses.
+- `f285358` — Commit B: 5 sub-scorer functions with explicit-value sector lookup for 23 distinct sectors observed in watchlist. Score breakdowns documented in code comments.
+- `449402a` — Commit C: `_score_forward_growth(fmp, sector)` aggregator. Smoke test: NVDA=80.5, MSFT=77.5, AAPL=68.0, JNJ=59.5, XOM=33.0.
+- `940507a` — Commit D: wired `forward_growth_score` into screener flow. Stored on StockScore. **Does NOT yet replace `portfolio_score` formula** — that's Commit E (deferred to observation period).
+
+Plus `699900b` (Commit O) — preserve all 5 sub-scores on StockScore so the augmentation prompt can show them per-name. Without this, augmentation would prompt with all-zeros for sub-scores.
+
+**Screener run after these landed (May 8, dashboard "Run now"):** 133 rows populated, range 11.8–89.2, avg 52.5. Top-20 by forward_growth_score: MA 89.2, ASML 88.8 (+21 vs old), LLY 86.6, META 86.5, KLAC 85.7, ANET 84.5, TSM 83.5, GOOG 83.0, NFLX 80.7, MSFT 80.5, NVDA 80.5 (-10.5 vs old, dilution + cyclical risk tempers), ISRG 80.5, RACE 79.8, ABNB 79.5, NVO 79.0, BKNG 76.2, V 75.9, CDNS 75.3, FSLR 73.0. Picks-and-shovels representation jumped from zero to ~10 names.
+
+### Augmentation pipeline — full feature complete (commits 6a9ba4a → 49b6785)
+
+Goal: monthly screener invokes Claude to propose 5–10 high-conviction names beyond the hand-coded universe, scores them, accepts those that beat the rank-60/rank-15 cutoff. **All gated behind `AUGMENTATION_ENABLED = False` — default OFF, no API calls until manually flipped.**
+
+Foundation:
+- `6a9ba4a` (F) — `tools/discovered_pool.yaml` empty file with growth+dividend tiers + `_load_discovered_pool()` loader
+- `6029b4f` (G) — `tools/evicted_names.yaml` empty + `_load_evicted_names()` loader
+- `5ed25f0` (H) — `_get_growth_universe()` / `_get_dividend_universe()` helpers; routed 5 universe iteration sites through merged pools (CANDIDATE_POOLS + discovered − evicted). Verified equivalent to original behavior with empty yamls.
+- `ed76fad` (I) — `AugmentationAudit` SQLAlchemy model added to `src/portfolio/models.py`. Eleven columns: id, run_date, tier, proposed_symbol, proposed_score, cutoff_score, displaced_symbol, displaced_score, accepted, reason, notes. Table auto-creates on next restart via `Base.metadata.create_all` (verified — table exists on this server).
+
+Logic:
+- `081ad9c` (J+K) — `_get_growth_swaps()` + `_get_dividend_swaps()` + shared `_call_claude_for_swaps()` helper + `_format_score_table_for_prompt()` + `_AUGMENTATION_RUBRIC_SUMMARY` constant + `_build_growth_augmentation_prompt()` / `_build_dividend_augmentation_prompt()`. Direct text + JSON parse, max_tokens=4000, includes top-60 + ranks 61–120 + rubric + exclusion list.
+
+Orchestration:
+- `c79d431` (L) — `_process_augmentation_proposal()` helper + `AUGMENTATION_ENABLED` flag (False) + PHASE 2.5 block in `screen_all`. PHASE 2.5 runs between PHASE 2 (breakthrough scan) and PHASE 3 (portfolio universe build). Splits non-breakthrough scores into growth/dividend pools using the same yield-routing rule as PHASE 3, identifies top_60/top_15 + cutoff, calls Claude, processes each proposal (score round-trip via `_score_stock`, accept if score > cutoff with margin=0, audit-log every proposal), opens SQLAlchemy session via `get_session_factory()`. Best-effort: any exception inside PHASE 2.5 is caught, logged, augmentation skipped, screener continues normally.
+
+Persistence + hygiene:
+- `2df64cd` (L+) — `_persist_augmentation_acceptances()` writes accepted symbols to `discovered_pool.yaml` atomically (.tmp + rename). Schema per entry: `symbol, exchange, currency, region, score, added_date, thesis`. Buffer (`pending_yaml_additions`) populated during proposal processing, written once after `audit_session.commit()`. Without this, accepted names would only exist in this run's `all_scores` and disappear next month.
+- `49b6785` (M) — `_evict_overflow_from_discovered_pool()`. When pool > cap (180 growth / 45 dividend), sort by score desc, slice to `[:cap]`, log evicted symbols. Atomic write. Eviction is list-size hygiene only — not a quality verdict.
+
+**Architecture decisions made today:**
+- Two pools (discovered_growth, discovered_dividend), separate, no yield-routing for discovered names.
+- Every symbol evictable — hand-coded names included, no editorial floor.
+- Eviction triggers only when pool > cap; no K-parameter, no consecutive-runs logic.
+- General augmentation (not slot-specific) — Claude proposes 5–10 high-conviction names, not "replace these specific laggards."
+- Margin = +0 (any improvement over rank-60 cutoff accepts). Easy to tune to +3 later if churn is excessive.
+- Eviction file at `tools/evicted_names.yaml` (NOT auto-edit source code).
+- discovered_pool.yaml lives in source tree (committed).
+- Strict failure handling on FMP miss (no retry). Audit row written with reason="scoring_failed".
+- Audit trail = SQLite table `augmentation_audit`.
+
+### Other commits today
+- `f55d8b2` — Anthropic API timeout 30s → 120s in `tools/screen_universe.py:439` (breakthrough prompt v3 takes ~80s).
+- `a23f611` — Breakthrough prompt v3: dynamic CANDIDATE_POOLS exclusion, geographic fix, top-20 hard exclusion, ETF/Fund pattern, existence check.
+- `f065259` — Added BAP (Credicorp Peru) and CHT (Chunghwa Telecom Taiwan) to `ADR_DIV` section of DIVIDEND_CANDIDATES.
+
+### Son's clone — solved
+
+Built standalone Script B for importing pre-merge history into son's clone DB. Single-file Python (~150 KB with embedded JSON, no separate data file needed). Implements: position match by (symbol, strike, expiry, opened_at); hard-skip when both his DB and export show OPEN (his side wins); update close+P&L when his is OPEN and export is CLOSED/EXPIRED/ASSIGNED; insert when no match; trade dedup by ibkr_exec_id then natural key; position_id remapping via dict; default dry-run (must pass `--apply` to write); atomic transaction; clean summary report.
+
+File at `/tmp/import_options_history_standalone.py` on this server. Sent to son via email attachment. **Resolved.**
+
+### Pending for next session
+
+**Augmentation:**
+1. **Live test** — flip `AUGMENTATION_ENABLED = True`, manually trigger one screener run. Cost: ~$0.40 Anthropic API + ~50 FMP calls. First time the prompt will be exercised against real data — expect potential prompt issues, JSON parse edge cases, scoring-time exceptions for proposed symbols.
+2. **Optional Commit N** — `--dry-run-augmentation` flag for sanity-checking prompts without persistence. Nice-to-have.
+
+**Other carry-over:**
+- **Commit E** — flip `portfolio_score` formula to actually USE `forward_growth_score`. Currently the field is computed and stored but `portfolio_score` still uses old `40g + 25v + 35q`. Deliberate observation period — accumulate runs to compare old vs new ranking before flipping. Earliest sensible: after 2-3 more screener runs.
+- **Breakthrough prompt v4** — geographic spread fix. Today's screener returned only 1 non-USD listing (Sony 6758) vs target 5+.
+
+### Critical working facts (unchanged from May 7, restated)
+- All code changes via copy-paste terminal commands; Ryan is non-programmer.
+- Strict fix→verify→commit per RULES.md.
+- View files before editing; write patches via Python script in /tmp; ast.parse before write; idempotency guards.
+- `cd ~/automatic_option_trader` before `.venv/bin/python3`.
+- `_score_stock` is the screener's per-symbol scoring entrypoint; called both by regular screening and by augmentation acceptance.
+- Augmentation audit columns confirmed: id, run_date, tier, proposed_symbol, proposed_score, cutoff_score, displaced_symbol, displaced_score, accepted, reason, notes (all 11).
