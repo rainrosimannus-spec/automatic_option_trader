@@ -66,6 +66,30 @@ def _load_discovered_pool() -> dict:
         return {"growth": [], "dividend": []}
 
 
+def _load_evicted_names() -> set:
+    """
+    Load tools/evicted_names.yaml — symbols removed from active universe.
+
+    Returns a set of symbol strings (just the tickers, no per-entry metadata).
+    Set form is convenient for fast membership testing during universe build.
+
+    Returns empty set if file missing or malformed. Non-fatal failure mode —
+    screener continues with no evictions applied.
+    """
+    import os
+    yaml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "evicted_names.yaml")
+    if not os.path.exists(yaml_path):
+        return set()
+    try:
+        with open(yaml_path) as f:
+            data = yaml.safe_load(f) or {}
+        entries = data.get("evicted") or []
+        return {entry["symbol"] for entry in entries if "symbol" in entry}
+    except Exception:
+        return set()
+
+
 DIVIDEND_CANDIDATES = {
     "US_DIV": {
         "exchange": "SMART", "currency": "USD",

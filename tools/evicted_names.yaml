@@ -1,0 +1,22 @@
+# Evicted names — symbols removed from active universe.
+#
+# Auto-managed by tools/screen_universe.py augmentation pipeline.
+# Pool size hygiene: when CANDIDATE_POOLS + discovered_pool exceeds
+# 180 (growth) or 45 (dividend), the lowest-ranked names get evicted
+# and recorded here.
+#
+# Hand-coded names ARE evictable. No editorial floor — pure score-driven.
+#
+# To re-add an evicted name: remove its entry from this file, OR add it
+# back to CANDIDATE_POOLS (the screener will skip the evict-list check
+# for re-added names on next run).
+#
+# Schema per entry:
+#   symbol: ticker
+#   region: matches CANDIDATE_POOLS region (US, JP, KR, etc.) or
+#           DIVIDEND_CANDIDATES region (US_DIV, NO_DIV, etc.)
+#   evicted_at: YYYY-MM-DD
+#   reason: "pool_size_cap" | "score_floor" | "manual"
+#   notes: optional string
+
+evicted: []
