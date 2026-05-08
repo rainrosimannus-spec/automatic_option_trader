@@ -1060,6 +1060,361 @@ def _score_dividend_total_return(fmp: dict, growth_score: float) -> float:
     total = cagr_score + yield_score + sustainability + price_appreciation_score
     return round(min(100, total), 1)
 
+
+# ─────────────────────────────────────────────────────────────────────────
+# FORWARD-GROWTH SCORERS (Commit B — building blocks, no callers yet)
+# ─────────────────────────────────────────────────────────────────────────
+# Five components that triangulate 10-15y growth potential, designed to be
+# combined into a single forward_growth_score (Commit C). Each returns
+# 0-100. Missing data defaults to neutral 50 (per dividend-tier convention).
+
+def _rd_threshold_for_sector(sector: str) -> float:
+    """
+    Return the R&D-intensity threshold (% of revenue) that represents
+    "exceptional" investment for the given sector. Used by
+    _score_innovation_investment for sector-calibrated scoring.
+
+    Returns -1 for sectors where R&D is not meaningful (banks, insurance);
+    caller should treat -1 as "skip this component, return neutral 50".
+
+    Mapping is against the 23 distinct sector strings observed in
+    portfolio_watchlist as of 2026-05-08 (via diagnostic). Includes both
+    Bloomberg-style labels ("Consumer, Cyclical") and hand-coded labels
+    from CANDIDATE_POOLS / breakthrough returns ("Cloud Data", "Super App").
+    Falls through to substring matching for unmapped values.
+    """
+    if not sector:
+        return 8.0
+
+    # ── Exact-match the 23 known sectors first ──
+    EXACT = {
+        # Software-tier (18%)
+        "Cloud Data": 18.0,
+        "Cybersecurity": 18.0,
+        "E-commerce/Fintech": 18.0,
+        "E-commerce/Gaming": 18.0,
+        "Enterprise Software": 18.0,
+        "Super App": 18.0,
+        # Biotech-tier (25%)
+        "Genomics": 25.0,
+        # Semiconductor-tier (12%)
+        "Semiconductors": 12.0,
+        "Semiconductor Equipment": 12.0,
+        "EV/Energy/AI": 12.0,
+        "Technology": 12.0,  # generic, between hardware & software
+        # Servers/Infrastructure — adjacent to semis (10%)
+        "Servers/Infrastructure": 10.0,
+        # Healthcare equipment (8%)
+        "Healthcare": 8.0,
+        # Industrials (6%)
+        "Industrial": 6.0,
+        # Telecom/Media (4%)
+        "Communications": 4.0,
+        # Consumer (3%)
+        "Consumer, Cyclical": 3.0,
+        "Consumer, Non-cyclical": 3.0,
+        # Energy/Materials/Utilities (2%)
+        "Energy": 2.0,
+        "Basic Materials": 2.0,
+        "Nuclear/Clean Energy": 2.0,
+        "Utilities": 2.0,
+        # Financial — skip
+        "Financial": -1.0,
+    }
+    if sector in EXACT:
+        return EXACT[sector]
+
+    # ── Fallback: loose substring match for unknown labels ──
+    s = sector.lower()
+    if any(k in s for k in ("bank", "insurance", "financial")):
+        return -1.0
+    if any(k in s for k in ("biotech", "pharma", "drug", "life science")):
+        return 25.0
+    if any(k in s for k in ("software", "internet", "saas")):
+        return 18.0
+    if any(k in s for k in ("semiconductor", "chip")):
+        return 12.0
+    if any(k in s for k in ("medical device", "health")):
+        return 8.0
+    if any(k in s for k in ("aerospace", "defense", "industrial", "machinery", "automotive")):
+        return 6.0
+    if any(k in s for k in ("consumer", "retail", "food", "beverage", "apparel")):
+        return 3.0
+    if any(k in s for k in ("energy", "oil", "gas", "mining", "material", "chemical", "utilit", "metal")):
+        return 2.0
+    if any(k in s for k in ("telecom", "media", "communication")):
+        return 4.0
+    if "tech" in s:
+        return 12.0  # generic tech catch-all
+    return 8.0
+
+
+def _score_revenue_durability(fmp: dict) -> float:
+    """
+    Score 0-100 for revenue durability — the foundation of long-term
+    compounding. Three components:
+      - 5yr revenue CAGR raw level (60 pts)
+      - YoY consistency vs 5yr average (25 pts)
+      - Floor for no-growth structural fail (caps at 30 if revenue is flat/declining)
+    """
+    avg = fmp.get("revenue_avg_pct")
+    yoy = fmp.get("revenue_yoy_pct")
+    if avg is None or yoy is None:
+        return 50.0  # neutral when data is missing
+
+    # ── Component A: 5yr CAGR raw (60 pts) ──
+    if avg < 0:
+        cagr_score = 0
+    elif avg < 5:
+        cagr_score = 15
+    elif avg < 10:
+        cagr_score = 30
+    elif avg < 15:
+        cagr_score = 45
+    elif avg < 20:
+        cagr_score = 55
+    elif avg < 30:
+        cagr_score = 60   # sweet spot
+    else:
+        cagr_score = 50   # >30% might be unsustainable acceleration
+
+    # ── Component B: YoY consistency vs avg (25 pts) ──
+    if avg == 0:
+        consistency_score = 12  # neutral, can't compute ratio
+    else:
+        # Distance from YoY to 5yr avg, normalized
+        deviation_pct = abs(yoy - avg) / max(abs(avg), 1.0) * 100
+        if deviation_pct <= 20:
+            consistency_score = 25
+        elif deviation_pct <= 50:
+            consistency_score = 25 - (deviation_pct - 20) * (20.0 / 30.0)
+        else:
+            consistency_score = 5
+
+    # ── Component C: 15 pts for positive growth signal (catches simple "growing" baseline) ──
+    if avg > 0 and yoy > 0:
+        positive_score = 15
+    elif avg > 0 or yoy > 0:
+        positive_score = 8
+    else:
+        positive_score = 0
+
+    total = cagr_score + consistency_score + positive_score
+
+    # Structural floor: if avg revenue growth is non-positive, cap at 30
+    if avg <= 0:
+        total = min(total, 30)
+
+    return round(min(100, max(0, total)), 1)
+
+
+def _score_compounding_quality(fmp: dict) -> float:
+    """
+    Score 0-100 for compounding quality (Buffett's compound machine).
+    Uses ROIC sustained over 5 years.
+      - 5yr ROIC avg (70 pts)
+      - 5yr ROIC min as floor (30 pts) — catches bad-year disasters
+    """
+    avg = fmp.get("roic_5yr_avg")
+    if avg is None:
+        return 50.0  # neutral when ROIC unavailable
+
+    # ── Avg ROIC level (70 pts) ──
+    if avg < 5:
+        avg_score = 0
+    elif avg < 10:
+        avg_score = 20   # mediocre — barely covers cost of capital
+    elif avg < 15:
+        avg_score = 40   # decent
+    elif avg < 20:
+        avg_score = 55   # strong
+    elif avg < 25:
+        avg_score = 65   # excellent compounder
+    else:
+        avg_score = 70   # elite — Costco/MSFT/MA tier
+
+    # ── ROIC min floor (30 pts) ──
+    roic_min = fmp.get("roic_5yr_min")
+    if roic_min is None:
+        min_score = 15  # neutral when min unavailable
+    elif roic_min < 0:
+        min_score = 0
+    elif roic_min < 5:
+        min_score = 10
+    elif roic_min < 10:
+        min_score = 20
+    else:
+        min_score = 30  # never broke down
+
+    return round(min(100, avg_score + min_score), 1)
+
+
+def _score_operating_leverage(fmp: dict) -> float:
+    """
+    Score 0-100 for operating leverage. Captures whether growth is
+    profitable AND getting more profitable.
+      - Operating margin level (50 pts)
+      - Operating margin trend (30 pts)
+      - Combined growth-x-profit signal (20 pts)
+    """
+    op_margin = fmp.get("operating_margin_pct")
+    if op_margin is None:
+        return 50.0
+
+    # ── Operating margin level (50 pts) ──
+    if op_margin < 0:
+        level_score = 0
+    elif op_margin < 10:
+        level_score = 15
+    elif op_margin < 20:
+        level_score = 30
+    elif op_margin < 30:
+        level_score = 40
+    else:
+        level_score = 50  # 30%+ — software/quality territory
+
+    # ── Operating margin trend (30 pts) ──
+    trend = fmp.get("operating_margin_trend")
+    if trend is None:
+        trend_score = 15  # neutral
+    elif trend < -3:
+        trend_score = 0
+    elif trend < 0:
+        trend_score = 5
+    elif trend < 2:
+        trend_score = 15
+    elif trend < 5:
+        trend_score = 25
+    else:
+        trend_score = 30
+
+    # ── Combined growth × profit (20 pts) ──
+    yoy = fmp.get("revenue_yoy_pct")
+    if yoy is None or op_margin <= 0:
+        combined_score = 5  # can't compute meaningfully
+    else:
+        # raw: yoy% * op_margin / 100, e.g. 25% growth at 30% margin = 7.5
+        raw = yoy * op_margin / 100
+        if raw < 0:
+            combined_score = 0
+        elif raw < 2:
+            combined_score = 5
+        elif raw < 5:
+            combined_score = 10
+        elif raw < 10:
+            combined_score = 15
+        else:
+            combined_score = 20
+
+    return round(min(100, level_score + trend_score + combined_score), 1)
+
+
+def _score_innovation_investment(fmp: dict, sector: str = "") -> float:
+    """
+    Score 0-100 for R&D investment. Sector-calibrated.
+
+    For financial-type sectors (banks, insurance), R&D is not meaningful
+    — returns neutral 50.
+
+    For other sectors:
+      - R&D intensity vs sector "exceptional" threshold (60 pts)
+      - R&D growth trend (40 pts)
+    """
+    threshold = _rd_threshold_for_sector(sector)
+    if threshold < 0:
+        return 50.0  # financial-type sector, R&D not meaningful
+
+    rd_intensity = fmp.get("rd_intensity_pct")
+    if rd_intensity is None:
+        return 50.0  # data missing
+
+    # ── R&D intensity vs threshold (60 pts) ──
+    ratio = rd_intensity / threshold if threshold > 0 else 0
+    if ratio < 0.3:
+        intensity_score = 0  # under-investing
+    elif ratio < 0.7:
+        intensity_score = 20
+    elif ratio < 1.0:
+        intensity_score = 40  # matching peers
+    elif ratio < 1.5:
+        intensity_score = 55
+    else:
+        intensity_score = 60  # elite R&D investment
+
+    # ── R&D growth trend (40 pts) ──
+    trend = fmp.get("rd_intensity_trend")
+    if trend is None:
+        trend_score = 20  # neutral
+    elif trend < -2:
+        trend_score = 0  # cutting R&D — harvesting mode
+    elif trend < 0:
+        trend_score = 10
+    elif trend < 1:
+        trend_score = 20  # stable
+    elif trend < 3:
+        trend_score = 30  # investing more
+    else:
+        trend_score = 40  # aggressive ramp
+
+    return round(min(100, intensity_score + trend_score), 1)
+
+
+def _score_capital_efficiency(fmp: dict) -> float:
+    """
+    Score 0-100 for capital efficiency. Captures whether the company
+    destroys value through bad capital deployment.
+      - FCF margin trend (35 pts)
+      - Share dilution / buyback (35 pts)
+      - Goodwill stability (30 pts) — proxy for value-destroying M&A
+    """
+    # ── FCF margin trend (35 pts) ──
+    fcf_trend = fmp.get("fcf_margin_trend")
+    if fcf_trend is None:
+        fcf_score = 17  # neutral
+    elif fcf_trend < -3:
+        fcf_score = 0
+    elif fcf_trend < 0:
+        fcf_score = 10
+    elif fcf_trend < 2:
+        fcf_score = 20  # stable
+    elif fcf_trend < 5:
+        fcf_score = 30  # improving
+    else:
+        fcf_score = 35  # strong improvement
+
+    # ── Share dilution / buyback (35 pts) ──
+    dilution = fmp.get("share_dilution_pct_3yr")
+    if dilution is None:
+        dilution_score = 17  # neutral
+    elif dilution > 10:
+        dilution_score = 0   # heavy dilution
+    elif dilution > 5:
+        dilution_score = 10
+    elif dilution > 0:
+        dilution_score = 20  # modest dilution
+    elif dilution > -5:
+        dilution_score = 30  # modest buybacks
+    else:
+        dilution_score = 35  # significant buybacks
+
+    # ── Goodwill stability (30 pts) ──
+    gw_change = fmp.get("goodwill_to_assets_change_pct")
+    if gw_change is None:
+        gw_score = 20  # neutral when data missing
+    elif gw_change > 15:
+        gw_score = 0   # huge M&A bloat
+    elif gw_change > 5:
+        gw_score = 10
+    elif gw_change > 0:
+        gw_score = 20  # some M&A, normal
+    elif gw_change > -5:
+        gw_score = 30  # organic growth, no destructive M&A
+    else:
+        gw_score = 30  # impairments — neutral
+
+    return round(min(100, fcf_score + dilution_score + gw_score), 1)
+
+
 @dataclass
 class StockScore:
     symbol: str
