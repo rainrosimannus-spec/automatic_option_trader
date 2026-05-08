@@ -1,0 +1,22 @@
+# Discovered pool — names added by augmentation (Claude-proposed)
+#
+# Auto-managed by tools/screen_universe.py augmentation pipeline.
+# Manual additions allowed but be mindful that the system can also
+# evict names if pool grows beyond 180 / 45 caps.
+#
+# Schema per entry:
+#   symbol: ticker (string, no exchange suffix unless needed for resolution)
+#   region: matches a region key in CANDIDATE_POOLS (US, JP, KR, etc.)
+#   exchange: IBKR exchange string
+#   currency: 3-letter code
+#   added_at: YYYY-MM-DD
+#   last_made_top_60_at: YYYY-MM-DD (for future eviction tracking)
+#   source: "augmentation" | "manual" | "breakthrough_promotion"
+#   notes: optional string
+#
+# Pool naturally bounded: the augmentation pipeline can add ~5-10
+# names/month at most, and pool size hygiene evicts lowest-ranked
+# names when pool > cap.
+
+growth: []
+dividend: []

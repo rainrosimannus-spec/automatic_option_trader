@@ -37,6 +37,35 @@ from ib_insync import IB, Stock, Option
 # These are screened in addition to regional pools.
 # Focus: long dividend history, growing payouts, strong FCF, not value traps.
 # Scored by _score_dividend_total_return() — best 15 selected for dividend tier.
+def _load_discovered_pool() -> dict:
+    """
+    Load tools/discovered_pool.yaml — names added by augmentation pipeline.
+
+    Returns dict with two keys:
+      "growth": list of dicts (symbol, region, exchange, currency, added_at,
+                last_made_top_60_at, source, notes)
+      "dividend": list of dicts (same fields)
+
+    Returns empty lists for both if file missing or malformed.
+    Failures are non-fatal: screener falls back to CANDIDATE_POOLS only.
+    """
+    import os
+    yaml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "discovered_pool.yaml")
+    if not os.path.exists(yaml_path):
+        return {"growth": [], "dividend": []}
+    try:
+        with open(yaml_path) as f:
+            data = yaml.safe_load(f) or {}
+        return {
+            "growth": list(data.get("growth") or []),
+            "dividend": list(data.get("dividend") or []),
+        }
+    except Exception:
+        # Fail-safe: return empty so screener continues working
+        return {"growth": [], "dividend": []}
+
+
 DIVIDEND_CANDIDATES = {
     "US_DIV": {
         "exchange": "SMART", "currency": "USD",
