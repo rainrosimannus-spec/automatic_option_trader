@@ -228,3 +228,29 @@ class PortfolioForecast(Base):
     trend: Mapped[str] = mapped_column(String(10))         # "up", "down", "flat"
     confidence: Mapped[float] = mapped_column(Float)       # quantile spread ratio (lower = more confident)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AugmentationAudit(Base):
+    """
+    Audit log for monthly augmentation pipeline. One row per Claude-proposed
+    swap candidate. Tracks both accepted and rejected proposals so you can
+    see what augmentation has been doing over time.
+    """
+    __tablename__ = "augmentation_audit"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    tier: Mapped[str] = mapped_column(String(15))  # "growth" or "dividend"
+    proposed_symbol: Mapped[str] = mapped_column(String(10), index=True)
+    proposed_score: Mapped[float] = mapped_column(Float, default=0.0)
+    cutoff_score: Mapped[float] = mapped_column(Float, default=0.0)
+    displaced_symbol: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    displaced_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    accepted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    reason: Mapped[str] = mapped_column(String(50), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+    __table_args__ = (
+        Index("ix_aug_audit_run_tier", "run_date", "tier"),
+    )
+
