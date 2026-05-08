@@ -536,11 +536,13 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
     """
     Fetch all fundamental metrics needed for scoring.
     Includes gross margin, FCF margin trend, and dividend CAGR for 10-year total return.
+    Plus 5-year history for forward-growth scorer (ROE, payout, operating margin,
+    R&D intensity, dilution, goodwill, neg net income years).
     Uses 4-5 API calls — monthly screener only.
     """
     result = {}
 
-    # ── Income statement: revenue, margins ──
+    # ── Income statement: revenue, margins, R&D, dilution, neg-NI count ──
     income = _fmp_get("income-statement", symbol, {"limit": 5})
     if income and len(income) >= 2:
         try:
@@ -565,67 +567,155 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
             if len(income) >= 3:
                 gm_old = income[2].get("grossProfit", 0) / max(income[2].get("revenue", 1), 1) * 100
                 gm_new = income[0].get("grossProfit", 0) / max(income[0].get("revenue", 1), 1) * 100
-                result["gross_margin_trend"] = gm_new - gm_old  # positive = improving
+                result["gross_margin_trend"] = gm_new - gm_old
+            # ── NEW: Operating margin (level + 3yr trend) ──
+            op_income_latest = income[0].get("operatingIncome", 0)
+            if revenue and revenue > 0:
+                result["operating_margin_pct"] = op_income_latest / revenue * 100
+            if len(income) >= 3:
+                rev_3yr = income[2].get("revenue", 0)
+                op_3yr = income[2].get("operatingIncome", 0)
+                if rev_3yr and revenue:
+                    om_old = (op_3yr / rev_3yr) * 100
+                    om_new = (op_income_latest / revenue) * 100
+                    result["operating_margin_trend"] = om_new - om_old
+            # ── NEW: R&D intensity (level + 3yr trend) ──
+            # Field name in FMP: researchAndDevelopmentExpenses
+            rd_latest = income[0].get("researchAndDevelopmentExpenses", 0) or 0
+            if revenue and revenue > 0:
+                result["rd_intensity_pct"] = (rd_latest / revenue) * 100
+            if len(income) >= 3:
+                rd_3yr = income[2].get("researchAndDevelopmentExpenses", 0) or 0
+                rev_3yr = income[2].get("revenue", 0) or 0
+                if rev_3yr and revenue:
+                    rd_old_pct = (rd_3yr / rev_3yr) * 100 if rev_3yr else 0
+                    rd_new_pct = (rd_latest / revenue) * 100
+                    result["rd_intensity_trend"] = rd_new_pct - rd_old_pct
+            # ── NEW: Share dilution (3yr) ──
+            # Positive = dilution, negative = buybacks
+            shs_latest = income[0].get("weightedAverageShsOutDil", 0) or 0
+            if len(income) >= 3:
+                shs_3yr = income[2].get("weightedAverageShsOutDil", 0) or 0
+                if shs_3yr and shs_latest:
+                    result["share_dilution_pct_3yr"] = ((shs_latest - shs_3yr) / abs(shs_3yr)) * 100
+            # ── NEW: Negative net income years over 5-year window ──
+            result["net_income_negative_years_5yr"] = sum(
+                1 for i in income if (i.get("netIncome") or 0) < 0
+            )
         except Exception:
             pass
 
     # ── Ratios: PE, PEG, dividend yield, payout ──
-    ratios = _fmp_get("ratios", symbol, {"limit": 3})
+    ratios = _fmp_get("ratios", symbol, {"limit": 5})
     if ratios and len(ratios) >= 1:
         try:
             r = ratios[0]
-            # FMP renamed these fields (priceEarningsRatio → priceToEarningsRatio etc.)
-            # Accept both old and new names for forward/backward compatibility.
             result["pe_ratio"] = (r.get("priceToEarningsRatio")
                                   or r.get("priceEarningsRatio") or 0)
             result["peg_ratio"] = (r.get("priceToEarningsGrowthRatio")
                                    or r.get("priceEarningsToGrowthRatio") or 0)
-            # FMP renamed payoutRatio → dividendPayoutRatio. Accept both.
             result["payout_ratio"] = ((r.get("dividendPayoutRatio")
                                        or r.get("payoutRatio") or 0) * 100)
             result["dividend_yield"] = (r.get("dividendYield") or 0) * 100
-            # ROE no longer in /ratios — fetched separately from /key-metrics below
-            result["roe"] = (r.get("returnOnEquity") or 0) * 100  # fallback only
+            result["roe"] = (r.get("returnOnEquity") or 0) * 100
             if len(ratios) >= 2:
                 prev_yield = (ratios[1].get("dividendYield") or 0) * 100
                 curr_yield = result["dividend_yield"]
                 result["dividend_cut"] = (prev_yield > 0.5 and curr_yield < prev_yield * 0.7)
             else:
                 result["dividend_cut"] = False
+            # ── NEW: 5-year payout history (avg) — deposit for future dividend tier ──
+            payout_history = []
+            for entry in ratios:
+                v = entry.get("dividendPayoutRatio") or entry.get("payoutRatio")
+                if v is not None:
+                    payout_history.append(v)
+            if payout_history:
+                result["payout_ratio_5yr_avg"] = sum(payout_history) / len(payout_history)
+            else:
+                result["payout_ratio_5yr_avg"] = 0  # treat unknown as no-payout
         except Exception:
             pass
 
-    # ── Key metrics: ROE (moved out of /ratios in FMP update) ──
-    km = _fmp_get("key-metrics", symbol, {"limit": 1})
+    # ── Key metrics: ROE history (5 years) + payout history ──
+    # BUMPED limit 1 → 5 to support compounding-quality scoring
+    km = _fmp_get("key-metrics", symbol, {"limit": 5})
     if km and len(km) >= 1:
         try:
+            # Latest ROE — overrides /ratios fallback
             roe_raw = km[0].get("returnOnEquity")
             if roe_raw is not None:
-                # returnOnEquity comes as a decimal (0.76 = 76%), convert to pct
                 result["roe"] = roe_raw * 100
+            # ── NEW: 5-year ROE history (avg + min) ──
+            roe_history = []
+            for entry in km:
+                v = entry.get("returnOnEquity")
+                if v is not None:
+                    roe_history.append(v * 100)
+            if roe_history:
+                result["roe_5yr_avg"] = sum(roe_history) / len(roe_history)
+                result["roe_5yr_min"] = min(roe_history)
+            # ── NEW: 5-year ROIC history (avg + min) ──
+            # ROIC is the right compounding signal for growth-tier companies.
+            # ROE × retention works for mature dividend payers but collapses to ROE
+            # for growth names that don't pay dividends. ROIC measures returns on
+            # ALL deployed capital (debt + equity) — what matters for compounders.
+            roic_history = []
+            for entry in km:
+                v = entry.get("returnOnInvestedCapital")
+                if v is not None:
+                    roic_history.append(v * 100)
+            if roic_history:
+                result["roic_5yr_avg"] = sum(roic_history) / len(roic_history)
+                result["roic_5yr_min"] = min(roic_history)
+            # ── NEW: Compounding quality raw = ROIC 5yr avg ──
+            # A company sustaining 20%+ ROIC for 5 years is genuinely compounding
+            # capital. < 10% sustained = capital being deployed inefficiently.
+            if roic_history:
+                result["compounding_quality_raw"] = result["roic_5yr_avg"]
         except Exception:
             pass
 
-    # ── Balance sheet: debt ──
-    bs = _fmp_get("balance-sheet-statement", symbol, {"limit": 2})
+    # ── Balance sheet: debt + goodwill trend ──
+    # BUMPED limit 2 → 5 to support goodwill-stability scoring
+    bs = _fmp_get("balance-sheet-statement", symbol, {"limit": 5})
     if bs and len(bs) >= 1:
         try:
             total_debt = bs[0].get("totalDebt") or 0
             equity = bs[0].get("totalStockholdersEquity") or 1
             result["debt_to_equity"] = total_debt / abs(equity) if equity else 0
+            # ── NEW: Goodwill / total assets, now and 5 years ago ──
+            # Captures whether company has been making big acquisitions (goodwill
+            # bloat) or growing organically. Stable goodwill = no destructive M&A.
+            gw_now = bs[0].get("goodwillAndIntangibleAssets") or bs[0].get("goodwill") or 0
+            assets_now = bs[0].get("totalAssets") or 1
+            if assets_now and assets_now > 0:
+                result["goodwill_to_assets_now_pct"] = (gw_now / assets_now) * 100
+            if len(bs) >= 5:
+                gw_old = bs[4].get("goodwillAndIntangibleAssets") or bs[4].get("goodwill") or 0
+                assets_old = bs[4].get("totalAssets") or 1
+                if assets_old and assets_old > 0:
+                    result["goodwill_to_assets_5yr_ago_pct"] = (gw_old / assets_old) * 100
+                if "goodwill_to_assets_now_pct" in result and "goodwill_to_assets_5yr_ago_pct" in result:
+                    result["goodwill_to_assets_change_pct"] = (
+                        result["goodwill_to_assets_now_pct"] - result["goodwill_to_assets_5yr_ago_pct"]
+                    )
         except Exception:
             pass
 
     # ── Cash flow: FCF quality and trend ──
-    cf = _fmp_get("cash-flow-statement", symbol, {"limit": 4})
+    # BUMPED limit 4 → 5 for symmetry with structural-quality 5yr window
+    cf = _fmp_get("cash-flow-statement", symbol, {"limit": 5})
     if cf:
         try:
+            # Existing field — keep for backward compat
             result["fcf_negative_years"] = sum(
                 1 for c in cf if (c.get("freeCashFlow") or 0) < 0
             )
+            # ── NEW: explicit 5-year window count for structural-quality cap ──
+            result["fcf_negative_years_5yr"] = result["fcf_negative_years"]
             result["fcf_latest"] = cf[0].get("freeCashFlow") or 0
             # FCF margin trend: is FCF growing as % of revenue?
-            # Positive trend = company converts more revenue to cash over time
             if len(cf) >= 3 and income and len(income) >= 3:
                 fcf_old = cf[2].get("freeCashFlow", 0)
                 rev_old = income[2].get("revenue", 1) or 1
@@ -637,10 +727,9 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
         except Exception:
             pass
 
-    # ── Dividend CAGR: the most important factor for 10-year dividend total return ──
-    # A 3% yield growing 10%/year beats a 6% yield flat — every time, by year 8
+    # ── Dividend CAGR: most important factor for 10-year dividend total return ──
     div_yield = result.get("dividend_yield", 0)
-    if div_yield > 0.5:  # only fetch for actual dividend payers
+    if div_yield > 0.5:
         try:
             hist = _fmp_get("historical-dividends", symbol)
             if hist and isinstance(hist, dict):
@@ -649,7 +738,6 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
                 payments = hist
             else:
                 payments = []
-            # Get annual dividend sums for last 5 years
             from collections import defaultdict
             by_year = defaultdict(float)
             for p in payments:
@@ -660,14 +748,12 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
                     by_year[year] += float(dividend)
             years_sorted = sorted(by_year.keys(), reverse=True)
             if len(years_sorted) >= 4:
-                # 3-year CAGR
                 d_new = by_year[years_sorted[0]]
                 d_3yr = by_year[years_sorted[3]]
                 if d_new > 0 and d_3yr > 0:
                     cagr_3yr = ((d_new / d_3yr) ** (1/3) - 1) * 100
                     result["dividend_cagr_3yr"] = round(cagr_3yr, 1)
             if len(years_sorted) >= 6:
-                # 5-year CAGR
                 d_5yr = by_year[years_sorted[5]]
                 if d_new > 0 and d_5yr > 0:
                     cagr_5yr = ((d_new / d_5yr) ** (1/5) - 1) * 100
