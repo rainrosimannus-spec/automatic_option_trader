@@ -1415,6 +1415,44 @@ def _score_capital_efficiency(fmp: dict) -> float:
     return round(min(100, fcf_score + dilution_score + gw_score), 1)
 
 
+def _score_forward_growth(fmp: dict, sector: str = "") -> float:
+    """
+    Combine the five forward-growth sub-scorers into a single 0-100
+    composite. The screener-side companion to _score_dividend_total_return.
+
+    Weights:
+      Revenue durability    25%  — foundation of compounding
+      Compounding quality   25%  — ROIC sustained over 5yr (Buffett metric)
+      Operating leverage    20%  — profitable AND increasingly so
+      Innovation investment 15%  — R&D vs sector peers + trend
+      Capital efficiency    15%  — FCF trend, dilution, no destructive M&A
+
+    Hard cap: 30 if structural quality has failed (3+ years of negative
+    net income AND 3+ years of negative FCF over the 5-year window).
+    """
+    rev_dur = _score_revenue_durability(fmp)
+    cmp_q = _score_compounding_quality(fmp)
+    op_lev = _score_operating_leverage(fmp)
+    rd = _score_innovation_investment(fmp, sector)
+    cap_eff = _score_capital_efficiency(fmp)
+
+    composite = (
+        rev_dur * 0.25
+        + cmp_q * 0.25
+        + op_lev * 0.20
+        + rd * 0.15
+        + cap_eff * 0.15
+    )
+
+    # ── Structural-quality hard cap ──
+    ni_neg = fmp.get("net_income_negative_years_5yr") or 0
+    fcf_neg = fmp.get("fcf_negative_years_5yr") or 0
+    if ni_neg >= 3 and fcf_neg >= 3:
+        composite = min(composite, 30.0)
+
+    return round(min(100, max(0, composite)), 1)
+
+
 @dataclass
 class StockScore:
     symbol: str
