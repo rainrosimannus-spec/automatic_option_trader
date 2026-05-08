@@ -87,6 +87,8 @@ DIVIDEND_CANDIDATES = {
         "symbols": [
             "PBR", "EC", "HDB", "IBN", "SFL",
             "VALE", "RIO", "BHP",  # miners with variable dividends
+            "BAP",  # Credicorp — Peru bank, ~3-4% yield, decades of dividends
+            "CHT",  # Chunghwa Telecom — Taiwan, ~4-5% yield, government-backed
         ],
     },
 }
