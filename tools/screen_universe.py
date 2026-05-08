@@ -919,6 +919,85 @@ def _persist_augmentation_acceptances(additions: dict) -> bool:
         return False
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# DISCOVERED POOL EVICTION (Commit M)
+# ─────────────────────────────────────────────────────────────────────────
+# Caps prevent unlimited growth of discovered_pool.yaml. When a tier exceeds
+# its cap, the lowest-scored entries are evicted (kept: highest-scored cap names).
+# Eviction is list-size hygiene only — NOT a quality verdict.
+DISCOVERED_POOL_CAP_GROWTH = 180
+DISCOVERED_POOL_CAP_DIVIDEND = 45
+
+
+def _evict_overflow_from_discovered_pool() -> bool:
+    """
+    Trim discovered_pool.yaml entries beyond cap by lowest score.
+    
+    For each tier:
+      - If len(pool) > cap: sort by score desc, keep [:cap], drop the rest
+      - Log evicted symbols
+    
+    Atomic write via .tmp+rename (same pattern as _persist).
+    Returns True on success or no-op, False on error.
+    """
+    import os
+    import yaml
+    
+    yaml_path = os.path.join(os.path.dirname(__file__), "discovered_pool.yaml")
+    tmp_path = yaml_path + ".tmp"
+    
+    if not os.path.exists(yaml_path):
+        return True  # nothing to evict from
+    
+    try:
+        with open(yaml_path) as f:
+            existing = yaml.safe_load(f) or {}
+        
+        caps = {
+            "growth": DISCOVERED_POOL_CAP_GROWTH,
+            "dividend": DISCOVERED_POOL_CAP_DIVIDEND,
+        }
+        any_evicted = False
+        
+        for tier, cap in caps.items():
+            pool = existing.get(tier) or []
+            if not isinstance(pool, list) or len(pool) <= cap:
+                continue
+            
+            # Sort by score descending (defaults to 0 if missing)
+            pool_sorted = sorted(pool, key=lambda e: e.get("score", 0) or 0, reverse=True)
+            keep = pool_sorted[:cap]
+            evicted = pool_sorted[cap:]
+            
+            evicted_summary = ", ".join(
+                f"{e.get('symbol', '?')}({e.get('score', 0):.1f})" for e in evicted[:10]
+            )
+            if len(evicted) > 10:
+                evicted_summary += f" ... +{len(evicted) - 10} more"
+            
+            print(f"  🧹 Evicting {len(evicted)} from {tier} pool (was {len(pool)}, cap {cap}): {evicted_summary}")
+            existing[tier] = keep
+            any_evicted = True
+        
+        if not any_evicted:
+            return True  # all pools within cap, nothing to do
+        
+        # Atomic write
+        with open(tmp_path, "w") as f:
+            yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
+        os.replace(tmp_path, yaml_path)
+        return True
+    
+    except Exception as e:
+        print(f"  ❌ Failed to evict from discovered_pool.yaml: {type(e).__name__}: {e}")
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        return False
+
+
 def _process_augmentation_proposal(
     proposal: dict,
     tier: str,
@@ -2242,6 +2321,8 @@ class UniverseScreener:
                 print(f"\n  Audit log committed.")
                 # Persist accepted symbols to discovered_pool.yaml so future runs see them
                 _persist_augmentation_acceptances(pending_yaml_additions)
+                # Evict overflow if pool grew beyond caps
+                _evict_overflow_from_discovered_pool()
             except Exception as e:
                 audit_session.rollback()
                 print(f"\n  ❌ Augmentation failed: {type(e).__name__}: {e}")
