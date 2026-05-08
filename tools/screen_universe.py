@@ -840,6 +840,105 @@ def _get_dividend_swaps(
     return _call_claude_for_swaps(prompt, "dividend")
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# AUGMENTATION ORCHESTRATION (Commit L)
+# ─────────────────────────────────────────────────────────────────────────
+# AUGMENTATION_ENABLED toggles Phase 2.5 in screen_all().
+# Default OFF — must be manually flipped to True to activate.
+# When OFF, augmentation code is bypassed entirely (no API calls, no DB writes).
+AUGMENTATION_ENABLED = False
+
+
+def _process_augmentation_proposal(
+    proposal: dict,
+    tier: str,
+    cutoff_score: float,
+    all_scores: list,
+    audit_session,
+    run_date,
+) -> bool:
+    """
+    Process a single Claude swap proposal.
+    
+    Steps:
+    1. Score the proposed symbol via _score_stock (real composite score)
+    2. Compare against cutoff_score (margin = 0)
+    3. If beats cutoff: append to all_scores, audit as accepted
+    4. If not: audit as rejected
+    
+    Returns True if accepted, False if rejected.
+    Failures (FMP missing, scoring exception) → audit as rejected with reason.
+    """
+    # Lazy import — matches codebase pattern (see _get_breakthrough_candidates for get_settings)
+    from src.portfolio.models import AugmentationAudit
+    
+    symbol = proposal.get("symbol", "?")
+    exchange = proposal.get("exchange", "SMART")
+    currency = proposal.get("currency", "USD")
+    region = proposal.get("region", tier.upper())
+    thesis = proposal.get("thesis", "")
+    
+    # Defensive: skip if symbol already in all_scores
+    if any(s.symbol == symbol for s in all_scores):
+        audit_row = AugmentationAudit(
+            run_date=run_date, tier=tier,
+            proposed_symbol=symbol, proposed_score=0.0, cutoff_score=cutoff_score,
+            displaced_symbol=None, displaced_score=None,
+            accepted=False, reason="duplicate",
+            notes=f"already in all_scores; thesis was: {thesis[:200]}",
+        )
+        audit_session.add(audit_row)
+        return False
+    
+    # Score it
+    try:
+        score = _score_stock(symbol, exchange=exchange, currency=currency, region=region)
+        if score is None:
+            raise ValueError("_score_stock returned None")
+    except Exception as e:
+        audit_row = AugmentationAudit(
+            run_date=run_date, tier=tier,
+            proposed_symbol=symbol, proposed_score=0.0, cutoff_score=cutoff_score,
+            displaced_symbol=None, displaced_score=None,
+            accepted=False, reason="scoring_failed",
+            notes=f"{type(e).__name__}: {str(e)[:200]} | thesis: {thesis[:200]}",
+        )
+        audit_session.add(audit_row)
+        return False
+    
+    # Pick the comparison metric based on tier
+    if tier == "growth":
+        proposal_score = score.forward_growth_score or 0.0
+    else:  # dividend
+        proposal_score = score.dividend_total_return_score or 0.0
+    
+    # Acceptance check (margin = 0)
+    if proposal_score > cutoff_score:
+        score.tier = tier
+        all_scores.append(score)
+        audit_row = AugmentationAudit(
+            run_date=run_date, tier=tier,
+            proposed_symbol=symbol, proposed_score=proposal_score, cutoff_score=cutoff_score,
+            displaced_symbol=None, displaced_score=None,
+            accepted=True, reason="beat_cutoff",
+            notes=f"thesis: {thesis[:300]}",
+        )
+        audit_session.add(audit_row)
+        print(f"  ✅ ACCEPTED  {symbol:8s} {tier:8s} score={proposal_score:.1f} > cutoff={cutoff_score:.1f}")
+        return True
+    else:
+        audit_row = AugmentationAudit(
+            run_date=run_date, tier=tier,
+            proposed_symbol=symbol, proposed_score=proposal_score, cutoff_score=cutoff_score,
+            displaced_symbol=None, displaced_score=None,
+            accepted=False, reason="below_cutoff",
+            notes=f"thesis: {thesis[:300]}",
+        )
+        audit_session.add(audit_row)
+        print(f"  ❌ REJECTED  {symbol:8s} {tier:8s} score={proposal_score:.1f} <= cutoff={cutoff_score:.1f}")
+        return False
+
+
 
 def _fmp_key() -> Optional[str]:
     try:
@@ -1983,6 +2082,87 @@ class UniverseScreener:
             except Exception as e:
                 print(f"  ❌ {symbol:8s} | Error: {e}")
             time.sleep(0.3)
+
+        # ──────────────────────────────────────────────────────────────────
+        # PHASE 2.5: Augmentation (Claude-driven swap proposals)
+        # ──────────────────────────────────────────────────────────────────
+        # Default OFF — manually flip AUGMENTATION_ENABLED at module top to enable.
+        # When enabled, asks Claude for high-conviction names that would beat the
+        # current rank-60 (growth) / rank-15 (dividend) cutoffs. Each proposal is
+        # scored, audit-logged, and accepted if score > cutoff (margin = 0).
+        if AUGMENTATION_ENABLED:
+            from datetime import datetime as _dt
+            # Lazy import — matches codebase pattern
+            from src.core.database import get_session_factory
+
+            print(f"\n{'='*60}")
+            print(f"PHASE 2.5: Augmentation (Claude swap proposals)")
+            print(f"{'='*60}")
+
+            run_date = _dt.utcnow()
+            non_breakthrough = [s for s in all_scores if s.tier != "breakthrough"]
+
+            # Split same way PHASE 3 does (yield routing)
+            _div_universe_aug = _get_dividend_universe()
+            _div_pool_syms_aug = {str(sym) for pool in _div_universe_aug.values() for sym in pool["symbols"]}
+            growth_pool = [s for s in non_breakthrough
+                          if s.symbol not in _div_pool_syms_aug and s.dividend_yield <= 2.5]
+            dividend_pool = [s for s in non_breakthrough
+                            if s.symbol in _div_pool_syms_aug or s.dividend_yield > 2.5]
+
+            # Sort each pool by its tier-relevant metric
+            growth_pool.sort(key=lambda s: s.forward_growth_score or 0.0, reverse=True)
+            dividend_pool.sort(key=lambda s: s.dividend_total_return_score or 0.0, reverse=True)
+
+            # Build exclusion set: every symbol already considered (across all tiers + pools)
+            _growth_universe_aug = _get_growth_universe()
+            _growth_universe_syms = {str(sym) for pool in _growth_universe_aug.values() for sym in pool["symbols"]}
+            exclusion = _growth_universe_syms | _div_pool_syms_aug | {s.symbol for s in all_scores}
+
+            # Open audit session
+            audit_session = get_session_factory()()
+            try:
+                # ── Growth tier augmentation ──
+                if len(growth_pool) >= 60:
+                    top_60 = growth_pool[:60]
+                    ranks_61_120 = growth_pool[60:120]
+                    cutoff_growth = top_60[-1].forward_growth_score or 0.0
+                    print(f"\n  Growth: cutoff={cutoff_growth:.1f} (rank-60 of {len(growth_pool)} candidates)")
+
+                    proposals = _get_growth_swaps(top_60, ranks_61_120, cutoff_growth, exclusion)
+                    accepted_count = 0
+                    for prop in proposals:
+                        if _process_augmentation_proposal(prop, "growth", cutoff_growth, all_scores, audit_session, run_date):
+                            accepted_count += 1
+                            exclusion.add(prop.get("symbol", ""))  # don't propose same symbol for dividend tier
+                    print(f"  Growth: {accepted_count}/{len(proposals)} proposals accepted")
+                else:
+                    print(f"\n  Growth: skipped (only {len(growth_pool)} candidates, need 60+)")
+
+                # ── Dividend tier augmentation ──
+                if len(dividend_pool) >= 15:
+                    top_15 = dividend_pool[:15]
+                    ranks_16_45 = dividend_pool[15:45]
+                    cutoff_div = top_15[-1].dividend_total_return_score or 0.0
+                    print(f"\n  Dividend: cutoff={cutoff_div:.1f} (rank-15 of {len(dividend_pool)} candidates)")
+
+                    proposals = _get_dividend_swaps(top_15, ranks_16_45, cutoff_div, exclusion)
+                    accepted_count = 0
+                    for prop in proposals:
+                        if _process_augmentation_proposal(prop, "dividend", cutoff_div, all_scores, audit_session, run_date):
+                            accepted_count += 1
+                    print(f"  Dividend: {accepted_count}/{len(proposals)} proposals accepted")
+                else:
+                    print(f"\n  Dividend: skipped (only {len(dividend_pool)} candidates, need 15+)")
+
+                audit_session.commit()
+                print(f"\n  Audit log committed.")
+            except Exception as e:
+                audit_session.rollback()
+                print(f"\n  ❌ Augmentation failed: {type(e).__name__}: {e}")
+                # Don't re-raise — augmentation is best-effort, screener should still complete
+            finally:
+                audit_session.close()
 
         print(f"\n{'='*60}")
         print(f"PHASE 3: Building portfolio universe")
