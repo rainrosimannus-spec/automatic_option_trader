@@ -1465,6 +1465,7 @@ class StockScore:
     growth_score: float = 0
     valuation_score: float = 0
     quality_score: float = 0
+    forward_growth_score: float = 0
     dividend_yield: float = 0
     dividend_total_return_score: float = 0
     options_available: bool = False
@@ -1760,6 +1761,7 @@ class UniverseScreener:
         score.growth_score = _score_growth(fmp)
         score.valuation_score = _score_valuation(fmp)
         score.quality_score = _score_quality(fmp)
+        score.forward_growth_score = _score_forward_growth(fmp, score.sector)
 
         # Detect complete-fundamentals-missing: when all three scorers returned
         # the exact default 50.0, neither FMP nor IBKR had fundamental data for

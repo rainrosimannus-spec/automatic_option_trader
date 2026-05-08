@@ -62,6 +62,7 @@ def _migrate_columns(engine):
         ("portfolio_watchlist", "risk_profitability", "VARCHAR(10) DEFAULT 'none'"),
         ("portfolio_watchlist", "risk_total_penalty", "REAL DEFAULT 0.0"),
         ("portfolio_watchlist", "raw_score", "REAL DEFAULT 0.0"),
+        ("portfolio_watchlist", "forward_growth_score", "REAL DEFAULT 0.0"),
         # Options exchange routing (v19+)
         ("trade_suggestions", "opt_exchange", "VARCHAR(15)"),
         ("trade_suggestions", "opt_currency", "VARCHAR(5)"),
@@ -92,6 +93,7 @@ def _migrate_columns(engine):
             ("portfolio_watchlist", "risk_profitability", "'none'"),
             ("portfolio_watchlist", "risk_total_penalty", "0.0"),
             ("portfolio_watchlist", "raw_score", "0.0"),
+            ("portfolio_watchlist", "forward_growth_score", "0.0"),
             # Intraday-loss halt support (May 2026)
             ("positions", "unrealized_pnl", "0.0"),
         ]
