@@ -90,6 +90,83 @@ def _load_evicted_names() -> set:
         return set()
 
 
+def _get_growth_universe() -> dict:
+    """
+    Build the growth universe by merging CANDIDATE_POOLS with the
+    discovered_pool["growth"] entries, then filtering out evicted symbols.
+
+    Returns dict keyed by region. Each value: {"exchange", "currency", "symbols"}.
+
+    Empty discovered_pool + empty evicted_names = identical to CANDIDATE_POOLS.
+    """
+    discovered = _load_discovered_pool()
+    evicted = _load_evicted_names()
+
+    # Start with a deep-ish copy of CANDIDATE_POOLS so we can mutate symbol lists
+    merged = {}
+    for region, pool in CANDIDATE_POOLS.items():
+        merged[region] = {
+            "exchange": pool["exchange"],
+            "currency": pool["currency"],
+            "symbols": [s for s in pool["symbols"] if s not in evicted],
+        }
+        # Preserve primary_exchange if present (used by some regions)
+        if "primary_exchange" in pool:
+            merged[region]["primary_exchange"] = pool["primary_exchange"]
+
+    # Add discovered growth names. Each entry has region/exchange/currency.
+    for entry in discovered.get("growth", []):
+        sym = entry.get("symbol")
+        region = entry.get("region")
+        if not sym or not region or sym in evicted:
+            continue
+        if region not in merged:
+            # Region from discovered_pool that's not in CANDIDATE_POOLS — create it
+            merged[region] = {
+                "exchange": entry.get("exchange", "SMART"),
+                "currency": entry.get("currency", "USD"),
+                "symbols": [],
+            }
+        if sym not in merged[region]["symbols"]:
+            merged[region]["symbols"].append(sym)
+
+    return merged
+
+
+def _get_dividend_universe() -> dict:
+    """
+    Build the dividend universe by merging DIVIDEND_CANDIDATES with the
+    discovered_pool["dividend"] entries, filtering out evicted symbols.
+    Same shape as _get_growth_universe().
+    """
+    discovered = _load_discovered_pool()
+    evicted = _load_evicted_names()
+
+    merged = {}
+    for region, pool in DIVIDEND_CANDIDATES.items():
+        merged[region] = {
+            "exchange": pool["exchange"],
+            "currency": pool["currency"],
+            "symbols": [s for s in pool["symbols"] if s not in evicted],
+        }
+
+    for entry in discovered.get("dividend", []):
+        sym = entry.get("symbol")
+        region = entry.get("region")
+        if not sym or not region or sym in evicted:
+            continue
+        if region not in merged:
+            merged[region] = {
+                "exchange": entry.get("exchange", "SMART"),
+                "currency": entry.get("currency", "USD"),
+                "symbols": [],
+            }
+        if sym not in merged[region]["symbols"]:
+            merged[region]["symbols"].append(sym)
+
+    return merged
+
+
 DIVIDEND_CANDIDATES = {
     "US_DIV": {
         "exchange": "SMART", "currency": "USD",
@@ -335,8 +412,8 @@ def _build_breakthrough_prompt() -> str:
     breakthrough slot.
     """
     excluded = sorted(
-        {sym for pool in CANDIDATE_POOLS.values() for sym in pool["symbols"]}
-        | {sym for pool in DIVIDEND_CANDIDATES.values() for sym in pool["symbols"]}
+        {sym for pool in _get_growth_universe().values() for sym in pool["symbols"]}
+        | {sym for pool in _get_dividend_universe().values() for sym in pool["symbols"]}
     )
     excluded_str = ", ".join(excluded)
     return BREAKTHROUGH_PROMPT_TEMPLATE.format(excluded_symbols=excluded_str)
@@ -1600,8 +1677,11 @@ class UniverseScreener:
         breakthrough_count: int = 25,
         options_count: int = 50,
     ) -> tuple[list[StockScore], list[StockScore]]:
+        # Build merged universe (CANDIDATE_POOLS + discovered_pool - evicted)
+        growth_universe = _get_growth_universe()
+
         if regions is None:
-            regions = list(CANDIDATE_POOLS.keys())
+            regions = list(growth_universe.keys())
 
         all_scores: list[StockScore] = []
 
@@ -1610,7 +1690,7 @@ class UniverseScreener:
         print(f"{'='*60}")
 
         for region in regions:
-            pool = CANDIDATE_POOLS.get(region)
+            pool = growth_universe.get(region)
             if not pool:
                 continue
             print(f"\n── {region} — {len(pool['symbols'])} candidates ──")
@@ -1636,7 +1716,8 @@ class UniverseScreener:
         print(f"PHASE 1b: Screening dedicated dividend candidates")
         print(f"{'='*60}")
 
-        for region, pool in DIVIDEND_CANDIDATES.items():
+        dividend_universe = _get_dividend_universe()
+        for region, pool in dividend_universe.items():
             print(f"\n\u2500\u2500 {region} \u2014 {len(pool['symbols'])} candidates \u2500\u2500")
             for symbol in pool["symbols"]:
                 if any(s.symbol == str(symbol) for s in all_scores):
@@ -1698,7 +1779,9 @@ class UniverseScreener:
         print(f"PHASE 3: Building portfolio universe")
         print(f"{'='*60}")
 
-        _dividend_pool_symbols = {str(sym) for pool in DIVIDEND_CANDIDATES.values() for sym in pool["symbols"]}
+        # Include both DIVIDEND_CANDIDATES symbols AND discovered_pool dividend names
+        _dividend_universe = _get_dividend_universe()
+        _dividend_pool_symbols = {str(sym) for pool in _dividend_universe.values() for sym in pool["symbols"]}
         dividend_candidates = [s for s in all_scores if s.tier != "breakthrough" and (s.symbol in _dividend_pool_symbols or s.dividend_yield > 2.5)]
         growth_candidates = [s for s in all_scores if s.tier != "breakthrough" and s.symbol not in _dividend_pool_symbols and s.dividend_yield <= 2.5]
 
