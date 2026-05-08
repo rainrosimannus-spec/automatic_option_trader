@@ -661,12 +661,12 @@ def _format_score_table_for_prompt(scores: list, max_rows: int = 60) -> str:
     Shows: rank, symbol, composite, then 5 sub-scores."""
     lines = ["  rank symbol     composite  rev cmp op rd cap"]
     for i, s in enumerate(scores[:max_rows], 1):
-        # Some sub-scores might not be set (older watchlist entries) — default to 0
-        rev = getattr(s, "_sub_revenue_durability", 0) or 0
-        cmp_ = getattr(s, "_sub_compounding_quality", 0) or 0
-        op = getattr(s, "_sub_operating_leverage", 0) or 0
-        rd = getattr(s, "_sub_innovation_investment", 0) or 0
-        cap = getattr(s, "_sub_capital_efficiency", 0) or 0
+        # Sub-scores stored on StockScore by _score_stock (Commit O)
+        rev = getattr(s, "sub_revenue_durability", 0) or 0
+        cmp_ = getattr(s, "sub_compounding_quality", 0) or 0
+        op = getattr(s, "sub_operating_leverage", 0) or 0
+        rd = getattr(s, "sub_innovation_investment", 0) or 0
+        cap = getattr(s, "sub_capital_efficiency", 0) or 0
         composite = s.forward_growth_score or 0
         lines.append(
             f"  {i:3d}. {s.symbol:8s}  {composite:6.1f}    {rev:3.0f} {cmp_:3.0f} {op:3.0f} {rd:3.0f} {cap:3.0f}"
@@ -1801,6 +1801,12 @@ class StockScore:
     valuation_score: float = 0
     quality_score: float = 0
     forward_growth_score: float = 0
+    # Sub-scores from the 5-component composite (Commit O — preserved for augmentation prompt)
+    sub_revenue_durability: float = 0
+    sub_compounding_quality: float = 0
+    sub_operating_leverage: float = 0
+    sub_innovation_investment: float = 0
+    sub_capital_efficiency: float = 0
     dividend_yield: float = 0
     dividend_total_return_score: float = 0
     options_available: bool = False
@@ -2103,6 +2109,12 @@ class UniverseScreener:
         score.valuation_score = _score_valuation(fmp)
         score.quality_score = _score_quality(fmp)
         score.forward_growth_score = _score_forward_growth(fmp, score.sector)
+        # Preserve sub-scores for augmentation prompt visibility (Commit O)
+        score.sub_revenue_durability = _score_revenue_durability(fmp)
+        score.sub_compounding_quality = _score_compounding_quality(fmp)
+        score.sub_operating_leverage = _score_operating_leverage(fmp)
+        score.sub_innovation_investment = _score_innovation_investment(fmp, score.sector)
+        score.sub_capital_efficiency = _score_capital_efficiency(fmp)
 
         # Detect complete-fundamentals-missing: when all three scorers returned
         # the exact default 50.0, neither FMP nor IBKR had fundamental data for
