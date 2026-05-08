@@ -849,6 +849,76 @@ def _get_dividend_swaps(
 AUGMENTATION_ENABLED = False
 
 
+def _persist_augmentation_acceptances(additions: dict) -> bool:
+    """
+    Append accepted augmentation proposals to tools/discovered_pool.yaml.
+    
+    Schema of additions:
+        {
+            "growth": [
+                {"symbol", "exchange", "currency", "region", "score", "added_date", "thesis"},
+                ...
+            ],
+            "dividend": [...]
+        }
+    
+    Atomicity: writes to .tmp file then renames. If interrupted, original yaml
+    is preserved.
+    
+    Returns True on success, False on any error (logged but not raised — augmentation
+    is best-effort).
+    """
+    if not additions or (not additions.get("growth") and not additions.get("dividend")):
+        return True  # nothing to persist
+    
+    import os
+    import yaml
+    
+    yaml_path = os.path.join(os.path.dirname(__file__), "discovered_pool.yaml")
+    tmp_path = yaml_path + ".tmp"
+    
+    try:
+        if os.path.exists(yaml_path):
+            with open(yaml_path) as f:
+                existing = yaml.safe_load(f) or {}
+        else:
+            existing = {}
+        
+        for tier in ("growth", "dividend"):
+            if tier not in existing or existing[tier] is None:
+                existing[tier] = []
+            elif not isinstance(existing[tier], list):
+                print(f"  ⚠ discovered_pool.yaml[{tier}] was not a list, resetting to []")
+                existing[tier] = []
+        
+        for tier, new_entries in additions.items():
+            if tier not in ("growth", "dividend"):
+                continue
+            for entry in new_entries:
+                if any(e.get("symbol") == entry["symbol"] for e in existing[tier]):
+                    print(f"  ⚠ {entry['symbol']} already in discovered_pool[{tier}], skipping")
+                    continue
+                existing[tier].append(entry)
+        
+        with open(tmp_path, "w") as f:
+            yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
+        os.replace(tmp_path, yaml_path)
+        
+        n_growth = len(additions.get("growth", []))
+        n_div = len(additions.get("dividend", []))
+        print(f"  💾 Persisted to discovered_pool.yaml: +{n_growth} growth, +{n_div} dividend")
+        return True
+    
+    except Exception as e:
+        print(f"  ❌ Failed to persist discovered_pool.yaml: {type(e).__name__}: {e}")
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        return False
+
+
 def _process_augmentation_proposal(
     proposal: dict,
     tier: str,
@@ -856,6 +926,7 @@ def _process_augmentation_proposal(
     all_scores: list,
     audit_session,
     run_date,
+    pending_additions: dict = None,
 ) -> bool:
     """
     Process a single Claude swap proposal.
@@ -924,6 +995,17 @@ def _process_augmentation_proposal(
             notes=f"thesis: {thesis[:300]}",
         )
         audit_session.add(audit_row)
+        # Buffer for yaml persistence (if caller passed a buffer)
+        if pending_additions is not None:
+            pending_additions.setdefault(tier, []).append({
+                "symbol": symbol,
+                "exchange": exchange,
+                "currency": currency,
+                "region": region,
+                "score": float(proposal_score),
+                "added_date": run_date.strftime("%Y-%m-%d"),
+                "thesis": thesis[:300],
+            })
         print(f"  ✅ ACCEPTED  {symbol:8s} {tier:8s} score={proposal_score:.1f} > cutoff={cutoff_score:.1f}")
         return True
     else:
@@ -2100,6 +2182,7 @@ class UniverseScreener:
             print(f"{'='*60}")
 
             run_date = _dt.utcnow()
+            pending_yaml_additions = {"growth": [], "dividend": []}
             non_breakthrough = [s for s in all_scores if s.tier != "breakthrough"]
 
             # Split same way PHASE 3 does (yield routing)
@@ -2132,7 +2215,7 @@ class UniverseScreener:
                     proposals = _get_growth_swaps(top_60, ranks_61_120, cutoff_growth, exclusion)
                     accepted_count = 0
                     for prop in proposals:
-                        if _process_augmentation_proposal(prop, "growth", cutoff_growth, all_scores, audit_session, run_date):
+                        if _process_augmentation_proposal(prop, "growth", cutoff_growth, all_scores, audit_session, run_date, pending_yaml_additions):
                             accepted_count += 1
                             exclusion.add(prop.get("symbol", ""))  # don't propose same symbol for dividend tier
                     print(f"  Growth: {accepted_count}/{len(proposals)} proposals accepted")
@@ -2149,7 +2232,7 @@ class UniverseScreener:
                     proposals = _get_dividend_swaps(top_15, ranks_16_45, cutoff_div, exclusion)
                     accepted_count = 0
                     for prop in proposals:
-                        if _process_augmentation_proposal(prop, "dividend", cutoff_div, all_scores, audit_session, run_date):
+                        if _process_augmentation_proposal(prop, "dividend", cutoff_div, all_scores, audit_session, run_date, pending_yaml_additions):
                             accepted_count += 1
                     print(f"  Dividend: {accepted_count}/{len(proposals)} proposals accepted")
                 else:
@@ -2157,6 +2240,8 @@ class UniverseScreener:
 
                 audit_session.commit()
                 print(f"\n  Audit log committed.")
+                # Persist accepted symbols to discovered_pool.yaml so future runs see them
+                _persist_augmentation_acceptances(pending_yaml_additions)
             except Exception as e:
                 audit_session.rollback()
                 print(f"\n  ❌ Augmentation failed: {type(e).__name__}: {e}")
