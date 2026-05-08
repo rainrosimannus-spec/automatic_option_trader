@@ -638,6 +638,209 @@ def _get_breakthrough_candidates() -> list[dict]:
         return []
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# AUGMENTATION SWAP PROPOSALS (Commit J+K — building blocks, no callers yet)
+# ─────────────────────────────────────────────────────────────────────────
+# Two functions that ask Claude for high-conviction company names that
+# would score above the rank-60 (or rank-15 for dividend) cutoff. Used by
+# the monthly augmentation pipeline (Commit L) to refresh the watchlist
+# with discovered names that score better than current weakest members.
+
+_AUGMENTATION_RUBRIC_SUMMARY = """RUBRIC (composite is weighted 25/25/20/15/15):
+- revenue_durability: 5yr revenue CAGR + YoY consistency
+- compounding_quality: 5yr ROIC sustained (Buffett-style compounder)
+- operating_leverage: margin level + trend + growth × profitability
+- innovation_investment: R&D vs sector peers + R&D growth trend
+- capital_efficiency: FCF trend + share dilution + goodwill stability
+STRUCTURAL CAP: score floored at 30 if 3+ years negative net income AND
+3+ years negative FCF in the 5-year window."""
+
+
+def _format_score_table_for_prompt(scores: list, max_rows: int = 60) -> str:
+    """Format a list of StockScore objects as a compact prompt table.
+    Shows: rank, symbol, composite, then 5 sub-scores."""
+    lines = ["  rank symbol     composite  rev cmp op rd cap"]
+    for i, s in enumerate(scores[:max_rows], 1):
+        # Some sub-scores might not be set (older watchlist entries) — default to 0
+        rev = getattr(s, "_sub_revenue_durability", 0) or 0
+        cmp_ = getattr(s, "_sub_compounding_quality", 0) or 0
+        op = getattr(s, "_sub_operating_leverage", 0) or 0
+        rd = getattr(s, "_sub_innovation_investment", 0) or 0
+        cap = getattr(s, "_sub_capital_efficiency", 0) or 0
+        composite = s.forward_growth_score or 0
+        lines.append(
+            f"  {i:3d}. {s.symbol:8s}  {composite:6.1f}    {rev:3.0f} {cmp_:3.0f} {op:3.0f} {rd:3.0f} {cap:3.0f}"
+        )
+    return "\n".join(lines)
+
+
+def _build_growth_augmentation_prompt(
+    top_60: list,
+    ranks_61_to_120: list,
+    cutoff_score: float,
+    exclusion_set: set,
+) -> str:
+    """Build the augmentation prompt for growth tier."""
+    excluded_str = ", ".join(sorted(exclusion_set)) if exclusion_set else "(none)"
+
+    return f"""You're evaluating long-term compounder candidates for a curated watchlist.
+
+CURRENT TOP-60 GROWTH (sub-scores: rev=revenue_durability, cmp=compounding_quality,
+op=operating_leverage, rd=innovation_investment, cap=capital_efficiency):
+{_format_score_table_for_prompt(top_60, max_rows=60)}
+
+NAMES JUST BELOW (rank 61-120, for context — these are the names your proposals
+would compete against if any of them entered the universe):
+{_format_score_table_for_prompt(ranks_61_to_120, max_rows=60)}
+
+EXCLUDED — already in our universe, do NOT propose:
+{excluded_str}
+
+{_AUGMENTATION_RUBRIC_SUMMARY}
+
+YOUR TASK:
+Propose 5-10 high-conviction company names that would likely score ABOVE {cutoff_score:.1f}
+(our current rank-60 cutoff) under this rubric. Focus on:
+- Sustained high ROIC (15%+ over 5 years)
+- Profitable AND growing (positive operating margin, expanding)
+- Smart capital allocation (low share dilution, no goodwill bloat from M&A)
+- Investing in innovation (R&D appropriate to sector)
+
+Avoid:
+- Mega-caps already in our universe (see EXCLUDED list)
+- Speculative/unprofitable names (those belong to breakthrough tier, not growth)
+- Names you're not confident actually exist with the ticker you provide
+
+OUTPUT FORMAT — strict JSON array, no other text, no markdown fencing:
+[
+  {{"symbol": "ABC", "exchange": "SMART", "currency": "USD", "region": "US",
+    "thesis": "2-3 sentence thesis grounded in the 5 components — explain why this would beat {cutoff_score:.1f}"}},
+  ...
+]"""
+
+
+def _build_dividend_augmentation_prompt(
+    top_15: list,
+    ranks_16_to_45: list,
+    cutoff_score: float,
+    exclusion_set: set,
+) -> str:
+    """Build the augmentation prompt for dividend tier.
+    Different rubric — dividend uses dividend_total_return_score, not forward_growth_score."""
+    excluded_str = ", ".join(sorted(exclusion_set)) if exclusion_set else "(none)"
+
+    def fmt_div(scores, max_rows):
+        lines = ["  rank symbol     div_score  yield  cagr  payout"]
+        for i, s in enumerate(scores[:max_rows], 1):
+            score = s.dividend_total_return_score or 0
+            yld = s.dividend_yield or 0
+            cagr = getattr(s, "_dividend_cagr_5yr", None) or 0
+            payout = getattr(s, "_payout_ratio", None) or 0
+            lines.append(
+                f"  {i:3d}. {s.symbol:8s}  {score:6.1f}    {yld:5.2f}% {cagr:5.1f}% {payout:5.1f}%"
+            )
+        return "\n".join(lines)
+
+    return f"""You're evaluating dividend-paying companies for a curated 10-year total return watchlist.
+
+CURRENT TOP-15 DIVIDEND:
+{fmt_div(top_15, 15)}
+
+NAMES JUST BELOW (rank 16-45, for context):
+{fmt_div(ranks_16_to_45, 30)}
+
+EXCLUDED — already in our universe, do NOT propose:
+{excluded_str}
+
+DIVIDEND RUBRIC: Total return = dividends received + price appreciation.
+Components scored 0-100, weighted: 35% dividend CAGR (the most important factor
+for 10yr return), 25% current yield (sweet spot 2.5-6%, above 8% is yield-trap
+territory), 20% payout sustainability (below 70% is healthy), 20% revenue+FCF
+trend as price appreciation proxy.
+
+YOUR TASK:
+Propose 5-10 high-conviction dividend names that would likely score ABOVE {cutoff_score:.1f}
+(our current rank-15 cutoff). Focus on:
+- Strong dividend CAGR (8%+ over 5 years preferred — beats inflation + grows wealth)
+- Sustainable payout (below 70% of earnings, room to keep growing)
+- Yield in the 2.5-6% sweet spot (avoid yield traps above 8%)
+- Stable or growing revenue (not declining businesses with high yields)
+- Geographic diversity welcome (LSE, Nordic, Asian dividend payers)
+
+Avoid:
+- Names already in our universe (see EXCLUDED)
+- Yield traps (>8% yield with declining revenue/earnings)
+- Recent dividend cutters
+
+OUTPUT FORMAT — strict JSON array, no other text, no markdown fencing:
+[
+  {{"symbol": "ABC", "exchange": "SMART", "currency": "USD", "region": "US_DIV",
+    "thesis": "2-3 sentence thesis: dividend CAGR, sustainability, yield context"}},
+  ...
+]"""
+
+
+def _call_claude_for_swaps(prompt: str, label: str) -> list[dict]:
+    """Shared helper: send prompt to Claude, parse JSON array, return list of dicts.
+    Empty list on failure. Matches _get_breakthrough_candidates pattern."""
+    try:
+        from src.core.config import get_settings
+        _ant_key = get_settings().raw.get("anthropic", {}).get("api_key", "")
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": _ant_key,
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 4000,  # smaller than breakthrough — only 5-10 names
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data["content"][0]["text"].strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        proposals = json.loads(text.strip())
+        if not isinstance(proposals, list):
+            print(f"  ❌ {label} swap proposals: response was not a JSON array")
+            return []
+        print(f"  ✅ Claude returned {len(proposals)} {label} swap proposals")
+        return proposals
+    except Exception as e:
+        print(f"  ❌ {label} swap proposals failed: {e}")
+        return []
+
+
+def _get_growth_swaps(
+    top_60: list,
+    ranks_61_to_120: list,
+    cutoff_score: float,
+    exclusion_set: set,
+) -> list[dict]:
+    """Ask Claude for 5-10 growth-tier swap candidates that would beat the rank-60 cutoff."""
+    prompt = _build_growth_augmentation_prompt(top_60, ranks_61_to_120, cutoff_score, exclusion_set)
+    return _call_claude_for_swaps(prompt, "growth")
+
+
+def _get_dividend_swaps(
+    top_15: list,
+    ranks_16_to_45: list,
+    cutoff_score: float,
+    exclusion_set: set,
+) -> list[dict]:
+    """Ask Claude for 5-10 dividend-tier swap candidates that would beat the rank-15 cutoff."""
+    prompt = _build_dividend_augmentation_prompt(top_15, ranks_16_to_45, cutoff_score, exclusion_set)
+    return _call_claude_for_swaps(prompt, "dividend")
+
+
+
 def _fmp_key() -> Optional[str]:
     try:
         from src.core.config import get_settings
