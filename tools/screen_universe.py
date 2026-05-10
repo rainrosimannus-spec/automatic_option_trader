@@ -438,29 +438,61 @@ NOT-already-covered alternative instead.
 ## MEGATRENDS (assign each company to ONE primary):
 
 1. AI/compute applications (end-user AI products, AI-enabled SaaS)
-2. Compute infrastructure (chips, packaging, networking, data center power
-   and cooling, memory, specialty fab supplies)
-3. Genomics & medical biotech (gene editing, AI drug discovery, cell therapy)
-4. GLP-1 & preventive consumer health (metabolic, mental health, wearables,
-   continuous monitoring, age-related joint/vision/hearing)
-5. Aging populations & elder care (Japanese/European demographic crisis;
-   robotics for elder care, longevity therapeutics, senior housing)
-6. Energy transition (solar, wind, batteries, EVs, hydrogen)
-7. Energy bridge (gas, nuclear/SMR, uranium — what powers the transition)
-8. Climate adaptation (water, cooling, flood defense, drought-resistant
-   agriculture, irrigation, weather modeling)
-9. Critical minerals & advanced materials (lithium, rare earths, specialty
-   chemicals, battery thermal management)
-10. Defense & sovereignty (drones, sensors, shipbuilding, NATO/Korean/Japanese
-    defense primes, supply-chain reshoring components)
-11. Reindustrialization & automation (factory automation, electrical
-    infrastructure, industrial REITs, specialty industrial)
-12. Cybersecurity & digital sovereignty
-13. Quantum computing
-14. Space (launch, satellites, ground systems)
-15. Nuclear fusion (early-stage, accept high mortality)
-16. EM digital finance & fintech (unbanked populations coming online)
-17. Frontier biotech / synthetic biology in industrial applications
+2. AI/compute infrastructure (silicon, networking, datacenter, power)
+3. Energy transition (renewables, grid, storage, nuclear, fusion-adjacent)
+4. Genomics / synthetic biology / longevity therapeutics
+5. Industrial automation / robotics / advanced manufacturing
+6. Critical minerals / mining / battery materials
+7. Space / launch / satellite economy
+8. Defense modernization / dual-use / autonomous systems
+9. Climate adaptation / water / agtech
+10. Quantum computing / post-classical compute
+11. Healthcare cost transformation / medtech / diagnostics
+12. Aging populations / silver economy / care delivery
+13. Reshoring / supply-chain resilience / specialty industrials
+14. Financial infrastructure / non-bank credit / cross-border payments
+15. Cybersecurity (especially OT/critical infrastructure)
+16. Material science breakthroughs (perovskites, solid-state batteries, etc.)
+17. Speculative / non-consensus (your choice — explain why)
+
+## COMPUTE BUILDOUT THESIS — UNDER-REPRESENTED SUB-THEMES:
+
+The "AI/compute infrastructure" megatrend has been over-indexed on
+silicon (NVDA, AMD, AVGO, TSMC) and EDA tools. The actual bottlenecks
+in the 2026-2030 buildout sit elsewhere and have been under-represented
+in prior scans. When you allocate slots within megatrend #2, give
+deliberate weight to these sub-themes:
+
+a. **Memory** — HBM3E and successors are the gating factor on Blackwell
+   and successor accelerator shipments. NAND/DRAM cycles also benefit
+   from AI demand. Names worth considering: Micron (MU, USD),
+   SK Hynix (000660 on KSE, KRW), Samsung Electronics (005930 on KSE,
+   KRW), Kioxia (285A on TSEJ, JPY), Western Digital (WDC, USD),
+   Sandisk if separately listed. Memory has been almost entirely absent
+   from prior scans — at least 1 memory name should appear.
+
+b. **Data center electrical and cooling** — power delivery and thermal
+   are physical bottlenecks the silicon doesn't solve. Beyond Vertiv
+   (VRT) and GE Vernova (GEV), consider: nVent Electric (NVT, USD),
+   Eaton (ETN, USD), Schneider Electric (SU on EBS/SBF, EUR),
+   Legrand (LR on SBF, EUR), Munters (MTRS on SFB, SEK),
+   Modine Manufacturing (MOD, USD). At least 1 such name should appear.
+
+c. **Semicap beyond ASML/AMAT/KLAC/LRCX** — Tokyo Electron (8035 on
+   TSEJ, JPY), Disco Corp (6146 on TSEJ, JPY), Advantest (6857 on
+   TSEJ, JPY), BE Semiconductor (BESI on AEB, EUR), Lasertec (6920 on
+   TSEJ, JPY) — these are picks-and-shovels names sitting outside the
+   US-listed semi index.
+
+d. **Power generation for compute load** — beyond CCJ and the obvious
+   nuclear names, consider grid-scale storage, geothermal pure-plays,
+   and emerging SMR developers with public listings.
+
+These sub-themes should land naturally in the compute-infrastructure
+megatrend and the picks-and-shovels category — they are not a separate
+quota, just a signal that prior scans missed them.
+
+## TARGET STRUCTURE:
 
 ## REQUIRED DISTRIBUTION:
 
@@ -471,18 +503,15 @@ the 17 megatrends represented.
 asymmetric bets, but most asymmetric bets fail; the portfolio must have
 both):**
 
-- AT LEAST 18 names in trends already in motion (consensus-or-near-consensus
-  is acceptable for these — they pay the bills and occasionally produce a
-  10x via execution): aging populations, energy bridge, defense/sovereignty,
-  climate adaptation, compute infrastructure, GLP-1/preventive health,
-  reindustrialization, cybersecurity, EM digital finance.
+- ~18 names in trends already in motion (in_motion). These are higher
+  hit-rate, lower expected payoff. Most of the 10-baggers from this
+  bucket will come from category creators or unloved picks-and-shovels,
+  not from owning the obvious leader.
 
-- AT LEAST 6 names in genuinely speculative / contrarian megatrends where
-  consensus has NOT arrived: nuclear fusion, quantum computing, true
-  longevity therapeutics, room-temperature superconductors, sovereign-cloud
-  infrastructure, ammonia as marine fuel, deep geothermal at tokamak scale,
-  AGI agent platforms, deep-sea mineral extraction, frontier synthetic
-  biology, novel space economy applications. The 6 should NOT be limited
+- ~6 names in genuinely speculative trends (speculative): fusion,
+  asteroid mining, brain-computer interfaces, longevity escape velocity,
+  quantum, space-based solar, radically new battery chemistry, novel
+  materials with no current commercial product. Do not feel constrained
   to these examples — surface other genuinely under-priced theses.
   Accept that 4-5 of these 6 may go to zero. The point is asymmetric upside.
 
@@ -490,11 +519,12 @@ both):**
 
 This barbell is the central design: most allocation in trends already in
 motion (high hit-rate), but explicit allocation to speculative trends that
-consensus is underweighting (where the actual 10-baggers historically hide).
+will mostly fail. Without the speculative bucket, you cannot reach 10x
+expected outcomes for the top performers.
 
-**Category shape (assign each company to ONE):**
-- 6 names: category-creators (companies building markets that don't yet exist)
-- 6 names: incumbent-replacers (taking share in $50B+ existing TAMs)
+**Category split (target):**
+- 6 names: category creators (new TAM, no incumbent)
+- 6 names: incumbent replacers (taking share in mature markets)
 - 6 names: picks-and-shovels (selling tools/components to whoever wins)
 - 6 names: unloved sectors (boring industries with secular tailwinds —
   fertilizer, aggregates, midstream, industrial REITs, specialty chemicals)
@@ -507,14 +537,20 @@ consensus is underweighting (where the actual 10-baggers historically hide).
 - 8 names: $50B-$500B market cap
 
 **Geographic spread:**
-- 5+ names with currency != USD (count by currency, not by exchange label).
+- 6+ names with currency != USD (count by currency, not by exchange label).
+  This is up from prior scans — the universe is over-tilted to USD.
 - For ANY US-listed name (NYSE/NASDAQ/AMEX/Pink), use exchange="SMART" and
   currency="USD". This is our internal convention. Do NOT return NYSE or
   NASDAQ as an exchange code.
-- Among the 5+ non-USD names, include at least 3 from underweighted
-  markets: Japan (TSEJ, JPY), Korea (KSE, KRW), India (NSE, INR), Brazil
-  (BVMF, BRL), Israel (TASE, ILS), Eastern Europe (WSE, BUX, etc.),
-  Nordics (HEX, OSE, SFB, CSE).
+- Among the 6+ non-USD names, include at least 4 from underweighted
+  markets: Korea (KSE, KRW — Hynix, Samsung, semicap), Japan (TSEJ, JPY —
+  Tokyo Electron, Disco, Advantest, Kioxia, Lasertec), Taiwan (non-TSM
+  semicap and component names), India (NSE, INR), Brazil (BVMF, BRL),
+  Israel (TASE, ILS), Eastern Europe (WSE, BUX, etc.), Nordics (HEX,
+  OSE, SFB, CSE).
+- Korea and Japan have been particularly absent in prior scans despite
+  hosting some of the most leveraged compute-buildout names. At least
+  1 Korean and 1 Japanese listing strongly preferred.
 
 ## EXCLUSIONS:
 
@@ -560,15 +596,11 @@ public listings with verifiable tickers.
 
 ## REQUIRED OUTPUT FIELDS PER COMPANY:
 
-JSON array. Each entry must include:
-
-- symbol: ticker
-- name: company name
-- exchange: SMART for US, native exchange code for non-US (LSE, AEB,
-  BVME, TSEJ, KSE, NSE, BVMF, TASE, BIT, etc.)
-- currency: USD/EUR/GBP/JPY/KRW/INR/BRL/ILS as appropriate
-- market_cap_usd: approximate, in billions, current
-- sector: GICS-style primary sector
+- ticker
+- exchange (SMART for US-listed; otherwise the IBKR exchange code:
+  TSEJ, KSE, NSE, BVMF, TASE, AEB, EBS, SBF, SFB, OSE, HEX, etc.)
+- currency (the trading currency — USD, EUR, GBP, JPY, KRW, BRL, etc.)
+- name (full company name)
 - megatrend: which of the 17 megatrends above (use the number + name).
   For speculative entries that don't fit the 17, use the literal name of
   the speculative trend.
@@ -591,8 +623,11 @@ Verify all of:
 - Risk-tier barbell: at least 18 in_motion, at least 6 speculative
 - Category split target 6/6/6/6/6 (adjust if returning fewer total)
 - Size split roughly 12/10/8 (proportional if fewer total)
-- 5+ names with currency != USD
-- 3+ from underweighted markets
+- 6+ names with currency != USD
+- 4+ from underweighted markets
+- At least 1 Korean (KSE) AND at least 1 Japanese (TSEJ) listing
+- At least 1 memory/HBM name (per compute buildout thesis sub-theme a)
+- At least 1 data center electrical/cooling name (sub-theme b)
 - No name in the global top 20 by market cap
 - No ETFs / funds / index products
 - Each ticker verified — do not return private companies or wrong-ticker
