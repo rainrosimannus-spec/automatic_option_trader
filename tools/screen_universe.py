@@ -1006,6 +1006,7 @@ def _process_augmentation_proposal(
     audit_session,
     run_date,
     pending_additions: dict = None,
+    screener=None,
 ) -> bool:
     """
     Process a single Claude swap proposal.
@@ -1042,7 +1043,9 @@ def _process_augmentation_proposal(
     
     # Score it
     try:
-        score = _score_stock(symbol, exchange=exchange, currency=currency, region=region)
+        if screener is None:
+            raise RuntimeError("_process_augmentation_proposal requires screener=<UniverseScreener instance>")
+        score = screener._score_stock(symbol, exchange=exchange, currency=currency)
         if score is None:
             raise ValueError("_score_stock returned None")
     except Exception as e:
@@ -2294,7 +2297,7 @@ class UniverseScreener:
                     proposals = _get_growth_swaps(top_60, ranks_61_120, cutoff_growth, exclusion)
                     accepted_count = 0
                     for prop in proposals:
-                        if _process_augmentation_proposal(prop, "growth", cutoff_growth, all_scores, audit_session, run_date, pending_yaml_additions):
+                        if _process_augmentation_proposal(prop, "growth", cutoff_growth, all_scores, audit_session, run_date, pending_yaml_additions, screener=self):
                             accepted_count += 1
                             exclusion.add(prop.get("symbol", ""))  # don't propose same symbol for dividend tier
                     print(f"  Growth: {accepted_count}/{len(proposals)} proposals accepted")
@@ -2311,7 +2314,7 @@ class UniverseScreener:
                     proposals = _get_dividend_swaps(top_15, ranks_16_45, cutoff_div, exclusion)
                     accepted_count = 0
                     for prop in proposals:
-                        if _process_augmentation_proposal(prop, "dividend", cutoff_div, all_scores, audit_session, run_date, pending_yaml_additions):
+                        if _process_augmentation_proposal(prop, "dividend", cutoff_div, all_scores, audit_session, run_date, pending_yaml_additions, screener=self):
                             accepted_count += 1
                     print(f"  Dividend: {accepted_count}/{len(proposals)} proposals accepted")
                 else:
