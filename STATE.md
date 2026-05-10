@@ -1,8 +1,107 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-05-08 (Fri) — Forward-growth scoring landed + augmentation pipeline complete (22 commits today); son's clone import script delivered.
+Last updated: 2026-05-10 (Sun) — Augmentation pipeline validated end-to-end + Commit E + breakthrough infrastructure (5 commits).
 
 ---
+
+
+## Sunday (2026-05-10) — Augmentation pipeline validated end-to-end + Commit E + breakthrough infrastructure (5 commits)
+
+**Long debugging-then-shipping evening.** Five real commits, all pushed. Augmentation pipeline produced its first acceptances ever (May 8 work was committed but never executed end-to-end — discovered tonight). Commit E shipped. Breakthrough prompt v4 deployed. Breakthrough history persistence layer built. Plus a 5-day-old portfolio dashboard drift cleared up along the way.
+
+### Augmentation pipeline — found and fixed NameError (commit 80f08c3)
+
+First augmentation live test (AUGMENTATION_ENABLED = True, manual run via dashboard) produced 16 audit rows, every single one with accepted=False. Eight scoring_failed, one duplicate from growth tier, the rest duplicate from dividend tier. Looked like a prompt or data problem at first.
+
+Audit-table notes column told the real story: NameError: name "_score_stock" is not defined. Every proposal raised this exception, was silently caught at line 1048's bare except Exception, and audited as scoring_failed with score=0.0.
+
+Root cause: _score_stock is a method on UniverseScreener (line 2385, defined yesterday), but _process_augmentation_proposal called it as a bare function. Whoever wrote the code yesterday (Claude in the May 8 session) assumed module scope. The defensive except swallowed it. Pre-flight ast.parse doesnt catch undefined names at runtime, only importlib.import_module in a fresh process would have — and even then only if the scoring path actually executes, which it didnt until first real run.
+
+Also discovered a second bug masked by the first: even after fixing the NameError, the call passed region=region as a kwarg, which _score_stock doesnt accept. Both fixed in one commit. Added screener parameter to _process_augmentation_proposal, defensive RuntimeError if screener missing, call screener._score_stock(symbol, exchange=exchange, currency=currency) without region, pass screener=self at both PHASE 2.5 call sites.
+
+**Important lesson for future work:** on-disk fixes dont activate in long-running services until restart. After committing the fix, the second test run produced *identical* errors — same NameError every row. The dashboards web process was holding stale bytecode in memory from before the fix landed. ~/restart-all.sh (2x phone 2FA) picked up the fix, third test run was clean.
+
+### Augmentation re-test post-restart — pipeline validated
+
+Fourth manual run (with NameError fix loaded): 6 of 8 growth proposals accepted. IDXX 82.5 (veterinary diagnostics, clean compounder well above 55.6 cutoff), MPWR 73.0 (analog semis, compute-adjacent), SPGI 65.8 (credit ratings duopoly), TDG 65.6 (aerospace aftermarket), EW 64.2 (structural heart), WST 60.0 (pharma packaging). Plus 2 below cutoff (ROP 52.8, MCHP 39.2) — proves scoring works, names just didnt beat threshold.
+
+Dividend tier: 0 acceptances, 4 duplicates (correct — already in DIVIDEND_CANDIDATES), 3 below 77.8 cutoff, 1 scoring failure (LMI = Lendlease, Australian REIT, fell to international-handling edge case in augmentation prompts — see known limitations below).
+
+After Commit E and second restart, fifth manual run: 4 more growth acceptances (different names — augmentation working under new portfolio_score). Discovered pool grew 0 to 6 to 10 over the evening. Pipeline genuinely validated across multiple runs.
+
+### Portfolio dashboard merge-mode fix (commit 2faa4df)
+
+Found 5-day-old uncommitted drift in src/web/routes/portfolio.py while preparing the augmentation re-test. Two call sites of get_total_invested_usd() were filtering by cfg.portfolio.ibkr_account — pre-merge artifact that under-counted post-April-28 (when both Maggy and Winston run against U17562704). Filter removed at both sites; cfg/get_settings import dropped from _build_portfolio_performance since no other use remained. Other functions in the file still import get_settings independently (lines 302, 442) — unrelated, untouched.
+
+### Commit E — portfolio_score = forward_growth_score (commit e958fc1)
+
+Per May 8 architectural plan: replaced 0.40*growth + 0.25*valuation + 0.35*quality with forward_growth_score directly at line 2484. Old growth/valuation/quality scores remain on StockScore for diagnostic visibility, no longer drive ranking. options_score derivation unchanged — it now propagates forward_growth_score downstream automatically.
+
+May 8 plan called for 2-3 observation runs before flipping; we had only one full run with forward_growth_score visible (todays earlier dashboard data). Decision to ship: todays results were coherent (Buffett-style ranking working, picks-and-shovels rising, NVDA correctly tempered to 80.5), augmentation re-test produced exactly the kind of names forward_growth_score is meant to surface (IDXX 82.5 ranking like a top-tier compounder), and US markets closed Sunday so behavior wouldnt go live until Monday regardless.
+
+**Verification post-restart:** composite_score field in portfolio_watchlist reflects the analyzers downstream 30/70 blend (0.30*raw_score + 0.70*compound_quality_pct), not the screeners portfolio_score directly. NVDA composite=65.0 = 0.30*0 + 0.70*92.9 (within rounding). Architecture confirmed: screener writes portfolio_score, scheduler stores it, analyzer blends with technical signal, result lands as composite_score. Commit E correctly changed step 1; downstream propagation works as designed.
+
+### Breakthrough prompt v4 (commit f855338)
+
+Targeted gaps surfaced over recent runs: memory/HBM names absent, data-center electrical/cooling under-represented, non-USD listings producing only 1 (target was 5+), Korea and Japan particularly absent.
+
+v4 adds COMPUTE BUILDOUT THESIS section calling out four under-represented sub-themes within AI/compute infrastructure megatrend. Memory (HBM3E, NAND/DRAM): Micron, SK Hynix (000660 KSE), Samsung (005930 KSE), Kioxia (285A TSEJ), WDC. Data center electrical and cooling: nVent (NVT), Eaton (ETN), Schneider (SU.PA), Munters (MTRS.SBF). Semicap beyond ASML/AMAT/KLAC: Tokyo Electron (8035 TSEJ), Disco (6146 TSEJ), Advantest (6857 TSEJ), BE Semiconductor (BESI AEB), Lasertec (6920 TSEJ). Power generation for compute load: beyond CCJ, geothermal pure-plays, SMR developers.
+
+Geographic spread tightened: 6+ non-USD (was 5), 4+ underweighted markets (was 3), explicit requirement of at least 1 Korean (KSE) AND at least 1 Japanese (TSEJ) listing. Concrete examples cited per sub-theme to anchor Claudes selection.
+
+No code changes; orchestration in _get_breakthrough_candidates() unchanged. Template grew from 8744 to 10433 chars. Effect activated at restart 2 — first v4 run was tonights final manual run.
+
+### Breakthrough history persistence (commit c098919) — Step B of three-part design
+
+**Architectural framing:** growth and dividend tiers each have a stable hand-curated base (CANDIDATE_POOLS, DIVIDEND_CANDIDATES) plus an augmentation overlay (discovered_pool.yaml). Breakthrough has neither — its pure ephemeral output, every run from scratch. Tonights commit gives breakthrough the same shape as the other two tiers.
+
+Adds new top-level breakthrough: key in tools/discovered_pool.yaml. Each entry tracks a name that has passed _check_breakthrough_eligibility, with these fields: symbol, exchange, currency, name, megatrend, thesis_latest, first_seen and last_seen (YYYY-MM strings, calendar-month bucketing), appearance_count.
+
+**Insert/update semantics.** New name on this run inserts with count=1, first_seen=last_seen=YYYY-MM. Existing name in a different last_seen month bumps count and updates last_seen. Existing name in same month (multiple manual runs) does not bump count, just refreshes thesis.
+
+Hook fires inside the breakthrough loop at line 2419, immediately after breakthrough_scores.append(score). Captures only what the system actually accepts (post-eligibility, post-scoring), not what Claude proposed. Best-effort: any persistence failure logged but does not interrupt the screener.
+
+**Eviction (_evict_breakthrough_overflow) is stubbed** with detailed TODO. Locked design: protect last 6 calendar months (recency dominates count for new names — a single fresh appearance can be a real new gem worth 6 cycles of observation), beyond window evict by lowest appearance_count then oldest last_seen until pool <= 75. Pool may exceed 75 transiently when all names are within protection window. Cap = 75 = 3*25 (three runs worth of names).
+
+**Why eviction stubbed tonight.** With a fresh pool and ~22 names per run, eviction logic isnt exercisable until pool grows beyond 75 over multiple months. Stub keeps tonights scope small (insert + update only, fully testable) while preserving the design for tomorrow.
+
+**Why Step B tonight (vs deferred).** Without persistence, Item 3 (anchored 30-vs-25 selection prompt) has no anchor list to operate on. Capturing tonights manual-run breakthrough names as the seed lets Item 3 be developed against real data on its first run. Without this, Item 3s first run would have no history to anchor against.
+
+### International handling — investigated, not systemic
+
+LMI scoring failure in augmentation prompted a check: are non-USD listings widely broken in the regular screener?
+
+Currency breakdown of regular screener output: USD 99 symbols (avg fgs 54.5), EUR 11 (51.9), CAD 11 (46.3), JPY 3 (48.1), AUD 3 (45.1), ZAR 2 (56.4), ILS 2 (51.5), GBP 2 (55.2), SGD 1 (50.6), HKD 1 (41.4) — 0 NULL forward_growth_score across all 135 symbols.
+
+Regular screener handles internationals fine — explicit per-symbol exchange/currency from yaml configs flow correctly through _score_stock, IBKR fundamentals fallback chain catches FMP gaps for international names. Issue is **augmentation-only**: when Claude proposes a non-US name with default SMART/USD (because the augmentation prompts dont tell Claude to specify exchange/currency for international names like breakthrough v3 does), qualifyContracts fails and _score_stock returns None.
+
+LMI is the only case in tonights runs. Logged as known limitation — fixable in a future session by extending _build_growth_augmentation_prompt and _build_dividend_augmentation_prompt to instruct Claude on IBKR exchange codes for non-US listings.
+
+### Other observations from tonight
+
+data/screener_next_run.txt is stale — says "Next screener run: May 4" but dashboard correctly shows June 1. The text file is leftover documentation; actual schedule lives elsewhere. Not a bug, just outdated. Future housekeeping.
+
+Breakthrough output was ephemeral — until tonights Step B, no run history retained anywhere. Each run overwrote the previous. Todays runs 1-2 breakthrough lists are gone forever. From tonight onward, breakthrough history starts being preserved.
+
+Stale .bak-2026-05-04* files — dozen of them in untracked state. Future housekeeping.
+
+### Pending for next session
+
+**Breakthrough Step B completion (eviction logic).** Implement _evict_breakthrough_overflow() per locked design: protect last 6 calendar months, beyond window evict by (appearance_count ASC, last_seen ASC) until pool <= 75. Allow transient overflow when all names protected. Test by inserting synthetic old entries to force eviction.
+
+**Breakthrough Item 3 — anchored 30-to-25 selection prompt.** Redesign breakthrough prompt to (a) propose 30 fresh names independently, (b) merge with last runs 25 anchor list from breakthrough_history pool, (c) Claude reasons over 55 candidates and selects top 25 by "market view vs prompt fit." Selection step: single Claude call, prompt contains 30 fresh + 25 anchor + selection rubric. First run with empty anchor: skip anchor section, return 25 fresh. Implements cross-run conviction stability (recurring names get protection) without losing fresh-idea generation (independent first step).
+
+**Augmentation international handling.** Patch _build_growth_augmentation_prompt and _build_dividend_augmentation_prompt to instruct Claude on IBKR exchange codes for non-US listings (similar to breakthrough v4). Resolves LMI-class scoring_failed audit rows for non-US augmentation proposals.
+
+**Carried over from earlier sessions.** RULES.md merge-mode update — still describes pre-merge architecture (Maggy 4001 / Winston 7496 separate). Add "Current operating mode (merged, since 2026-04-28)" section noting suggestion mode + auto-approve OFF, plus backup file references for re-split when new options account arrives. Sons clone Asia/EU options scan check — if Mondays Asian/European market scans on sons clone (U23886415) produce zero put suggestions, son needs to determine whether real bug (universe filter, market label, gates firing only on US data, live-quote gate) or current criteria too strict. Diagnostic drafted. Optional Commit N — --dry-run-augmentation flag for prompt iteration without API spend, nice-to-have.
+
+### Tonights commits (5)
+
+- 80f08c3 — augmentation: fix NameError, call screener._score_stock as method, drop invalid region kwarg
+- 2faa4df — portfolio dashboard: remove per-account filter on total_invested_usd (merge-mode fix)
+- e958fc1 — screener: Commit E, portfolio_score = forward_growth_score (Buffett-style fair-price)
+- f855338 — screener: breakthrough prompt v4, compute buildout thesis + tightened geographic spread
+- c098919 — screener: breakthrough_history persistence — Step B (insert+update only, eviction stubbed)
 
 ## Monday (2026-05-05) — Capital injections deposit-proof graphs + margin interest investigation
 
