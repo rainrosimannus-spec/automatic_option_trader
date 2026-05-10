@@ -876,6 +876,145 @@ def _get_dividend_swaps(
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# BREAKTHROUGH HISTORY (May 10 — Step B persistence; eviction stubbed)
+# ─────────────────────────────────────────────────────────────────────────
+# Tracks names that pass _check_breakthrough_eligibility across runs.
+# Each entry: appearance_count + first_seen + last_seen (calendar-month YYYY-MM).
+# Stored as the `breakthrough:` key in tools/discovered_pool.yaml alongside
+# growth/dividend (which augmentation populates).
+#
+# Insert/update logic (this commit): on each eligible breakthrough candidate,
+#   - new symbol → insert with count=1, first_seen=last_seen=current_month
+#   - existing symbol → bump count, update last_seen, refresh thesis_latest
+#
+# Eviction logic (TODO — next session):
+#   protect last 6 calendar months; beyond window, drop lowest count first,
+#   tiebreak by oldest last_seen, until pool <= 75. Pool may exceed 75
+#   transiently when all names are within protection window.
+BREAKTHROUGH_HISTORY_CAP = 75
+
+
+def _persist_breakthrough_appearance(
+    symbol: str,
+    exchange: str,
+    currency: str,
+    name: str,
+    megatrend: str,
+    thesis: str,
+    run_date,
+) -> bool:
+    """
+    Insert-or-update a breakthrough name into discovered_pool.yaml.
+
+    Calendar-month bucketing: first_seen / last_seen are YYYY-MM strings.
+    Multiple manual runs in the same calendar month do NOT bump the count —
+    a name appearing in 3 runs in May counts as 1 May appearance.
+
+    Atomic write via .tmp + os.replace (matches _persist_augmentation_acceptances).
+    Returns True on success, False on any error (logged but not raised —
+    breakthrough persistence is best-effort, scan should still complete).
+    """
+    import os
+    import yaml
+
+    yaml_path = os.path.join(os.path.dirname(__file__), "discovered_pool.yaml")
+    tmp_path = yaml_path + ".tmp"
+
+    # Calendar-month bucket: format run_date as YYYY-MM
+    try:
+        if hasattr(run_date, "strftime"):
+            run_month = run_date.strftime("%Y-%m")
+        else:
+            # Defensive — if run_date is a string, take first 7 chars (YYYY-MM)
+            run_month = str(run_date)[:7]
+    except Exception as e:
+        print(f"  ⚠ breakthrough persist: bad run_date {run_date!r}: {e}")
+        return False
+
+    try:
+        if os.path.exists(yaml_path):
+            with open(yaml_path) as f:
+                existing = yaml.safe_load(f) or {}
+        else:
+            existing = {}
+
+        if "breakthrough" not in existing or existing["breakthrough"] is None:
+            existing["breakthrough"] = []
+        elif not isinstance(existing["breakthrough"], list):
+            print(f"  ⚠ discovered_pool.yaml[breakthrough] was not a list, resetting")
+            existing["breakthrough"] = []
+
+        # Find existing entry by symbol
+        match = None
+        for entry in existing["breakthrough"]:
+            if entry.get("symbol") == symbol:
+                match = entry
+                break
+
+        if match is None:
+            # New name — insert
+            existing["breakthrough"].append({
+                "symbol": symbol,
+                "exchange": exchange,
+                "currency": currency,
+                "name": name,
+                "megatrend": megatrend,
+                "thesis_latest": (thesis or "")[:400],
+                "first_seen": run_month,
+                "last_seen": run_month,
+                "appearance_count": 1,
+            })
+            print(f"  📒  breakthrough_history: NEW {symbol} ({run_month})")
+        else:
+            # Existing — only bump if this is a different month than last_seen
+            if match.get("last_seen") != run_month:
+                match["appearance_count"] = (match.get("appearance_count") or 0) + 1
+                match["last_seen"] = run_month
+                print(f"  📒  breakthrough_history: BUMP {symbol} count={match['appearance_count']} ({run_month})")
+            else:
+                # Same month, already counted — just refresh thesis & metadata
+                pass
+            # Always refresh thesis to latest version Claude provided
+            match["thesis_latest"] = (thesis or match.get("thesis_latest", ""))[:400]
+            match["megatrend"] = megatrend or match.get("megatrend", "")
+            match["name"] = name or match.get("name", symbol)
+
+        with open(tmp_path, "w") as f:
+            yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
+        os.replace(tmp_path, yaml_path)
+        return True
+
+    except Exception as e:
+        print(f"  ❌  breakthrough_history persist failed for {symbol}: {type(e).__name__}: {e}")
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        return False
+
+
+def _evict_breakthrough_overflow() -> bool:
+    """
+    STUB — eviction logic deferred to next session.
+
+    When implemented:
+    1. Load discovered_pool.yaml[breakthrough]
+    2. If len <= BREAKTHROUGH_HISTORY_CAP: no-op
+    3. Compute current calendar month; protection window = last 6 months.
+    4. Of names with last_seen OUTSIDE protection window, sort by:
+         (appearance_count ASC, last_seen ASC)
+       and evict from the front until len <= cap.
+    5. If all names are within protection window and pool > cap,
+       LET POOL EXCEED CAP transiently — recency dominates strict cap.
+    6. Atomic write.
+
+    For now: no-op. Pool will grow unbounded until next session implements this.
+    """
+    return True
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # AUGMENTATION ORCHESTRATION (Commit L)
 # ─────────────────────────────────────────────────────────────────────────
 # AUGMENTATION_ENABLED toggles Phase 2.5 in screen_all().
@@ -2274,6 +2413,20 @@ class UniverseScreener:
                     if score.sector == "Unknown":
                         score.sector = candidate.get("sector", "Unknown")
                     breakthrough_scores.append(score)
+                    # Step B: persist to breakthrough_history pool (best-effort)
+                    try:
+                        from datetime import datetime as _dt_bt
+                        _persist_breakthrough_appearance(
+                            symbol=symbol,
+                            exchange=candidate.get("exchange", "SMART"),
+                            currency=candidate.get("currency", "USD"),
+                            name=score.name,
+                            megatrend=score.megatrend,
+                            thesis=candidate.get("thesis", "") or candidate.get("rationale", ""),
+                            run_date=_dt_bt.now(),
+                        )
+                    except Exception as _e:
+                        print(f"  ⚠ breakthrough_history hook failed for {symbol}: {_e}")
                     status = "✅" if score.options_available else "⛔"
                     print(f"  {status} {score.symbol:8s} | MCap: ${score.market_cap/1e9:5.1f}B | {score.megatrend}")
                 else:
