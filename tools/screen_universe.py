@@ -846,7 +846,7 @@ def _get_dividend_swaps(
 # AUGMENTATION_ENABLED toggles Phase 2.5 in screen_all().
 # Default OFF — must be manually flipped to True to activate.
 # When OFF, augmentation code is bypassed entirely (no API calls, no DB writes).
-AUGMENTATION_ENABLED = False
+AUGMENTATION_ENABLED = True
 
 
 def _persist_augmentation_acceptances(additions: dict) -> bool:
@@ -2478,9 +2478,13 @@ class UniverseScreener:
 
         self._score_options(score, contract)
 
-        score.portfolio_score = round(
-            score.growth_score * 0.40 + score.valuation_score * 0.25 + score.quality_score * 0.35, 1
-        )
+        # Commit E (May 10): portfolio_score = forward_growth_score directly.
+        # forward_growth_score is the Buffett-style fair-price composite
+        # (30% raw + 70% compound quality across 5 sub-scorers).
+        # The old 40/25/35 blend is preserved in growth_score / valuation_score /
+        # quality_score on the StockScore (still computed at lines 2454-2456)
+        # for diagnostic visibility.
+        score.portfolio_score = round(score.forward_growth_score or 0.0, 1)
         score.options_score = round(
             score.portfolio_score * 0.60 + score.options_liquidity * 0.40, 1
         )
