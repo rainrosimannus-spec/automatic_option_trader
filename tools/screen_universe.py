@@ -1209,6 +1209,172 @@ Return the JSON object now."""
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# BREAKTHROUGH SELECTION ORCHESTRATION (Big-Ticket #2, Commit 4a of 4)
+# ─────────────────────────────────────────────────────────────────────────
+# Call B execution: send the selection prompt to Claude, parse the JSON
+# object response, write an audit row, return the selected symbol set.
+#
+# Not wired into screen_all() yet — that's Commit 4b. This commit only
+# adds the standalone, testable functions.
+
+
+def _call_claude_for_selection(prompt: str) -> dict:
+    """Sibling to _call_claude_for_swaps but expects a JSON OBJECT response,
+    not an array. Returns parsed dict, or {} on any failure.
+
+    Output schema (per _build_breakthrough_selection_prompt):
+      {"selected": [{"symbol": "...", "reasoning": "..."}, ...],
+       "group_reasoning": "..."}
+    """
+    try:
+        from src.core.config import get_settings
+        _ant_key = get_settings().raw.get("anthropic", {}).get("api_key", "")
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": _ant_key,
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 8000,  # 25 picks with reasoning + group paragraph
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data["content"][0]["text"].strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        parsed = json.loads(text.strip())
+        if not isinstance(parsed, dict):
+            print(f"  ❌ breakthrough selection: response was not a JSON object")
+            return {}
+        if "selected" not in parsed or not isinstance(parsed["selected"], list):
+            print(f"  ❌ breakthrough selection: missing or invalid 'selected' field")
+            return {}
+        n = len(parsed["selected"])
+        print(f"  ✅ Claude selected {n} breakthrough names")
+        return parsed
+    except Exception as e:
+        print(f"  ❌ breakthrough selection failed: {type(e).__name__}: {e}")
+        return {}
+
+
+def _run_breakthrough_selection(
+    fresh: list[dict],
+    anchor: list[dict],
+    audit_session,
+    run_date,
+) -> dict:
+    """Orchestrate call B of the anchored 30->25 selection.
+
+    Builds prompt, calls Claude, parses response, writes a
+    BreakthroughSelectionAudit row, returns:
+
+        {
+          "selected_symbols": set[str],     # symbols that won the slot
+          "selected_with_reasoning": list,  # full [{symbol, reasoning}, ...]
+          "group_reasoning": str,
+          "fallback_used": bool,
+          "notes": str,
+        }
+
+    Caller (Commit 4b) reads selected_symbols to filter breakthrough_scores
+    before the persist hook fires.
+
+    Fallback policy: if Claude call B fails (HTTP error, JSON parse, missing
+    fields), we fall back to "use fresh as-is, no anchor merge" — preserves
+    today's pre-selection behavior so a call-B outage doesn't kill the run.
+    Logged in audit as fallback_used=True with reason in notes.
+
+    Caller is responsible for audit_session.commit(). Mirrors
+    _process_augmentation_proposal pattern.
+    """
+    # Lazy import — matches codebase pattern
+    from src.portfolio.models import BreakthroughSelectionAudit
+
+    # Build symbol sets for audit / overlap accounting
+    fresh_syms = [e.get("symbol") for e in fresh if e.get("symbol")]
+    anchor_syms = [e.get("symbol") for e in anchor if e.get("symbol")]
+    merged_count = len(set(fresh_syms) | set(anchor_syms))
+
+    # Build prompt + call Claude
+    prompt = _build_breakthrough_selection_prompt(fresh, anchor)
+    response = _call_claude_for_selection(prompt)
+
+    selected_with_reasoning = []
+    group_reasoning = ""
+    fallback_used = False
+    notes = "ok"
+
+    if not response:
+        # Call B failed entirely — fallback to fresh as-is
+        fallback_used = True
+        notes = "call_B_failed_empty_response"
+        for sym in fresh_syms:
+            selected_with_reasoning.append({
+                "symbol": sym,
+                "reasoning": "fallback: call B failed, fresh-as-is",
+            })
+    else:
+        # Validate each entry has required fields
+        for item in response["selected"]:
+            if not isinstance(item, dict):
+                continue
+            sym = item.get("symbol")
+            if not sym:
+                continue
+            reasoning = item.get("reasoning", "")
+            selected_with_reasoning.append({"symbol": sym, "reasoning": reasoning})
+        group_reasoning = response.get("group_reasoning", "")
+
+        # Edge case: call B returned a response but no usable picks
+        if not selected_with_reasoning:
+            fallback_used = True
+            notes = "call_B_returned_no_valid_picks"
+            for sym in fresh_syms:
+                selected_with_reasoning.append({
+                    "symbol": sym,
+                    "reasoning": "fallback: call B returned no valid picks, fresh-as-is",
+                })
+
+    selected_symbols = {item["symbol"] for item in selected_with_reasoning}
+
+    # Write audit row
+    try:
+        audit_row = BreakthroughSelectionAudit(
+            run_date=run_date,
+            anchor_count=len(anchor_syms),
+            fresh_count=len(fresh_syms),
+            merged_count=merged_count,
+            selected_count=len(selected_symbols),
+            fresh_symbols_json=json.dumps(fresh_syms),
+            anchor_symbols_json=json.dumps(anchor_syms),
+            selected_json=json.dumps(selected_with_reasoning),
+            group_reasoning=group_reasoning[:5000],  # defensive truncate
+            fallback_used=fallback_used,
+            notes=notes,
+        )
+        audit_session.add(audit_row)
+    except Exception as e:
+        # Audit failure must not break the run
+        print(f"  ⚠ breakthrough selection audit write failed: {type(e).__name__}: {e}")
+
+    return {
+        "selected_symbols": selected_symbols,
+        "selected_with_reasoning": selected_with_reasoning,
+        "group_reasoning": group_reasoning,
+        "fallback_used": fallback_used,
+        "notes": notes,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # AUGMENTATION ORCHESTRATION (Commit L)
 # ─────────────────────────────────────────────────────────────────────────
 # AUGMENTATION_ENABLED toggles Phase 2.5 in screen_all().
