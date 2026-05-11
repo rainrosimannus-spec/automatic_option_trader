@@ -33,3 +33,10 @@ config/screened_universe.yaml
 config/structural_risks.yaml
 data/portfolio_account_cache.json
 data/screener_last_run.json
+
+# Runtime API cache (FMP fundamentals responses, refreshes monthly)
+data/fmp_cache.json
+
+# Manual backup files (rm-ed manually when no longer needed)
+*.bak
+*.bak-*
