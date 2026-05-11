@@ -438,8 +438,10 @@ NOT-already-covered alternative instead.
 ## MEGATRENDS (assign each company to ONE primary):
 
 1. AI/compute applications (end-user AI products, AI-enabled SaaS)
-2. Compute infrastructure (chips, packaging, networking, data center power
-   and cooling, memory, specialty fab supplies)
+2. Compute infrastructure — the AI buildout's full stack: silicon, advanced
+   packaging, networking, data center electrical and cooling, HBM/DRAM/NAND
+   memory, semicap equipment, power generation for compute load. Currently the
+   largest single capital-cycle in technology
 3. Genomics & medical biotech (gene editing, AI drug discovery, cell therapy)
 4. GLP-1 & preventive consumer health (metabolic, mental health, wearables,
    continuous monitoring, age-related joint/vision/hearing)
@@ -584,6 +586,10 @@ JSON array. Each entry must include:
   would confirm the thesis is on track.
 
 ## VALIDATION CHECKLIST (before returning):
+
+IMPORTANT: if you cannot satisfy ALL items below, return your best honest
+attempt with as many names as you can — do not return an empty array. A
+shorter list of high-conviction names is strictly preferred to no list.
 
 Verify all of:
 - No name from the ALREADY-COVERED list above
