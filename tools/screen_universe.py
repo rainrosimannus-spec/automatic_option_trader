@@ -717,6 +717,42 @@ Avoid:
 - Speculative/unprofitable names (those belong to breakthrough tier, not growth)
 - Names you're not confident actually exist with the ticker you provide
 
+EXCHANGE/CURRENCY MAPPING:
+The OUTPUT FORMAT below shows defaults "exchange": "SMART", "currency": "USD"
+which ONLY work for US stocks. For non-US names, provide the correct IBKR
+exchange code AND matching currency, or scoring will fail (we have seen this
+fail on FP/TotalEnergies before). Use these conventions:
+
+  Market               IBKR exchange    Currency
+  US                   SMART            USD
+  Canada               SMART            CAD
+  UK (LSE)             LSE              GBP
+  France (CAC 40)      SBF              EUR
+  Germany (DAX)        IBIS             EUR
+  Netherlands (AEX)    AEB              EUR
+  Switzerland (SIX)    SWX              CHF
+  Italy (FTSE MIB)     BVME             EUR
+  Spain                BM               EUR
+  Belgium              ENEXT.BE         EUR
+  Ireland              ISE              EUR
+  Austria              VSE              EUR
+  Sweden               SFB              SEK
+  Denmark              CSE              DKK
+  Finland              HEX              EUR
+  Norway               OSE              NOK
+  Japan                TSEJ             JPY
+  Hong Kong            SEHK             HKD
+  Singapore            SGX              SGD
+  Korea                KSE              KRW
+  Australia            ASX              AUD
+
+TICKER CONVENTIONS: use the IBKR symbol for each stock, which may differ
+from common-knowledge tickers. Examples: TotalEnergies is TTE (not FP),
+LVMH is MC (not LVMUY), ASML is ASML on AEB (not ASML.AS). When in doubt,
+verify the modern IBKR ticker for that local exchange. If you propose an
+ADR (NYSE-listed foreign stock with US trading), use SMART/USD as for any
+US name.
+
 OUTPUT FORMAT — strict JSON array, no other text, no markdown fencing:
 [
   {{"symbol": "ABC", "exchange": "SMART", "currency": "USD", "region": "US",
@@ -777,6 +813,42 @@ Avoid:
 - Names already in our universe (see EXCLUDED)
 - Yield traps (>8% yield with declining revenue/earnings)
 - Recent dividend cutters
+
+EXCHANGE/CURRENCY MAPPING:
+The OUTPUT FORMAT below shows defaults "exchange": "SMART", "currency": "USD"
+which ONLY work for US stocks. For non-US names, provide the correct IBKR
+exchange code AND matching currency, or scoring will fail (we have seen this
+fail on FP/TotalEnergies before). Use these conventions:
+
+  Market               IBKR exchange    Currency
+  US                   SMART            USD
+  Canada               SMART            CAD
+  UK (LSE)             LSE              GBP
+  France (CAC 40)      SBF              EUR
+  Germany (DAX)        IBIS             EUR
+  Netherlands (AEX)    AEB              EUR
+  Switzerland (SIX)    SWX              CHF
+  Italy (FTSE MIB)     BVME             EUR
+  Spain                BM               EUR
+  Belgium              ENEXT.BE         EUR
+  Ireland              ISE              EUR
+  Austria              VSE              EUR
+  Sweden               SFB              SEK
+  Denmark              CSE              DKK
+  Finland              HEX              EUR
+  Norway               OSE              NOK
+  Japan                TSEJ             JPY
+  Hong Kong            SEHK             HKD
+  Singapore            SGX              SGD
+  Korea                KSE              KRW
+  Australia            ASX              AUD
+
+TICKER CONVENTIONS: use the IBKR symbol for each stock, which may differ
+from common-knowledge tickers. Examples: TotalEnergies is TTE (not FP),
+LVMH is MC (not LVMUY), ASML is ASML on AEB (not ASML.AS). When in doubt,
+verify the modern IBKR ticker for that local exchange. If you propose an
+ADR (NYSE-listed foreign stock with US trading), use SMART/USD as for any
+US name.
 
 OUTPUT FORMAT — strict JSON array, no other text, no markdown fencing:
 [
