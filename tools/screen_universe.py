@@ -892,12 +892,15 @@ def _persist_breakthrough_appearance(
     tmp_path = yaml_path + ".tmp"
 
     # Calendar-month bucket: format run_date as YYYY-MM
+    # ISO timestamp: full run_date as ISO 8601 string — identifies the exact run
     try:
         if hasattr(run_date, "strftime"):
             run_month = run_date.strftime("%Y-%m")
+            run_iso = run_date.strftime("%Y-%m-%dT%H:%M:%S")
         else:
             # Defensive — if run_date is a string, take first 7 chars (YYYY-MM)
             run_month = str(run_date)[:7]
+            run_iso = str(run_date)[:19]
     except Exception as e:
         print(f"  ⚠ breakthrough persist: bad run_date {run_date!r}: {e}")
         return False
@@ -933,6 +936,7 @@ def _persist_breakthrough_appearance(
                 "thesis_latest": (thesis or "")[:400],
                 "first_seen": run_month,
                 "last_seen": run_month,
+                "last_run_at": run_iso,
                 "appearance_count": 1,
             })
             print(f"  📒  breakthrough_history: NEW {symbol} ({run_month})")
@@ -945,10 +949,11 @@ def _persist_breakthrough_appearance(
             else:
                 # Same month, already counted — just refresh thesis & metadata
                 pass
-            # Always refresh thesis to latest version Claude provided
+            # Always refresh thesis and run-cursor to latest version
             match["thesis_latest"] = (thesis or match.get("thesis_latest", ""))[:400]
             match["megatrend"] = megatrend or match.get("megatrend", "")
             match["name"] = name or match.get("name", symbol)
+            match["last_run_at"] = run_iso
 
         with open(tmp_path, "w") as f:
             yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
