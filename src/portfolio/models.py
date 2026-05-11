@@ -249,6 +249,7 @@ class AugmentationAudit(Base):
     accepted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     reason: Mapped[str] = mapped_column(String(50), default="")
     notes: Mapped[str] = mapped_column(Text, default="")
+    raw_proposal_json: Mapped[str] = mapped_column(Text, default="")
 
     __table_args__ = (
         Index("ix_aug_audit_run_tier", "run_date", "tier"),

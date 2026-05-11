@@ -1670,6 +1670,8 @@ def _process_augmentation_proposal(
     currency = proposal.get("currency", "USD")
     region = proposal.get("region", tier.upper())
     thesis = proposal.get("thesis", "")
+    # Serialize the full Claude proposal once for diagnostic logging in audit rows
+    _proposal_json = json.dumps(proposal, default=str)
     
     # Defensive: skip if symbol already in all_scores
     if any(s.symbol == symbol for s in all_scores):
@@ -1679,6 +1681,7 @@ def _process_augmentation_proposal(
             displaced_symbol=None, displaced_score=None,
             accepted=False, reason="duplicate",
             notes=f"already in all_scores; thesis was: {thesis[:200]}",
+            raw_proposal_json=_proposal_json,
         )
         audit_session.add(audit_row)
         return False
@@ -1697,6 +1700,7 @@ def _process_augmentation_proposal(
             displaced_symbol=None, displaced_score=None,
             accepted=False, reason="scoring_failed",
             notes=f"{type(e).__name__}: {str(e)[:200]} | thesis: {thesis[:200]}",
+            raw_proposal_json=_proposal_json,
         )
         audit_session.add(audit_row)
         return False
@@ -1717,6 +1721,7 @@ def _process_augmentation_proposal(
             displaced_symbol=None, displaced_score=None,
             accepted=True, reason="beat_cutoff",
             notes=f"thesis: {thesis[:300]}",
+            raw_proposal_json=_proposal_json,
         )
         audit_session.add(audit_row)
         # Buffer for yaml persistence (if caller passed a buffer)
@@ -1739,6 +1744,7 @@ def _process_augmentation_proposal(
             displaced_symbol=None, displaced_score=None,
             accepted=False, reason="below_cutoff",
             notes=f"thesis: {thesis[:300]}",
+            raw_proposal_json=_proposal_json,
         )
         audit_session.add(audit_row)
         print(f"  ❌ REJECTED  {symbol:8s} {tier:8s} score={proposal_score:.1f} <= cutoff={cutoff_score:.1f}")

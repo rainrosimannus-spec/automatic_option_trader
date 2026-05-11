@@ -62,6 +62,8 @@ def _migrate_columns(engine):
         ("portfolio_watchlist", "risk_profitability", "VARCHAR(10) DEFAULT 'none'"),
         ("portfolio_watchlist", "risk_total_penalty", "REAL DEFAULT 0.0"),
         ("portfolio_watchlist", "raw_score", "REAL DEFAULT 0.0"),
+        # Augmentation diagnostics — full Claude proposal JSON per audit row
+        ("augmentation_audit", "raw_proposal_json", "TEXT DEFAULT ''"),
         ("portfolio_watchlist", "forward_growth_score", "REAL DEFAULT 0.0"),
         # Options exchange routing (v19+)
         ("trade_suggestions", "opt_exchange", "VARCHAR(15)"),
