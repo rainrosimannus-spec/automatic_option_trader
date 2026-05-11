@@ -2851,24 +2851,76 @@ class UniverseScreener:
                 _audit_session_sel.close()
             _selected_syms = _sel_result["selected_symbols"]
             _pre_count = len(breakthrough_scores)
+            # Step 1: filter breakthrough_scores to fresh-selected names
             breakthrough_scores = [s for s in breakthrough_scores if s.symbol in _selected_syms]
-            # Persist only the selected (now safe — call B has run)
-            for _meta in breakthrough_fresh_meta:
-                if _meta["symbol"] in _selected_syms:
-                    try:
-                        _persist_breakthrough_appearance(
-                            symbol=_meta["symbol"],
-                            exchange=_meta["exchange"],
-                            currency=_meta["currency"],
-                            name=_meta["name"],
-                            megatrend=_meta["megatrend"],
-                            thesis=_meta["thesis"],
-                            run_date=_run_date_sel,
-                        )
-                    except Exception as _pe:
-                        print(f"  ⚠ breakthrough_history hook failed for {_meta['symbol']}: {_pe}")
-            print(f"  📒 breakthrough selection: kept {len(breakthrough_scores)}/{_pre_count} "
-                  f"(fallback={_sel_result['fallback_used']}, notes={_sel_result['notes']!r})")
+            _fresh_meta_by_sym = {m["symbol"]: m for m in breakthrough_fresh_meta}
+            _anchor_by_sym = {e.get("symbol"): e for e in _anchor_sel if e.get("symbol")}
+            _anchor_only_selected = _selected_syms - set(_fresh_meta_by_sym.keys())
+            # Step 2: score anchor-only selected names and append to breakthrough_scores
+            _anchor_scored = 0
+            _anchor_score_failed = 0
+            for _sym_ao in _anchor_only_selected:
+                _entry_ao = _anchor_by_sym.get(_sym_ao)
+                if not _entry_ao:
+                    continue
+                _exch_ao = _entry_ao.get("exchange", "SMART")
+                _curr_ao = _entry_ao.get("currency", "USD")
+                try:
+                    _score_ao = self._score_stock(
+                        symbol=_sym_ao,
+                        exchange=_exch_ao,
+                        currency=_curr_ao,
+                    )
+                    if _score_ao is None:
+                        raise ValueError("_score_stock returned None")
+                    _score_ao.tier = "breakthrough"
+                    _score_ao.megatrend = _entry_ao.get("megatrend", "")
+                    _score_ao.rationale = _entry_ao.get("thesis_latest", "")
+                    if _score_ao.name == _sym_ao:
+                        _score_ao.name = _entry_ao.get("name", _sym_ao)
+                    breakthrough_scores.append(_score_ao)
+                    _anchor_scored += 1
+                except Exception as _se_ao:
+                    print(f"  ⚠ anchor-only score failed for {_sym_ao}: {type(_se_ao).__name__}: {_se_ao}")
+                    _anchor_score_failed += 1
+            # Step 3: persist ALL selected (fresh + anchor-only) so last_run_at refreshes
+            _persisted = 0
+            _persist_failed = 0
+            for _sym_p in _selected_syms:
+                _meta_p = _fresh_meta_by_sym.get(_sym_p)
+                if _meta_p:
+                    _exchange = _meta_p["exchange"]
+                    _currency = _meta_p["currency"]
+                    _name = _meta_p["name"]
+                    _megatrend = _meta_p["megatrend"]
+                    _thesis = _meta_p["thesis"]
+                else:
+                    _entry_p = _anchor_by_sym.get(_sym_p)
+                    if not _entry_p:
+                        continue
+                    _exchange = _entry_p.get("exchange", "SMART")
+                    _currency = _entry_p.get("currency", "USD")
+                    _name = _entry_p.get("name", _sym_p)
+                    _megatrend = _entry_p.get("megatrend", "")
+                    _thesis = _entry_p.get("thesis_latest", "")
+                try:
+                    _persist_breakthrough_appearance(
+                        symbol=_sym_p,
+                        exchange=_exchange,
+                        currency=_currency,
+                        name=_name,
+                        megatrend=_megatrend,
+                        thesis=_thesis,
+                        run_date=_run_date_sel,
+                    )
+                    _persisted += 1
+                except Exception as _pe:
+                    print(f"  ⚠ breakthrough_history hook failed for {_sym_p}: {_pe}")
+                    _persist_failed += 1
+            print(f"  📒  breakthrough selection: kept {len(breakthrough_scores)}/{_pre_count} "
+                  f"(fresh-kept + anchor-scored {_anchor_scored}, failed {_anchor_score_failed}; "
+                  f"persisted {_persisted}/{len(_selected_syms)}, persist-failed {_persist_failed}; "
+                  f"fallback={_sel_result['fallback_used']}, notes={_sel_result['notes']!r})")
         except Exception as _se:
             print(f"  ⚠ breakthrough selection wrapper failed: {type(_se).__name__}: {_se}")
             print(f"  ⚠ leaving breakthrough_scores untouched ({len(breakthrough_scores)} entries), skipping persist")
