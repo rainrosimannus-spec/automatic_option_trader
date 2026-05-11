@@ -1079,6 +1079,136 @@ def _evict_breakthrough_overflow() -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# BREAKTHROUGH SELECTION PROMPT (Big-Ticket #2, Commit 3 of 4)
+# ─────────────────────────────────────────────────────────────────────────
+# Call B of the anchored 30->25 selection. Given fresh proposals (call A
+# output) and the prior-run anchor (entries with max last_run_at), build a
+# prompt that asks Claude to select 25 with reasoning.
+
+
+def _build_breakthrough_selection_prompt(fresh: list[dict], anchor: list[dict]) -> str:
+    """
+    Build the call-B prompt for anchored breakthrough selection.
+
+    Inputs:
+        fresh:  list of dicts from call A. Each must have 'symbol',
+                'megatrend', 'thesis' (or 'rationale') keys. Up to ~30.
+        anchor: list of dicts from discovered_pool.yaml[breakthrough]
+                where last_run_at == max(last_run_at). Each has 'symbol',
+                'megatrend', 'thesis_latest' keys. Up to 25.
+
+    Output: prompt string. No API call.
+
+    Overlap handling: names appearing in both fresh and anchor are labeled
+    'both' in the merged list — Claude sees the dual provenance and can
+    use it as a conviction signal without seeing the raw appearance_count.
+
+    Bootstrap: if anchor is empty (first run of new design), the prompt
+    drops the anchor section and tells Claude there is no prior selection
+    to anchor against.
+    """
+    # Build symbol -> source label map: 'fresh', 'anchor', or 'both'
+    fresh_syms = {e.get("symbol") for e in fresh if e.get("symbol")}
+    anchor_syms = {e.get("symbol") for e in anchor if e.get("symbol")}
+    both = fresh_syms & anchor_syms
+
+    # Merge: anchor first (preserves their full thesis_latest), then
+    # fresh-only names. Dedup on symbol.
+    merged = []
+    seen = set()
+    for e in anchor:
+        sym = e.get("symbol")
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        label = "both" if sym in both else "anchor"
+        merged.append({
+            "symbol": sym,
+            "megatrend": e.get("megatrend", "uncategorized"),
+            "thesis": (e.get("thesis_latest") or "")[:400],
+            "source": label,
+        })
+    for e in fresh:
+        sym = e.get("symbol")
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        merged.append({
+            "symbol": sym,
+            "megatrend": e.get("megatrend", "uncategorized"),
+            "thesis": (e.get("thesis") or e.get("rationale") or "")[:400],
+            "source": "fresh",
+        })
+
+    n_total = len(merged)
+    n_anchor = len(anchor_syms)
+    n_fresh = len(fresh_syms)
+    n_both = len(both)
+
+    # Build the candidate listing
+    if merged:
+        listing_lines = []
+        for c in merged:
+            listing_lines.append(
+                f"- {c['symbol']} [{c['source']}] | megatrend: {c['megatrend']}\n"
+                f"  thesis: {c['thesis']}"
+            )
+        candidates_block = "\n".join(listing_lines)
+    else:
+        candidates_block = "(no candidates available)"
+
+    # Bootstrap note
+    bootstrap_note = ""
+    if not anchor:
+        bootstrap_note = (
+            "\n\nNOTE: This is the first run of the anchored-selection design. "
+            "There is no prior selection to anchor against. Select 25 from the "
+            "fresh candidates alone using the rubric below.\n"
+        )
+
+    prompt = f"""You are selecting the final breakthrough portfolio slate for a 10-15 year holding horizon.
+
+You will be given a merged pool of candidates from two sources:
+- ANCHOR: names selected on the previous screener run (high conviction by prior judgment)
+- FRESH: names freshly proposed by the current run's breakthrough scan
+- BOTH: names appearing in both sources (strongest dual signal)
+
+Your job: pick exactly 25 names from this pool with one-sentence reasoning each, plus a short group-level reasoning paragraph.{bootstrap_note}
+
+POOL SIZE: {n_total} unique candidates ({n_anchor} from anchor, {n_fresh} from fresh, {n_both} overlap labeled BOTH).
+
+SELECTION RUBRIC (balanced):
+1. Thesis strength — is the 10-15 year compounding case real and durable?
+2. Megatrend diversity — the final 25 should span multiple megatrends, not pile into one or two
+3. Conviction signals — names labeled BOTH carry dual provenance; treat that as positive signal but do not rely on it alone (a thesis-weak BOTH name should still lose to a thesis-strong FRESH or ANCHOR name)
+
+SAFETY NET: if you cannot honestly find 25 strong picks, return your best attempt with as many as you can — do not return an empty array. A shorter list of high-conviction names is strictly preferred to forcing weak picks to hit 25.
+
+CANDIDATES:
+{candidates_block}
+
+OUTPUT FORMAT:
+Return ONLY valid JSON, no markdown, no prose outside JSON, no code fences.
+Schema:
+{{
+  "selected": [
+    {{"symbol": "SYM1", "reasoning": "one sentence why this earned the slot"}},
+    ...
+  ],
+  "group_reasoning": "<=200 word paragraph covering: thesis clusters represented, notable inclusions/exclusions, megatrend distribution"
+}}
+
+Per-pick reasoning rules:
+- One sentence each, factual not promotional
+- Reference the rubric: which of thesis/diversity/conviction drove this pick
+- No marketing language ('exciting', 'revolutionary', 'game-changer')
+
+Return the JSON object now."""
+
+    return prompt
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # AUGMENTATION ORCHESTRATION (Commit L)
 # ─────────────────────────────────────────────────────────────────────────
 # AUGMENTATION_ENABLED toggles Phase 2.5 in screen_all().
