@@ -254,3 +254,28 @@ class AugmentationAudit(Base):
         Index("ix_aug_audit_run_tier", "run_date", "tier"),
     )
 
+
+class BreakthroughSelectionAudit(Base):
+    """
+    Audit log for the anchored 30->25 breakthrough selection step.
+
+    One row per screener run (per selection event, not per pick). The full
+    per-pick reasoning lives inside selected_json as a list of dicts. Other
+    JSON columns preserve the inputs (fresh + anchor symbols) so any past
+    selection can be reconstructed and second-guessed.
+    """
+    __tablename__ = "breakthrough_selection_audit"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    anchor_count: Mapped[int] = mapped_column(Integer, default=0)
+    fresh_count: Mapped[int] = mapped_column(Integer, default=0)
+    merged_count: Mapped[int] = mapped_column(Integer, default=0)
+    selected_count: Mapped[int] = mapped_column(Integer, default=0)
+    fresh_symbols_json: Mapped[str] = mapped_column(Text, default="[]")
+    anchor_symbols_json: Mapped[str] = mapped_column(Text, default="[]")
+    selected_json: Mapped[str] = mapped_column(Text, default="[]")
+    group_reasoning: Mapped[str] = mapped_column(Text, default="")
+    fallback_used: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+
