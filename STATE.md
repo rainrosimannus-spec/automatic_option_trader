@@ -987,3 +987,117 @@ Beyond breakthrough v4 → v4.1, no code change on this server tonight. Son's wo
 - `077aab5` Option B: `dividend_total_return_score` column + tier-aware compound quality
 - `c6d5e06` Commit B: Phase 2b refresh scores for held holdings not in top-100
 - `2a95c7b` Fix metrics job order: fetch metrics before recalc
+
+## Monday (2026-05-11) — Big-Ticket #1 + #2 shipped, #3 fixes partial, watchlist field-name bug surfaced (14 commits)
+
+**Long day. Three structural items shipped, plus a real bug fix, plus repo hygiene. Big-Ticket #3 ended with a deeper-than-expected diagnostic detour that reframed the original problem.**
+
+### Big-Ticket #1: breakthrough_history eviction (commit `2620c65`)
+
+Caps `breakthrough_history` pool at 75 entries. When the pool exceeds cap, evicts oldest entries first by `last_seen` with window protection (entries within the current week are protected from eviction). Earlier shipped + verified dormant — pool was below cap. The cap matters most when the system runs continuously for months and the natural growth rate from new fresh proposals would otherwise unbounded the pool.
+
+### Big-Ticket #2: anchored 30→25 breakthrough selection — fully shipped + verified across 3 runs
+
+**Design**: instead of generating 30 fresh names every run and selecting 25 (high churn), now the breakthrough selection runs in two phases. Phase A (`_get_breakthrough_candidates`) produces fresh names. Phase B (`_run_breakthrough_selection`) merges fresh + anchor (last run's selected 25) and asks Claude to pick the final 25. Anchor preservation creates natural continuity across runs; high-conviction names from prior weeks survive multiple selections unless a stronger candidate displaces them.
+
+Five commits built it:
+- **`91af94a`** (B#2-1) — Added `last_run_at` ISO timestamp field to breakthrough_history entries. Each persisted entry now records when it was last selected, enabling anchor identification as "entries with max(last_run_at)."
+- **`8eb7e11`** (B#2-2) — Added `BreakthroughSelectionAudit` SQLAlchemy table. 12 columns including JSON blobs for fresh_symbols, anchor_symbols, selected, and Claude's raw response. Schema auto-creates via `Base.metadata.create_all`.
+- **`04bc137`** (B#2-3) — `_build_breakthrough_selection_prompt()` builder. Inputs: 30 fresh + 25 anchor (deduplicated by symbol, fresh wins on conflict). Output: instructions to pick 25 final names.
+- **`e38d2b6`** (B#2-4a) — `_call_claude_for_selection()` + `_run_breakthrough_selection()` orchestration helpers.
+- **`1128891`** (B#2-4b) — Wire-in to `screen_all()`. Calls `_run_breakthrough_selection()` after fresh proposal generation, persists selected.
+- **`51d764b`** (B#2-4c) — **Bug fix discovered mid-session.** First post-wire-in run (id=1, 11:24) had `selected_count=25` but YAML only persisted 17 names with new timestamp. Cause: persist loop iterated only `breakthrough_fresh_meta`; anchor-only selected names (8 of 25) were never persisted, would have dropped from anchor next run. Fix: filter breakthrough_scores, then score anchor-only names via `self._score_stock`, append to scores, then unified persist loop over `_selected_syms` pulling metadata fresh-first then anchor.
+- **`a7da6ad`** — Manual migration. `/tmp/mark_anchor_22.py` marked today's 22 breakthrough names with `last_run_at='2026-05-11T07:59:00'` to seed anchor.
+
+**Live verification across 3 runs:**
+- id=1 (11:24:02): anchor=22 fresh=24 merged=39 selected=25 fallback=False — first activation, exposed the bug
+- id=2 (13:32:30): anchor=17 fresh=17 merged=30 selected=25 fallback=False — 4c verified, persisted 25/25 ✓
+- id=3 (18:28:40): anchor=25 fresh=20 merged=35 selected=25 fallback=False — anchor cascade fully working ✓
+
+Pool state at session end: 57 entries, 4 distinct timestamps (`07:59:00:11`, `11:24:02:3`, `13:32:30:5`, `18:28:40:25`).
+
+### Watchlist field-name bug (commit `59d9391`)
+
+**Surfaced unexpectedly via son's-clone investigation.** Earlier today, while comparing repos to decide what to port, noticed son's code uses field name `options_exchange:` for derivatives-exchange routing while our code reads `opt_exchange:` at `src/strategy/universe.py:147`. Then grep'd our `config/watchlist.yaml` and found 29 entries silently using `options_exchange:` — son's name — which our code completely ignored. Result: `universe.get_options_exchange()` returned "SMART" fallback for all 29 European/Asian stocks (EUREX, OSE.JPN, OSE, ASX, ICEEU), foreign put-scans returned no chains, scans silently no-op'd.
+
+How they got there: presumably hand-copied from son's clone at some point without renaming. Bug had been live for weeks.
+
+Fix: single-pattern rename `options_exchange:` → `opt_exchange:` across 29 entries in `config/watchlist.yaml`. No code change. Activates 29 European/Asian watchlist entries — Swiss (NESN, NOVN, ROG, SIKA, LONN, GIVN, GEBN, UBSG, ZURN, SREN, ABBN, SLHN), Norwegian (BWLPG, HAUTO, EQNR, MOWI, AKRBP, DNB, ORK, YAR, SUBC, SFL), Australian (WDS, XRO, ALL), German/EUREX entries, and ICEEU (UK derivatives). Next foreign-market scan after restart should now actually evaluate option chains for these stocks instead of silently no-op'ing.
+
+Suggestion-mode + auto-approve OFF means any produced suggestions go through manual review before execution.
+
+### Big-Ticket #3: international augmentation handling — partial (3 commits) + diagnostic detour
+
+The original problem framing: today's run (id=2, 13:32) augmentation had `FP` (TotalEnergies, France) fail scoring with `score=0.0, reason=scoring_failed`. Root cause: Claude proposed FP with exchange=SMART, currency=USD because the OUTPUT FORMAT example in both augmentation prompts uses those as placeholder values. With wrong contract inputs, `ib.qualifyContracts()` returned empty, `_score_stock` returned None.
+
+Three fixes shipped:
+- **`8d6debb`** (Fix C) — Client-side dedup of augmentation proposals. id=2 had 8 dividend duplicates (V, WMT, UNP, MSFT, PG, KO, JNJ, CDNS) Claude proposed despite the 518-symbol EXCLUDED list in the prompt. Hypothesis: 518 names is too long for Claude to attend to reliably. Fix: 5-line insert at each call site (growth + dividend) that filters Claude's proposals against `exclusion` set before processing. Audit rows for filtered dupes never get created.
+- **`46a24c4`** (Intl mapping guide) — Added EXCHANGE/CURRENCY MAPPING block to both prompts (growth + dividend). 21 markets mapped using actual CANDIDATE_POOLS conventions: US/SMART/USD, France/SBF/EUR, Germany/IBIS/EUR, Netherlands/AEB/EUR, Switzerland/SWX/CHF, Italy/BVME/EUR, UK/LSE/GBP, Japan/TSEJ/JPY, etc. Plus ticker conventions note (TTE not FP, MC not LVMUY). Designed to fix the case where Claude proposes a foreign name but with wrong exchange/currency.
+- **`d0e39f0`** (Raw logging) — Added `raw_proposal_json` TEXT column to AugmentationAudit. Uses existing `_migrate_columns()` pattern in `src/core/database.py` — auto-applies ALTER TABLE on startup. `json.dumps(proposal)` once at top of `_process_augmentation_proposal`, passed to all 4 audit row sites (duplicate, scoring_failed, beat_cutoff, below_cutoff). Pure diagnostic infrastructure; immediately paid off in evaluating fix effectiveness.
+
+**Post-restart augmentation run (id=3, 18:28)** verified all three fixes worked technically:
+- Dedup: 0 duplicates this run (vs 8 in id=2) ✓
+- raw_proposal_json populated for all rows ✓
+- Mapping guide formatting available
+- No fallback errors
+
+BUT id=3 revealed something new: **Claude proposed 100% US names** (13 proposals total). Zero international. Mapping guide didn't make Claude reach for foreign names — it only told Claude how to format them IF proposed.
+
+### Diagnostic detour — what the data actually shows
+
+Several hypotheses tested and rejected before arriving at the right diagnosis:
+
+1. **"Claude has US bias in augmentation prompts"** — rejected. Breakthrough prompt produces ~20% non-US fresh proposals consistently. Same Claude API, same screener, different prompt — different behavior. So it's prompt structure not Claude.
+2. **"Scoring rubric biases toward US"** — rejected by direct check. Top-15 dividend tier is **12/15 non-US** (Canadian banks, UK telco, Dutch banks, Chinese insurer, South African, Norwegian, Spanish utilities). The dividend rubric correctly rewards foreign income-payers.
+3. **"Foreign names attrit through the screener"** — partially right. Growth tier: 369 non-US inputs collapse to 13 outputs (96% attrition). Dividend tier: 29 non-US inputs → 15 outputs (48% attrition, actually BETTER survival than US).
+
+Final correct diagnosis (Ryan's framing): **the geographic distribution is the system working correctly, not failing.** Growth ends up 84% US because growth-as-defined-by-rubric (revenue durability, compounding quality, operating leverage) IS concentrated in the US tech sector. European industrials/banks aren't growth investments; they fail the rubric for legitimate reasons. The 96% non-US growth attrition isn't bias — it's correct identification that mature European businesses aren't compounders.
+
+Dividend tier proposing US names is also rational: foreign dividend quality is already captured (12/15 of top-15), so marginal additions are most likely US names not yet covered. Augmentation has little new to add internationally because the curated pools + scoring already capture most foreign quality.
+
+**Outcome: no Fix B needed.** The original Fix B (force international diversity in augmentation prompts) would have pushed Claude to propose mediocre European industrials and Norwegian variable-dividend stocks that fail scoring correctly. The Fix C dedup + intl mapping guide + raw logging are sufficient. Augmentation behaving as it should.
+
+### Repo hygiene (commits `728695f`, `077c219`)
+
+`728695f` — untracked 5 machine-rewritten files via `git rm --cached`: `config/options_universe.yaml`, `config/screened_universe.yaml`, `config/structural_risks.yaml`, `data/portfolio_account_cache.json`, `data/screener_last_run.json`. Files stay on disk; app keeps writing them; git stops watching commit churn.
+
+`077c219` — Added to `.gitignore`: runtime cache patterns (`__pycache__/`, `.pytest_cache/`), `*.bak` files (deleted 14 stale ones from 2026-05-04), and the now-untracked files.
+
+### Son's clone investigation (NOT ported)
+
+Added `mesicap` SSH remote (push disabled). Compared `mesicap/main` vs our `main`. 16 unique commits on son's side. Per-Ryan classification:
+- `4ab28ad` (asyncio reentry locks) — our work backported to his fork. Comment-only diff vs ours.
+- `75df952` (3 trade_sync bugs) — Bug 1 + Bug 3 not in our code. Patch prepared (`/tmp/patch_tradesync_v1.py`) but **decided to skip — not failure-mode-critical, suggestion-mode is the safety net for going live**.
+- `45158a9` (RACE/IDEM options exchange + CLOSED/EXPIRED defer logic) — RACE is son-specific. Parked.
+- Other commits: deploy/systemd/healthcheck (his), graphs (cosmetic), per-account risk limits (his).
+
+### CREDENTIAL SAFETY INCIDENT (third occurrence)
+
+Claude asked Ryan to run `git remote -v`. Output contained live GitHub Personal Access Token `github_pat_11B7H5GGI0Y...` embedded in HTTPS remote URL. Token went into Anthropic conversation logs. Ryan rightly angry — Ryan is not a programmer, told Claude this in user preferences, Claude should have anticipated.
+
+**Resolution**: Ryan revoked token at https://github.com/settings/personal-access-tokens. Switched origin to SSH: `git remote set-url origin git@github.com:rainrosimannus-spec/automatic_option_trader.git`. SSH already authenticated.
+
+**Rule reinforced** (third incident — strict rule, no exceptions): NEVER ask Ryan to run commands that expose credentials: `git remote -v`, `env`, `printenv`, `cat .env`, `cat .git/config`, `history`, `ps auxe`. PATs are often in HTTPS git URLs. Always use redacted variants: `git remote -v | sed 's|//[^@]*@|//[REDACTED]@|g'`. ALWAYS warn before commands touching credential-bearing files. Ryan will not catch leaks.
+
+### Session-end state
+
+Commits shipped today (all on origin):
+1. `2620c65` — B#1: Eviction
+2. `91af94a` — B#2-1: last_run_at timestamp
+3. `8eb7e11` — B#2-2: Audit table
+4. `04bc137` — B#2-3: Selection prompt
+5. `e38d2b6` — B#2-4a: Orchestration helpers
+6. `a7da6ad` — B#2: Anchor migration (YAML)
+7. `728695f` — Untrack runtime artifacts
+8. `077c219` — Gitignore caches + .bak
+9. `1128891` — B#2-4b: Wire-in to screen_all
+10. `51d764b` — B#2-4c: Anchor-only persist+score fix
+11. `59d9391` — Watchlist opt_exchange rename (29 entries)
+12. `8d6debb` — B#3 Fix C: Client-side dedup
+13. `46a24c4` — B#3 Intl: Exchange/currency mapping guide
+14. `d0e39f0` — B#3 Raw logging: raw_proposal_json column
+
+**Big-Ticket #1 done. Big-Ticket #2 done + verified. Big-Ticket #3 has its three fixes in; Fix B deferred/cancelled (system working correctly). Watchlist Issue 2 fixed. Repo hygiene done. SSH-only remote.**
+
+Running PID at session end had Commit 4c but not 8d6debb, 46a24c4, d0e39f0. Restart picks all three up + applies the auto-migration that adds `raw_proposal_json` column.
+
