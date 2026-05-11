@@ -2981,6 +2981,11 @@ class UniverseScreener:
                     print(f"\n  Growth: cutoff={cutoff_growth:.1f} (rank-60 of {len(growth_pool)} candidates)")
 
                     proposals = _get_growth_swaps(top_60, ranks_61_120, cutoff_growth, exclusion)
+                    # Fix C: client-side dedup against exclusion before scoring/audit
+                    _pre_filter_n = len(proposals)
+                    proposals = [p for p in proposals if p.get("symbol") and p.get("symbol") not in exclusion]
+                    if _pre_filter_n != len(proposals):
+                        print(f"  Growth: filtered {_pre_filter_n - len(proposals)} duplicate proposals (already in universe)")
                     accepted_count = 0
                     for prop in proposals:
                         if _process_augmentation_proposal(prop, "growth", cutoff_growth, all_scores, audit_session, run_date, pending_yaml_additions, screener=self):
@@ -2998,6 +3003,11 @@ class UniverseScreener:
                     print(f"\n  Dividend: cutoff={cutoff_div:.1f} (rank-15 of {len(dividend_pool)} candidates)")
 
                     proposals = _get_dividend_swaps(top_15, ranks_16_45, cutoff_div, exclusion)
+                    # Fix C: client-side dedup against exclusion before scoring/audit
+                    _pre_filter_n = len(proposals)
+                    proposals = [p for p in proposals if p.get("symbol") and p.get("symbol") not in exclusion]
+                    if _pre_filter_n != len(proposals):
+                        print(f"  Dividend: filtered {_pre_filter_n - len(proposals)} duplicate proposals (already in universe)")
                     accepted_count = 0
                     for prop in proposals:
                         if _process_augmentation_proposal(prop, "dividend", cutoff_div, all_scores, audit_session, run_date, pending_yaml_additions, screener=self):
