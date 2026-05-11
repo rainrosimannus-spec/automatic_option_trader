@@ -25,3 +25,11 @@ data/trades.db
 logs/
 build/
 config/settings.yaml
+
+# Machine-generated artifacts (rewritten by running app, not source)
+# Tracked once historically, untracked from 2026-05-11 onward.
+config/options_universe.yaml
+config/screened_universe.yaml
+config/structural_risks.yaml
+data/portfolio_account_cache.json
+data/screener_last_run.json
