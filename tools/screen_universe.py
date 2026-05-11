@@ -967,22 +967,110 @@ def _persist_breakthrough_appearance(
 
 def _evict_breakthrough_overflow() -> bool:
     """
-    STUB — eviction logic deferred to next session.
+    Trim discovered_pool.yaml[breakthrough] when it exceeds BREAKTHROUGH_HISTORY_CAP,
+    while protecting names within a 6-calendar-month recency window.
 
-    When implemented:
-    1. Load discovered_pool.yaml[breakthrough]
-    2. If len <= BREAKTHROUGH_HISTORY_CAP: no-op
-    3. Compute current calendar month; protection window = last 6 months.
-    4. Of names with last_seen OUTSIDE protection window, sort by:
-         (appearance_count ASC, last_seen ASC)
-       and evict from the front until len <= cap.
-    5. If all names are within protection window and pool > cap,
-       LET POOL EXCEED CAP transiently — recency dominates strict cap.
-    6. Atomic write.
+    Locked design (Sunday 2026-05-10):
+    - Protection window: last 6 calendar months of last_seen, inclusive of the
+      current month. Names within window are NEVER evicted.
+    - Beyond the window, sort eviction-eligible names by:
+        (appearance_count ASC, last_seen ASC)
+      and remove from the front until len(pool) <= BREAKTHROUGH_HISTORY_CAP.
+    - If all names are within protection window and pool > cap, allow transient
+      overflow — recency dominates strict cap.
 
-    For now: no-op. Pool will grow unbounded until next session implements this.
+    Atomic write via .tmp + os.replace, mirroring _persist_breakthrough_appearance.
+
+    Returns True on success or no-op, False on any error (logged but not raised —
+    eviction is best-effort, scan should still complete).
     """
-    return True
+    import os
+    from datetime import date
+    import yaml
+
+    yaml_path = os.path.join(os.path.dirname(__file__), "discovered_pool.yaml")
+    tmp_path = yaml_path + ".tmp"
+
+    if not os.path.exists(yaml_path):
+        return True  # nothing to evict
+
+    try:
+        with open(yaml_path) as f:
+            existing = yaml.safe_load(f) or {}
+
+        pool = existing.get("breakthrough") or []
+        if not isinstance(pool, list):
+            print(f"  ⚠  breakthrough_history evict: pool not a list, skipping")
+            return False
+
+        if len(pool) <= BREAKTHROUGH_HISTORY_CAP:
+            return True  # no-op, under cap
+
+        # Build protection-window cutoff: 6 calendar months back from today,
+        # inclusive of current month. E.g. today=2026-05-XX → cutoff=2025-12.
+        # A name with last_seen >= cutoff is protected.
+        today = date.today()
+        # Compute year/month 6 months ago (5 months back from current month = window
+        # of 6 calendar months total, current month inclusive).
+        cutoff_total_months = today.year * 12 + (today.month - 1) - 5
+        cutoff_year = cutoff_total_months // 12
+        cutoff_month = (cutoff_total_months % 12) + 1
+        cutoff_yyyymm = f"{cutoff_year:04d}-{cutoff_month:02d}"
+
+        protected = []
+        evictable = []
+        for entry in pool:
+            ls = (entry.get("last_seen") or "")[:7]
+            if ls >= cutoff_yyyymm:
+                protected.append(entry)
+            else:
+                evictable.append(entry)
+
+        # Sort evictable: lowest appearance_count first, then oldest last_seen
+        # as tiebreaker. Ties beyond that: stable sort preserves input order.
+        evictable.sort(key=lambda e: (
+            int(e.get("appearance_count") or 0),
+            (e.get("last_seen") or ""),
+        ))
+
+        # Evict from the front of evictable until total len <= cap, but
+        # never touch protected. If protected alone exceeds cap, all
+        # evictables stay too (transient overflow).
+        target_total = BREAKTHROUGH_HISTORY_CAP
+        n_protected = len(protected)
+        n_keep_evictable = max(0, target_total - n_protected)
+        evicted = evictable[: max(0, len(evictable) - n_keep_evictable)]
+        kept_evictable = evictable[max(0, len(evictable) - n_keep_evictable):]
+
+        new_pool = protected + kept_evictable
+
+        if not evicted:
+            # Above cap but everyone is protected — transient overflow.
+            print(f"  📒  breakthrough_history: {len(pool)} > cap {BREAKTHROUGH_HISTORY_CAP}, "
+                  f"all within {cutoff_yyyymm} window — transient overflow allowed")
+            return True
+
+        existing["breakthrough"] = new_pool
+
+        with open(tmp_path, "w") as f:
+            yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
+        os.replace(tmp_path, yaml_path)
+
+        evicted_syms = ", ".join(e.get("symbol", "?") for e in evicted[:10])
+        if len(evicted) > 10:
+            evicted_syms += f", ... +{len(evicted) - 10} more"
+        print(f"  📒  breakthrough_history: evicted {len(evicted)} "
+              f"(pool {len(pool)} → {len(new_pool)}, cutoff {cutoff_yyyymm}): {evicted_syms}")
+        return True
+
+    except Exception as e:
+        print(f"  ❌  breakthrough_history evict failed: {type(e).__name__}: {e}")
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -2405,6 +2493,14 @@ class UniverseScreener:
             except Exception as e:
                 print(f"  ❌ {symbol:8s} | Error: {e}")
             time.sleep(0.3)
+
+        # Step B: trim breakthrough_history pool to cap, protecting recent names.
+        # Fires once per screener run, after all breakthrough names have been
+        # persisted. Best-effort: failure logged, scan continues.
+        try:
+            _evict_breakthrough_overflow()
+        except Exception as _e:
+            print(f"  ⚠ breakthrough_history evict hook failed: {_e}")
 
         # ──────────────────────────────────────────────────────────────────
         # PHASE 2.5: Augmentation (Claude-driven swap proposals)
