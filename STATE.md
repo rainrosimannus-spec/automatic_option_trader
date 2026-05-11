@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-05-10 (Sun) — Restructured into L1 Fundamentals / L2 Top of Mind / L3 History.
+Last updated: 2026-05-11 (Mon, late) — **Breakthrough v4.1 validated** (22 names, healthy spread, history pool 36 entries). **Commit E shipped** as `e958fc1` (`portfolio_score = forward_growth_score`). Son's three-market diagnosis closed on NSE side (root cause: SMART-override at L100 + IBKR subscription gap); EU asyncio-reentry fix awaits 07:58 UTC verification; ASX confirmed working-as-designed.
 
 This document has three layers. Read top-to-bottom in a normal session; jump to L3 only when investigating *why* something is the way it is.
 
@@ -36,6 +36,22 @@ This server runs **both Maggy code and Winston code against the portfolio accoun
 | Son's clone (Maggy real) | U23886415 | (elsewhere) | — | — | Runs on separate machine under user `nexbit` |
 
 App tmux `trader` runs everything: web server on port 8080 (localhost only), scheduler, both connections. Public access via Caddy reverse proxy at `https://37.0.30.34/` with HTTP basic auth.
+
+## Son's Clone — Porting Relationship
+
+Son's mesicap-trader (running U23886415 on a separate machine under user `nexbit`) is forked from this repo. **Options-side code is shared in lineage** — both sides run the same `src/strategy/`, `src/broker/trade_sync.py`, `config/options_universe.yaml`, etc. Over time the two repos drift independently:
+
+- Son's side gets options-trading fixes faster because that's the live execution side (real auto-approve, real fills against U23886415).
+- This server's side gets Winston (portfolio) fixes faster because Winston is the active strategy here.
+- **Capital injections diverged 2026-05-05 → 2026-05-11**: this server got `3b407ff` (per-account deposits), son's side built its own anchor-removal fix on a `port-capital-injections-refactor` branch. The two implementations are not identical; that's accepted divergence.
+
+**Porting workflow:** manual, case-by-case. No automated sync, no cherry-pick from son's repo. When son ships an options-side fix, the steps are:
+1. Capture the diff (paste, screenshot, or commit hash + repo URL if reachable)
+2. Read your current code at the same site
+3. Decide: already covered, applies cleanly, applies with modification, or not relevant to your merged setup
+4. If port: write patch via `/tmp/patchN.py` per RULES.md (no heredoc), one match assertion, fix → verify → commit
+
+Port candidates accumulate in L2 next-session queue. Don't blind-apply.
 
 ## Module Purposes (what lives where)
 
@@ -293,10 +309,11 @@ Anchored to first-point-zero. Reads `options_account` from `cfg.ibkr.account`, c
 | Winston IBKR-level | **read-only** | Two-layer safety with app-level suggestion mode |
 | `AUGMENTATION_ENABLED` | **False** | `tools/screen_universe.py` — no Claude API calls until manually flipped |
 | `portfolio_lock_mode` | merged=True | Cross-strategy supervisor active; auto-disengages when ports diverge |
-| `portfolio_score` formula | **old (40g + 25v + 35q)** | `forward_growth_score` computed but not yet used downstream; Commit E pending |
+| `portfolio_score` formula | **`forward_growth_score`** | Shipped 2026-05-09 in commit `e958fc1` (Commit E). Old `40g + 25v + 35q` retired. |
 | `direct_buy_threshold` | 75 | Raised from 70 on 2026-05-03 |
 | `composite_floor` | 40 | Below this, no buy_signal (since 2026-05-03) |
 | Composite blend | 30% raw / 70% quality | Since 2026-05-03 |
+| Breakthrough prompt | **v4.1 validated** | 22 names, healthy megatrend spread, 1 non-USD (Sony 6758) — same as v3. Geographic deferred to universe expansion in `CANDIDATE_POOLS`, not prompt. |
 
 ## Active Covered Calls
 
@@ -314,31 +331,40 @@ Anchored to first-point-zero. Reads `options_account` from `cfg.ibkr.account`, c
 
 ### High priority
 
-1. **Augmentation live test** — flip `AUGMENTATION_ENABLED = True` in `tools/screen_universe.py`, manually trigger one screener run via dashboard "Run now". Cost: ~$0.40 Anthropic API + ~50 FMP calls. First time the prompt is exercised against real data. Watch for: prompt issues, JSON parse edge cases, scoring-time exceptions on proposed symbols. Verify `augmentation_audit` table fills with rows; verify `discovered_pool.yaml` gets accepted symbols.
+1. **Pull INFY + ITC from `config/options_universe.yaml`** (free, immediate). NSE is un-tradeable until IBKR subscription added (see L3 May 11 NSE diagnosis). Leaving these in burns scan cycles producing zero candidates every run. Surgical removal — one-line YAML edit per symbol.
 
-2. **Son's clone — Asia/EU put scan validation.** Zero-put-suggestion issue on Asian/European scans is unresolved on son's end (U23886415). Diagnostic drafted and ready to forward. Possible causes: universe filter mismatch, market label issue, gates firing only on US data, live-quote gate. This server's diagnostic shows scans hit AEB/LSE/evaluate ASM/ASML/AZN but all blocked by `Position limit reached: 23/15` — meaningless for son's real options account.
+2. **Port queue from son's clone** — son's mesicap-trader (U23886415) is the upstream for options-side code. Three recent fixes need *check-whether-applies* on your repo (manual port; see L1 "Son's Clone — Porting Relationship"):
+   - **RACE → IDEM exchange routing.** `config/options_universe.yaml` — RACE has no `opt_exchange` field, so `universe.get_options_exchange()` at `src/strategy/universe.py:144-147` falls through to `stock.opt_exchange` which gives BVME (equity exchange). Chains are on IDEM. Add `opt_exchange: IDEM` to RACE entry.
+   - **Asyncio-reentry fix.** Son shipped tonight; details from his commit not yet captured here. Family-related to your Stages 1–5 lock supervisor + May 3 reconnect-race fix (`b734cf7`). Diff against your `connection.py` / `trade_sync.py` before deciding.
+   - **TTD covered-call dashboard display fix.** Manually-opened CC positions didn't disappear from Positions table at expiry. Check whether your dashboard exhibits the same display gap.
 
-3. **Son's clone — NVDA P&L recovery.** Needs JSON history import (Script B). Standalone single-file Python (~150 KB with embedded JSON) drafted at `/tmp/import_options_history_standalone.py` on this server, sent to son via email. Implements: position match by (symbol, strike, expiry, opened_at); hard-skip when both DBs show OPEN; update close+P&L when his is OPEN and export is CLOSED/EXPIRED/ASSIGNED; insert when no match; trade dedup; position_id remapping; default dry-run (must pass `--apply`); atomic transaction. **Resolved on this end; awaits son's run.**
+3. **NSE SMART-routing fix at `src/broker/market_data.py:100`** — `contract.exchange = "SMART"` override rejects INR stocks because IBKR's SMART aggregator doesn't include NSE for INR-denominated names. Conditionally skip the override when `currency == 'INR'` and use `primaryExchange='NSE'` directly. **Only useful if NSE subscription gets added at IBKR** — otherwise pulling INFY/ITC (#1) is sufficient. Defer until subscription decision.
 
 ### Medium priority
 
-4. **Commit E — flip `portfolio_score` to use `forward_growth_score`.** Currently `forward_growth_score` is computed and stored but `portfolio_score` still uses old `40g + 25v + 35q`. Deliberate observation period — accumulate runs to compare old vs new ranking before flipping. Earliest sensible: after 2–3 more screener runs.
+4. **Breakthrough Step B eviction logic** — design locked yesterday, awaiting implementation. History pool currently grows unbounded (20 → 36 → ...); eviction rules need to land before pool size becomes a real issue.
 
-5. **Breakthrough prompt v4 — geographic spread fix.** Today's screener (May 8) returned only 1 non-USD listing (Sony 6758) vs target 5+. Need stricter geographic distribution constraint in the prompt.
+5. **Breakthrough Item 3 — anchored 30 → 25 selection.** Carried over from yesterday's chat. Details not in current context; recover from son's chat or yesterday's session log when picking up.
 
-6. **Watchlist dividend NULL backfill** — 9 dividend holdings still NULL on `dividend_total_return_score` (HDB, IBN, BMY, CEG, 0ZQ, ALV, NLY, PBR, SFL). Phase 2b populates on next screener run; verify after augmentation live test.
+6. **Augmentation international handling.** v4.1 surfaced only 1 non-USD listing (Sony 6758). Right fix is universe expansion: add international names to `CANDIDATE_POOLS` directly. Not a prompt-side fix. Scope: which markets, how many names, what selection criteria.
 
-7. **Optional Commit N** — `--dry-run-augmentation` flag for sanity-checking prompts without persistence/audit writes. Nice-to-have.
+7. **Son's clone — verify EU scan firing post-asyncio-reentry-fix.** 07:58 UTC wake-up re-pulls his journal to confirm LSE / AEB / BVME scans actually fired after Europe opened at 07:00 UTC. Status: pending son's verification, not your work directly. Just track outcome.
+
+8. **Son's clone — NVDA P&L recovery.** Needs JSON history import (Script B). Standalone single-file Python at `/tmp/import_options_history_standalone.py` on this server, sent to son via email. **Resolved on this end; awaits son's run.**
+
+9. **Watchlist dividend NULL backfill** — 9 dividend holdings still NULL on `dividend_total_return_score` (HDB, IBN, BMY, CEG, 0ZQ, ALV, NLY, PBR, SFL). Phase 2b populates on next screener run; verify after next monthly screener.
+
+10. **Optional Commit N** — `--dry-run-augmentation` flag for sanity-checking prompts without persistence/audit writes. Nice-to-have.
 
 ### Lower priority
 
-8. **RULES.md merged-mode update.** RULES.md still describes pre-merge architecture (Maggy 4001 / Winston 7496 as two separate accounts on separate gateways). Needs a new "Current operating mode (merged, since 2026-04-28)" section noting suggestion mode + auto-approve OFF + backup file references. Listed as deferred work in Ryan's notes.
+11. **RULES.md merged-mode update.** RULES.md still describes pre-merge architecture. Needs new "Current operating mode (merged, since 2026-04-28)" section. Deferred work.
 
-9. **GBP centralization** — 8+ separate sites in codebase divide by 100 for GBP. Surgical fix landed at `analyzer.py` on May 7; centralization deferred.
+12. **GBP centralization** — 8+ separate sites in codebase divide by 100 for GBP. Surgical fix landed at `analyzer.py` on May 7; centralization deferred.
 
-10. **Scorer fail-closed behavior** — screener side largely self-corrects; metrics side now via staleness flag. Defer.
+13. **Scorer fail-closed behavior** — screener side largely self-corrects; metrics side now via staleness flag. Defer.
 
-11. **3-consecutive-failure exchange skip** in `update_watchlist_metrics` — dormant in code. Leave alone unless it bites again.
+14. **3-consecutive-failure exchange skip** in `update_watchlist_metrics` — dormant in code. Leave alone unless it bites again.
 
 ## Known Unfixed Issues
 
@@ -789,9 +815,107 @@ Reorganized STATE.md from pure chronology into three layers (L1 Fundamentals / L
 
 No code change. RULES.md merged-mode update deferred to a separate session.
 
+## Monday (2026-05-11) — breakthrough v4 reverted → v4.1 validated + son's three-market diagnosis + earlier May 9-10 work captured
+
+### May 9-10 commits not previously captured in STATE.md
+
+Four commits happened in the chat between Sunday's restructure and tonight that should be recorded:
+
+- **`80f08c3`** — Augmentation NameError fix. Working.
+- **`2faa4df`** — Portfolio dashboard merge-mode. Working.
+- **`e958fc1`** — **Commit E shipped.** `portfolio_score` now uses `forward_growth_score` instead of the old `40g + 25v + 35q`. The observation-period deferral noted on May 8 was concluded; flip executed. Operating flags table updated accordingly. Composite score architecture verified.
+- **`c098919`** — Breakthrough Step B persistence. Working. History pool tracking 36 entries cleanly across 3 runs.
+
+### Breakthrough prompt v4 → v4.1
+
+First v4 attempt added a dedicated COMPUTE BUILDOUT THESIS section + country-specific quotas (Korean AND Japanese) + memory/HBM quota + datacenter electrical quota + tightened non-USD count (6+/4+ vs v3's 5+/3+). Result: produced empty arrays under the stacked constraints — Claude couldn't satisfy all the new requirements simultaneously and returned nothing instead of a degraded list.
+
+**Reverted at `bf830c3`** then re-fixed as **v4.1 at `f5e090f`**.
+
+What v4.1 keeps from v4:
+- Megatrend #2 expanded (still one entry in the megatrend list, no quota, no dedicated section, no named-ticker examples — named tickers bias Claude toward specific names rather than letting it surface what looks attractive now)
+- **Safety-net clause** at top of validation checklist: "if you cannot satisfy ALL items below, return your best honest attempt with as many names as you can — do not return an empty array. A shorter list of high-conviction names is strictly preferred to no list." Defends against future constraint additions causing the same empty-array failure mode.
+
+What v4.1 deliberately drops from v4:
+- COMPUTE BUILDOUT THESIS dedicated section (overweighted compute vs 16 other megatrends)
+- Country-specific quotas — country prescription embeds static geopolitical assumptions in a dynamic-conditions prompt
+- Memory/HBM quota — if those names belong in the universe, add to `CANDIDATE_POOLS` directly
+- Datacenter electrical quota — same reasoning
+- Tightened non-USD count (6+/4+) — left at v3's 5+/3+
+
+### v4.1 test run results (validated)
+
+| Metric | v4.1 (tonight) | v3 (yesterday) | v4 original (broken) |
+|---|---|---|---|
+| Breakthrough count | **22** | 19 | 0 |
+| Non-USD listings | 1 (Sony 6758 JPY) | 1 (4565) | n/a |
+| Megatrends represented | 10 | ~8 | n/a |
+| History pool growth | 20 → 36 (+16 net-new) | 3 → 20 (+17 new) | n/a |
+
+**Composition tonight:** RKLB, BEAM, SITM, FSLR, CRSP, SPWR, ALB, 6758, ZS, EPAM, TMDX, RDWR, CHWY, DKNG, HUBS, CVNA, MNDY, IONQ, SMCI, PATH, STEM, TDOC.
+
+**Megatrend distribution healthy:** Genomics, energy transition, AI applications, compute infrastructure, cybersecurity, space, quantum, critical minerals — broad spread, no over-concentration. 4 names in #1 (AI applications) slightly bends Claude's own "max 3 per megatrend" cap — acceptable variance.
+
+**Geographic spread still v3-level (1 non-USD).** v4.1 didn't fix this — wasn't the goal. Country-specific prescription was wrong-shaped. **Right fix is universe expansion** (add international names to `CANDIDATE_POOLS`), not prompt prescription. Queued as L2 #6.
+
+**Compute representation:** SITM + SMCI (infrastructure) + EPAM, MNDY, HUBS, DKNG (AI applications) = 6/22 = 27%. Solid. Megatrend #2 expansion worked — Claude surfacing names across the compute stack.
+
+### Son's clone — three-market diagnosis (resolves the open "Asia/EU scan validation" item from May 7)
+
+Son ran the diagnostic on his mesicap-trader (U23886415, real options-trading account, unmerged). Results split cleanly across three markets:
+
+**1. ASX (Australia) — working-as-designed.** JHX surfaced as a candidate but blocked by low-IV-rank filter (same gate that blocks TSLA on quiet days). Not a bug.
+
+**2. NSE (India) — confirmed broken, two compounding issues.** Journal at 06:30/07:00 UTC scan for INFY+ITC shows:
+
+```
+Error 200: No security definition ... contract: Stock(conId=44652017, symbol='INFY',
+  exchange='SMART', primaryExchange='NSE', currency='INR' ...)
+no_price_data exchange=NSE symbol=INFY
+option_chains_raw count=0 exchange=NSE exchanges=[] symbol=INFY
+no_option_chains
+```
+
+Two distinct failures stacked:
+
+- **SMART-routing rejects INR stocks.** Even with `conId`, `primaryExchange='NSE'`, `localSymbol`, `tradingClass` all set, IBKR returns Error 200. Root cause: `contract.exchange = "SMART"` override at `src/broker/market_data.py:100`. IBKR's SMART aggregator doesn't include NSE for INR-denominated names.
+- **Option chains return empty (`count=0`)** — separate from the price fetch. Even when the chain query goes through, IBKR returns 0 chains for NSE. **Market-data subscription gap** — IBKR account doesn't have NSE options data enabled. Possibly also missing NSE equity-data subscription (which would explain the SMART failure too).
+
+**Net:** even if the SMART-override at L100 gets fixed, NSE still produces 0 candidates because no option chains exist for this account. **NSE is effectively un-tradeable until the IBKR subscription is added.** Son suggests pulling INFY+ITC from `options_universe.yaml` until that's resolved. Queued as L2 #1.
+
+**3. Europe (LSE / AEB / BVME) — jobs never fire.** Real bug. No "scan started" log line, no "scan failed" log line — silent failure. Tonight son shipped an **asyncio-reentry fix** to address it. Verification path: 07:58 UTC wake-up re-pulls his journal to confirm LSE / AEB / BVME scans actually fired after Europe opened at 07:00 UTC.
+
+### TTD covered-call dashboard display fix (son's side, verified yesterday)
+
+All closed puts disappeared from the Positions dashboard at expiry, but TTD's *manually-opened* covered call (which expired at the same date) did not. The dashboard close-out filter caught dashboard-originated positions but not manually-opened ones. Son fixed it. Worth checking whether this server's dashboard has the same display gap.
+
+### RACE → IDEM exchange routing fix (son's investigation, applies to your code)
+
+Son's investigation surfaced: RACE (Ferrari) options chains are found on **IDEM** (Borsa Italiana derivatives), but `placing_sell_put` calls go to **BVME** (the equity exchange). Journal evidence: `option_chain_data exchange=IDEM strikes=266 symbol=RACE` followed by `placing_sell_put exchange=BVME strike=279.0 symbol=RACE`.
+
+Root cause: `config/options_universe.yaml` — RACE has no `opt_exchange` field, so `universe.get_options_exchange()` at `src/strategy/universe.py:144-147` falls through to `stock.opt_exchange` which gives BVME. Fix: add `opt_exchange: IDEM` to the RACE entry. Same pattern is already used in `config/watchlist.yaml` (other stocks have `options_exchange: EUREX` / `OSE.JPN`).
+
+### Porting workflow codified
+
+L1 now has a "Son's Clone — Porting Relationship" section codifying the manual case-by-case workflow. Three port-check items in L2 next-session queue (RACE/IDEM, asyncio-reentry diff against your locks, TTD CC display gap check).
+
+### What's NOT changed on your code tonight
+
+Beyond breakthrough v4 → v4.1, no code change on this server tonight. Son's work happens on his clone with his own AI; this server records status and identifies port candidates.
+
 ---
 
 ## All Commits Reference (recent, all pushed)
+
+**2026-05-09 to 2026-05-11:**
+- `f5e090f` screener: breakthrough prompt v4.1 — expand megatrend #2 + safety-net clause (validated tonight: 22 names, healthy spread)
+- `bf830c3` Revert "screener: breakthrough prompt v4 — compute buildout thesis + tightened geographic spread"
+- (v4 original commit hash not preserved in current chat — was reverted in `bf830c3`)
+- `c098919` breakthrough: history persistence Step B — pool tracking confirmed working (36 entries across 3 runs)
+- `e958fc1` **Commit E: portfolio_score = forward_growth_score** (old 40g+25v+35q formula retired)
+- `2faa4df` portfolio dashboard merge-mode fix
+- `80f08c3` augmentation: NameError fix
+- `c2cced4` STATE.md: Sunday — augmentation pipeline validated, Commit E, breakthrough infrastructure (5 commits)
 
 **2026-05-08:**
 - `49b6785` augmentation: `_evict_overflow_from_discovered_pool` (180/45 cap, atomic write)
