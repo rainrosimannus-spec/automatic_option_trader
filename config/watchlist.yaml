@@ -157,25 +157,25 @@ growth:
     sector: Consumer Staples
     exchange: SMART
     currency: CHF
-    options_exchange: EUREX
+    opt_exchange: EUREX
   - symbol: NOVN
     name: Novartis AG
     sector: Healthcare
     exchange: SMART
     currency: CHF
-    options_exchange: EUREX
+    opt_exchange: EUREX
   - symbol: SIKA
     name: Sika AG
     sector: Materials
     exchange: SMART
     currency: CHF
-    options_exchange: EUREX
+    opt_exchange: EUREX
   - symbol: LONN
     name: Lonza Group AG
     sector: Healthcare
     exchange: SMART
     currency: CHF
-    options_exchange: EUREX
+    opt_exchange: EUREX
 
   # ── Japan (4) ──
   - symbol: "6758"
@@ -183,28 +183,28 @@ growth:
     sector: Technology
     exchange: SMART
     currency: JPY
-    options_exchange: OSE.JPN
+    opt_exchange: OSE.JPN
     contract_size: 100
   - symbol: "6861"
     name: Keyence Corp.
     sector: Technology
     exchange: SMART
     currency: JPY
-    options_exchange: OSE.JPN
+    opt_exchange: OSE.JPN
     contract_size: 100
   - symbol: "7203"
     name: Toyota Motor Corp.
     sector: Consumer Discretionary
     exchange: SMART
     currency: JPY
-    options_exchange: OSE.JPN
+    opt_exchange: OSE.JPN
     contract_size: 100
   - symbol: "6367"
     name: Daikin Industries
     sector: Industrials
     exchange: SMART
     currency: JPY
-    options_exchange: OSE.JPN
+    opt_exchange: OSE.JPN
     contract_size: 100
 
   # ── Norway (3) ──
@@ -213,19 +213,19 @@ growth:
     sector: Energy
     exchange: SMART
     currency: NOK
-    options_exchange: OSE
+    opt_exchange: OSE
   - symbol: MOWI
     name: Mowi ASA
     sector: Consumer Staples
     exchange: SMART
     currency: NOK
-    options_exchange: OSE
+    opt_exchange: OSE
   - symbol: DNB
     name: DNB Bank ASA
     sector: Financials
     exchange: SMART
     currency: NOK
-    options_exchange: OSE
+    opt_exchange: OSE
 
   # ── Australia (4) ──
   - symbol: CSL
@@ -233,25 +233,25 @@ growth:
     sector: Healthcare
     exchange: SMART
     currency: AUD
-    options_exchange: ASX
+    opt_exchange: ASX
   - symbol: WDS
     name: Woodside Energy Group
     sector: Energy
     exchange: SMART
     currency: AUD
-    options_exchange: ASX
+    opt_exchange: ASX
   - symbol: XRO
     name: Xero Limited
     sector: Technology
     exchange: SMART
     currency: AUD
-    options_exchange: ASX
+    opt_exchange: ASX
   - symbol: ALL
     name: Aristocrat Leisure
     sector: Consumer Discretionary
     exchange: SMART
     currency: AUD
-    options_exchange: ASX
+    opt_exchange: ASX
 
 dividend:
   # ── US (5) ──
@@ -292,7 +292,7 @@ dividend:
     sector: Financials
     exchange: SMART
     currency: CHF
-    options_exchange: EUREX
+    opt_exchange: EUREX
     div_yield: 5.2
 
   # ── Europe (1) ──
@@ -301,7 +301,7 @@ dividend:
     sector: Financials
     exchange: SMART
     currency: EUR
-    options_exchange: EUREX
+    opt_exchange: EUREX
     div_yield: 4.5
 
   # ── Japan (1) ──
@@ -310,7 +310,7 @@ dividend:
     sector: Financials
     exchange: SMART
     currency: JPY
-    options_exchange: OSE.JPN
+    opt_exchange: OSE.JPN
     div_yield: 3.4
     contract_size: 100
 
@@ -320,7 +320,7 @@ dividend:
     sector: Communication Services
     exchange: SMART
     currency: NOK
-    options_exchange: OSE
+    opt_exchange: OSE
     div_yield: 6.8
 
   # ── Australia (2) ──
@@ -329,14 +329,14 @@ dividend:
     sector: Materials
     exchange: SMART
     currency: AUD
-    options_exchange: ASX
+    opt_exchange: ASX
     div_yield: 5.0
   - symbol: CBA
     name: Commonwealth Bank
     sector: Financials
     exchange: SMART
     currency: AUD
-    options_exchange: ASX
+    opt_exchange: ASX
     div_yield: 3.6
 
   # ── London (4) ──
@@ -345,7 +345,7 @@ dividend:
     sector: Materials
     exchange: SMART
     currency: GBP
-    options_exchange: ICEEU
+    opt_exchange: ICEEU
     contract_size: 1000
     div_yield: 6.5
   - symbol: SHEL
@@ -353,7 +353,7 @@ dividend:
     sector: Energy
     exchange: SMART
     currency: GBP
-    options_exchange: ICEEU
+    opt_exchange: ICEEU
     contract_size: 1000
     div_yield: 3.8
   - symbol: HSBA
@@ -361,7 +361,7 @@ dividend:
     sector: Financials
     exchange: SMART
     currency: GBP
-    options_exchange: ICEEU
+    opt_exchange: ICEEU
     contract_size: 1000
     div_yield: 5.0
   - symbol: AZN
@@ -369,7 +369,7 @@ dividend:
     sector: Healthcare
     exchange: SMART
     currency: GBP
-    options_exchange: ICEEU
+    opt_exchange: ICEEU
     contract_size: 1000
     div_yield: 2.1
 
@@ -379,14 +379,14 @@ dividend:
     sector: Technology
     exchange: SMART
     currency: EUR
-    options_exchange: EUREX
+    opt_exchange: EUREX
     div_yield: 1.0
   - symbol: SIE
     name: Siemens AG
     sector: Industrials
     exchange: SMART
     currency: EUR
-    options_exchange: EUREX
+    opt_exchange: EUREX
     div_yield: 2.8
   # ── Euronext Amsterdam (2) ──
   - symbol: ASML
@@ -394,12 +394,12 @@ dividend:
     sector: Technology
     exchange: SMART
     currency: EUR
-    options_exchange: EUREX
+    opt_exchange: EUREX
     div_yield: 0.7
   - symbol: INGA
     name: ING Group NV
     sector: Financials
     exchange: SMART
     currency: EUR
-    options_exchange: EUREX
+    opt_exchange: EUREX
     div_yield: 6.0
