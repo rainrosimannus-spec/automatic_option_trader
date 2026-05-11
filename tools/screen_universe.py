@@ -1078,6 +1078,42 @@ def _evict_breakthrough_overflow() -> bool:
         return False
 
 
+def _load_breakthrough_anchor() -> list[dict]:
+    """Load the prior-run anchor from discovered_pool.yaml[breakthrough].
+
+    Returns entries with last_run_at == max(last_run_at across pool).
+    If no entry has last_run_at set, returns []. Empty list signals
+    bootstrap (first run after Commit 1 schema landed but before any
+    selection has persisted a run).
+
+    Pure read. No write. Best-effort: on any IO/parse failure, returns []
+    and logs the error. Caller treats empty as "no anchor available."
+    """
+    import os
+    import yaml
+
+    yaml_path = os.path.join(os.path.dirname(__file__), "discovered_pool.yaml")
+    if not os.path.exists(yaml_path):
+        return []
+
+    try:
+        with open(yaml_path) as f:
+            data = yaml.safe_load(f) or {}
+        pool = data.get("breakthrough") or []
+        if not isinstance(pool, list):
+            return []
+        # Entries with a real last_run_at timestamp
+        timed = [e for e in pool if e.get("last_run_at")]
+        if not timed:
+            return []
+        max_ts = max(e["last_run_at"] for e in timed)
+        anchor = [e for e in pool if e.get("last_run_at") == max_ts]
+        return anchor
+    except Exception as e:
+        print(f"  ⚠  breakthrough anchor load failed: {type(e).__name__}: {e}")
+        return []
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # BREAKTHROUGH SELECTION PROMPT (Big-Ticket #2, Commit 3 of 4)
 # ─────────────────────────────────────────────────────────────────────────
@@ -2749,6 +2785,8 @@ class UniverseScreener:
 
         breakthrough_candidates = _get_breakthrough_candidates()
         breakthrough_scores: list[StockScore] = []
+        # 4b: accumulate metadata for call B; persist hook deferred to post-loop
+        breakthrough_fresh_meta: list[dict] = []
 
         for candidate in breakthrough_candidates:
             symbol = candidate.get("symbol", "")
@@ -2773,20 +2811,15 @@ class UniverseScreener:
                     if score.sector == "Unknown":
                         score.sector = candidate.get("sector", "Unknown")
                     breakthrough_scores.append(score)
-                    # Step B: persist to breakthrough_history pool (best-effort)
-                    try:
-                        from datetime import datetime as _dt_bt
-                        _persist_breakthrough_appearance(
-                            symbol=symbol,
-                            exchange=candidate.get("exchange", "SMART"),
-                            currency=candidate.get("currency", "USD"),
-                            name=score.name,
-                            megatrend=score.megatrend,
-                            thesis=candidate.get("thesis", "") or candidate.get("rationale", ""),
-                            run_date=_dt_bt.now(),
-                        )
-                    except Exception as _e:
-                        print(f"  ⚠ breakthrough_history hook failed for {symbol}: {_e}")
+                    # 4b: accumulate metadata; persistence happens AFTER call B selection
+                    breakthrough_fresh_meta.append({
+                        "symbol": symbol,
+                        "exchange": candidate.get("exchange", "SMART"),
+                        "currency": candidate.get("currency", "USD"),
+                        "name": score.name,
+                        "megatrend": score.megatrend,
+                        "thesis": candidate.get("thesis", "") or candidate.get("rationale", ""),
+                    })
                     status = "✅" if score.options_available else "⛔"
                     print(f"  {status} {score.symbol:8s} | MCap: ${score.market_cap/1e9:5.1f}B | {score.megatrend}")
                 else:
@@ -2794,6 +2827,51 @@ class UniverseScreener:
             except Exception as e:
                 print(f"  ❌ {symbol:8s} | Error: {e}")
             time.sleep(0.3)
+
+        # 4b: anchored 30->25 selection (Big-Ticket #2).
+        # Loads prior-run anchor (max last_run_at), calls Claude with fresh+anchor,
+        # writes audit row, then filters breakthrough_scores to selected 25 and
+        # persists only those to discovered_pool.yaml. On any failure, leaves
+        # breakthrough_scores untouched and skips persistence (fresh-as-is).
+        try:
+            from datetime import datetime as _dt_sel
+            from src.core.database import get_session_factory as _gsf_sel
+            _run_date_sel = _dt_sel.now()
+            _anchor_sel = _load_breakthrough_anchor()
+            _audit_session_sel = _gsf_sel()()
+            try:
+                _sel_result = _run_breakthrough_selection(
+                    fresh=breakthrough_fresh_meta,
+                    anchor=_anchor_sel,
+                    audit_session=_audit_session_sel,
+                    run_date=_run_date_sel,
+                )
+                _audit_session_sel.commit()
+            finally:
+                _audit_session_sel.close()
+            _selected_syms = _sel_result["selected_symbols"]
+            _pre_count = len(breakthrough_scores)
+            breakthrough_scores = [s for s in breakthrough_scores if s.symbol in _selected_syms]
+            # Persist only the selected (now safe — call B has run)
+            for _meta in breakthrough_fresh_meta:
+                if _meta["symbol"] in _selected_syms:
+                    try:
+                        _persist_breakthrough_appearance(
+                            symbol=_meta["symbol"],
+                            exchange=_meta["exchange"],
+                            currency=_meta["currency"],
+                            name=_meta["name"],
+                            megatrend=_meta["megatrend"],
+                            thesis=_meta["thesis"],
+                            run_date=_run_date_sel,
+                        )
+                    except Exception as _pe:
+                        print(f"  ⚠ breakthrough_history hook failed for {_meta['symbol']}: {_pe}")
+            print(f"  📒 breakthrough selection: kept {len(breakthrough_scores)}/{_pre_count} "
+                  f"(fallback={_sel_result['fallback_used']}, notes={_sel_result['notes']!r})")
+        except Exception as _se:
+            print(f"  ⚠ breakthrough selection wrapper failed: {type(_se).__name__}: {_se}")
+            print(f"  ⚠ leaving breakthrough_scores untouched ({len(breakthrough_scores)} entries), skipping persist")
 
         # Step B: trim breakthrough_history pool to cap, protecting recent names.
         # Fires once per screener run, after all breakthrough names have been
