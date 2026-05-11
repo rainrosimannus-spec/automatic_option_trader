@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-05-11 (Mon, late) — **Breakthrough v4.1 validated** (22 names, healthy spread, history pool 36 entries). **Commit E shipped** as `e958fc1` (`portfolio_score = forward_growth_score`). Son's three-market diagnosis closed on NSE side (root cause: SMART-override at L100 + IBKR subscription gap); EU asyncio-reentry fix awaits 07:58 UTC verification; ASX confirmed working-as-designed.
+Last updated: 2026-05-11 (Mon, very late) — **14 commits shipped Monday**: Big-Tickets #1 (eviction `2620c65`) + #2 (anchored 30→25 breakthrough selection, six commits, verified across 3 live runs) done; B#3 (international augmentation) has three fixes in — client-side dedup (`8d6debb`), exchange/currency mapping guide (`46a24c4`), raw_proposal_json diagnostic column (`d0e39f0`). Watchlist field-name bug fixed (`59d9391`, 29 entries with `options_exchange:` renamed to `opt_exchange:`, activating silent European/Asian routing). Augmentation 'US-bias' originally suspected as a bug, conclusively diagnosed as system working correctly per scoring rubric design — see L1 Augmentation Pipeline section. SSH-only origin enforced after PAT-in-URL incident (third credential incident — new L1 rule 17).
 
 This document has three layers. Read top-to-bottom in a normal session; jump to L3 only when investigating *why* something is the way it is.
 
@@ -175,6 +175,13 @@ Monthly screener invokes Claude to propose 5–10 high-conviction names beyond t
 
 **Status:** gated behind `AUGMENTATION_ENABLED = False` in `tools/screen_universe.py`. No API calls until manually flipped. See L2 next-session queue for live test plan.
 
+**Augmentation prompt hardening (2026-05-11):** Three structural improvements landed during Big-Ticket #3 work.
+1. Client-side dedup of Claude's proposals against the 518-symbol exclusion set, since the prompt-level exclusion is unreliable at that length (commit `8d6debb`).
+2. Exchange/currency mapping guide embedded in both growth and dividend prompts, using actual CANDIDATE_POOLS conventions (21 markets mapped), plus ticker convention reminders like TTE-not-FP (commit `46a24c4`).
+3. Per-proposal raw JSON stored in `augmentation_audit.raw_proposal_json` for diagnostic forensics (commit `d0e39f0`). Schema auto-migration runs on startup via `_migrate_columns()`.
+
+**Geographic distribution by design (not bug):** The growth tier ends up 84% US, dividend tier 58% non-US, breakthrough 96% US. This reflects where rubric-specific quality actually lives: growth (revenue durability + compounding quality) concentrates in US tech, dividend in foreign income-payers (Canadian banks, UK/EU telcos/utilities, Norwegian energy, Chinese insurers), breakthrough in speculative US innovation. Universe input is 77% non-US growth + 39% non-US dividend; the scoring rubric correctly filters down to where quality actually exists. Forcing geographic diversity via augmentation would push Claude to propose lower-quality names that fail scoring correctly. **No "Fix B" needed.** Augmentation proposing mostly US names is rational, not biased.
+
 ## Asyncio Lock Architecture (post-merge serialization)
 
 Post-merge, two `ib_insync` clients (Maggy clientId 12, Winston clientId 97) hit the same gateway through the same Python process. Pre-merge they had separate gateways; collisions were physically impossible. Post-merge, every overlapping IBKR call is a race.
@@ -234,6 +241,7 @@ Anchored to first-point-zero. Reads `options_account` from `cfg.ibkr.account`, c
 - **FMP is dead** for LSE/AEB/HKEX/BM. Use IBKR `ReportsFinSummary` via `src/portfolio/ibkr_fundamentals.py`.
 - **LSE prices come in pence**, not pounds. Normalized at source in `analyzer.py` since 2026-05-07 (commit `95f7d67`). Eight other GBP-handling sites in codebase still divide by 100 surgically; centralization deferred.
 - **DTE config** for options: USD 0–3 DTE at low/mid VIX. Hardcoded fallback in `screen_puts()` was 5–14; that fallback caused the April 27 mistaken fills before `_evaluate_symbol` was patched to pass DTE explicitly.
+- **Watchlist YAML field name:** `opt_exchange:` is the correct field for derivatives-exchange routing in `config/watchlist.yaml`. Son's clone uses `options_exchange:` (different naming convention). If importing entries from son's repo, rename the field. Code at `src/strategy/universe.py:147` reads `opt_exchange` only; `options_exchange:` is silently ignored. Bug surfaced 2026-05-11 — 29 entries had wrong name, all silently ignored for weeks, fixed in commit `59d9391`.
 
 ## Scheduled Jobs
 
@@ -284,6 +292,7 @@ Anchored to first-point-zero. Reads `options_account` from `cfg.ibkr.account`, c
 14. **`composite=0` for valid stocks is NEVER correct.**
 15. **If Ryan asks a question before pasting output, answer the question first.** Don't assume output that wasn't there.
 16. **Cross-check STATE.md after writing.** Empty pattern matches mean nothing changed; verify content actually updated.
+17. **Never request commands that expose credentials.** Personal Access Tokens are often embedded in HTTPS git remote URLs. Never ask Ryan to run `git remote -v`, `env`, `printenv`, `cat .env`, `cat .git/config`, `history`, or `ps auxe` directly. Use redacted variants like `git remote -v | sed 's|//[^@]*@|//[REDACTED]@|g'`. Ryan is not a programmer and will not catch leaks. **Third incident on 2026-05-11 — strict rule, no exceptions.**
 
 ## Don'ts
 
@@ -314,6 +323,10 @@ Anchored to first-point-zero. Reads `options_account` from `cfg.ibkr.account`, c
 | `composite_floor` | 40 | Below this, no buy_signal (since 2026-05-03) |
 | Composite blend | 30% raw / 70% quality | Since 2026-05-03 |
 | Breakthrough prompt | **v4.1 validated** | 22 names, healthy megatrend spread, 1 non-USD (Sony 6758) — same as v3. Geographic deferred to universe expansion in `CANDIDATE_POOLS`, not prompt. |
+| Breakthrough selection mode | **Anchored 30→25** | Phase A fresh proposals + Phase B Claude-select-25-from-merged. Shipped 2026-05-11. Verified across 3 live runs. |
+| `breakthrough_history` cap | 75 entries | Eviction shipped 2026-05-11 (`2620c65`). `last_seen` window protection (current-week entries protected). |
+| `augmentation_audit.raw_proposal_json` | populated | From 2026-05-11 18:28 onward; rows before that have empty string. |
+| Git origin URL | **SSH-only** | `git@github.com:rainrosimannus-spec/automatic_option_trader.git`. PAT-in-URL incident 2026-05-11 forced SSH switchover. |
 
 ## Active Covered Calls
 
@@ -333,22 +346,15 @@ Anchored to first-point-zero. Reads `options_account` from `cfg.ibkr.account`, c
 
 1. **Pull INFY + ITC from `config/options_universe.yaml`** (free, immediate). NSE is un-tradeable until IBKR subscription added (see L3 May 11 NSE diagnosis). Leaving these in burns scan cycles producing zero candidates every run. Surgical removal — one-line YAML edit per symbol.
 
-2. **Port queue from son's clone** — son's mesicap-trader (U23886415) is the upstream for options-side code. Three recent fixes need *check-whether-applies* on your repo (manual port; see L1 "Son's Clone — Porting Relationship"):
-   - **RACE → IDEM exchange routing.** `config/options_universe.yaml` — RACE has no `opt_exchange` field, so `universe.get_options_exchange()` at `src/strategy/universe.py:144-147` falls through to `stock.opt_exchange` which gives BVME (equity exchange). Chains are on IDEM. Add `opt_exchange: IDEM` to RACE entry.
-   - **Asyncio-reentry fix.** Son shipped tonight; details from his commit not yet captured here. Family-related to your Stages 1–5 lock supervisor + May 3 reconnect-race fix (`b734cf7`). Diff against your `connection.py` / `trade_sync.py` before deciding.
-   - **TTD covered-call dashboard display fix.** Manually-opened CC positions didn't disappear from Positions table at expiry. Check whether your dashboard exhibits the same display gap.
-
-3. **NSE SMART-routing fix at `src/broker/market_data.py:100`** — `contract.exchange = "SMART"` override rejects INR stocks because IBKR's SMART aggregator doesn't include NSE for INR-denominated names. Conditionally skip the override when `currency == 'INR'` and use `primaryExchange='NSE'` directly. **Only useful if NSE subscription gets added at IBKR** — otherwise pulling INFY/ITC (#1) is sufficient. Defer until subscription decision.
+2. **NSE SMART-routing fix at `src/broker/market_data.py:100`** — `contract.exchange = "SMART"` override rejects INR stocks because IBKR's SMART aggregator doesn't include NSE for INR-denominated names. Conditionally skip the override when `currency == 'INR'` and use `primaryExchange='NSE'` directly. **Only useful if NSE subscription gets added at IBKR** — otherwise pulling INFY/ITC (#1) is sufficient. Defer until subscription decision.
 
 ### Medium priority
 
-4. **Breakthrough Step B eviction logic** — design locked yesterday, awaiting implementation. History pool currently grows unbounded (20 → 36 → ...); eviction rules need to land before pool size becomes a real issue.
+4. **Verify watchlist rename effect on next foreign-market scan.** Tomorrow's scheduled scans for European and Asian markets (EUREX/AEB/BVME/SBF/ASX/SEHK etc.) should now produce real candidates instead of silently no-op'ing. Watch dashboard suggestions tab + tmux trader pane for any new put suggestions on EU/Asian symbols. Reverification of `59d9391` impact in production.
 
-5. **Breakthrough Item 3 — anchored 30 → 25 selection.** Carried over from yesterday's chat. Details not in current context; recover from son's chat or yesterday's session log when picking up.
+5. **Breakthrough fresh-proposal count variance investigation.** Run id=1 had fresh=24, id=2 had fresh=17, id=3 had fresh=20. Claude's conviction count varies meaningfully between runs. Is this noise (resampling) or signal (changing market conditions)? Worth tracking over the next 10 runs to see if a pattern emerges. Don't intervene yet — instrument first.
 
-6. **Augmentation international handling.** v4.1 surfaced only 1 non-USD listing (Sony 6758). Right fix is universe expansion: add international names to `CANDIDATE_POOLS` directly. Not a prompt-side fix. Scope: which markets, how many names, what selection criteria.
-
-7. **Son's clone — verify EU scan firing post-asyncio-reentry-fix.** 07:58 UTC wake-up re-pulls his journal to confirm LSE / AEB / BVME scans actually fired after Europe opened at 07:00 UTC. Status: pending son's verification, not your work directly. Just track outcome.
+6. **Son's clone — verify EU scan firing post-asyncio-reentry-fix.** 07:58 UTC wake-up re-pulls his journal to confirm LSE / AEB / BVME scans actually fired after Europe opened at 07:00 UTC. Status: pending son's verification, not your work directly. Just track outcome.
 
 8. **Son's clone — NVDA P&L recovery.** Needs JSON history import (Script B). Standalone single-file Python at `/tmp/import_options_history_standalone.py` on this server, sent to son via email. **Resolved on this end; awaits son's run.**
 
@@ -358,7 +364,7 @@ Anchored to first-point-zero. Reads `options_account` from `cfg.ibkr.account`, c
 
 ### Lower priority
 
-11. **RULES.md merged-mode update.** RULES.md still describes pre-merge architecture. Needs new "Current operating mode (merged, since 2026-04-28)" section. Deferred work.
+11. **RULES.md merged-mode update — overdue.** RULES.md still describes pre-merge architecture (Maggy 4001 / Winston 7496 separate). Since 2026-04-28 both run against U17562704 on 7496; U23886415 on son's clone. Needs new "Current operating mode (merged, since 2026-04-28)" section noting suggestion mode + auto-approve OFF, plus the backup files `~/restart-all.sh.pre-merge-2026-04-28` and `~/watchdog-trader.sh.pre-merge-2026-04-28` for re-split. Flagged twice now in handoffs; should land next session.
 
 12. **GBP centralization** — 8+ separate sites in codebase divide by 100 for GBP. Surgical fix landed at `analyzer.py` on May 7; centralization deferred.
 
@@ -373,6 +379,8 @@ Anchored to first-point-zero. Reads `options_account` from `cfg.ibkr.account`, c
 - **`'Position' object has no attribute 'unrealized_pnl'`** — fires on every Maggy put_seller scan against U17562704 (ISRG, CRWD, CNR, AVGO, SOFI, NFLX, etc.). Maggy code expects an attribute that U17562704 Position objects don't have. Same code wrote 4 puts successfully against U23886415 on April 27 — proves the bug is account-type/permission-specific, not a code defect. When Maggy gets a new independent options account configured like U23886415, the existing code should work without patching. If the new account also fails, fix is a one-line `getattr(pos, 'unrealizedPNL', 0.0)` at `src/strategy/risk.py:1224`. **Until then, Maggy on this server scans uselessly and generates zero suggestions — cosmetic-only because Winston is the active strategy here.**
 
 - **Watchlist staleness "looks stale" feeling** — investigated 2026-05-07. All 129 rows have `metrics_stale=0`, last update 2.9h ago — well within 4h cycle. The "looks stale" is the new 30/70 scoring blend producing stable scores dominated by slow-moving quality (70% weight), correctly per design.
+
+- **Tier-count shortage (59 growth, 14 dividend on some runs vs 60/15 target)** — investigated 2026-05-11. Root cause is not a bug. Augmentation only accepts proposals that beat the rank-60 (growth) or rank-15 (dividend) cutoff. On runs where no Claude proposal beats the cutoff, the tier stays at whatever count the regular ranking produced. Forcing names to fill quota would lower quality. **Honest result. Not fixing.**
 
 ### Architectural debt (will resolve when re-split happens)
 
