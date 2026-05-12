@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-05-11 — Restructured into L1/L2/L3 by access pattern. Content preserved from 2026-05-08 version.
+Last updated: 2026-05-12 — Restructured into L1/L2/L3 by access pattern. Content preserved from prior chronological version.
 
 **How to read this document:**
 - **L1 Fundamentals** — read first on every new session. Rarely changes.
@@ -41,6 +41,7 @@ This server runs **both Maggy and Winston code against a single account, U175627
 - **Dashboard:** https://37.0.30.34/ (Caddy + basic auth + self-signed HTTPS, user `maggycian`)
 - **Dashboard auth:** bcrypt cost 14, hash in `/etc/caddy/Caddyfile`. App binds `127.0.0.1:8080` — localhost only.
 - **IBKR ports (canonical, when split):** Maggy=4001, Winston=7496. Currently both on 7496 (merge).
+- **DB path:** `data/trades.db` (per `config/settings.yaml`)
 - **FMP quota:** 250/day. Screener uses ~150–300; +60 with breakthrough filter checks.
 - **First metrics run after restart:** startup + 120 seconds
 - **Metrics cycle:** every 4 hours (`check_interval_hours: 4` in `config/settings.yaml`)
@@ -100,9 +101,9 @@ Columns on `portfolio_watchlist` (38 total):
 4. `recalc_scores_from_db` loops again with populated discount/rsi, calls `_compute_compound_quality`, writes `composite_score`
 5. Logs `portfolio_metrics_updated` (with `newly_stale` count) and `portfolio_scores_recalced`
 
-## Augmentation pipeline (May 8, gated OFF)
+## Augmentation pipeline (May 8, live test ran May 11)
 
-Monthly screener invokes Claude to propose 5–10 high-conviction names beyond the hand-coded universe, scores them, accepts those that beat the rank-60/rank-15 cutoff. **All gated behind `AUGMENTATION_ENABLED = False`** in `tools/screen_universe.py` — default OFF, no API calls until manually flipped.
+Monthly screener invokes Claude to propose 5–10 high-conviction names beyond the hand-coded universe, scores them, accepts those that beat the rank-60/rank-15 cutoff. **First live test ran May 11**, accepted DECK, CPRT, ROL to `discovered_pool.yaml`.
 
 **Architecture decisions:**
 - Two discovered pools (`discovered_growth`, `discovered_dividend`), separate, no yield-routing for discovered names.
@@ -134,12 +135,25 @@ Monthly screener invokes Claude to propose 5–10 high-conviction names beyond t
 9. **`composite=0` for valid stocks is NEVER correct.**
 10. **Every action needs a turn.** Stop when Ryan stops.
 11. **If Ryan asks a question before pasting output, answer the question first.** Don't assume output that wasn't there.
-12. **Cross-check STATE.md after writing.** Empty pattern matches mean nothing changed; verify content actually updated.
+12. **Cross-check STATE.md after writing.** Empty pattern matches mean nothing changed; verify content actually updated. **After GitHub web upload, fetch the raw URL and verify head + tail match what was generated** (May 11 lesson — wrong file landed without detection).
 13. **No heredocs for Python patches** — write to `/tmp/patchN.py`, `ast.parse` check, dry-run, commit with `--commit`.
 14. **One match assertion per patch with ABORT on mismatch.**
 15. **`tmux capture-pane -t trader -p -S -2000`** is the log source.
 16. **Raw GitHub URLs** for file reading.
 17. **CREDENTIAL SAFETY (third incident, May 11 2026):** NEVER ask Ryan to run commands that expose credentials: `git remote -v`, `env`, `printenv`, `cat .env`, `cat .git/config`, `history`, `ps auxe`. PATs are often in HTTPS git URLs. Use redacted variants: `git remote -v | sed 's|//[^@]*@|//[REDACTED]@|g'`. ALWAYS warn before commands touching credential-bearing files. Ryan is not a programmer and will not catch leaks. Strict rule, no exceptions.
+
+## File handoff workflow (Ryan's path)
+
+When Claude generates a file:
+1. Claude creates the file via `create_file` + `present_files`.
+2. Ryan downloads locally. If browser auto-numbers (e.g. `state_7.md`), rename to exact target filename — **case-sensitive** (`STATE.md`, not `state.md`).
+3. Ryan opens `https://github.com/rainrosimannus-spec/automatic_option_trader/upload/main` and drags the file onto the page.
+4. Ryan commits via the GitHub web UI ("Commit directly to the main branch").
+5. On the server: `cd ~/automatic_option_trader && git pull`
+
+**Never** ask Ryan to: paste long file content into a terminal, use heredocs, use base64 chunks, or run `scp`. The GitHub web upload is the only acceptable path.
+
+**Post-upload verification (mandatory):** after Ryan reports the upload is done, fetch the raw GitHub URL and compare head + tail against what was generated.
 
 ## Don'ts
 
@@ -151,7 +165,7 @@ Monthly screener invokes Claude to propose 5–10 high-conviction names beyond t
 - Don't conflate "dashboard looks wrong" with "is broken."
 - Don't assume a fix worked — restart and verify.
 - Don't use complex heredoc for patches.
-- Don't assume STATE.md write succeeded — verify with `head`/`tail` of the file.
+- Don't assume STATE.md write succeeded — verify with `head`/`tail` of the file AND verify against GitHub raw URL.
 
 ---
 
@@ -159,38 +173,31 @@ Monthly screener invokes Claude to propose 5–10 high-conviction names beyond t
 
 ## ⏭ Next session — do these first
 
-**1. Diagnostic blocker (highest priority).** Find where the dashboard web/screener process logs stdout (breakthrough phase, Claude API responses, REJECTED lines). `tmux trader` pane is empty; `watchdog.log` doesn't have it. Check:
-- `tmux list-panes -a` for all sessions
-- `systemctl` for custom service
-- `~/restart-all.sh` for redirects
-- nohup logs
+**1. IBM duplicate-row fix in `src/portfolio/sync.py`.** Diagnosis complete May 12. Root cause: holdings sync's safety-net dedup at lines ~110–114 only checks for `action='put_assigned'`, missing the `action='buy'` row written by `ibkr_sync`. When session timing causes holdings sync to start before `ibkr_sync` commits, dedup misses the buy row and writes a phantom `put_assigned` at `strike − premium` price ($251.84 for IBM 260P with $8.16 premium). Fix shape agreed: extend the `filter()` to `action.in_(["put_assigned", "buy"])`. Single line, no new imports.
 
-This blocks proper diagnosis of breakthrough v4 failure mode.
+**2. Diagnostic blocker (still queued from May 11).** Find where the dashboard web/screener process logs stdout (breakthrough phase, Claude API responses, REJECTED lines). `tmux trader` pane is empty; `watchdog.log` doesn't have it. Check `tmux list-panes -a`, `systemctl`, `~/restart-all.sh` redirects, nohup logs.
 
-**2. STATE.md verification.** This document was restructured 2026-05-11 from chronological to L1/L2/L3. Confirm nothing important was lost vs the prior version.
-
-**3. RULES.md gap (was noted May 8).** Update RULES.md to reflect merged mode. RULES.md still describes pre-merge architecture (Maggy 4001 / Winston 7496 separate). Add a "Current operating mode (merged, since 2026-04-28)" section noting suggestion mode + auto-approve OFF, plus backup file references.
+**3. Augmentation acceptances housekeeping.** DECK, CPRT, ROL added to `discovered_pool.yaml` May 11. Verify `augmentation_audit` table has matching rows. Currently `discovered_pool.yaml` shows uncommitted on server — commit it.
 
 ## Active flags / current state
 
-- `AUGMENTATION_ENABLED = False` in `tools/screen_universe.py` — gated OFF, no Claude API calls
+- `AUGMENTATION_ENABLED = True` in `tools/screen_universe.py` — was flipped on May 11, live test ran successfully
 - Maggy: suggestion mode ON, auto-approve OFF
 - Winston: read-only at IBKR protocol level (placeOrder rejected)
 - Portfolio lock supervisor: `merged=True` (logged at startup)
 - Earnings cache table: auto-creates via `Base.metadata.create_all` (verified exists on server)
 - AugmentationAudit table: exists on server
+- Watchlist scoring May 12 06:21 UTC check: 132 rows, all fresh (last update ~04:21 UTC), `metrics_stale=0` across the board. Healthy.
 
 ## In-flight work
 
-**Forward-growth scoring — observation period.** All 5 sub-scores stored on `StockScore`, `forward_growth_score` populated for 133 watchlist rows (range 11.8–89.2, avg 52.5). `portfolio_score` formula NOT yet using it. Need 2–3 more screener runs to compare old vs new ranking before flipping (Commit E).
+**Forward-growth scoring — observation period.** All 5 sub-scores stored on `StockScore`, `forward_growth_score` populated for 133 watchlist rows (range 11.8–89.2, avg 52.5). `portfolio_score` formula NOT yet using it. Commit E pending.
 
-**Augmentation pipeline — awaiting live test.** Full pipeline built and committed May 8. First exercise against real data still pending. Cost: ~$0.40 Anthropic + ~50 FMP calls per run.
+**Augmentation pipeline — first run complete May 11.** DECK, CPRT, ROL added to discovered_pool.yaml. Live run cost ~$0.40 Anthropic + ~50 FMP calls.
 
 ## Queued work (after next-session priorities)
 
 **Commit E — flip `portfolio_score` to use `forward_growth_score`.** Earliest sensible: after 2–3 more screener runs accumulate.
-
-**Augmentation live test.** Flip `AUGMENTATION_ENABLED = True`, manually trigger one screener run via dashboard "Run now". Watch for: prompt issues, JSON parse edge cases, scoring-time exceptions on proposed symbols. Verify `augmentation_audit` table fills with rows; verify `discovered_pool.yaml` gets accepted symbols.
 
 **Optional Commit N — `--dry-run-augmentation` flag** in `tools/screen_universe.py` to invoke Claude proposals + scoring without persistence/audit writes. Useful for prompt iteration without polluting audit/yaml.
 
@@ -229,7 +236,7 @@ This blocks proper diagnosis of breakthrough v4 failure mode.
 
 **1. Asia/EU put scan validation.** Needs son's diagnostic on U23886415 to confirm whether scans produce zero suggestions due to legitimate market mechanics (live-quote gate, position limits, etc.) or a real bug (universe filter mismatch, market label issue, gate firing only against US data). Diagnostic drafted and ready to forward.
 
-**2. NVDA P&L recovery.** Resolved — Script B delivered May 8 (`/tmp/import_options_history_standalone.py`, ~150 KB with embedded JSON, sent to son via email). Implements position match, hard-skip when both OPEN, update close+P&L when his is OPEN and export is closed, atomic transaction, dry-run by default.
+**2. NVDA P&L recovery.** Resolved — Script B delivered May 8 (`/tmp/import_options_history_standalone.py`, ~150 KB with embedded JSON, sent to son via email).
 
 ---
 
@@ -240,427 +247,149 @@ This blocks proper diagnosis of breakthrough v4 failure mode.
 ## Monday (2026-04-22) — Option B + Commit B + metrics-order fix
 
 - Dividend tier ranks on dedicated `dividend_total_return_score` column (Option B). Tier-aware compound_quality formulas: growth/breakthrough use `0.40*growth + 0.25*valuation + 0.35*quality`; dividend uses `dividend_total_return_score` directly.
-- Held holdings not in top-100 get score refresh in Phase 2b (Commit B). 9 dividend holdings still NULL on `dividend_total_return_score` (HDB, IBN, BMY, CEG, 0ZQ, ALV, NLY, PBR, SFL) until next screener run.
-- Late evening: discovered ~58/126 watchlist rows had composite=0 because scheduler ran `recalc_scores_from_db` BEFORE `update_watchlist_metrics`. Fix (commit `2a95c7b`): swap order. New stocks now get fresh discount/rsi BEFORE `compound_quality` computation. Holdings were unaffected because they had populated metrics from prior cycles.
-- XXII (22nd Century — $15M tobacco penny stock with 1-for-15 reverse split pending) made breakthrough tier at composite 55. Confirmed Claude's breakthrough scan returned it; no post-LLM filter rejected it.
+- Held holdings not in top-100 get score refresh in Phase 2b (Commit B). 9 dividend holdings still NULL on `dividend_total_return_score` until next screener run.
+- Late evening: discovered ~58/126 watchlist rows had composite=0 because scheduler ran `recalc_scores_from_db` BEFORE `update_watchlist_metrics`. Fix (commit `2a95c7b`): swap order.
+- XXII penny stock (1-for-15 reverse split pending) made breakthrough tier at composite 55. Confirmed Claude's breakthrough scan returned it; no post-LLM filter rejected it.
 
 ## Thursday (2026-04-23) morning — four targeted fixes
 
-1. **Breakthrough quality filters** (commit `3c744c6`) — `_check_breakthrough_eligibility` rejects ETFs (FMP `isEtf=true`), market_cap < $500M (uses FMP profile `mktCap` as backup), and any reverse split in last 18 months. Adds 2 FMP calls per breakthrough candidate (~60/run). Quota-safe.
-
-2. **Logger routing** (commit `65a9dec`) — switched structlog from `PrintLoggerFactory` to `stdlib.LoggerFactory`. Application events (`portfolio_score_saved`, `portfolio_metrics_updated`, etc.) now land in `trader.log` instead of stdout-only. Fixes the debugging blind-spot from Wednesday night where tmux buffer rolled and we had to guess at what happened.
-
-3. **Stale-metrics flagging** (commit `06cb459`) — added `metrics_stale` (bool) and `last_metrics_success` (datetime) columns. Inner `_update_watchlist_metrics` writes timestamp on success. Outer loop scans at end and flips `metrics_stale=True` for stocks with `last_metrics_success` older than 24h. Dashboard shows yellow ⏱ icon next to stale symbols. No extra IBKR calls. First run after deployment will flag 100+ stocks (NULL timestamps); self-corrects within 4h.
-
-4. **Cross-tier dedup** (commit `23f6f72`) — symbols can appear in `CANDIDATE_POOLS` (scored as growth/dividend) AND in Claude's breakthrough scan. Without dedup, Phase 2 of screener reclassifies the same symbol twice in one run (growth→breakthrough, then breakthrough→growth). TSLA, NVDA, PLTR all flip-flopped in latest screenshot. Fix: dedup before tier slicing — breakthrough wins because it's the more specific thesis assignment.
+1. **Breakthrough quality filters** (commit `3c744c6`) — `_check_breakthrough_eligibility` rejects ETFs, market_cap < $500M, reverse splits in last 18 months. ~60 FMP calls/run, quota-safe.
+2. **Logger routing** (commit `65a9dec`) — structlog → `stdlib.LoggerFactory`. Application events now land in `trader.log`.
+3. **Stale-metrics flagging** (commit `06cb459`) — `metrics_stale` (bool) + `last_metrics_success` (datetime) columns. Yellow ⏱ icon for stale > 24h.
+4. **Cross-tier dedup** (commit `23f6f72`) — symbols in both CANDIDATE_POOLS and breakthrough scan deduplicate to breakthrough tier.
 
 ## Friday (2026-04-24) pre-market — wheel.py covered-call expiry bug
 
-Investigating dashboard showing PG, PANW, UBER calls as expired pre-close, system trying to write new calls on positions still open in IBKR. Found `wheel.py:439` used `expiry <= today` to mark covered calls EXPIRED — fired pre-market on expiry day while shares were still held. `trade_sync` (every 15 min) saw IBKR still had the contracts, reopened them. Repeating cycle. Window between flip-out and reopen exposed `wheel.write_covered_calls()` to thinking the lot was uncovered → phantom new calls.
+Found `wheel.py:439` used `expiry <= today` to mark covered calls EXPIRED — fired pre-market on expiry day while shares were still held. `trade_sync` (every 15 min) saw IBKR still had the contracts, reopened them. Repeating cycle. Window between flip-out and reopen exposed `wheel.write_covered_calls()` to thinking the lot was uncovered → phantom new calls.
 
-First commit (`dd16ec6`) changed `<=` to `<` — would have skipped early-exercise detection same-day. **Reverted via better fix (`b41e39a`)**: keep `<=` to catch same-day events, but only mark `called_away` when IBKR confirms via shares dropping below covered amount. Otherwise defer to `trade_sync` (the proper authority for "is contract still alive at IBKR"). Mirrors the put-side defensive pattern at `wheel.py:99` which already does this correctly.
+First commit (`dd16ec6`) changed `<=` to `<` — would have skipped early-exercise detection same-day. Reverted via better fix (`b41e39a`): keep `<=` to catch same-day events, but only mark `called_away` when IBKR confirms via shares dropping below covered amount. Otherwise defer to `trade_sync`.
 
-After restart: PG/PANW/UBER stay OPEN through expiry day. `trade_sync` detects assignment or worthless expiry from IBKR's portfolio state at/after market close.
+**Cleanup applied live:** buggy expiry handler had set `realized_pnl` on three OPEN positions (PG=274, UBER=132, PANW=543). Cleared to 0.0 via direct UPDATE.
 
-**Cleanup applied live:** the buggy expiry handler had set `realized_pnl` on the three OPEN positions (PG=274, UBER=132, PANW=543) — phantom values matching premium collected. Cleared to 0.0 via direct UPDATE. Schema enforces NOT NULL so 0.0 not NULL. Dashboard wasn't displaying these because realized P&L queries filter to `status IN (CLOSED, EXPIRED, ASSIGNED)`, but the dirty values would have caused incorrect accounting on actual close.
-
-**Trade_sync reopen logic still incomplete:** at `trade_sync.py:625-630` the reopen flips status and clears `closed_at` but does NOT clear `realized_pnl`. With `wheel.py` fixed, reopen shouldn't trigger for valid OPEN positions anymore — but if it ever does fire, the same bug returns. Defense-in-depth fix would be a one-line addition (set `realized_pnl=0` on reopen). Deferred.
+**Trade_sync reopen logic still incomplete:** `trade_sync.py:625-630` reopen flips status and clears `closed_at` but does NOT clear `realized_pnl`. Defense-in-depth one-liner deferred.
 
 ## Saturday (2026-04-25) early morning — realized_pnl on covered-call assignments
 
-Dashboard showed Realized P&L = -$36,779.24 after PG/PANW/UBER assignments at expiry. Investigation found the loss was approximately the sum of stock sale proceeds at strike — meaning sale proceeds were being recorded as a loss instead of offsetting the assignment cost basis.
+Dashboard showed Realized P&L = -$36,779.24 after PG/PANW/UBER assignments. Three accounting bugs found in `trade_sync.py:580-595` and `wheel.py _handle_called_away`:
 
-**Three accounting bugs found:**
-
-1. **`trade_sync.py:580-595`** stock-close formula included `ASSIGNMENT` and `CALLED_AWAY` trade types in the realized P&L sum. These are IBKR accounting markers alongside the underlying `BUY_STOCK`/`SELL_STOCK` rows — not separate cash flows. Including them double-counted on the cost side and off-by-strike on the proceeds side.
-
-2. **`trade_sync.py` timing race:** the code marked stock CLOSED in the sync that detected the IBKR position disappear, but the matching `SELL_STOCK` trade often arrived in a *later* sync. Realized got computed with only `BUY_STOCK` present, freezing at `-cost_basis`. Never recomputed afterward.
-
-3. **`wheel.py _handle_called_away`** wrote its own `realized_pnl` with formula `(sale - cost + total_premium)`. But `cost_basis` was already net of put premium, AND `total_premium_collected` had already been realized when each option closed. Triple-counted on the premium side, undercounted on the put-strike side.
+1. Stock-close formula included `ASSIGNMENT` and `CALLED_AWAY` trade types — double-counted on cost side.
+2. Timing race: position marked CLOSED before matching `SELL_STOCK` trade arrived.
+3. `_handle_called_away` wrote its own `realized_pnl` with formula triple-counting premium.
 
 **Fix (commit `2e9708c`):**
-- `trade_sync.py`: sum only `BUY_STOCK` and `SELL_STOCK` (commission inclusive). Defer marking the position CLOSED until a matching `SELL_STOCK` trade is present in the DB. Single sweep handles both timing and accounting.
-- `wheel.py`: stop writing `realized_pnl` in `_handle_called_away`. Just mark CLOSED. `trade_sync` owns the calculation. Single source of truth.
+- `trade_sync.py`: sum only `BUY_STOCK` and `SELL_STOCK` (commission inclusive). Defer marking position CLOSED until matching `SELL_STOCK` present.
+- `wheel.py`: stop writing `realized_pnl` in `_handle_called_away`. `trade_sync` owns the calculation.
 
-**Accounting model confirmed (per Ryan):**
-- Total wheel-cycle realized = `collected_premium + (call_strike − put_strike) × 100 − fees`
-- Stored on call positions (EXPIRED): the `collected_premium` portion (net of any roll buy-backs)
-- Stored on stock positions (CLOSED): the strike-difference portion only
-
-**Manual cleanup applied to today's three positions:**
-- PG stock (id 130): -$421.24 (sold 146, bought 150, plus -$21 14-share roundtrip)
-- UBER stock (id 134): -$100.00 (sold 74, bought 75)
-- PANW stock (id 135): $0.00 (sold 162.5, bought 162.5)
-- Call positions (id 131, 138, 139): kept at $539/$242/$543 — those were already correct
-- Total historical realized after cleanup: $1,708.26
+**Accounting model confirmed:** total wheel-cycle realized = `collected_premium + (call_strike − put_strike) × 100 − fees`.
 
 ## Monday (2026-04-27) — put_seller stuck + IPO scanner silently broken
 
-Ryan noticed `put_seller` making no suggestions despite 24% margin used and Asian/EU markets open. Two issues found:
-
-**1. position_limit double-counting** (commit `3cb2930`) — `check_position_limit` counted ALL Position rows including covered_call entries. A wheel cycle (stock + covered call) consumed 2 of 4 slots when it should consume 1. Account at NLV $15.5k has cap=4; with 2 wheels open the cap appeared full. Fix: count only `short_put` and `stock` types. Covered calls are bound to existing stock positions, don't take a slot.
-
-**2. risk check order** (same commit) — `position_limit` was 5th in the check list. The first 4 checks made IBKR/FMP calls (~7s each), so a position-limit block took ~28s. The `put_seller` scanner classified any None-result that took >10s as a "connection failure" and aborted after 3 in a row (`scan_aborted_connection_dead`). Reorder: cheap DB-read checks (`position_limit`, `duplicate`, `daily_limit`, `vix_gate`) run FIRST. Slow IBKR/FMP checks only run if cheap ones pass. Risk-blocks now return in <1s, no more false connection-dead aborts.
-
-**3. IPO scanner timedelta UnboundLocalError** (commit `5607adc`) — `scan_ipo_calendar()` had `from datetime import datetime, timedelta` at module level (line 18) AND a redundant `from datetime import timedelta` inside a nested if-branch (line 168). Python's scope rules mark `timedelta` as a local variable for the entire function, masking the module-level binding. Line 92 (which uses `timedelta` unconditionally near top of function) errors before line 168 ever runs.
-
-Result: IPO Date Calendar Scan job (8 AM ET daily) had been failing for at least 2 days with `cannot access local variable 'timedelta'`. Finnhub data never reached `expected_date` column on `ipo_watchlist`. IPO Ticker Scan loop's `if not ipo.expected_date: continue` guard skipped every row. Scan completed in 10ms doing nothing, every 5 minutes. Fix: remove the redundant local import.
-
-**Post-restart verification (10:30 UTC scan):**
-- Position-limit reorder works: scan completes in seconds with honest blocking reasons
-- Current `put_seller` correctly blocked by cash-reserve constraint ($1,355 cash vs $2,328 reserve floor) and sector-concentration limit (Communications 100% > 88%)
-- These are correct constraints for the current account state, not bugs
-- IPO date scan will run at 8 AM ET (12:00 UTC) tomorrow — should populate `expected_date` for Kraken (KRKN), Lambda (LMDA), Dataiku (DIKU), Xanadu (XNDU) all with `expected_date='2026-06-01'` and now ~35 days out (still beyond the 1-day scan trigger window, but data flow restored)
-
-**Discussion outcome on scoring (no code change):**
-- Quality formula has been silently broken since FMP rename — `valuation_score=50.0` for all 127 stocks because PE/PEG fields renamed in `/ratios`. Fixed Friday (commit `1905e04`). Effect on next screener run.
-- Composite formula `0.80×raw + 0.20×CQ%` means max possible composite = 76. 70+ requires both timing AND quality alignment — rare by design.
-- HCLTech surfaced at top despite 50/50/50 fundamentals. Backfilled `fundamentals_complete=False` on 13 NSE Indian stocks + 1 FWB2 dividend. Dashboard ⚠ icon now shows them as unverified.
-- Ryan's $11M deployment concern: scoring is calibrated for "buy good companies on dips" (wheel-friendly). Not for steady accumulation of quality at fair value. Separate accumulate-signal would need different scoring (60-70% quality, 20-30% own-history valuation, 10-20% timing). Deferred.
+**1. position_limit double-counting** (commit `3cb2930`) — covered_call rows consumed extra slots. Fix: count only `short_put` and `stock`.
+**2. risk check order** (same commit) — cheap DB-read checks now run FIRST. Slow IBKR/FMP only if cheap ones pass.
+**3. IPO scanner timedelta UnboundLocalError** (commit `5607adc`) — redundant nested `from datetime import timedelta` shadowed module-level binding. Removed.
 
 ## Monday (2026-04-27) afternoon — DTE bypass fix in _evaluate_symbol
 
-Ryan noticed `put_seller` had filled four orders at wrong DTE: NVDA May 6 (9 DTE), PLTR/RKLB/DXCM May 8 (11 DTE). Config says 0-3 DTE for USD at low/mid VIX — these were way out of bounds. QCOM order also tried, canceled by IBKR.
+Four orders filled at wrong DTE: NVDA May 6 (9 DTE), PLTR/RKLB/DXCM May 8 (11 DTE). Config says 0-3 DTE for USD at low/mid VIX.
 
-**Root cause** (commit `63f68c6`): `_evaluate_symbol` called `screen_puts()` without `dte_min`/`dte_max`. `screen_puts()` then fell back to `getattr(cfg, 'dte_min', 5)` and `getattr(cfg, 'dte_max', 14)` — but current `settings.yaml` has no `dte_min`/`dte_max` keys (only `.bak` does), so the hardcoded defaults 5-14 were used. That window perfectly covers May 6 (9 DTE) and May 8 (11 DTE).
+Root cause (commit `63f68c6`): `_evaluate_symbol` called `screen_puts()` without `dte_min`/`dte_max`. Fall-back to hardcoded 5-14 defaults. `_process_symbol` had been correct all along. Fix mirrors `_process_symbol`.
 
-`_process_symbol` had been correct all along — it called `_resolve_dte()` and passed both values into `screen_puts`. Only `_evaluate_symbol` was buggy. Fix mirrors `_process_symbol`: resolve DTE via `_resolve_dte(currency)`, halt on VIX-halt return, pass `dte_min=dte_min, dte_max=dte_max` into `screen_puts`. Both scan paths now correctly enforce DTE.
+The 4 mistaken puts kept open. Auto-approve flipped OFF after this incident.
 
-**Margin guard verified during investigation:** initial suspicion was margin guard had failed because account hit 68% margin used. False alarm. Logs showed ranks 1-6 passed with legitimate headroom ($12,171 down to $1,776), ranks 8-20 correctly rejected with `expired_no_margin`. The 4 fills consumed margin proportionally; the 68% used is the correct downstream result of those approved orders, not a guard failure.
+## Tuesday (2026-04-28) — account merge
 
-**`check_position_size` cosmetic note (no code change):** variable named `estimated_margin` is misleading — it's notional concentration (price × 100), not margin. Real margin enforcement happens via `get_whatif_margin` in `put_seller`. Docstring already says this. Rename deferred to a future session.
+Test account U23886415 decommissioned on this server, migrated to son's clone under user `nexbit`. This server now runs Maggy and Winston code against U17562704 only, port 7496.
 
-**SHOP fully closed:** Ryan manually bought back $135 May15 call and sold 100 shares earlier today. Frees Maggy capacity once the four mistaken puts close.
+Config-only changes:
+- `config/settings.yaml`: port 4001 → 7496, account U23886415 → U17562704
+- `~/restart-all.sh`: dropped options tmux block. Backup `~/restart-all.sh.pre-merge-2026-04-28`
+- `~/watchdog-trader.sh`: commented out options-gateway respawn. Backup `~/watchdog-trader.sh.pre-merge-2026-04-28`
 
-**The 4 mistaken puts kept open:** NVDA May 6, PLTR/RKLB/DXCM May 8. Bug was upstream — these are filled, premium collected, accounting fine. Decision: let them ride. With DTE fix in place, no new violations from next scan onward. Monitor as expirations approach; close early if margin pressure forces it.
+Hiccup: watchdog cron respawned the killed options tmux session within 3 min, holding the U23886415 session and locking son out. Patched watchdog.
 
-## Tuesday (2026-04-28) — account merge: this server now runs both Maggy and Winston on portfolio account
+## Tuesday (2026-04-28) evening — dashboard auth + lockdown
 
-Test account U23886415 was decommissioned on this server and migrated to a clone codebase running on the same machine under user `nexbit` (Ryan's son). This server now runs Maggy and Winston code against U17562704 only, on the portfolio gateway (port 7496). Suggestion mode kept on for both, auto-approve toggle OFF for options (Ryan flipped it off Monday after the 4 unintended NVDA/PLTR/RKLB/DXCM fills).
+Dashboard was publicly accessible. Closed via Caddy reverse proxy:
+- Caddy 2.11.2 from apt, public on 80/443
+- Self-signed TLS cert (caddy `tls internal`)
+- Basic auth user `maggycian`, bcrypt cost 14, hash in `/etc/caddy/Caddyfile`
+- App binding `0.0.0.0:8080` → `127.0.0.1:8080`
+- ufw firewall: ports 80, 443 added
+- New URL: https://37.0.30.34/
 
-**Config-only changes (no application code touched):**
+## Wednesday (2026-04-29) — KSPI fill-claiming + watchlist metrics asyncio fix
 
-- `config/settings.yaml` ibkr block: `port: 4001` → `7496`, `account: "U23886415"` → `"U17562704"`. Comments updated to flag merged mode.
-- `~/restart-all.sh`: dropped the `tmux new-session -d -s options ...` block + 35s sleep. Added a "MERGED MODE" banner. Defensive `tmux kill-session -t options` in the kill block left in place (harmless cleanup).
-- `~/watchdog-trader.sh`: commented out the options-gateway respawn block with a DISABLED note. Cron still runs the watchdog every 5 min, just skips options now. Portfolio + trader checks unchanged.
+**KSPI fill-claiming (no code change):** Manual Winston buy-back showed only on Maggy's trade history. Whichever sync runs first claims fills. Listed in deferred bugs.
 
-Both `~/restart-all.sh` and `~/watchdog-trader.sh` live outside the repo (in `$HOME`); `config/settings.yaml` is gitignored due to API keys. Backups stored as `~/restart-all.sh.pre-merge-2026-04-28` and `~/watchdog-trader.sh.pre-merge-2026-04-28` for clean revert when the new dedicated options account arrives.
+**Bug B fixed — get_ib_lock missing import** (commit `877426d`): `reconcile_submitted_trades()` called `with get_ib_lock():` but import only had `get_ib` and `is_connected`. NameError swallowed by `except`. Fix: added import.
 
-**Migration sequence (executed):**
+**Watchlist metrics catastrophic failure:** Last 3 of 4 cycles had `failed=124 updated=0`. Asyncio races between Maggy clientId 12 and Winston clientId 97 sharing the gateway.
 
-1. `settings.yaml` patched (matches found: 1, written)
-2. `restart-all.sh` patched (matches found: 1, written)
-3. `~/restart-all.sh` executed — one 2FA tap on phone, portfolio gateway came up on 7496
-4. Trader app started, both Maggy code and Winston code connected to U17562704 (clientId 12 and 97 respectively)
-5. Son started clone server, took over U23886415
+Two-layer fix:
+- **Stages 1–3** (commits `ff631e2`, `baa533d`, `59b3197`): Wrap every Winston IBKR call site with `get_portfolio_lock()`. Stage 2 covered 21 sites as 16 lock blocks. Stage 3 covered analyzer/forecaster/sync/fundamentals/bridge.
+- **Stages 4–5** (commit `392369b`): Cross-strategy supervisor. When merged-mode detected, `get_portfolio_lock()` acquires Maggy's `ib_lock` FIRST, then `_portfolio_lock`. When ports diverge post-re-split, becomes no-op automatically.
 
-**Hiccup during cutover — son couldn't log in:**
+Verification: 23:46 metrics run after restart: `failed=0 updated=124`. Asyncio race dead.
 
-Watchdog cron (`*/5 * * * *`) respawned the killed options tmux session within 3 minutes, holding the U23886415 IBKR session and locking son out. Patched watchdog to skip the options check, killed the respawned options session, son immediately logged in to U23886415 on his clone. 2FA prompts to son's phone (from this server's repeated respawn attempts) stopped after the watchdog patch.
+## Saturday (2026-05-03) — reconnect-race + scoring rebalance + pending orders
 
-**Open issues from the merged setup (non-blocking, deferred to next session):**
+**1. Reconnect-race fix (commit `b734cf7`):** IBC gateway restart at midnight, trader reconnect attempts looped 47 min with "event loop is already running". Root cause: `_connect()` calls `ib.connect()` which invokes `asyncio.get_event_loop().run_until_complete(...)`. If Winston thread is mid-call holding `_ib_lock`, new asyncio task can't run. Fix: wrap `ib.connect()` in `with _ib_lock:`. RLock so safe even if same thread.
 
-- `'Position' object has no attribute 'unrealized_pnl'` — fires on every `put_seller` scan (ISRG, CRWD, CNR, AVGO, SOFI, NFLX, etc.). Maggy code expects an attribute the U17562704 Position objects don't have. Likely a 2-line `getattr(pos, 'unrealized_pnl', 0)` fix once we read the code.
-- `trade_sync_fetch_error 'This event loop is already running'` + `'There is no current event loop in thread Thread-2'` — asyncio contention. Two `ib_insync` clients (id 12 + 97) on one Python process amplifies the existing event-loop fragility.
-- `reconcile_submitted_trades_skipped_ib_error "name 'get_ib_lock' is not defined"` — missing import surfaced by the merge.
-- `portfolio_account_updates_failed` (TimeoutError on `reqAccountUpdates`) — fired once at startup. May be one-time, watch for recurrence.
+**2. Scoring rebalance — Buffett-style:** Dashboard top sat at 45-65 score range, never reached 70+ except in panic. System effectively "panic-buy or never." Three changes:
+- `a25ccb1`: Fair-price base 0-24 points scaled across `discount_pct` from -5% to +5%. Composite blend 80/20 → 30/70.
+- `45e6d72`: Composite floor `MIN_COMPOSITE_FOR_ACTION = 40.0` for `buy_signal=True`.
+- `f65b9d4`: Direct-buy threshold 70 → 75.
 
-None of these block the merged setup operationally because Maggy is in suggestion mode with auto-approve OFF — at worst, no options suggestions reach the dashboard. Winston (read-only) is unaffected.
+**3. Pending orders dashboard fix (commit `2c161a8`):** Template `{{o.quantity}}` → `{{o.qty}}`. Trigger `refresh_portfolio_pending_orders_cache()` immediately after each `placeOrder`. Visible in ~2 sec.
 
-**Architecture note for next dedicated options account:**
+## Monday (2026-05-05) — Capital injections deposit-proof graphs
 
-To re-split: revert the three patches above (port back to 4001, account back to new ID, restart-all.sh options block restored, watchdog options block uncommented), point at new gateway, run `restart-all.sh`. All three backup files preserved on disk for direct comparison.
+**Options graph formula fix (commit `3b407ff`):** €15K injection had caused graph to jump +100%. Five-file fix: `account_id` column on `portfolio_capital_injections`, formula `(nlv / total_invested - 1) × 100` anchored to first-point-zero.
 
-## Tuesday (2026-04-28) evening — dashboard authentication + localhost lockdown
+Initial backfill (`65178bd`) failed with `"name 'text' is not defined"`. Removed entirely (`10ef0a4`).
 
-Dashboard at `http://37.0.30.34:8080/` was publicly accessible with no authentication. Anyone with the URL could see positions, NLV, suggestions. Closed via Caddy reverse proxy with HTTP basic auth + self-signed HTTPS cert.
+**Margin interest investigation (no code change):** `NetLiquidation = TotalCashValue + AccruedInterest`. Already correct, no graph adjustment.
 
-**Architecture:**
+## Thursday (2026-05-07) — earnings gate, LSE pence, JSON history export
 
-- Caddy 2.11.2 installed from official repo (apt) — public-facing reverse proxy on ports 80 and 443
-- Self-signed TLS cert auto-generated for 37.0.30.34 (caddy `tls internal`) — browser warns once per device, click through, remembered after
-- Basic auth user `maggycian` (bcrypt cost 14, hash stored in `/etc/caddy/Caddyfile`)
-- HTTP (80) redirects to HTTPS (443)
-- Caddy reverse-proxies authenticated requests to localhost:8080 (the trader app)
-- Trader app web binding moved from `0.0.0.0:8080` to `127.0.0.1:8080` — localhost only — so the world cannot bypass Caddy by hitting `:8080` directly
-- ufw firewall: ports 80 and 443 added (were missing — caused initial "can't connect" from Safari until added)
+Four commits pushed:
+1. `974b538` — `EarningsCache` model (24h cache)
+2. `4cf7630` — `get_next_earnings_date(ib, contract)` using `CalendarReport`
+3. `58c6a55` — Real `has_upcoming_earnings()` implementation. **Fail-CLOSED on missing data.**
+4. `95f7d67` — LSE pence normalization at source in `analyzer.py`. AZN fixed (was 13552, now 135.52).
 
-**Files modified:**
-
-- `/etc/caddy/Caddyfile` — caddy config (root-owned, sudo to edit). Backup at `/etc/caddy/Caddyfile.default-2026-04-28`
-- `/var/log/caddy/dashboard-access.log` — access log (caddy:caddy ownership)
-- `config/settings.yaml` web block: `host: "0.0.0.0"` to `"127.0.0.1"` with merge-mode comment
-
-**New URL:** https://37.0.30.34/ — username `maggycian`, password set via `caddy hash-password`.
-**Old URL dead from outside:** `http://37.0.30.34:8080/` — connection refused for non-localhost. Caddy still uses it internally.
-
-**Verification confirmed:**
-
-- `ss -tlnp` shows `127.0.0.1:8080` (python), `*:443` (caddy), `*:80` (caddy)
-- `curl -k -i https://37.0.30.34/` without credentials returns `HTTP/2 401 Unauthorized` (auth enforced)
-- `curl http://37.0.30.34:8080/` from outside times out (lockdown enforced)
-- Authenticated access via Safari + curl works end to end
-
-**Known cosmetic issue:** Safari may hang on first visit to the self-signed cert page until cache is cleared or page is reopened. Other browsers behave normally.
-
-## Wednesday (2026-04-29) — KSPI fill-claiming clarification + watchlist metrics asyncio fix (Bug B + Stages 1–5)
-
-KSPI buy-back triggered a discovery: post-merge fill-claiming. Then a deeper investigation revealed the watchlist metrics job had been silently failing every 4h since the merge. Five commits address it.
-
-**KSPI fill-claiming (architectural note, no code change):**
-
-Ryan placed a manual buy-back limit order on a long-standing Winston cash-secured put (KSPI 70 strike, June 18 expiry). Order filled at 0.88. Phone notified, but the buy-back showed only on Maggy's trade history, not Winston's transactions or trade-history pages. Winston's open-position counter correctly went 53 to 52, but the realized P&L of 888 landed in `positions` (Maggy's table) instead of `portfolio_put_entries` (Winston's table).
-
-Root cause: post-merge, all IBKR fills arrive on the same shared connection with no strategy tag. Whichever sync code runs first claims the fill. Maggy's `trade_sync` runs every ~5 min; Winston's runs every 4 hours. Maggy almost always wins. The KSPI position was originally placed manually in IBKR (not via dashboard), so Winston never had a `portfolio_put_entries` record — only the open-counter knew about it. Maggy's sync ran first after the merge, found the open IBKR position with no DB match, created a fresh `positions` row claiming it as Maggy's. Today's buy-back closed Maggy's record cleanly. Display split is annoying, accounting is correct.
-
-Decision: not fixing now. Real fix would tag fills by strategy at sync time — non-trivial. Listed in deferred bugs. Will be moot once the new options account arrives and the strategies separate again.
-
-**Bug B fixed — get_ib_lock missing import in trade_sync (commit `877426d`):**
-
-`reconcile_submitted_trades()` at line 414 of `src/broker/trade_sync.py` called `with get_ib_lock():` but the import at line 14 only imported `get_ib` and `is_connected`. NameError on every reconcile run, swallowed by `except as reconcile_submitted_trades_skipped_ib_error`. Surfaced post-merge because `trade_sync` now runs more frequently against the shared gateway.
-
-Fix: added `get_ib_lock` to the import. Verified clean by absence of the error in 14:25, 14:40 reconcile cycles after restart.
-
-**Watchlist metrics investigation:**
-
-User asked to verify `update_watchlist_metrics` was running on schedule. Found it WAS — every 4h at 00:43, 04:52, 08:54, 12:54 — but the last 3 of those failed catastrophically: `failed=124 updated=0`. All 124 watchlist symbols failing in lockstep meant a connection-wide issue. Confirmed via `"event loop is already running"`, `"no current event loop in thread Thread-2"`, `spy_ma_fetch_error`, `price_fetch_error` errors clustering around the failed runs.
-
-Root cause: post-merge, two `ib_insync` clients (Maggy clientId 12, Winston clientId 97) hit the same gateway through the same Python process. Pre-merge they had separate gateways; collisions were physically impossible. Post-merge, every overlapping IBKR call is a race.
-
-Maggy already had `_ib_lock` infrastructure used consistently. Winston had `_portfolio_lock` defined but barely used — only at 2 sites in `connection.py` and 6 sites in `scheduler.py`. Roughly 26 IBKR call sites across `connection.py`, `buyer.py`, `analyzer.py`, `forecaster.py`, `sync.py`, `ibkr_fundamentals.py`, `bridge.py` were unlocked.
-
-Two-layer fix architecture:
-- Layer 1 (Stages 1–3): Wrap every Winston IBKR call site with `get_portfolio_lock()`. Winston serializes its own calls.
-- Layer 2 (Stages 4–5): For the merge period, `get_portfolio_lock()` returns a supervisor that acquires Maggy's `ib_lock` FIRST, then Winston's `_portfolio_lock`. Cross-strategy serialization without touching Maggy code.
-
-**Stage 1 (commit `ff631e2`) — connection.py:** Wrapped `refresh_portfolio_account_cache_from()` `accountValues()` and `refresh_brkb_history()` `reqHistoricalData()`. Connection-setup code at lines 115/144 intentionally not wrapped (no contention possible).
-
-**Stage 2 (commit `baa533d`) — buyer.py:** 21 IBKR call sites wrapped as 16 lock blocks (per logical operation). Sites: VIX/SPY regime fetch, option chain discovery, option qualify+live bid sequence, place put order, assignment check, place stock buy, cash park sequence, three account-value queries, holdings update loop.
-
-**Stage 3 (commit `59b3197`) — analyzer.py, forecaster.py, sync.py, ibkr_fundamentals.py, bridge.py:** 8 lock blocks across 5 files. After Stage 3, every Winston IBKR call site holds the portfolio lock during the call.
-
-**Stage 4+5 (commit `392369b`) — Cross-strategy supervisor:** Replaced `get_portfolio_lock()` with a context-manager-returning function. When merged (detected once at module import by comparing `settings.ibkr.host/port/account` vs `settings.portfolio.ibkr_host/ibkr_port/ibkr_account`), it acquires Maggy's `ib_lock` FIRST, then `_portfolio_lock`. When split, returns plain `_portfolio_lock`. Lock acquisition order is fixed (`ib_lock` then `portfolio_lock`) and Maggy never acquires `portfolio_lock`, so no deadlock. Logged at startup as `portfolio_lock_mode merged=True`.
-
-When the new options account arrives and ports diverge, `_detect_merged_with_options()` returns False automatically. Supervisor becomes a no-op without code change. Removal instructions for permanent re-split are inline in `connection.py` under the MERGE-ONLY header.
-
-**Verification:** Restart at 19:46:10 logged `portfolio_lock_mode merged=True` confirming supervisor is active. Next watchlist metrics run is at ~23:46. If `failed=0 updated=124`, asyncio race is dead.
-
-## Saturday (2026-05-03) — reconnect-race fix + scoring rebalance + pending orders fix
-
-Three lines of work today, all pushed.
-
-**1. Reconnect-race fix (commit `b734cf7`):**
-
-Yesterday's lock work proved itself: 03:49 watchlist metrics run logged `failed=0 updated=124`. Asyncio race against the metrics job is dead.
-
-But discovered a related bug overnight. IBC restarted the gateway at midnight UTC; trader reconnected cleanly at 00:01, ran 03:49 metrics fine, then connection dropped around 05:46. Reconnect attempts started failing with `"This event loop is already running"` every 5/10/20s, looped for 47 min until manual restart at 06:35. 195 failed-reconnect log entries.
-
-Root cause: `_connect()` in `src/broker/connection.py` calls `ib.connect()` which internally invokes `asyncio.get_event_loop().run_until_complete(...)`. If a Winston thread is mid-call holding `_ib_lock` via the merge-period supervisor, the new asyncio task can't run. Yesterday's lock work protected Winston's CALLS but not Maggy's RECONNECT against Winston's calls.
-
-Fix: wrapped `ib.connect()` plus the post-connect setup (`RequestTimeout`, `reqMarketDataType`, sleep) in `with _ib_lock:`. Lock is `RLock` so safe even if called from a thread already holding it. Reconnect now waits for any in-flight Winston operation to release the lock before grabbing the event loop.
-
-**2. Scoring rebalance — Buffett-style (commits `a25ccb1`, `45e6d72`, `f65b9d4`):**
-
-User concern: dashboard top sat at 45-65 score range, never reaching 70+ direct-buy threshold except in panic. 75 of 124 stocks at `raw_score=0`, 25 at exactly 40. Top stable for days. System effectively "panic-buy or never."
-
-Architecture investigation revealed: the screener (`tools/screen_universe.py`) already does Buffett-style work properly — `_score_growth` (40%, revenue + gross margin level + trend), `_score_valuation` (25%, PEG-first with PE fallback), `_score_quality` (35%, D/E + FCF consistency + FCF margin trend). Composite `0.40*growth + 0.25*valuation + 0.35*quality`. Already calibrated for "wonderful business at fair price." OFF-LIMITS to changes per explicit user guardrail.
-
-The downstream scoring was the problem. `analyzer.py:_compute_composite_score` was purely a panic detector (SMA-discount + RSI-oversold + 52w-low gates). If no gate fired, returned 0. Most quality stocks at fair valuation hit no gates, scored 0. The composite blend was 80% raw + 20% quality, so quality couldn't lift them. And `analyzer.py` was setting `composite_score = score` directly without ANY blend — discrepancy with `recalc_scores_from_db` which used 80/20.
-
-Three changes restored Buffett-style behavior:
-
-`a25ccb1` — Two simultaneous changes:
-- Added a fair-price base of 0-24 points to `_compute_composite_score`, scaled across `discount_pct` from -5% (above SMA, 0pts) to +5% (below SMA, 24pts). Saturates exactly where the existing gated SMA signal takes over. Stocks at fair valuation now have a foot in the door even without panic-level signals. Anti-chase guard at -20% still blocks deeply overpriced stocks.
-- Composite blend: 80% raw + 20% quality → 30% raw + 70% quality. Applied symmetrically in `_evaluate_symbol` (was no blend at all — discrepancy fixed) and `recalc_scores_from_db`.
-
-`45e6d72` — Composite floor: stocks below `MIN_COMPOSITE_FOR_ACTION = 40.0` don't get `buy_signal=True`. Filters out fair-priced stocks with weak quality (whose composite was lifted only by fair-price base). At `score=0`, the `0.70*quality_pct` term means floor=40 is roughly `quality_pct >= 57`. Below that, watchlist-only, no CSP suggestion.
-
-`f65b9d4` — Direct-buy threshold bumped from 70 to 75. Under the new 30/70 blend, composite=70 was reachable by top-quality stock at exact-SMA price (zero technical signal). Bumping to 75 ensures every direct-buy candidate has `raw_score >= 15` — some real price-side reason to act, not pure quality lift.
-
-**3. Pending orders dashboard fix (commit `2c161a8`):**
-
-User wanted Pending Orders view to reflect IBKR state in near-real-time, with order lifecycle (Submitted, PartiallyFilled, Filled disappears to Holdings, Cancelled disappears entirely) handled cleanly.
-
-Audit revealed most of the lifecycle infrastructure already exists:
-- `refresh_portfolio_pending_orders_cache()` captures all the right fields (status, filled, remaining, order_id, etc.)
-- Uses `reqAllOpenOrders()` so it sees orders from all clients including manually placed TWS orders
-- `trade_sync` handles fills (moves to Holdings/Open Options) and ghost detection (rejected to CANCELLED)
-- Dashboard renders the table with status column
-
-Two real issues found:
-1. Template variable mismatch: `{{o.quantity}}` in `portfolio.html`, but cache stores it as `qty`. Qty column silently empty on dashboard.
-2. Cache refreshed only every 15 min (inline with `_job_trade_sync`). Freshly placed orders invisible for up to 15 minutes.
-
-Fixes (commit `2c161a8`):
-- Template: `{{o.quantity}}` → `{{o.qty}}`
-- Trigger `refresh_portfolio_pending_orders_cache()` immediately after each `placeOrder` + sleep block. Three sites: CSP (line 695), direct buy (line 1074), cash park (line 1149). Wrapped in `try/except` so dashboard issues never break order placement.
-
-Result: newly placed orders appear on the dashboard within ~2 seconds.
-
-**Architectural state confirmation (no change, but worth recording):**
-
-Portfolio IBKR connection (clientId 97) remains in **read-only mode at IBKR level** — even if app-level `suggestion_mode` is flipped off, IBKR rejects `placeOrder` at the protocol level. This is a deliberate two-layer safety:
-- IBKR side: read-only (protocol-level lockout)
-- App side: `suggestion_mode` + auto-approve OFF
-
-For Winston to ever execute, BOTH switches need to be flipped deliberately. Today's scoring/lifecycle work prepares for that future state but doesn't enable it.
-
-## Monday (2026-05-05) — Capital injections deposit-proof graphs + margin interest investigation
-
-**Options graph formula fix (commit `3b407ff`):**
-
-Ryan reported: adding €15K capital injection on options account caused the options graph to jump +100% that day (bullshit). The formula was `(current_nlv - first_nlv) / first_nlv × 100` — pure NLV diff, treated capital deposits as growth. Portfolio side had the correct pattern; options side never copied it.
-
-Five-file atomic commit fixed it:
-
-1. `src/core/database.py` — add migration for `portfolio_capital_injections.account_id` (VARCHAR(20))
-2. `src/portfolio/models.py` — add `account_id` field to `PortfolioCapitalInjection` model
-3. `src/portfolio/capital_injections.py` — add `get_total_invested_usd(account_id=None)` parameter filtering; `sync_injections_from_ibkr(account_id=None)` tags new rows with `account_id`
-4. `src/web/routes/dashboard.py` — replace buggy `(nlv - first_nlv) / first_nlv` formula with `(nlv / total_invested - 1) × 100`, anchored to first-point-zero; reads `options_account` from `cfg.ibkr.account`; calls `get_total_invested_usd(account_id=options_account)`
-5. `src/web/routes/portfolio.py` — update call sites to pass `account_id` (reverted later; see below)
-
-Post-split readiness: when new options account arrives, options graph will automatically filter deposits to that account only. No cross-account interference.
-
-**Backfill issue discovered at restart (commit `65178bd` + `10ef0a4`):**
-
-The backfill UPDATE in `risk_backfills` loop failed with `"name 'text' is not defined"` error, breaking the `account_snapshot` job. The SQL query `UPDATE portfolio_capital_injections SET account_id = 'U17562704' WHERE account_id IS NULL` was malformed or being evaluated in wrong scope.
-
-Rather than debug the backfill, removed it entirely (commit `10ef0a4`). The migration itself creates the column with no DEFAULT, so existing rows get NULL. That's fine — they're historical. New rows from `trade_sync` will have `account_id` set. Post-split, the new options account's Flex sync will populate its own rows correctly.
-
-**Margin interest investigation (no code change):**
-
-User asked: does IBKR's `NetLiquidation` already include accrued margin interest, or is it shown separately?
-
-Research from IBKR docs: `NetLiquidation = TotalCashValue + AccruedInterest`. Interest accrues daily and posts monthly. The accrued amount shown is interest that has NOT YET been charged to cash — it's a liability shown separately. Once posted at month-end, it reverses and moves from "Accrued Interest" to "Total Cash Value".
-
-Conclusion: `NetLiquidation` already includes accrued interest (as a separate line), so your graph is correct as-is. The margin interest cost is already reflected. The strike-bumping heuristic in `wheel.py` (line 305, `interest_surcharge`) operationally tries to recover the interest cost through higher premiums. No additional graph adjustment needed.
-
-Portfolio side shows accrued interest via `fetch_accrued_interest_usd()` which reads Flex data. This is informational — the interest is already baked into NLV.
-
-**Web server went blank after restart:**
-
-The five-file commit broke something at runtime. Both dashboards were blank/error. Root cause: the backfill UPDATE was failing silently, triggering exception handling that masked a Python import error downstream.
-
-Restart after removing the backfill (`10ef0a4`) brought both dashboards back up. Options side shows the new capital-aware formula. Portfolio side unaffected.
-
-**Pending issue: portfolio.py still has account_id filtering:**
-
-Patch 5/5 modified `portfolio.py` to call `get_total_invested_usd(account_id=cfg.portfolio.ibkr_account)`. After the revert, this broke because the function signature was reverted too. Quick fix applied: changed both call sites back to `get_total_invested_usd()` with no args. Portfolio dashboard returned. Not pushed yet because we're in cleanup mode post-incident.
-
-**Architecture fact for post-split:**
-
-When new options account arrives and is configured for Flex sync, the options graph will read only that account's deposits automatically via the `account_id` filter. No manual intervention needed.
-
-## Thursday (2026-05-07) — earnings gate, LSE pence, JSON history export, two open items for son's clone
-
-**Four commits pushed, restart pending:**
-
-1. `974b538` — Added `EarningsCache` model (symbol PK, status, next_earnings_date, fetched_at) for 24h cache backing the earnings gate. Auto-creates via `Base.metadata.create_all` at next startup.
-2. `4cf7630` — Added `get_next_earnings_date(ib, contract)` in `src/portfolio/ibkr_fundamentals.py`. Mirrors existing `ReportsFinSummary` pattern — same lock acquisition (`get_portfolio_lock`), same XML parse, same exception shape. Calls `ib.reqFundamentalData(contract, "CalendarReport")`. Returns `EarningsResult(next_date, status)` with three explicit states: `found`, `none_scheduled`, `fetch_failed`. Tries `<EarningsAnnouncement Date="...">` first, falls back to `<EPSDate>` children if format differs.
-3. `58c6a55` — Replaced the always-False `has_upcoming_earnings()` stub in `src/broker/market_data.py` with real implementation. **Fail-CLOSED on missing data** (no IB / qualify failure / fetch failure / parse failure all return True = block). 24h DB cache; cached entries auto-invalidated when their date passes. Three states from `get_next_earnings_date` map to: `found` + within 3 days → block, `found` + outside window → allow, `none_scheduled` → allow, `fetch_failed` → block.
-4. `95f7d67` — LSE pence normalization at source in `src/portfolio/analyzer.py`. IBKR returns LSE prices in pence; analyzer was storing raw pence into `analysis.current_price`, `sma_*`, `52w_high/low`. Now normalized once where `closes`/`highs`/`lows` are extracted from bars, before any computation. All downstream metrics inherit correct units. AZN was the symptom (showed 13552 instead of 135.52); fix is universal for any GBP symbol. **Eight other GBP-handling sites** in the codebase exist (`screener.py:35`, `put_seller.py:440`, `trade_sync.py:321`, etc.) — surgical fix at this site, no centralization. Centralization deferred.
-
-**Architecture note: earnings gate is now fail-CLOSED, opposite to most gates.** Rationale: earnings is the single most predictable cause of overnight gap risk on a CSP. Better to skip a trade than mis-trade through earnings. VIX gate, MA gate, and most others remain fail-OPEN.
-
-**JSON history export built (not committed to repo, lives at `/tmp/options_history_export.json` + `~/options_history_export.json`):**
-
-`tools/export_options_history.py` (drafted, run from `/tmp`): exports pre-merge Maggy-side data from your DB for handoff to son's clone. Window 2026-02-22 to 2026-04-28, FILLED trades only. Trades scoped by `(symbol, strike, expiry)` match against in-window positions because `Trade.position_id` was unpopulated on most historical rows (only 7 of 92 had FK link). Output: 37 positions, 92 trades, 127 events with running realized P&L, total $2,964.76. JSON file ~126 KB, ready to hand off to son.
-
-Import script (Script B) **not yet written** — waiting for son's schema diagnostic + existing-rows snapshot. He will run two read-only checks on his clone, paste output, then we write the import tailored to his actual schema (since his fork may have diverged).
-
-**Investigations that did not become commits:**
-
-- **Asia/EU put scan question (deferred to son's clone)**: This server's diagnostic shows scans run correctly, hit AEB and LSE, evaluate ASM/ASML/AZN — but every symbol gets blocked by `Position limit reached: 23/15`. Not a bug per se on this server, but the cross-strategy position-counting on the merged Maggy+Winston `positions` table makes the diagnostic meaningless for the real options-trader account. Son's clone (clean U23886415, separate `positions` table) is the only place this can be validated. Diagnostic prepared and ready to forward.
-- **NVDA realized P&L = 0 on son's dashboard (deferred to son's clone)**: His DB has only `BUY_PUT @ 0.0` (the IBKR expiry-recognition row), no `SELL_PUT`, because the original April 27 sale fell in your server's gateway session and never reached his `ib.fills()` after cutover. `trade_sync`'s expiry handler queried the Trade ledger, summed to 0, wrote 0. Once written, no recovery path. Possible defensive fixes (defer-marking-EXPIRED-when-no-SELL, fallback to `total_premium_collected`, defer-position-synthesis-when-avg_cost-zero) discussed and rejected: would not have prevented son's specific case (no SELL row anywhere) and would risk corrupting your already-correct data. JSON history import is the right path for son. **No code change made on your server for this.**
-- **Watchlist staleness alarm**: Investigated. All 129 rows have `metrics_stale=0`, last update 2.9h ago — well within 4h cycle. The "looks stale" feeling is the new May 3 30/70 scoring blend producing stable scores dominated by slow-moving quality (70% weight), correctly per design. The 06:56 and 12:13 partial-failure metrics cycles were restart artifacts (manual restarts that day), not regressions of the asyncio race fix.
-- **Six historical positions with `realized_pnl=0`, `total_premium_collected>0`**: Surfaced during CRWV review. PANW/UBER/SHOP/TTD ASSIGNED puts on March 29 (predate April 25 commit `2e9708c` stock-close fix), PANW stock CLOSED on April 25 (possibly correct at break-even), COIN covered_call EXPIRED on March 9 (pre-everything). ~$1,339 in unrecognized P&L on the dashboard. **Decision: do not fix on this server.** Merged-mode data is mixed pre-merge Maggy + post-merge Winston; manual UPDATEs now would risk correcting numbers that should be on the other side of the future re-split. Wait for new options account, separate the data, re-evaluate.
-- **CRWV id=152 stuck OPEN despite May 6 buy-back**: Identified but not pursued; same merged-mode-data caveat applies.
-
-**Two open items for son's clone (priority order for next session):**
-
-1. **Asia/EU put scan validation**: needs his diagnostic on U23886415 to confirm whether scans produce zero suggestions due to legitimate market mechanics (live-quote gate, position limits, etc.) or due to a real bug (universe filter mismatch, market label issue, gate firing only against US data).
-2. **NVDA P&L recovery**: needs JSON history import (Script B, to be written after his schema diagnostic). Will rewrite his NVDA Position row with `realized_pnl=196` from your export.
-
-**Bundle for son contains:**
-- `~/options_history_export.json` (126 KB, the JSON export)
-- Schema-check + existing-rows diagnostic (drafted, ready to send)
-- Asia/EU scan diagnostic (drafted, ready to send)
-- Note that import script Script B is coming once he sends his schema output
-
-**Verification queue when restart happens:**
-- `earnings_cache` table auto-creates ✓ check `sqlite_master`
-- `has_upcoming_earnings('DDOG')` returns True via real CalendarReport ✓ check verification block
-- DDOG cache row populated with valid status ✓ check `earnings_cache`
-- AZN `current_price` normalizes to ~135.52 on next 4h metrics cycle (not immediately at restart)
-- Watchlist log entries should show clean cycles after restart, no asyncio race
+JSON history export built for son's clone: 37 positions, 92 trades, 127 events, $2,964.76 running realized P&L.
 
 ## Friday (2026-05-08) — Forward-growth scoring landed + augmentation pipeline complete (22 commits)
 
-**Big day. Two major themes:** built the 5-component forward-growth scoring system (Path A refactor) and the full Claude-driven augmentation pipeline. Plus son's clone JSON import script delivered.
+**Forward-growth scoring** (`f55d8b2` → `940507a`, `ed76fad`, plus `699900b`): replaces old `40g + 25v + 35q` with 5-component Buffett-style composite. Revenue durability 25%, compounding quality 25%, operating leverage 20%, innovation investment 15%, capital efficiency 15%. Hard cap at 30 if 3+ years negative NI AND 3+ years negative FCF over a 5-year window.
 
-### Forward-growth scoring (commits `f55d8b2` → `940507a`, `ed76fad`)
+Screener run May 8: 133 rows, range 11.8–89.2, avg 52.5. Top names MA 89.2, ASML 88.8, LLY 86.6, META 86.5, KLAC 85.7.
 
-Replaces the old `40g + 25v + 35q` portfolio score formula with a Buffett-style composite weighted across 5 sub-components: revenue durability (25%), compounding quality (25%), operating leverage (20%), innovation investment (15%), capital efficiency (15%). **Hard cap at 30** if a name has 3+ years negative net income AND 3+ years negative FCF over a 5-year window.
+**Augmentation pipeline** (`6a9ba4a` → `49b6785`): full pipeline built, gated behind `AUGMENTATION_ENABLED = False`. Files: `tools/discovered_pool.yaml`, `tools/evicted_names.yaml`, `AugmentationAudit` model, prompt builders, PHASE 2.5 orchestration, atomic yaml persistence, eviction-on-overflow.
 
-Implementation in 4 commits (Path A):
-- `d5dedf6` — Commit A: extended `_get_fmp_fundamentals()` to extract 5-year history fields (operating_margin, R&D intensity, share dilution, ROIC sustained, goodwill stability, FCF trend, neg-NI/neg-FCF year counts). NO new API calls — all derived from existing income/balance/key-metrics responses.
-- `f285358` — Commit B: 5 sub-scorer functions with explicit-value sector lookup for 23 distinct sectors observed in watchlist. Score breakdowns documented in code comments.
-- `449402a` — Commit C: `_score_forward_growth(fmp, sector)` aggregator. Smoke test: NVDA=80.5, MSFT=77.5, AAPL=68.0, JNJ=59.5, XOM=33.0.
-- `940507a` — Commit D: wired `forward_growth_score` into screener flow. Stored on `StockScore`. **Does NOT yet replace `portfolio_score` formula** — that's Commit E (deferred to observation period).
+**Son's clone:** Standalone Script B for importing pre-merge history delivered. Resolved.
 
-Plus `699900b` (Commit O) — preserve all 5 sub-scores on `StockScore` so the augmentation prompt can show them per-name. Without this, augmentation would prompt with all-zeros for sub-scores.
+## Sunday (2026-05-10) — augmentation pipeline validated, Commit E groundwork
 
-**Screener run after these landed (May 8, dashboard "Run now"):** 133 rows populated, range 11.8–89.2, avg 52.5. Top-20 by `forward_growth_score`: MA 89.2, ASML 88.8 (+21 vs old), LLY 86.6, META 86.5, KLAC 85.7, ANET 84.5, TSM 83.5, GOOG 83.0, NFLX 80.7, MSFT 80.5, NVDA 80.5 (-10.5 vs old, dilution + cyclical risk tempers), ISRG 80.5, RACE 79.8, ABNB 79.5, NVO 79.0, BKNG 76.2, V 75.9, CDNS 75.3, FSLR 73.0. Picks-and-shovels representation jumped from zero to ~10 names.
+(Commit `c2cced4` — details preserved in prior chronological versions; abbreviated.)
 
-### Augmentation pipeline — full feature complete (commits `6a9ba4a` → `49b6785`)
+## Monday (2026-05-11) — STATE.md restructure + RULES.md refresh + augmentation live test
 
-Goal: monthly screener invokes Claude to propose 5–10 high-conviction names beyond the hand-coded universe, scores them, accepts those that beat the rank-60/rank-15 cutoff. **All gated behind `AUGMENTATION_ENABLED = False` — default OFF, no API calls until manually flipped.**
+- `3d654df` (19:35): L3 history entry added for May 11
+- `e25252b` (19:43): L1+L2 surgical edits
+- `485fc90` (22:47 "Add files via upload"): Full STATE.md restructure attempted via GitHub web upload. **Result inadvertently overwrote some earlier L1/L2/L3 structure with a hybrid version. Discovered May 12.** Lesson learned: post-upload verification via GitHub raw URL is mandatory.
+- RULES.md refresh: added credential safety rule, file handoff workflow, merged-mode operating section.
+- **Augmentation live test:** flipped `AUGMENTATION_ENABLED = True`, ran screener. DECK, CPRT, ROL accepted to `discovered_pool.yaml`.
 
-Foundation:
-- `6a9ba4a` (F) — `tools/discovered_pool.yaml` empty file with growth+dividend tiers + `_load_discovered_pool()` loader
-- `6029b4f` (G) — `tools/evicted_names.yaml` empty + `_load_evicted_names()` loader
-- `5ed25f0` (H) — `_get_growth_universe()` / `_get_dividend_universe()` helpers; routed 5 universe iteration sites through merged pools (CANDIDATE_POOLS + discovered − evicted). Verified equivalent to original behavior with empty yamls.
-- `ed76fad` (I) — `AugmentationAudit` SQLAlchemy model added to `src/portfolio/models.py`. Eleven columns: id, run_date, tier, proposed_symbol, proposed_score, cutoff_score, displaced_symbol, displaced_score, accepted, reason, notes. Table auto-creates on next restart via `Base.metadata.create_all` (verified — table exists on this server).
+## Tuesday (2026-05-12) — STATE.md re-restructure + IBM duplicate-row diagnosis
 
-Logic:
-- `081ad9c` (J+K) — `_get_growth_swaps()` + `_get_dividend_swaps()` + shared `_call_claude_for_swaps()` helper + `_format_score_table_for_prompt()` + `_AUGMENTATION_RUBRIC_SUMMARY` constant + `_build_growth_augmentation_prompt()` / `_build_dividend_augmentation_prompt()`. Direct text + JSON parse, max_tokens=4000, includes top-60 + ranks 61–120 + rubric + exclusion list.
+**Morning triage:** "Portfolio watchlist scores look stale" report. Diagnosed: not stale. 132 rows, all `metrics_stale=0`, last update ~2h ago. Working as designed — May 3 30/70 blend dominated by slow-moving quality.
 
-Orchestration:
-- `c79d431` (L) — `_process_augmentation_proposal()` helper + `AUGMENTATION_ENABLED` flag (False) + PHASE 2.5 block in `screen_all`. PHASE 2.5 runs between PHASE 2 (breakthrough scan) and PHASE 3 (portfolio universe build). Splits non-breakthrough scores into growth/dividend pools using the same yield-routing rule as PHASE 3, identifies `top_60`/`top_15` + cutoff, calls Claude, processes each proposal (score round-trip via `_score_stock`, accept if score > cutoff with margin=0, audit-log every proposal), opens SQLAlchemy session via `get_session_factory()`. Best-effort: any exception inside PHASE 2.5 is caught, logged, augmentation skipped, screener continues normally.
+**IBM duplicate transaction investigation:** Three rows in `portfolio_transactions` for IBM assignment — `put_assigned 260`, `buy 260`, `put_assigned 251.84`. First two are correct (option leg + stock leg of assignment). Third is phantom.
 
-Persistence + hygiene:
-- `2df64cd` (L+) — `_persist_augmentation_acceptances()` writes accepted symbols to `discovered_pool.yaml` atomically (.tmp + rename). Schema per entry: `symbol, exchange, currency, region, score, added_date, thesis`. Buffer (`pending_yaml_additions`) populated during proposal processing, written once after `audit_session.commit()`. Without this, accepted names would only exist in this run's `all_scores` and disappear next month.
-- `49b6785` (M) — `_evict_overflow_from_discovered_pool()`. When pool > cap (180 growth / 45 dividend), sort by score desc, slice to `[:cap]`, log evicted symbols. Atomic write. Eviction is list-size hygiene only — not a quality verdict.
+Diagnosis: `src/portfolio/sync.py` holdings safety-net (lines ~107–124) creates a `put_assigned` row when it detects a new holding without a matching transaction. Dedup at lines ~110–114 only checks for `action='put_assigned'` in last 3 days, missing the `action='buy'` row written by `ibkr_sync` at 01:43. When holdings sync ran at 08:09 in a session that opened before `ibkr_sync` committed, dedup missed row 160, wrote phantom row 159. Price $251.84 = strike − premium ($260 − $8.16, premium from original SELL_PUT row id 225).
 
-### Other commits today
-- `f55d8b2` — Anthropic API timeout 30s → 120s in `tools/screen_universe.py:439` (breakthrough prompt v3 takes ~80s).
-- `a23f611` — Breakthrough prompt v3: dynamic CANDIDATE_POOLS exclusion, geographic fix, top-20 hard exclusion, ETF/Fund pattern, existence check.
-- `f065259` — Added BAP (Credicorp Peru) and CHT (Chunghwa Telecom Taiwan) to `ADR_DIV` section of DIVIDEND_CANDIDATES.
+Fix shape agreed (not yet written): extend filter to `action.in_(["put_assigned", "buy"])`. Single line. No new imports.
 
-### Son's clone — solved
-
-Built standalone Script B for importing pre-merge history into son's clone DB. Single-file Python (~150 KB with embedded JSON, no separate data file needed). Implements: position match by `(symbol, strike, expiry, opened_at)`; hard-skip when both his DB and export show OPEN (his side wins); update close+P&L when his is OPEN and export is CLOSED/EXPIRED/ASSIGNED; insert when no match; trade dedup by `ibkr_exec_id` then natural key; `position_id` remapping via dict; default dry-run (must pass `--apply` to write); atomic transaction; clean summary report.
-
-File at `/tmp/import_options_history_standalone.py` on this server. Sent to son via email attachment. **Resolved.**
-
----
-
-## Handoff notes archive
-
-**Mar 17 handoff:** Portfolio `remove Client 99` loop fixed — missing `_ensure_event_loop()` in `_get_portfolio_connection()`. Profit taker uses `opt_exchange` not stock exchange. Suggestion expiry skips submitted/approved. `sync.py` created, `ib.disconnect()` removed from trade sync. Watchlist: TEF/ENG/RIO/BWLPG/HAUTO/EC added dividend tier; tiers fixed for NLY/PBR/SFL/STLA/AVGO/ASML/NVO/ALB/ADYEY. Both connections stable at session end.
-
----
-
-## Recent commits log (chronological, all pushed unless noted)
-
-**2026-05-08:** `f55d8b2` `d5dedf6` `f285358` `449402a` `940507a` `699900b` `6a9ba4a` `6029b4f` `5ed25f0` `ed76fad` `081ad9c` `c79d431` `2df64cd` `49b6785` `a23f611` `f065259` (+6 housekeeping)
-
-**2026-05-07:** `974b538` `4cf7630` `58c6a55` `95f7d67`
-
-**2026-05-05:** `10ef0a4` `3b407ff` (+ reverted `65178bd` `66d4d79`)
-
-**2026-05-03 to 2026-05-04:** `2c161a8` `f65b9d4` `45e6d72` `a25ccb1` `b734cf7` `392369b` `59b3197` `baa533d` `ff631e2` `877426d`
-
-**2026-04-27 to 2026-04-29:** `63f68c6` `3cb2930` `5607adc` (+ Apr 28 config-only merge changes)
-
-**2026-04-22 to 2026-04-25:** `5738250` `8ae93c3` `d9821da` `785d83f` `e1d9568` `1a8b883` `267d36e` `077aab5` `c6d5e06` `bf39145` `2a95c7b` `a05cee7` `8ab4b65` `c8ec353` `3c744c6` `65a9dec` `06cb459` `23f6f72` `dd16ec6` `b41e39a` `2e9708c` `1905e04`
+**STATE.md restructure discovered hybrid:** GitHub history showed yesterday's "Add files via upload" commit (`485fc90`) partly overwrote prior L1/L2/L3 structure. Regenerated full STATE.md May 12. Workflow lesson added to working rules: mandatory post-upload verification against raw GitHub URL.
