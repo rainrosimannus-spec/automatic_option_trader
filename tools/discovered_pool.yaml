@@ -199,6 +199,36 @@ growth:
     driven by recurring companion animal revenue and livestock cycle resilience. Excellent
     operating leverage from R&D scale advantages, patent portfolio protection, and
     capital-efficient manufacturing with consistent FCF generation '
+- symbol: DECK
+  exchange: NYSE
+  currency: USD
+  region: US
+  score: 84.2
+  added_date: '2026-05-11'
+  thesis: 'Deckers combines premium brand portfolio (UGG, Hoka) with exceptional operating
+    leverage, delivering 30%+ ROIC and accelerating revenue growth driven by Hoka''s
+    athletic success. Strong direct-to-consumer margins, minimal capex requirements,
+    and consistent share buybacks demonstrate superior capital '
+- symbol: CPRT
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 68.5
+  added_date: '2026-05-11'
+  thesis: Copart operates a network-effect business in vehicle auctions with predictable
+    revenue growth from insurance partnerships and expanding margins. The company
+    maintains 25%+ ROIC with strong operating leverage as auction volumes scale, while
+    investing in technology platforms that strengthen competitiv
+- symbol: ROL
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 69.5
+  added_date: '2026-05-11'
+  thesis: Rollins dominates pest control services with recurring revenue streams,
+    consistent growth, and expanding margins through route density optimization. The
+    company generates high returns on invested capital with strong free cash flow
+    conversion, while strategic acquisitions and technology investments s
 dividend: []
 breakthrough:
 - symbol: FORM
@@ -216,25 +246,23 @@ breakthrough:
   currency: USD
   name: IONQ INC
   megatrend: 13. Quantum computing
-  thesis_latest: Trapped-ion quantum computing leader with AWS/Google partnerships
-    positioning for quantum advantage breakthrough in optimization and cryptography
-    by 2028.
+  thesis_latest: Trapped-ion quantum computers achieve fault-tolerant advantage in
+    optimization problems; AWS partnership scales cloud quantum access rapidly.
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_run_at: '2026-05-11T18:28:40'
 - symbol: RKLB
   exchange: SMART
   currency: USD
   name: ROCKET LAB CORP
   megatrend: 14. Space
-  thesis_latest: Small-sat launch leader expanding into spacecraft manufacturing and
-    space applications, capturing growing commercial and defense satellite constellations
-    market.
+  thesis_latest: Small satellite launch monopoly expands into satellite manufacturing;
+    reusable Neutron rocket captures medium-lift market from SpaceX overflow.
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_run_at: '2026-05-11T18:28:40'
 - symbol: ARVN
   exchange: SMART
   currency: USD
@@ -261,12 +289,12 @@ breakthrough:
   currency: USD
   name: CRISPR THERAPEUTICS AG
   megatrend: 3. Genomics & medical biotech
-  thesis_latest: Gene editing platform with approved sickle cell therapy and expanding
-    pipeline in oncology, diabetes, and autoimmune diseases targeting $100B+ markets.
+  thesis_latest: CTX001 sickle cell therapy launches create billion-dollar rare disease
+    franchise; CAR-T platform expands to solid tumors with improved efficacy.
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_run_at: '2026-05-11T18:28:40'
 - symbol: KTOS
   exchange: SMART
   currency: USD
@@ -294,13 +322,12 @@ breakthrough:
   currency: USD
   name: FIRST SOLAR INC
   megatrend: 6. Energy transition
-  thesis_latest: Utility-scale solar manufacturer with cadmium telluride technology
-    advantage and US reshoring beneficiary, 3-year backlog visibility supporting 20%+
-    returns.
+  thesis_latest: Thin-film solar technology leader with cadmium telluride panels offering
+    superior heat performance and US manufacturing capacity amid trade restrictions.
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_run_at: '2026-05-11T18:28:40'
 - symbol: NVTS
   exchange: SMART
   currency: USD
@@ -402,35 +429,34 @@ breakthrough:
   currency: USD
   name: ENERGY FUELS INC
   megatrend: 7. Energy bridge
-  thesis_latest: US uranium production ramps as nuclear renaissance drives domestic
-    fuel security requirements, while rare earth processing creates additional revenue
-    streams.
+  thesis_latest: US uranium production scales with nuclear renaissance and SMR deployment,
+    rare earth processing adds second revenue multiplier via strategic minerals.
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
+  last_run_at: '2026-05-11T18:28:40'
 - symbol: STEM
   exchange: SMART
   currency: USD
   name: STEM INC
   megatrend: 6. Energy transition
-  thesis_latest: AI-driven energy storage optimization platform monetizing grid services,
-    demand charges, and renewables integration for commercial customers.
+  thesis_latest: AI-powered energy storage platform optimizing battery deployment
+    and grid services, capturing distributed energy resource orchestration market.
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_run_at: '2026-05-11T18:28:40'
 - symbol: SMCI
   exchange: SMART
   currency: USD
   name: SUPER MICRO COMPUTER INC
   megatrend: 2. Compute infrastructure
-  thesis_latest: AI server rack specialist capturing disproportionate share of hyperscale
-    datacenter buildout with liquid cooling expertise and direct-to-customer model
-    enabling 40%+ gross margins.
+  thesis_latest: AI server demand driving 3x revenue growth; custom liquid cooling
+    solutions capture higher ASPs as hyperscalers scale data centers.
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_run_at: '2026-05-11T18:28:40'
 - symbol: CVNA
   exchange: SMART
   currency: USD
@@ -447,23 +473,25 @@ breakthrough:
   currency: USD
   name: BEAM THERAPEUTICS INC
   megatrend: 3. Genomics & medical biotech
-  thesis_latest: Base editing gene therapy platform with multiple shots-on-goal in
-    sickle cell, CAR-T enhancement, and in-vivo liver editing programs.
+  thesis_latest: Base editing technology enables precise genetic medicines without
+    double-strand breaks, platform generates multiple blockbuster therapies across
+    disease areas.
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_run_at: '2026-05-11T18:28:40'
 - symbol: SITM
   exchange: SMART
   currency: USD
   name: SITIME CORP
   megatrend: 2. Compute infrastructure
-  thesis_latest: MEMS timing solutions replacing quartz oscillators in 5G/AI infrastructure
-    with superior reliability and 60%+ gross margins in $8B addressable market.
+  thesis_latest: MEMS timing solutions replace quartz crystals in electronics, AI
+    and 5G infrastructure demand drives precision timing requirements and revenue
+    growth.
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_run_at: '2026-05-11T11:24:02'
 - symbol: SPWR
   exchange: SMART
   currency: USD
@@ -525,14 +553,13 @@ breakthrough:
   exchange: SMART
   currency: USD
   name: UIPATH INC - CLASS A
-  megatrend: 11. Reindustrialization & automation
-  thesis_latest: Robotic process automation leader expanding into AI-powered document
-    processing and workflow automation, capturing enterprise back-office automation
-    demand.
+  megatrend: 1. AI/compute applications
+  thesis_latest: Robotic process automation becomes AI-powered workflow automation;
+    enterprise customers expand from task automation to process intelligence and optimization.
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_run_at: '2026-05-11T18:28:40'
 - symbol: ZS
   exchange: SMART
   currency: USD
@@ -562,23 +589,23 @@ breakthrough:
   currency: USD
   name: TRANSMEDICS GROUP INC
   megatrend: 5. Aging populations & elder care
-  thesis_latest: Organ care system enabling longer organ preservation and transportation,
-    expanding transplantable organ supply for aging populations with 80%+ gross margins.
+  thesis_latest: Organ transport technology doubles transplant success rates; aging
+    population creates massive organ demand exceeding traditional preservation methods.
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_run_at: '2026-05-11T18:28:40'
 - symbol: DKNG
   exchange: SMART
   currency: USD
   name: DRAFTKINGS INC-CL A
   megatrend: 1. AI/compute applications
-  thesis_latest: Sports betting platform using AI for personalized wagering recommendations
-    and risk management, capturing US market legalization with 30%+ hold rates.
+  thesis_latest: Sports betting market expansion and AI-driven personalization increase
+    customer lifetime value, international expansion multiplies addressable market.
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_run_at: '2026-05-11T11:24:02'
 - symbol: HUBS
   exchange: SMART
   currency: USD
@@ -602,3 +629,240 @@ breakthrough:
   last_seen: 2026-05
   appearance_count: 1
   last_run_at: '2026-05-11T07:59:00'
+- symbol: QBTS
+  exchange: SMART
+  currency: USD
+  name: D-WAVE QUANTUM INC
+  megatrend: 13. Quantum computing
+  thesis_latest: Commercial quantum annealing leader with enterprise contracts in
+    optimization, positioning for 10x via fault-tolerant quantum breakthrough and
+    cloud scaling.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T13:32:30'
+  appearance_count: 1
+- symbol: TAK
+  exchange: SMART
+  currency: USD
+  name: TAKEDA PHARMACEUTIC-SP ADR
+  megatrend: 3. Genomics & medical biotech
+  thesis_latest: Cell therapy pipeline including CAR-T advances create new treatment
+    categories, licensing deals multiply valuation as therapies prove commercial.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T13:32:30'
+  appearance_count: 1
+- symbol: RDDT
+  exchange: SMART
+  currency: USD
+  name: REDDIT INC-CL A
+  megatrend: 1. AI/compute applications
+  thesis_latest: User-generated content becomes premium AI training data; advertising
+    revenue scales with authentic conversation data licensing to LLM developers.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: EQT
+  exchange: SMART
+  currency: USD
+  name: EQT CORP
+  megatrend: 7. Energy bridge
+  thesis_latest: Appalachian natural gas producer benefits from European LNG export
+    demand and data center power needs, FCF yield drives shareholder returns.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T13:32:30'
+  appearance_count: 1
+- symbol: INMD
+  exchange: SMART
+  currency: USD
+  name: INMODE LTD
+  megatrend: 4. GLP-1 & preventive consumer health
+  thesis_latest: Minimally invasive aesthetic medical devices capture body contouring
+    demand as GLP-1 users seek skin tightening, international expansion multiplies
+    addressable market.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T11:24:02'
+  appearance_count: 1
+- symbol: HWM
+  exchange: SMART
+  currency: USD
+  name: HOWMET AEROSPACE INC
+  megatrend: 10. Defense & sovereignty
+  thesis_latest: Aerospace components supplier benefits from defense spending increase
+    and commercial aviation recovery, advanced manufacturing capabilities drive margin
+    expansion.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: MDB
+  exchange: SMART
+  currency: USD
+  name: MONGODB INC
+  megatrend: 1. AI/compute applications
+  thesis_latest: Document database becomes standard for AI applications requiring
+    flexible data structures, Atlas cloud service drives recurring revenue growth.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: AEHR
+  exchange: SMART
+  currency: USD
+  name: AEHR TEST SYSTEMS
+  megatrend: 2. Compute infrastructure
+  thesis_latest: Semiconductor test equipment for silicon carbide and power devices
+    captures EV and renewable energy growth, wafer-level testing drives efficiency
+    gains.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: VRNS
+  exchange: SMART
+  currency: USD
+  name: VARONIS SYSTEMS INC
+  megatrend: 12. Cybersecurity & digital sovereignty
+  thesis_latest: Data security platform captures enterprise data protection requirements,
+    SaaS transition and AI-powered threat detection drive recurring revenue growth.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: ZIM
+  exchange: SMART
+  currency: USD
+  name: ZIM INTEGRATED SHIPPING SERV
+  megatrend: 10. Defense & sovereignty
+  thesis_latest: Red Sea shipping disruption creates permanent route changes; Israeli
+    flag carrier gains strategic premium for Western trade security.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: NMDC
+  exchange: NSE
+  currency: INR
+  name: NMDC LIMITED
+  megatrend: 11. Reindustrialization & automation
+  thesis_latest: India's largest iron ore producer benefiting from infrastructure
+    buildout and supply chain diversification away from China-dependent sources.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T13:32:30'
+  appearance_count: 1
+- symbol: TASE
+  exchange: TASE
+  currency: ILS
+  name: TEL AVIV STOCK EXCHANGE LTD
+  megatrend: 2. Compute infrastructure
+  thesis_latest: Advanced semiconductor metrology tools for AI chip manufacturing,
+    capturing high-margin inspection equipment demand in leading-edge fabs.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T13:32:30'
+  appearance_count: 1
+- symbol: '4385'
+  exchange: TSEJ
+  currency: JPY
+  name: MERCARI INC
+  megatrend: 16. EM digital finance & fintech
+  thesis_latest: Japan's leading C2C marketplace with integrated payments and financial
+    services, capturing aging population's asset monetization needs.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: HIMS
+  exchange: SMART
+  currency: USD
+  name: HIMS & HERS HEALTH INC
+  megatrend: 4. GLP-1 & preventive consumer health
+  thesis_latest: Direct-to-consumer telehealth captures primary care market; GLP-1
+    weight management access drives subscriber growth and retention expansion.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: LAC
+  exchange: SMART
+  currency: USD
+  name: LITHIUM AMERICAS CORP
+  megatrend: 9. Critical minerals & advanced materials
+  thesis_latest: North American lithium development with Thacker Pass mine becoming
+    largest US lithium source, benefiting from domestic supply chain requirements.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: OKTA
+  exchange: SMART
+  currency: USD
+  name: OKTA INC
+  megatrend: 12. Cybersecurity & digital sovereignty
+  thesis_latest: Identity management platform leader with zero-trust architecture
+    capturing enterprise security transformation and remote work authentication demands.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: IREN
+  exchange: SMART
+  currency: USD
+  name: IREN LTD
+  megatrend: 2. Compute infrastructure
+  thesis_latest: Bitcoin mining infrastructure pivots to AI compute hosting; renewable
+    energy assets provide low-cost power for hyperscaler data centers.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: POWL
+  exchange: SMART
+  currency: USD
+  name: POWELL INDUSTRIES INC
+  megatrend: 2. Compute infrastructure
+  thesis_latest: Electrical infrastructure equipment captures data center power demand
+    surge; custom switchgear and transformers command premium pricing for AI facilities.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: CGNT
+  exchange: SMART
+  currency: USD
+  name: COGNYTE SOFTWARE LTD
+  megatrend: 10. Defense & sovereignty
+  thesis_latest: Security analytics software captures government surveillance spending;
+    AI-powered threat detection scales across law enforcement and intelligence agencies
+    globally.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: MLAB
+  exchange: SMART
+  currency: USD
+  name: MESA LABORATORIES INC
+  megatrend: 8. Climate adaptation
+  thesis_latest: Cold chain monitoring systems capture pharmaceutical logistics demand;
+    temperature-sensitive drug storage requirements create recurring software subscription
+    revenue.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
+- symbol: FTAI
+  exchange: SMART
+  currency: USD
+  name: FTAI AVIATION LTD
+  megatrend: 11. Reindustrialization & automation
+  thesis_latest: Aircraft engine leasing captures aftermarket MRO margins; infrastructure
+    assets benefit from reshoring-driven rail and port capacity needs.
+  first_seen: 2026-05
+  last_seen: 2026-05
+  last_run_at: '2026-05-11T18:28:40'
+  appearance_count: 1
