@@ -108,7 +108,7 @@ def sync_ibkr_holdings(ib: IB) -> int:
                 cutoff = datetime.utcnow() - timedelta(days=3)
                 existing_tx = db.query(PortfolioTransaction).filter(
                     PortfolioTransaction.symbol == symbol,
-                    PortfolioTransaction.action == "put_assigned",
+                    PortfolioTransaction.action.in_(["put_assigned", "buy"]),
                     PortfolioTransaction.created_at >= cutoff,
                 ).first()
                 if not existing_tx:
