@@ -307,9 +307,16 @@ class WheelManager:
             cc_delta_max = risk_cfg.wheel_exit_delta_max
         else:
             # Wheel covered calls: goal is to get called away and return to cash
-            # Use fixed delta range regardless of market regime — sell close to money
-            # above cost basis, maximize fill probability and premium collection
-            cc_delta_min, cc_delta_max = 0.30, 0.45
+            if current_price and cost_basis and current_price < cost_basis * 0.95:
+                # Rescue mode: stock 5%+ below cost basis. Far-OTM strikes above
+                # cost basis have low delta by definition (e.g. $25.50 strike on
+                # $20.49 stock has delta ~0.15). Widen floor so wheel.py can find
+                # a strike >= cost basis. Lower premium per trade, but premium > 0.
+                cc_delta_min, cc_delta_max = 0.05, 0.35
+            else:
+                # Normal wheel: stock near cost basis, write closer to ATM,
+                # maximize fill probability and premium collection.
+                cc_delta_min, cc_delta_max = 0.30, 0.45
 
         # min_strike = net basis plus interest surcharge (exit mode) or net basis alone (normal)
         min_strike_value = net_cost_basis + interest_surcharge
