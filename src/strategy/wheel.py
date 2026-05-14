@@ -295,7 +295,16 @@ class WheelManager:
         from src.core.config import get_settings as _gs
         risk_cfg = _gs().risk
         interest_surcharge = 0.0
-        if stock_pos.wheel_exit_mode:
+        if current_price and cost_basis and current_price < cost_basis * 0.95:
+            # Rescue mode: stock 5%+ below cost basis. Overrides BOTH normal and
+            # exit-mode branches because assignments default to exit_mode=True,
+            # which would otherwise gate this branch out. Strike floor
+            # (min_strike >= net_cost_basis) unchanged — still never sells below
+            # breakeven. Far-OTM strikes above cost basis have low delta by
+            # definition (e.g. $25.50 strike on $20.49 stock has delta ~0.15),
+            # so widen the floor to find any candidate above cost basis.
+            cc_delta_min, cc_delta_max = 0.05, 0.35
+        elif stock_pos.wheel_exit_mode:
             # Days held since assignment (opened_at is assignment time for wheel positions)
             try:
                 from datetime import datetime as _dt
