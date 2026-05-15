@@ -42,12 +42,11 @@ def controls_page(request: Request):
     halted = _get_state("halted") == "true"
     halt_reason = _get_state("halt_reason") or ""
 
-    # Bridge settings from state (overrides config if set)
+    # Bridge settings from state (overrides config defaults)
     bridge_enabled = _get_state("bridge_enabled")
     bridge_pct = _get_state("bridge_transfer_pct")
-    bridge_min = _get_state("bridge_min_value")
-    bridge_month = _get_state("bridge_month")
-    bridge_day = _get_state("bridge_day")
+    bridge_factor = _get_state("bridge_factor")
+    bridge_cooldown = _get_state("bridge_cooldown_days")
     bridge_dry_run = _get_state("bridge_dry_run")
 
     return templates.TemplateResponse("controls.html", {
@@ -60,12 +59,14 @@ def controls_page(request: Request):
         "auto_restart": True,  # supervisor is always recommended
         "bridge_enabled": (bridge_enabled == "true") if bridge_enabled else False,
         "bridge_transfer_pct": int(float(bridge_pct)) if bridge_pct else 10,
-        "bridge_min_value": int(float(bridge_min)) if bridge_min else 1000000,
-        "bridge_month": int(bridge_month) if bridge_month else 7,
-        "bridge_day": int(bridge_day) if bridge_day else 31,
+        "bridge_factor": float(bridge_factor) if bridge_factor else 2.0,
+        "bridge_cooldown_days": int(bridge_cooldown) if bridge_cooldown else 0,
         "bridge_dry_run": (bridge_dry_run != "false") if bridge_dry_run else True,
+        "bridge_benchmark": _get_state("bridge_benchmark"),
         "bridge_last_check": _get_state("bridge_last_check_date"),
-        "bridge_last_net_liq": _get_state("bridge_last_check_net_liq"),
+        "bridge_last_net_liq": _get_state("bridge_last_check_nlv"),
+        "bridge_last_sweep_date": _get_state("bridge_last_sweep_date"),
+        "bridge_last_transfer_amount": _get_state("bridge_last_transfer_amount"),
     })
 
 
@@ -118,26 +119,23 @@ def toggle_pause():
 @router.post("/bridge")
 def save_bridge_settings(
     transfer_pct: int = Form(10),
-    min_portfolio_value: int = Form(1000000),
-    transfer_month: int = Form(7),
-    transfer_day: int = Form(31),
+    factor: float = Form(2.0),
+    cooldown_days: int = Form(0),
     enabled: bool = Form(False),
     dry_run: bool = Form(False),
 ):
     """Save bridge settings to database state."""
     _set_state("bridge_enabled", "true" if enabled else "false")
     _set_state("bridge_transfer_pct", str(transfer_pct))
-    _set_state("bridge_min_value", str(min_portfolio_value))
-    _set_state("bridge_month", str(transfer_month))
-    _set_state("bridge_day", str(transfer_day))
+    _set_state("bridge_factor", str(factor))
+    _set_state("bridge_cooldown_days", str(cooldown_days))
     _set_state("bridge_dry_run", "true" if dry_run else "false")
 
     log.info("bridge_settings_updated",
              enabled=enabled,
              transfer_pct=transfer_pct,
-             min_value=min_portfolio_value,
-             month=transfer_month,
-             day=transfer_day,
+             factor=factor,
+             cooldown_days=cooldown_days,
              dry_run=dry_run)
 
     return RedirectResponse(url="/controls", status_code=303)
