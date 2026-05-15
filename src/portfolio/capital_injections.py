@@ -174,6 +174,7 @@ def sync_injections_from_ibkr(account_id: str | None = None) -> int:
     deposits = parse_deposits_from_flex(xml_content)
 
     added = 0
+    pending_bridge_bumps = []  # collect (amount_usd, account_id) tuples for Bridge benchmark
     with get_db() as db:
         for dep in deposits:
             existing = db.query(PortfolioCapitalInjection).filter(
@@ -185,20 +186,34 @@ def sync_injections_from_ibkr(account_id: str | None = None) -> int:
                 continue
 
             rate = _get_fx_rate_to_usd(dep["currency"], dep["date"])
+            amount_usd = dep["amount_original"] * rate
             inj = PortfolioCapitalInjection(
                 date=dep["date"],
                 amount_original=dep["amount_original"],
                 currency=dep["currency"],
                 eur_usd_rate=rate if dep["currency"] == "EUR" else None,
-                amount_usd=dep["amount_original"] * rate,
+                amount_usd=amount_usd,
                 notes=dep["notes"],
                 source="ibkr_flex",
                 account_id=account_id,
             )
             db.add(inj)
             added += 1
+            pending_bridge_bumps.append((amount_usd, account_id))
 
         db.commit()
+
+    # Bridge benchmark hook: fired AFTER the injection commit succeeds.
+    # If the injection is for the configured Bridge source_account,
+    # bump bridge_benchmark by the injection amount so that capital
+    # deposits never trigger fake sweep events.
+    if pending_bridge_bumps:
+        try:
+            from src.portfolio.bridge import bump_bridge_benchmark
+            for amount_usd, acct in pending_bridge_bumps:
+                bump_bridge_benchmark(amount_usd, acct or "")
+        except Exception as e:
+            log.warning("bridge_benchmark_hook_failed", error=str(e))
 
     log.info("injections_synced", added=added, account_id=account_id)
     return added
