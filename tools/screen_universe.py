@@ -623,7 +623,7 @@ def _get_breakthrough_candidates() -> list[dict]:
                 "anthropic-version": "2023-06-01",
             },
             json={
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-6",
                 "max_tokens": 8000,
                 "messages": [{"role": "user", "content": _build_breakthrough_prompt()}],
             },
@@ -872,7 +872,7 @@ def _call_claude_for_swaps(prompt: str, label: str) -> list[dict]:
                 "anthropic-version": "2023-06-01",
             },
             json={
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-6",
                 "max_tokens": 4000,  # smaller than breakthrough — only 5-10 names
                 "messages": [{"role": "user", "content": prompt}],
             },
@@ -1345,7 +1345,7 @@ def _call_claude_for_selection(prompt: str) -> dict:
                 "anthropic-version": "2023-06-01",
             },
             json={
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-6",
                 "max_tokens": 8000,  # 25 picks with reasoning + group paragraph
                 "messages": [{"role": "user", "content": prompt}],
             },
