@@ -1,6 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <rect width="32" height="32" rx="6" fill="#1a2332"/>
-  <rect x="1" y="1" width="30" height="30" rx="5" fill="none" stroke="#c9a84c" stroke-width="0.8" opacity="0.5"/>
-  <text x="3.5" y="23.5" font-family="'Georgia', 'Times New Roman', serif" font-size="17" font-weight="400" fill="#d4af5a" letter-spacing="-1.5">M</text>
-  <text x="14" y="23.5" font-family="'Georgia', 'Times New Roman', serif" font-size="17" font-weight="400" fill="#d4af5a" letter-spacing="-1.5">W</text>
+  <title>Maggy &amp; Winston favicon</title>
+  <!-- Solid frame, no inner hairline at this size -->
+  <rect x="1" y="1" width="30" height="30" fill="#0E1B2E"/>
+  <rect x="3" y="3" width="26" height="26" fill="#F5F1E8"/>
+  <!-- Gold divider -->
+  <line x1="4" y1="16" x2="28" y2="16" stroke="#B08D3A" stroke-width="0.8"/>
+  <!-- M (simplified, scaled for 32px) -->
+  <path d="M 6 5 L 6 14.5 L 8.5 14.5 L 8.5 7.5 L 13 14.5 L 14.5 14.5 L 17.5 14.5 L 19 14.5 L 23.5 7.5 L 23.5 14.5 L 26 14.5 L 26 5 L 23.5 5 L 16 14 L 8.5 5 Z" fill="#0E1B2E"/>
+  <!-- W -->
+  <path d="M 6 27 L 6 17.5 L 8.5 17.5 L 8.5 24.5 L 13 17.5 L 14.5 17.5 L 17.5 17.5 L 19 17.5 L 23.5 24.5 L 23.5 17.5 L 26 17.5 L 26 27 L 23.5 27 L 16 18 L 8.5 27 Z" fill="#B08D3A"/>
 </svg>
