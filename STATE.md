@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-05-15 — L1/L2/L3 structure. Content current through end of May 15 session.
+Last updated: 2026-05-17 — L1/L2/L3 structure. Content current through end of May 17 session (Bruno initial build complete).
 
 **How to read this document:**
 - **L1 Fundamentals** — read first on every new session. Rarely changes.
@@ -163,6 +163,29 @@ Replaces the v1 annual-date sweep with a performance-based design. **`enabled=Fa
 4. Uncheck Dry Run when comfortable
 5. Check Enabled
 
+## Bruno — loan portfolio management (live since May 17)
+
+MesiCap Technologies OÜ's internal loan tracking and origination system. Lives at `/borrower` in the dashboard. Source: `src/borrower/` (models + accrual engine), `src/web/routes/borrower.py` (routes), `src/web/templates/borrower_*.html` (6 templates).
+
+**Database:** `data/bruno.db` (SQLite, separate from Maggy's `data/trades.db`, gitignored). Seven tables: counterparties, loans, loan_movements, loan_amendments, interest_accruals, payments, audit_log.
+
+**Pages:**
+- `/borrower` — landing
+- `/borrower/loans` — index with totals by currency and purpose
+- `/borrower/loans/{id}` — full loan detail (movements, amendments, payments, accrual)
+- `/borrower/loans-new` — origination form
+- `/borrower/counterparties-new` — new counterparty form
+- `/borrower/lender-admin` — placeholder
+
+**Accrual engine** (`src/borrower/accrual.py`): three methods (capitalizing/simple/amortizing) with rate-amendment + principal-change handling. Daily snapshots recorded by `job_record_accruals` at 05:30 UTC. 819 historical snapshots backfilled May 17.
+
+**Dev/Prod separation:** `cfg.app.bruno_run_integrations` (default `False` on this codebase) gates future external integrations (IBKR NLV reads, LHV bank statements, etc.). Rasmus's MesiCap clone enables it to `True`. The accrual job has no external dependencies, runs unconditionally on both. Bruno code lives in Rain's codebase as the dev environment; Rasmus's clone is the production environment because MesiCap's actual financials live there.
+
+**Architectural decisions locked:**
+- Path 3 + Option C (Bruno-first with contract attachment): admin creates loan in Bruno, contract generated from template, signed externally, signed PDF uploaded back as the authoritative artifact. Template engine and document storage not yet built.
+- LTV framework: Asset Coverage ≥ 2.0x (50% LTV) at Phase 3 start, with explicit understanding it loosens to 1.67x (60%) after 12-18 months of operational track record. Liquidity Reserve ≥ 2.0x of 12-month cash debt service. Operating Cash Coverage ≥ 1.5x. Net Worth tracked as observability, not binding.
+- Subordination: shareholder loans (Waddy/Arvutitugi operational + all trading capital) require formal subordination to external lenders before Phase 3 launches. Master agreement amendment needed.
+
 ## Working rules
 
 1. **Copy-paste terminal commands only.** Ryan is non-programmer.
@@ -214,15 +237,19 @@ When Claude generates a file:
 
 ## ⏭ Next session — do these first
 
-**1. RESTART required to activate today's fixes.** Four code changes are committed and on disk but the running process started May 11 20:19 still runs the pre-May-12 code:
-- `fb3ef28` — sync.py IBM duplicate-row dedup
-- `3c0bf55` — wheel.py hoisted rescue mode
-- `cac0d2d` — Claude model migration sonnet-4-20250514 → sonnet-4-6 (Anthropic deprecation **June 15 2026**, so this must restart before then)
-- `f70381a` + `4364047` + `efcc298` + `70c5656` — Bridge v2 (stays inert since enabled=False)
+**Restart-required May-12 fixes are now live.** `~/restart-all.sh` was run multiple times during Bruno work on May 16-17. `fb3ef28`, `3c0bf55`, `cac0d2d`, Bridge v2 commits all active in the current running process.
 
-Run: `~/restart-all.sh`. One 2FA tap. ~20 seconds.
+**1. Logging diagnostic blocker (still queued).** Find where dashboard/screener process logs stdout. `tmux trader` pane is empty; `watchdog.log` doesn't have it. `trader.log` exists and captures scheduler/strategy logs but NOT web errors (we hit this during Bruno work — web 500s only surfaced via direct Python invocation). Check `tmux list-panes -a`, `systemctl`, `~/restart-all.sh` redirects, nohup logs.
 
-**2. Logging diagnostic blocker (queued since May 11).** Find where dashboard/screener process logs stdout. `tmux trader` pane is empty; `watchdog.log` doesn't have it. `trader.log` doesn't exist on disk despite STATE.md claiming it does. Check `tmux list-panes -a`, `systemctl`, `~/restart-all.sh` redirects, nohup logs.
+**2. Bruno next-build choices, in priority order:**
+- **Headroom calculator** with four-metric debt-burden gate (the "block loans that cross limits" feature Rain flagged as the main strategic goal). Depends on: accrual engine ✓ + IBKR NLV read (gated) + LHV cash read (gated). Needs both integrations enabled, which means MesiCap clone, not this server.
+- **Movement and Payment recording forms** — UI replacements for the Python seed scripts. Each ~150-line form template.
+- **Mobile UX pass** on loan detail page — tables overflow, key facts cramped. Rain flagged it Sunday morning.
+- **Counterparty detail page** — currently no equivalent to loan detail page for counterparties.
+- **Contract template engine + PDF generation** — pending lawyer-drafted Estonian templates (legal track, parallel to Bruno code).
+- **Document attachment storage** — table linking signed PDFs to loans, retrofit existing 7 loans.
+
+**3. Bruno DB sync for Rasmus's clone.** When he starts using Bruno operationally, his `data/bruno.db` needs population: either repeat the seed scripts on his side or one-time SQL dump export-import from Rain's. Coordinate when he's ready.
 
 ## Active flags / current state
 
@@ -234,6 +261,7 @@ Run: `~/restart-all.sh`. One 2FA tap. ~20 seconds.
 - Earnings cache table: exists
 - AugmentationAudit table: exists
 - TTD position (Maggy wheel, 100 shares cost basis $26.01): covered through June 26 by manually-sold $25.50 CC at $0.69 premium
+- Bruno: live at `/borrower`. 5 counterparties, 7 loans, 13 movements, 3 restructures, 72 payments, 819 accrual snapshots. Daily accrual job scheduled 05:30 UTC. `cfg.app.bruno_run_integrations = False` (dev-codebase posture).
 
 ## In-flight work
 
@@ -431,3 +459,43 @@ JSON history export built for son's clone: 37 positions, 92 trades, 127 events.
 4. `70c5656` — `src/portfolio/capital_injections.py`. Hook: collects pending bridge bumps during injection loop, fires `bump_bridge_benchmark` after db.commit() succeeds. Wrapped in try/except — injection sync returns success even if Bridge hook fails.
 
 **STATE.md regenerated end-of-day** with all May 12-15 changes folded into L2/L3. Surgical-edit attempt failed earlier due to byte-mismatch; full regeneration via the established GitHub web upload + raw URL verification path.
+
+## Saturday (2026-05-16) — Bruno data model + initial pages + restructure modeled
+
+**Built Bruno from skeleton to working portfolio view.** Day's work:
+
+- **Data model:** 7-table SQLAlchemy schema in `src/borrower/models.py`. Generic enough to handle shareholder loans, private external loans, bank facilities, amortizing/capitalizing/revolving structures, multi-currency, back-to-back, restructurings, paid-payment tracking, audit log.
+- **Separate database:** `data/bruno.db` (SQLite). Distinct from Maggy's `trades.db`. Gitignored.
+- **Real data seeded:** 5 counterparties (MesiCap, Thirona, SK4 HoldCo, Waddy, Arvutitugi), 7 loans across 3 currencies (EUR/USD), 13 bank movements, 3 paper restructures, 72-payment Thirona octoserver schedule. Reconciled to LHV statements at €0.00 / $0.00 diff.
+- **Loans index page:** totals by currency and purpose, table with all 7 loans, color-coded purpose badges. After several iteration rounds for the right layout (Outstanding / Facility / Headroom; "— bullet —" for non-revolving; cash + premium sub-line where applicable).
+- **02.05.2026 restructure modeled correctly:** Thirona trading €8,500 → €8,682.90 (premium share €182.90). SK4 HoldCo trading €3,200 → €3,592.13 (premium share €392.13, valued from USD+AUD trading-account balances). Multiple incorrect attempts before landing on the right interpretation (SK4 contract clause 1.1 specifies single EUR figure; USD+AUD value priced into it). All three currencies on trading account reconcile to allocated amounts to the cent.
+- **Wasted ~hour on phantom paste failures.** `mv /tmp/file path` was silently not taking effect. Solved by writing directly with `cat > path <<'EOF'` rather than `/tmp` middle step. Made it a permanent rule: direct writes for non-credential files.
+
+## Sunday (2026-05-17) — Bruno detail page + origination forms + accrual engine + scheduling + commit
+
+**Major build day. Bruno went from view-only to a system that can originate loans, record financial reality, and project debt burden.** Final state committed as `c7af8d0`.
+
+**Built:**
+- **Loan detail page** at `/borrower/loans/{id}`: breadcrumb, status badge, four key-facts cards (outstanding/rate/maturity/structure), outstanding breakdown table, full loan terms, movement history, amendment history, payment schedule, notes. Lender name on the Loans index now hyperlinks to the detail page. Route order initially placed `/loans/new` after `/loans/{loan_id}` — caused 422 (FastAPI tried to coerce "new" to int loan_id). Worked around by renaming to `/loans-new` (cleaner than route-order surgery).
+- **New Loan form** at `/borrower/loans-new`: 4 card sections (Lender & Identification, Economic Terms, Schedule, Optional Details), ~20 fields, draft/active status toggle, lender dropdown from existing counterparties, +Add new counterparty link.
+- **New Counterparty form** at `/borrower/counterparties-new`: 3 sections (Identification, Contact & Banking, Notes). Returns to New Loan form after save.
+- **Accrual engine** (`src/borrower/accrual.py`, 447 lines): three methods (capitalizing/simple/amortizing). First version had bug: applied current rate from origination, ignoring rate amendments. Fixed by adding `_rate_segments` parallel to `_principal_segments`, then `_merge_timelines` to walk both timelines together. Verified against hand calculations: loan 4 (Thirona trading) €103.71 → €18.11; loan 5 (SK4) €39.72 → €7.49.
+- **Snapshot recorder:** `record_snapshot(loan, date)` and `record_all_snapshots(date)` in `accrual.py`. Idempotent. Writes `accrued_amount` (delta since last snapshot) and `cumulative_accrued` (running total) to `interest_accruals` table.
+- **Daily scheduling:** `job_record_accruals` registered at 05:30 UTC daily (quiet window — only 03:00 and 06:15 jobs nearby). Verified registered in trader.log scheduler startup line.
+- **Historical backfill:** 819 daily snapshots written across all 7 loans from each loan's origination to 2026-05-17.
+- **Display integration:** loan detail page outstanding breakdown now shows accrued interest + total amount owed today + method used + as-of date.
+- **Config gating:** `AppConfig.bruno_run_integrations: bool = False` added. Future IBKR/LHV integrations check this flag and skip on this codebase, run on Rasmus's clone (where he'll set it `True`).
+
+**Architectural decisions made during the day:**
+- **Path 3 + Option C** (build contract generation now, with Bruno as source of truth, signed PDFs attached as evidence) — committed direction for contract handling. Template work blocked on lawyer.
+- **Multi-metric LTV framework** (4 metrics + Net Worth as observability) — calibrated. Not too conservative for Phase 3 start; loosens with track record.
+- **NLV definition recalibrated:** for LTV denominator, use gross unencumbered assets, not net-of-debt. Subordinated debt doesn't reduce collateral (protected by contract ranking). This is the bank-style approach.
+- **Borrowing economics validated.** 24% target Maggy return vs 8% average cost of capital = ~16% gross spread. Real but compresses to ~10% in bad-year scenarios. The four-metric framework caps leverage at a level where worst-case drawdown is survivable.
+- **Bruno dev/prod separation:** Rain's codebase = development. Rasmus's MesiCap clone = production (because MesiCap financials live on his server). Config flag is the gate.
+
+**Process wins:**
+- Switched to direct `cat > path` writes (avoiding `/tmp` middle step that silently failed yesterday). Worked reliably all day even over flaky phone-terminal sessions.
+- Chunked multi-line writes to avoid paste failures on narrow terminal — verified line counts between chunks.
+- All commit-worthy work staged carefully (Bruno DB excluded; backup files excluded via expanded .gitignore patterns).
+
+**Committed and pushed:** `c7af8d0` "Bruno: loan portfolio management — initial system". 2,015 insertions, 14 files.
