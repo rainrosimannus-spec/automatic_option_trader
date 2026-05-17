@@ -109,7 +109,20 @@ class WheelManager:
         return assigned_symbols
 
     def _handle_assignment(self, db, put_pos: Position, symbol: str) -> None:
-        """Process a put assignment — close put position, open stock position."""
+        """Process a put assignment — close put position, open stock position.
+
+        Idempotency: if an OPEN stock Position already exists for this symbol
+        with quantity matching the assignment (100 * put.quantity), skip the
+        stock Position creation. This prevents duplicate stock rows when
+        check_assignments runs multiple times against the same assigned put
+        (e.g., race between concurrent scheduler runs, or re-fire after a
+        previous call's commit was rolled back).
+
+        The put-side state changes (status=ASSIGNED, trade row) remain
+        idempotent: re-setting an ASSIGNED position to ASSIGNED is harmless,
+        and the existing duplicate check on trade insertion handles the
+        Trade row.
+        """
         log.info(
             "put_assigned",
             symbol=symbol,
@@ -136,6 +149,28 @@ class WheelManager:
         )
         db.add(trade)
 
+        # Idempotency guard: skip stock Position creation if one already exists
+        # for this symbol with the expected quantity. Defensive against race
+        # conditions where _handle_assignment is called more than once for the
+        # same underlying assignment event.
+        expected_qty = 100 * put_pos.quantity
+        existing_stock = db.query(Position).filter(
+            Position.symbol == symbol,
+            Position.status == PositionStatus.OPEN,
+            Position.position_type == "stock",
+            Position.is_wheel == True,
+        ).first()
+        if existing_stock:
+            log.info(
+                "assignment_stock_position_already_exists",
+                symbol=symbol,
+                existing_id=existing_stock.id,
+                existing_qty=existing_stock.quantity,
+                expected_qty=expected_qty,
+                note="skipping duplicate stock Position creation",
+            )
+            return
+
         # Create stock position (cost basis = strike - premium received)
         cost_basis = (put_pos.strike or 0) - put_pos.entry_premium
         from src.core.config import get_settings as _gs
@@ -145,7 +180,7 @@ class WheelManager:
             status=PositionStatus.OPEN,
             position_type="stock",
             cost_basis=cost_basis,
-            quantity=100 * put_pos.quantity,
+            quantity=expected_qty,
             total_premium_collected=put_pos.total_premium_collected,
             is_wheel=True,
             wheel_exit_mode=exit_mode_enabled,
