@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — New Loan{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500">
+            <a href="/borrower" class="hover:text-gray-300">Borrower</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <a href="/borrower/loans" class="hover:text-gray-300">Loans</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <span class="text-gray-400">New</span>
+        </p>
+        <h1 class="text-3xl font-semibold mt-2">New Loan</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            Record a new loan agreement. Required fields are marked with an asterisk.
+            Set status to "draft" while contract is being finalized, "active" once signed and disbursed.
+        </p>
+    </div>
+
+    <form method="POST" action="/borrower/loans-new" class="space-y-6">
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-5">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-4">Lender & Identification</div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Lender <span class="text-red-400">*</span></label>
+                    <select name="lender_id" required class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        <option value="">Select a lender...</option>
+                        {% for cp in counterparties %}
+                            {% if cp.name != "MesiCap Technologies OÜ" %}
+                            <option value="{{ cp.id }}">{{ cp.name }}{% if cp.related_principal %} ({{ cp.related_principal }}){% endif %}</option>
+                            {% endif %}
+                        {% endfor %}
+                    </select>
+                    <p class="text-xs text-gray-600 mt-1">Counterparty must already exist. <a href="/borrower/counterparties-new" class="text-amber-300/90 hover:text-amber-300">+ Add new counterparty</a></p>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Initial Status</label>
+                    <select name="initial_status" class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        <option value="draft">Draft (contract pending)</option>
+                        <option value="active">Active (already signed & disbursed)</option>
+                    </select>
+                    <p class="text-xs text-gray-600 mt-1">Disbursement movements added separately after creation.</p>
+                </div>
+            </div>
+
+            <div class="mt-4">
+                <label class="block text-xs text-gray-400 mb-1">Contract Reference <span class="text-red-400">*</span></label>
+                <input type="text" name="contract_reference" required placeholder="e.g., LenderName-MesiCap Purpose dd.mm.yyyy"
+                       class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm font-mono focus:border-amber-300/50 focus:outline-none">
+                <p class="text-xs text-gray-600 mt-1">Used as the canonical identifier. Convention: "Lender-Borrower Purpose dd.mm.yyyy".</p>
+            </div>
+
+            <div class="mt-4">
+                <label class="block text-xs text-gray-400 mb-1">Description</label>
+                <input type="text" name="description" placeholder="One-line summary of the loan's purpose"
+                       class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+            </div>
+        </div>
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-5">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-4">Economic Terms</div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Loan Type <span class="text-red-400">*</span></label>
+                    <select name="loan_type" required class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        {% for t in loan_types %}
+                        <option value="{{ t }}">{{ t | replace('_', ' ') }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Purpose <span class="text-red-400">*</span></label>
+                    <select name="purpose" required class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        {% for p in purposes %}
+                        <option value="{{ p }}">{{ p | replace('_', ' ') }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Repayment Structure <span class="text-red-400">*</span></label>
+                    <select name="repayment_structure" required class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        {% for r in repayment_structures %}
+                        <option value="{{ r }}">{{ r | replace('_', ' ') }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                <div class="md:col-span-2">
+                    <label class="block text-xs text-gray-400 mb-1">Principal (max) <span class="text-red-400">*</span></label>
+                    <input type="number" name="principal_max" required step="0.01" min="0" placeholder="0.00"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums focus:border-amber-300/50 focus:outline-none">
+                    <p class="text-xs text-gray-600 mt-1">For revolving facilities, this is the maximum draw. For bullet/amortizing, this is the contracted principal.</p>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Currency <span class="text-red-400">*</span></label>
+                    <select name="currency" required class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        {% for c in currencies %}
+                        <option value="{{ c }}"{% if c == 'EUR' %} selected{% endif %}>{{ c }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Interest Rate (%) <span class="text-red-400">*</span></label>
+                    <input type="number" name="interest_rate_pct" required step="0.001" min="0" placeholder="5.00"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums focus:border-amber-300/50 focus:outline-none">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Rate Type</label>
+                    <select name="interest_rate_type" class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        {% for t in interest_rate_types %}
+                        <option value="{{ t }}">{{ t | replace('_', ' ') }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Day Count</label>
+                    <select name="day_count_convention" class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        {% for d in day_count_conventions %}
+                        <option value="{{ d }}"{% if d == 'act_360' %} selected{% endif %}>{{ d | replace('_', '/') }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Interest Treatment <span class="text-red-400">*</span></label>
+                    <select name="interest_treatment" required class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        {% for t in interest_treatments %}
+                        <option value="{{ t }}">{{ t | replace('_', ' ') }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-5">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-4">Schedule</div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Payment Frequency <span class="text-red-400">*</span></label>
+                    <select name="payment_frequency" required class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        {% for f in payment_frequencies %}
+                        <option value="{{ f }}">{{ f | replace('_', ' ') }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Payment Day of Month</label>
+                    <input type="number" name="payment_day_of_month" min="1" max="31" placeholder="e.g., 14"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums focus:border-amber-300/50 focus:outline-none">
+                    <p class="text-xs text-gray-600 mt-1">Only for monthly/quarterly schedules.</p>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Installment Amount</label>
+                    <input type="number" name="installment_amount" step="0.01" min="0" placeholder="0.00"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums focus:border-amber-300/50 focus:outline-none">
+                    <p class="text-xs text-gray-600 mt-1">Only for amortizing loans.</p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Contract Date <span class="text-red-400">*</span></label>
+                    <input type="date" name="contract_date" required
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Origination Date <span class="text-red-400">*</span></label>
+                    <input type="date" name="origination_date" required
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                    <p class="text-xs text-gray-600 mt-1">When the loan actually starts (typically = contract date or first disbursement).</p>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Maturity Date <span class="text-red-400">*</span></label>
+                    <input type="date" name="maturity_date" required
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-5">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-4">Optional Details</div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Collateral Description</label>
+                    <textarea name="collateral_description" rows="2" placeholder="e.g., Octoserver hardware pledged to lender"
+                              class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none"></textarea>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Back-to-back / Parent Loan</label>
+                    <textarea name="parent_loan_description" rows="2" placeholder="e.g., Funded from Lender's bank loan at X%, maturity Y"
+                              class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none"></textarea>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                <div class="flex items-center">
+                    <label class="flex items-center text-sm text-gray-300 cursor-pointer">
+                        <input type="checkbox" name="is_subordinated" value="true" class="mr-2 accent-amber-300">
+                        Subordinated to external lenders
+                    </label>
+                </div>
+
+                <div class="flex items-center">
+                    <label class="flex items-center text-sm text-gray-300 cursor-pointer">
+                        <input type="checkbox" name="early_repayment_allowed" value="true" checked class="mr-2 accent-amber-300">
+                        Early repayment allowed
+                    </label>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Early Repayment Notice (days)</label>
+                    <input type="number" name="early_repayment_notice_days" value="30" min="0"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums focus:border-amber-300/50 focus:outline-none">
+                </div>
+            </div>
+
+            <div class="mt-4">
+                <label class="block text-xs text-gray-400 mb-1">Notes</label>
+                <textarea name="notes" rows="3" placeholder="Free-form notes about this loan"
+                          class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none"></textarea>
+            </div>
+        </div>
+
+        <div class="flex justify-between items-center pt-2">
+            <a href="/borrower/loans" class="text-sm text-gray-400 hover:text-gray-300">&larr; Cancel</a>
+            <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-5 py-2 rounded text-sm">
+                Create Loan
+            </button>
+        </div>
+
+    </form>
+</div>
+{% endblock %}

@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — New Counterparty{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500">
+            <a href="/borrower" class="hover:text-gray-300">Borrower</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <a href="/borrower/loans-new" class="hover:text-gray-300">New Loan</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <span class="text-gray-400">Add Counterparty</span>
+        </p>
+        <h1 class="text-3xl font-semibold mt-2">Add Counterparty</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            Add a new lender, borrower, or related party. After saving, you'll be returned to the New Loan form
+            where this counterparty will be available in the lender dropdown.
+        </p>
+    </div>
+
+    <form method="POST" action="/borrower/counterparties-new" class="space-y-6">
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-5">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-4">Identification</div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="md:col-span-2">
+                    <label class="block text-xs text-gray-400 mb-1">Name <span class="text-red-400">*</span></label>
+                    <input type="text" name="name" required placeholder="e.g., Example Holding OÜ or John Smith"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Type <span class="text-red-400">*</span></label>
+                    <select name="type" required class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        <option value="">Select type...</option>
+                        {% for t in counterparty_types %}
+                        <option value="{{ t }}">{{ t | replace('_', ' ') }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Tier</label>
+                    <select name="tier" class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        <option value="">(not specified)</option>
+                        {% for t in counterparty_tiers %}
+                        <option value="{{ t }}">{{ t | replace('_', ' ') }}</option>
+                        {% endfor %}
+                    </select>
+                    <p class="text-xs text-gray-600 mt-1">Lender category. Leave blank if not a lender.</p>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Legal Form</label>
+                    <input type="text" name="legal_form" placeholder="OÜ, AS, GmbH, etc."
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Registration Number</label>
+                    <input type="text" name="registration_number" placeholder="e.g., 12345678"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums focus:border-amber-300/50 focus:outline-none">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Country</label>
+                    <input type="text" name="country" value="EE" placeholder="ISO 2-letter code"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Related Principal</label>
+                    <input type="text" name="related_principal" placeholder="Natural person behind the entity"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                    <p class="text-xs text-gray-600 mt-1">Useful when an OÜ is controlled by a known individual.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-5">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-4">Contact & Banking</div>
+
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Address</label>
+                <textarea name="address" rows="2" placeholder="Street, city, postal code, country"
+                          class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none"></textarea>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">IBAN (primary)</label>
+                    <input type="text" name="iban" placeholder="EE..."
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm font-mono focus:border-amber-300/50 focus:outline-none">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">IBAN (secondary)</label>
+                    <input type="text" name="secondary_iban" placeholder="optional"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm font-mono focus:border-amber-300/50 focus:outline-none">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Contact Email</label>
+                    <input type="email" name="contact_email" placeholder="name@example.com"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Phone</label>
+                    <input type="text" name="phone" placeholder="+372 ..."
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-5">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-4">Notes</div>
+            <textarea name="notes" rows="3" placeholder="Free-form notes about this counterparty"
+                      class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none"></textarea>
+        </div>
+
+        <div class="flex justify-between items-center pt-2">
+            <a href="/borrower/loans-new" class="text-sm text-gray-400 hover:text-gray-300">&larr; Back to New Loan</a>
+            <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-5 py-2 rounded text-sm">
+                Save Counterparty
+            </button>
+        </div>
+
+    </form>
+</div>
+{% endblock %}

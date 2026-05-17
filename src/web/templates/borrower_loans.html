@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Loans{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-6">
+    <div class="mb-6">
+        <p class="text-sm text-gray-500"><a href="/borrower" class="hover:text-gray-300">&larr; Back to Borrower</a></p>
+        <div class="flex items-baseline justify-between mt-2"><h1 class="text-3xl font-semibold">Loans</h1><a href="/borrower/loans-new" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-4 py-2 rounded text-sm">+ New Loan</a></div>
+        <p class="text-gray-400 text-sm mt-1">MesiCap loan portfolio — admin view</p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        {% for ccy, t in totals_by_currency.items() %}
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Outstanding {{ ccy }}</div>
+            <div class="text-2xl font-semibold mt-1">{{ "{:,.2f}".format(t.outstanding) }} {{ ccy }}</div>
+            <div class="text-xs text-gray-500 mt-1">of {{ "{:,.2f}".format(t.facility) }} max facility</div>
+        </div>
+        {% endfor %}
+
+        {% for purpose, by_ccy in totals_by_purpose.items() %}
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">{{ purpose | replace('_', ' ') }}</div>
+            {% for ccy, amt in by_ccy.items() %}
+            <div class="text-lg font-semibold mt-1">{{ "{:,.2f}".format(amt) }} {{ ccy }}</div>
+            {% endfor %}
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-800 text-[10px] uppercase tracking-widest text-gray-400">
+                <tr>
+                    <th class="text-left px-3 py-2">Lender</th>
+                    <th class="text-left px-3 py-2">Purpose</th>
+                    <th class="text-right px-3 py-2">Outstanding</th>
+                    <th class="text-right px-3 py-2">Facility / Headroom</th>
+                    <th class="text-right px-3 py-2">Rate</th>
+                    <th class="text-left px-3 py-2">Type</th>
+                    <th class="text-left px-3 py-2">Maturity</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for loan in loans %}
+                <tr class="hover:bg-gray-850">
+                    <td class="px-3 py-2">
+                        <div class="font-medium"><a href="/borrower/loans/{{ loan.id }}" class="hover:text-amber-300/90">{{ loan.lender_name }}</a></div>
+                        <div class="text-xs text-gray-500">{{ loan.description }}</div>
+                    </td>
+                    <td class="px-3 py-2">
+                        <span class="inline-block px-2 py-0.5 text-xs rounded
+                            {% if loan.purpose == 'trading_capital' %}bg-blue-900 text-blue-200
+                            {% elif loan.purpose == 'operating' %}bg-amber-900 text-amber-200
+                            {% elif loan.purpose == 'infrastructure' %}bg-purple-900 text-purple-200
+                            {% else %}bg-gray-800 text-gray-300{% endif %}">
+                            {{ loan.purpose | replace('_', ' ') }}
+                        </span>
+                    </td>
+                    <td class="text-right px-3 py-2 tabular-nums">
+                        <div>{{ "{:,.2f}".format(loan.outstanding) }} {{ loan.currency }}</div>
+                        {% if loan.restructure_adj and loan.restructure_adj != 0 %}
+                        <div class="text-xs text-gray-500">
+                            original {{ "{:,.2f}".format(loan.disbursed_cash) }} + premium {{ "{:,.2f}".format(loan.restructure_adj) }}
+                        </div>
+                        {% endif %}
+                    </td>
+                    <td class="text-right px-3 py-2 tabular-nums">
+                        {% if loan.is_revolving %}
+                            <div class="text-gray-400">{{ "{:,.2f}".format(loan.principal_max) }}</div>
+                            <div class="text-xs text-gray-500">{{ "{:,.2f}".format(loan.headroom) }} headroom</div>
+                        {% else %}
+                            <div class="text-gray-500">— bullet —</div>
+                        {% endif %}
+                    </td>
+                    <td class="text-right px-3 py-2 tabular-nums">
+                        {{ "%.2f"|format(loan.rate) }}%
+                    </td>
+                    <td class="px-3 py-2 text-xs text-gray-400">
+                        {{ loan.loan_type | replace('_', ' ') }}
+                        {% if loan.paid_payments_count > 0 %}
+                            <div class="text-gray-500">{{ loan.paid_payments_count }} payments made</div>
+                        {% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-xs text-gray-400">
+                        {{ loan.maturity_date.strftime('%d.%m.%Y') }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="mt-6 text-xs text-gray-500">
+        <p>{{ loans | length }} active loans. Excludes matured, repaid, defaulted, cancelled.</p>
+        <p class="mt-1">Outstanding = original capital + earned premium added at restructure − repayments. Headroom only shown for revolving facilities.</p>
+    </div>
+</div>
+{% endblock %}

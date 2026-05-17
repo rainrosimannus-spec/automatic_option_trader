@@ -957,6 +957,28 @@ def job_db_cleanup():
         log.error("db_cleanup_error", error=str(e))
 
 
+def job_record_accruals():
+    """Record daily interest accrual snapshots for all active Bruno loans."""
+    from datetime import date
+    from src.borrower.models import get_session_factory
+    from src.borrower.accrual import record_all_snapshots
+    try:
+        session = get_session_factory()()
+        try:
+            result = record_all_snapshots(session, date.today())
+            session.commit()
+            log.info(
+                "bruno_accruals_recorded",
+                created=result["created"],
+                skipped=result["skipped"],
+                loans_processed=len(result["loan_ids_processed"]),
+            )
+        finally:
+            session.close()
+    except Exception as e:
+        log.error("bruno_accruals_error", error=str(e))
+
+
 def create_scheduler() -> BackgroundScheduler:
     """
     Create and configure the multi-market job scheduler.
@@ -1610,6 +1632,15 @@ def create_scheduler() -> BackgroundScheduler:
     )
 
     log.info("ipo_rider_scheduled")
+
+    # Bruno: record daily interest accrual snapshots — 05:30 UTC daily (quiet window)
+    scheduler.add_job(
+        job_record_accruals,
+        CronTrigger(hour=5, minute=30, timezone=utc_tz),
+        id="bruno_record_accruals",
+        name="Bruno: Record Daily Accruals",
+        max_instances=1,
+    )
 
     return scheduler
 

@@ -1,0 +1,278 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Loan {{ loan.id }}: {{ loan.lender.name }}{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500">
+            <a href="/borrower" class="hover:text-gray-300">Borrower</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <a href="/borrower/loans" class="hover:text-gray-300">Loans</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <span class="text-gray-400">Loan {{ loan.id }}</span>
+        </p>
+        <div class="flex items-baseline justify-between mt-2">
+            <h1 class="text-3xl font-semibold">{{ loan.lender.name }}</h1>
+            <span class="inline-block px-2 py-1 text-xs rounded uppercase tracking-widest
+                {% if loan.status.value == 'active' %}bg-green-900 text-green-200
+                {% elif loan.status.value == 'matured' %}bg-blue-900 text-blue-200
+                {% elif loan.status.value == 'repaid' %}bg-gray-700 text-gray-300
+                {% elif loan.status.value == 'defaulted' %}bg-red-900 text-red-200
+                {% else %}bg-gray-800 text-gray-300{% endif %}">
+                {{ loan.status.value }}
+            </span>
+        </div>
+        <p class="text-gray-400 text-sm mt-1">{{ loan.description }}</p>
+        <p class="text-xs text-gray-600 mt-1">Contract: {{ loan.contract_reference }}</p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Outstanding</div>
+            <div class="text-2xl font-semibold mt-1 tabular-nums">{{ "{:,.2f}".format(outstanding) }} {{ loan.currency }}</div>
+            <div class="text-xs text-gray-500 mt-1">principal balance owed</div>
+        </div>
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Rate</div>
+            <div class="text-2xl font-semibold mt-1 tabular-nums">{{ "%.2f"|format(rate_pct) }}%</div>
+            <div class="text-xs text-gray-500 mt-1">{{ loan.interest_rate_type.value }} / {{ loan.day_count_convention.value }} / {{ loan.interest_treatment.value }}</div>
+        </div>
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Maturity</div>
+            <div class="text-2xl font-semibold mt-1">{{ loan.maturity_date.strftime('%d.%m.%Y') }}</div>
+            <div class="text-xs text-gray-500 mt-1">
+                {% if days_to_maturity > 0 %}{{ days_to_maturity }} days remaining
+                {% elif days_to_maturity == 0 %}due today
+                {% else %}{{ -days_to_maturity }} days overdue{% endif %}
+            </div>
+        </div>
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">
+                {% if is_revolving %}Facility / Headroom{% else %}Structure{% endif %}
+            </div>
+            {% if is_revolving %}
+                <div class="text-2xl font-semibold mt-1 tabular-nums">{{ "{:,.2f}".format(loan.principal_max) }}</div>
+                <div class="text-xs text-gray-500 mt-1">{{ "{:,.2f}".format(headroom) }} headroom</div>
+            {% else %}
+                <div class="text-2xl font-semibold mt-1">{{ loan.repayment_structure.value | replace('_', ' ') }}</div>
+                <div class="text-xs text-gray-500 mt-1">{{ loan.payment_frequency.value }}</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Outstanding breakdown</div>
+        <table class="w-full text-sm">
+            <tbody class="divide-y divide-gray-800">
+                <tr>
+                    <td class="py-2 text-gray-400">Cash disbursed</td>
+                    <td class="py-2 text-right tabular-nums">{{ "{:,.2f}".format(disbursed_cash) }} {{ loan.currency }}</td>
+                </tr>
+                {% if restructure_adj != 0 %}
+                <tr>
+                    <td class="py-2 text-gray-400">Premium added at restructure</td>
+                    <td class="py-2 text-right tabular-nums">{{ "{:,.2f}".format(restructure_adj) }} {{ loan.currency }}</td>
+                </tr>
+                {% endif %}
+                {% if repaid != 0 %}
+                <tr>
+                    <td class="py-2 text-gray-400">Repaid (principal)</td>
+                    <td class="py-2 text-right tabular-nums">−{{ "{:,.2f}".format(repaid) }} {{ loan.currency }}</td>
+                </tr>
+                {% endif %}
+                <tr class="font-semibold">
+                    <td class="py-2">Current outstanding principal</td>
+                    <td class="py-2 text-right tabular-nums">{{ "{:,.2f}".format(outstanding) }} {{ loan.currency }}</td>
+                </tr>
+            </tbody>
+        </table>
+        <table class="w-full text-sm mt-3 pt-3 border-t border-gray-800">
+            <tbody>
+                <tr>
+                    <td class="py-2 text-gray-400">Accrued interest (since origination)</td>
+                    <td class="py-2 text-right tabular-nums">+{{ "{:,.2f}".format(accrual.accrued_interest) }} {{ loan.currency }}</td>
+                </tr>
+                <tr class="font-semibold">
+                    <td class="py-2">Total amount owed today</td>
+                    <td class="py-2 text-right tabular-nums">{{ "{:,.2f}".format(accrual.total_owed) }} {{ loan.currency }}</td>
+                </tr>
+            </tbody>
+        </table>
+        <p class="text-xs text-gray-500 mt-3">Computed as of {{ accrual.as_of_date.strftime('%d.%m.%Y') }} using {{ accrual.method }} method.</p>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Loan terms</div>
+        <table class="w-full text-sm">
+            <tbody class="divide-y divide-gray-800">
+                <tr>
+                    <td class="py-2 text-gray-400 w-1/3">Loan type</td>
+                    <td class="py-2">{{ loan.loan_type.value | replace('_', ' ') }}</td>
+                </tr>
+                <tr>
+                    <td class="py-2 text-gray-400">Purpose</td>
+                    <td class="py-2">{{ loan.purpose.value | replace('_', ' ') }}</td>
+                </tr>
+                <tr>
+                    <td class="py-2 text-gray-400">Repayment structure</td>
+                    <td class="py-2">{{ loan.repayment_structure.value | replace('_', ' ') }}</td>
+                </tr>
+                <tr>
+                    <td class="py-2 text-gray-400">Payment frequency</td>
+                    <td class="py-2">{{ loan.payment_frequency.value }}</td>
+                </tr>
+                {% if loan.installment_amount %}
+                <tr>
+                    <td class="py-2 text-gray-400">Installment amount</td>
+                    <td class="py-2 tabular-nums">{{ "{:,.2f}".format(loan.installment_amount) }} {{ loan.currency }}</td>
+                </tr>
+                {% endif %}
+                <tr>
+                    <td class="py-2 text-gray-400">Contract date</td>
+                    <td class="py-2">{{ loan.contract_date.strftime('%d.%m.%Y') }}</td>
+                </tr>
+                <tr>
+                    <td class="py-2 text-gray-400">Origination date</td>
+                    <td class="py-2">{{ loan.origination_date.strftime('%d.%m.%Y') }}</td>
+                </tr>
+                <tr>
+                    <td class="py-2 text-gray-400">Maturity date</td>
+                    <td class="py-2">{{ loan.maturity_date.strftime('%d.%m.%Y') }}</td>
+                </tr>
+                {% if loan.collateral_description %}
+                <tr>
+                    <td class="py-2 text-gray-400">Collateral</td>
+                    <td class="py-2">{{ loan.collateral_description }}</td>
+                </tr>
+                {% endif %}
+                {% if loan.parent_loan_description %}
+                <tr>
+                    <td class="py-2 text-gray-400">Back-to-back</td>
+                    <td class="py-2">{{ loan.parent_loan_description }}</td>
+                </tr>
+                {% endif %}
+                <tr>
+                    <td class="py-2 text-gray-400">Subordination</td>
+                    <td class="py-2">{% if loan.is_subordinated %}Subordinated{% else %}Senior / pari passu{% endif %}</td>
+                </tr>
+                <tr>
+                    <td class="py-2 text-gray-400">Early repayment</td>
+                    <td class="py-2">
+                        {% if loan.early_repayment_allowed %}
+                            Allowed{% if loan.early_repayment_notice_days %} ({{ loan.early_repayment_notice_days }} days notice){% endif %}
+                        {% else %}
+                            Not allowed
+                        {% endif %}
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Movement history ({{ movements | length }})</div>
+        {% if movements %}
+        <table class="w-full text-sm">
+            <thead class="text-[10px] uppercase tracking-widest text-gray-500">
+                <tr>
+                    <th class="text-left py-2">Date</th>
+                    <th class="text-left py-2">Type</th>
+                    <th class="text-right py-2">Amount</th>
+                    <th class="text-left py-2 pl-3">Reference</th>
+                    <th class="text-left py-2 pl-3">Description</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for mv in movements %}
+                <tr>
+                    <td class="py-2 tabular-nums">{{ mv.movement_date.strftime('%d.%m.%Y') }}</td>
+                    <td class="py-2">{{ mv.movement_type.value | replace('_', ' ') }}</td>
+                    <td class="py-2 text-right tabular-nums">{{ "{:,.2f}".format(mv.amount) }} {{ mv.currency }}</td>
+                    <td class="py-2 pl-3 text-xs text-gray-500 tabular-nums">{{ mv.bank_reference or '—' }}</td>
+                    <td class="py-2 pl-3 text-xs text-gray-400">{{ mv.description or '' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="text-sm text-gray-500 italic">No movements recorded.</p>
+        {% endif %}
+    </div>
+
+    {% if amendments %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Amendments ({{ amendments | length }})</div>
+        <table class="w-full text-sm">
+            <thead class="text-[10px] uppercase tracking-widest text-gray-500">
+                <tr>
+                    <th class="text-left py-2">Date</th>
+                    <th class="text-left py-2">Field changed</th>
+                    <th class="text-left py-2">Old value</th>
+                    <th class="text-left py-2">New value</th>
+                    <th class="text-left py-2 pl-3">Description</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for a in amendments %}
+                <tr>
+                    <td class="py-2 tabular-nums">{{ a.amendment_date.strftime('%d.%m.%Y') }}</td>
+                    <td class="py-2">{{ a.field_changed }}</td>
+                    <td class="py-2 tabular-nums text-gray-400">{{ a.old_value }}</td>
+                    <td class="py-2 tabular-nums">{{ a.new_value }}</td>
+                    <td class="py-2 pl-3 text-xs text-gray-400">{{ a.description or '' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {% if payments %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">
+            Payment schedule — {{ payments_paid_count }} paid, {{ payments_pending_count }} scheduled
+        </div>
+        <table class="w-full text-sm">
+            <thead class="text-[10px] uppercase tracking-widest text-gray-500">
+                <tr>
+                    <th class="text-left py-2">Scheduled date</th>
+                    <th class="text-right py-2">Amount</th>
+                    <th class="text-left py-2 pl-3">Status</th>
+                    <th class="text-left py-2 pl-3">Paid date</th>
+                    <th class="text-left py-2 pl-3">Reference</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for p in payments %}
+                <tr {% if p.status.value == 'paid' %}class="text-gray-500"{% endif %}>
+                    <td class="py-1.5 tabular-nums">{{ p.scheduled_date.strftime('%d.%m.%Y') }}</td>
+                    <td class="py-1.5 text-right tabular-nums">{{ "{:,.2f}".format(p.scheduled_amount) }} {{ loan.currency }}</td>
+                    <td class="py-1.5 pl-3 text-xs">
+                        {% if p.status.value == 'paid' %}<span class="text-green-400">paid</span>
+                        {% elif p.status.value == 'overdue' %}<span class="text-red-400">overdue</span>
+                        {% elif p.status.value == 'waived' %}<span class="text-gray-500">waived</span>
+                        {% else %}<span class="text-gray-400">scheduled</span>{% endif %}
+                    </td>
+                    <td class="py-1.5 pl-3 text-xs">{% if p.paid_date %}{{ p.paid_date.strftime('%d.%m.%Y') }}{% else %}—{% endif %}</td>
+                    <td class="py-1.5 pl-3 text-xs text-gray-500 tabular-nums">{{ p.bank_reference or '—' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {% if loan.notes %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Notes</div>
+        <pre class="text-sm text-gray-300 whitespace-pre-wrap font-sans">{{ loan.notes }}</pre>
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}

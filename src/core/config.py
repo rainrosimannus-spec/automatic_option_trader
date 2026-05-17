@@ -168,6 +168,7 @@ class AppConfig(BaseModel):
     suggestion_mode: bool = False    # true = suggest trades with Approve/Reject
     log_level: str = "INFO"
     db_path: str = "data/trades.db"
+    bruno_run_integrations: bool = False  # gated: True on MesiCap clone, False on Rain dev
 
 
 # ── Portfolio config ─────────────────────────────────────────

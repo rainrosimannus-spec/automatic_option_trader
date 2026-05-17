@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — MesiCap{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>Borrower</h1>
+    <p class="subtitle">Bruno — MesiCap loan portfolio management</p>
+
+    <div class="card-grid">
+        <a href="/borrower/loans" class="card">
+            <h2>Loans</h2>
+            <p>View and manage MesiCap's loan portfolio: shareholder loans, external private loans, future bank facilities. Track payments, monitor covenants, evaluate new loan proposals.</p>
+        </a>
+
+        <a href="/borrower/lender-admin" class="card">
+            <h2>Lender Site Admin</h2>
+            <p>Manage the lender-facing portal: invite new lenders, view portal access logs, publish quarterly statements, manage lender accounts.</p>
+        </a>
+    </div>
+</div>
+{% endblock %}
