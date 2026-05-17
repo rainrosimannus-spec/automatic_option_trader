@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-05-17 — L1/L2/L3 structure. Content current through end of May 17 session (Bruno initial build complete).
+Last updated: 2026-05-17 (later same day) — L1/L2/L3 structure. Content current through end of May 17 session (Bruno initial build + refactor audit + dashboard rebrand + iOS PWA saga + idempotency guards).
 
 **How to read this document:**
 - **L1 Fundamentals** — read first on every new session. Rarely changes.
@@ -38,8 +38,11 @@ This server runs **both Maggy and Winston code against a single account, U175627
 - **Python:** `.venv/bin/python3` (always `cd ~/automatic_option_trader` first)
 - **GitHub:** https://github.com/rainrosimannus-spec/automatic_option_trader
 - **Restart command:** `~/restart-all.sh` (2x phone 2FA in split mode, 1x in merged mode, wait 15–20s)
-- **Dashboard:** https://37.0.30.34/ (Caddy + basic auth + self-signed HTTPS, user `maggycian`)
+- **Dashboard:** **https://app.rosimannus.ee/** (Caddy + basic auth + real Let's Encrypt cert since May 16; user `maggycian`)
+- **Old dashboard URL** `https://37.0.30.34/` still resolves and redirects to the new domain. Self-signed cert era is over.
 - **Dashboard auth:** bcrypt cost 14, hash in `/etc/caddy/Caddyfile`. App binds `127.0.0.1:8080` — localhost only.
+- **Caddy config layout:** `@static`, `@ios_icons`, `@manifest` path matchers exempt public asset paths from basic auth so iOS PWA can fetch icons without credentials. `basicauth` lives in fallback `handle{}`. Backups: `/etc/caddy/Caddyfile.default-2026-04-28`, `/etc/caddy/Caddyfile.pre-static-fix`, `/etc/caddy/Caddyfile.pre-letsencrypt`.
+- **DNS:** `app.rosimannus.ee` A record → `37.0.30.34` at registrar. Let's Encrypt ACME validation via Caddy auto-renews. Renewal alerts to `admin@rosimannus.ee`.
 - **IBKR ports (canonical, when split):** Maggy=4001, Winston=7496. Currently both on 7496 (merge).
 - **DB path:** `data/trades.db` (per `config/settings.yaml`)
 - **FMP quota:** 250/day. Screener uses ~150–300; +60 with breakthrough filter checks.
@@ -62,6 +65,7 @@ This server runs **both Maggy and Winston code against a single account, U175627
 11. **`NetLiquidation` already includes accrued interest** as a separate line (researched May 5). Graph is correct as-is. Margin interest is reflected in NLV.
 12. **Earnings gate is fail-CLOSED** (opposite to most gates). Missing data → block. Rationale: earnings is the single most predictable cause of overnight gap risk on a CSP.
 13. **Capital injections are account-tagged.** Both Maggy and Winston injections flow through `portfolio_capital_injections` table with `account_id` column. `get_total_invested_usd(account_id=...)` filters per-account.
+14. **Architecture audit complete (May 17).** Full map of all Position/PortfolioHolding/PortfolioTransaction write paths committed as `REFACTOR_PHASE1.md` and `REFACTOR_PHASE2.md` in the repo root. Same architectural failure on both sides — three Pattern A (DB-first) writers vs one Pattern B (IBKR-first, correct) writer. Refactor target: trade_sync sole Position writer on Maggy side; sync.sync_ibkr_holdings sole PortfolioHolding writer on Winston side. 11 refactor commits planned across Phase 4, 2-4 weeks calendar. **Not started yet.** Defensive idempotency guards (`d9550e6` for Maggy, Winston counterpart still queued) protect the bug surface during the refactor window.
 
 ## How scoring works
 
@@ -112,6 +116,8 @@ Three-branch evaluation in `_write_call`:
 3. **Normal** — close to ATM, delta 0.30–0.45.
 
 Pre-May-14 the rescue check was nested inside the else of `wheel_exit_mode`, making it unreachable for any assigned position (since assignments default to exit_mode=True). The hoisted version (`3c0bf55`) places rescue check first and wins regardless of exit_mode flag.
+
+**Idempotency guard (`d9550e6`, May 17):** `_handle_assignment` now checks for an existing OPEN stock Position with `is_wheel=True` before creating a new one. Defensive patch against duplicate-stock-Position-on-assignment race conditions during the refactor window. The proper architectural fix (trade_sync as sole Position writer) will replace this band-aid in Phase 4.
 
 ## Augmentation pipeline (live since May 11)
 
@@ -199,12 +205,13 @@ MesiCap Technologies OÜ's internal loan tracking and origination system. Lives 
 9. **`composite=0` for valid stocks is NEVER correct.**
 10. **Every action needs a turn.** Stop when Ryan stops.
 11. **If Ryan asks a question before pasting output, answer the question first.** Don't assume output that wasn't there.
-12. **Cross-check STATE.md after writing.** Empty pattern matches mean nothing changed; verify content actually updated. **After GitHub web upload, fetch the raw URL and verify head + tail match what was generated** (May 11 lesson — wrong file landed without detection).
+12. **Cross-check STATE.md after writing.** Empty pattern matches mean nothing changed; verify content actually updated. **After GitHub web upload, fetch the raw URL and verify head + tail match what was generated** (May 11 lesson — wrong file landed without detection). **GitHub raw CDN is cached** — if browser shows current and web_fetch shows stale, browser is right (May 17 lesson).
 13. **No heredocs for Python patches.** Plain-text OLD/NEW files in `/tmp/` + a Python script that reads them is fine; `python3 -c "..."` with escaped quotes inside is the banned pattern. Cat heredoc for plain Python files (full-file writes, not match-and-replace) is also fine.
 14. **One match assertion per patch with ABORT on mismatch.**
 15. **`tmux capture-pane -t trader -p -S -2000`** is the log source.
 16. **Raw GitHub URLs** for file reading.
 17. **CREDENTIAL SAFETY (third incident, May 11 2026):** NEVER ask Ryan to run commands that expose credentials: `git remote -v`, `env`, `printenv`, `cat .env`, `cat .git/config`, `history`, `ps auxe`. PATs are often in HTTPS git URLs. Use redacted variants: `git remote -v | sed 's|//[^@]*@|//[REDACTED]@|g'`. ALWAYS warn before commands touching credential-bearing files. Ryan is not a programmer and will not catch leaks. Strict rule, no exceptions.
+18. **Caddy access log is the FIRST stop for infrastructure debugging** (May 16 lesson — hours wasted on iOS icon problem that `tail -f /var/log/caddy/dashboard-access.log` would have diagnosed in 30 seconds).
 
 ## File handoff workflow (Ryan's path)
 
@@ -217,7 +224,7 @@ When Claude generates a file:
 
 **Never** ask Ryan to: paste long file content into a terminal, use heredocs, use base64 chunks, or run `scp`. The GitHub web upload is the only acceptable path.
 
-**Post-upload verification (mandatory):** after Ryan reports the upload is done, fetch the raw GitHub URL and compare head + tail against what was generated.
+**Post-upload verification (mandatory):** after Ryan reports the upload is done, fetch the raw GitHub URL and compare head + tail against what was generated. **CDN cache caveat:** if the fetch shows stale content but Ryan reports the upload succeeded, trust Ryan — GitHub raw URLs cache for several minutes.
 
 ## Don'ts
 
@@ -229,7 +236,8 @@ When Claude generates a file:
 - Don't conflate "dashboard looks wrong" with "is broken."
 - Don't assume a fix worked — restart and verify.
 - Don't use complex heredoc for patches.
-- Don't assume STATE.md write succeeded — verify with `head`/`tail` of the file AND verify against GitHub raw URL.
+- Don't assume STATE.md write succeeded — verify with `head`/`tail` of the file AND verify against GitHub raw URL (allowing for CDN cache).
+- Don't trust web_fetch over Ryan's browser when they disagree on file content.
 
 ---
 
@@ -237,11 +245,15 @@ When Claude generates a file:
 
 ## ⏭ Next session — do these first
 
-**Restart-required May-12 fixes are now live.** `~/restart-all.sh` was run multiple times during Bruno work on May 16-17. `fb3ef28`, `3c0bf55`, `cac0d2d`, Bridge v2 commits all active in the current running process.
+**Restart-required May-12 fixes are now live.** `~/restart-all.sh` was run multiple times during Bruno work on May 16-17. `fb3ef28`, `3c0bf55`, `cac0d2d`, Bridge v2 commits all active in the current running process. Same restarts also activated May 17 changes: `ccd3677` (orphan trade_sync delete), `d9550e6` (wheel.py idempotency guard).
 
-**1. Logging diagnostic blocker (still queued).** Find where dashboard/screener process logs stdout. `tmux trader` pane is empty; `watchdog.log` doesn't have it. `trader.log` exists and captures scheduler/strategy logs but NOT web errors (we hit this during Bruno work — web 500s only surfaced via direct Python invocation). Check `tmux list-panes -a`, `systemctl`, `~/restart-all.sh` redirects, nohup logs.
+**1. Winston-side idempotency guard.** Most important short-term action item from the May 17 architecture audit. Maggy got `d9550e6` (defensive guard on `wheel._handle_assignment`). Winston has the same race-condition vulnerability on `buyer._handle_put_assignment` with no equivalent guard. The next time a Winston put gets assigned and `_check_put_entries` fires concurrently with `job_portfolio_sync_trades`, duplicate `PortfolioHolding` rows are possible. ~30 minutes of work.
 
-**2. Bruno next-build choices, in priority order:**
+**2. Phase 3 of refactor — target architecture spec.** `REFACTOR_PHASE1.md` and `REFACTOR_PHASE2.md` are in the repo root. Both describe the problem (8 files containing Pattern A writes vs the single correct Pattern B writer on each side) and the proposed solution. Phase 3 is the per-file before/after spec — 11 refactor commits across Maggy + Winston + IPO Rider. Resolve the five remaining Q decisions (Q2 hedge close on roll, Q7 `/close-all` future, Q8 `/force-close` status, Q11 `position_type="ipo_flip"` survival, Q12 IPO lockup dedup). Reviewable as one document before any code change.
+
+**3. Logging diagnostic blocker (still queued).** Find where dashboard/screener process logs stdout. `tmux trader` pane is empty; `watchdog.log` doesn't have it. `trader.log` exists and captures scheduler/strategy logs but NOT web errors (we hit this during Bruno work — web 500s only surfaced via direct Python invocation). Check `tmux list-panes -a`, `systemctl`, `~/restart-all.sh` redirects, nohup logs.
+
+**4. Bruno next-build choices, in priority order:**
 - **Headroom calculator** with four-metric debt-burden gate (the "block loans that cross limits" feature Rain flagged as the main strategic goal). Depends on: accrual engine ✓ + IBKR NLV read (gated) + LHV cash read (gated). Needs both integrations enabled, which means MesiCap clone, not this server.
 - **Movement and Payment recording forms** — UI replacements for the Python seed scripts. Each ~150-line form template.
 - **Mobile UX pass** on loan detail page — tables overflow, key facts cramped. Rain flagged it Sunday morning.
@@ -249,7 +261,7 @@ When Claude generates a file:
 - **Contract template engine + PDF generation** — pending lawyer-drafted Estonian templates (legal track, parallel to Bruno code).
 - **Document attachment storage** — table linking signed PDFs to loans, retrofit existing 7 loans.
 
-**3. Bruno DB sync for Rasmus's clone.** When he starts using Bruno operationally, his `data/bruno.db` needs population: either repeat the seed scripts on his side or one-time SQL dump export-import from Rain's. Coordinate when he's ready.
+**5. Bruno DB sync for Rasmus's clone.** When he starts using Bruno operationally, his `data/bruno.db` needs population: either repeat the seed scripts on his side or one-time SQL dump export-import from Rain's. Coordinate when he's ready.
 
 ## Active flags / current state
 
@@ -262,8 +274,13 @@ When Claude generates a file:
 - AugmentationAudit table: exists
 - TTD position (Maggy wheel, 100 shares cost basis $26.01): covered through June 26 by manually-sold $25.50 CC at $0.69 premium
 - Bruno: live at `/borrower`. 5 counterparties, 7 loans, 13 movements, 3 restructures, 72 payments, 819 accrual snapshots. Daily accrual job scheduled 05:30 UTC. `cfg.app.bruno_run_integrations = False` (dev-codebase posture).
+- Dashboard live at `https://app.rosimannus.ee/` with real Let's Encrypt cert, auto-renewing. iOS PWA icon working.
+- Defensive idempotency guard `d9550e6` active on Maggy `wheel._handle_assignment`. Winston side has no equivalent guard yet.
+- Orphan `src/scheduler/trade_sync.py` removed (`ccd3677`). Active version is `src/broker/trade_sync.py` — sole authority.
 
 ## In-flight work
+
+**Architecture refactor** — Phase 1 + Phase 2 + Phase 2b audit complete and committed as `REFACTOR_PHASE1.md` and `REFACTOR_PHASE2.md` in repo root. 11 refactor commits identified across 2-4 weeks calendar time, 6-10 hours active work. Phase 3 (target architecture spec) not yet started. Phase 4 (execution) blocked on Phase 3.
 
 **Forward-growth scoring** — `forward_growth_score` populated for 133 watchlist rows; integration considered done.
 
@@ -279,7 +296,7 @@ When Claude generates a file:
 
 **`portfolio_account_updates_failed` (TimeoutError on `reqAccountUpdates`).** Fired once at startup; may be one-time. Watch for recurrence.
 
-**DB-write timing in `buyer.py`.** Holdings/transactions row written at submission time, before fill confirmation. If IBKR rejects, DB has phantom row until trade_sync's next reconcile cycle (15 min). Real fix: write only on fill. Not blocking under current read-only/suggestion-mode operation. Worth fixing before any auto-approve live mode.
+**DB-write timing in `buyer.py`.** Holdings/transactions row written at submission time, before fill confirmation. If IBKR rejects, DB has phantom row until trade_sync's next reconcile cycle (15 min). Real fix: write only on fill. **This is the architectural problem documented in REFACTOR_PHASE2.md** — see Phase 4 commit 10 for resolution path.
 
 **`trade_sync` reopen logic still incomplete.** At `trade_sync.py:625-630` the reopen flips status and clears `closed_at` but does NOT clear `realized_pnl`. With Apr 24 wheel.py fix in place, reopen shouldn't trigger for valid OPEN positions — but defense-in-depth one-liner deferred.
 
@@ -292,6 +309,8 @@ When Claude generates a file:
 **`check_position_size` cosmetic note.** Variable named `estimated_margin` is misleading — it's notional concentration (price × 100), not margin. Real margin enforcement happens via `get_whatif_margin` in `put_seller`. Rename deferred.
 
 **GBP centralization.** 8+ separate sites in codebase divide by 100 for GBP. Surgical fix landed at `analyzer.py` on May 7; centralization deferred.
+
+**`/close-all` dashboard footgun.** Marks all OPEN positions CLOSED in the DB without submitting IBKR orders. Trade_sync then sees IBKR still holds the stock and recreates the Position row. Flagged in REFACTOR_PHASE2.md as the single most dangerous endpoint in the codebase. Phase 4 commit 3 either removes or rewrites it.
 
 ## Open items for son's clone
 
@@ -357,7 +376,7 @@ Hiccup: watchdog cron respawned the killed options tmux session within 3 min, lo
 
 ## Tuesday (2026-04-28) evening — dashboard auth + lockdown
 
-Dashboard was publicly accessible. Closed via Caddy reverse proxy with basic auth + self-signed HTTPS. App binding `0.0.0.0:8080` → `127.0.0.1:8080`. ufw firewall: ports 80, 443 added. New URL: https://37.0.30.34/.
+Dashboard was publicly accessible. Closed via Caddy reverse proxy with basic auth + self-signed HTTPS. App binding `0.0.0.0:8080` → `127.0.0.1:8080`. ufw firewall: ports 80, 443 added. URL: https://37.0.30.34/.
 
 ## Wednesday (2026-04-29) — KSPI fill-claiming + watchlist metrics asyncio fix
 
@@ -460,7 +479,7 @@ JSON history export built for son's clone: 37 positions, 92 trades, 127 events.
 
 **STATE.md regenerated end-of-day** with all May 12-15 changes folded into L2/L3. Surgical-edit attempt failed earlier due to byte-mismatch; full regeneration via the established GitHub web upload + raw URL verification path.
 
-## Saturday (2026-05-16) — Bruno data model + initial pages + restructure modeled
+## Saturday (2026-05-16) — Bruno data model + initial pages + restructure modeled (Bruno track)
 
 **Built Bruno from skeleton to working portfolio view.** Day's work:
 
@@ -471,7 +490,43 @@ JSON history export built for son's clone: 37 positions, 92 trades, 127 events.
 - **02.05.2026 restructure modeled correctly:** Thirona trading €8,500 → €8,682.90 (premium share €182.90). SK4 HoldCo trading €3,200 → €3,592.13 (premium share €392.13, valued from USD+AUD trading-account balances). Multiple incorrect attempts before landing on the right interpretation (SK4 contract clause 1.1 specifies single EUR figure; USD+AUD value priced into it). All three currencies on trading account reconcile to allocated amounts to the cent.
 - **Wasted ~hour on phantom paste failures.** `mv /tmp/file path` was silently not taking effect. Solved by writing directly with `cat > path <<'EOF'` rather than `/tmp` middle step. Made it a permanent rule: direct writes for non-credential files.
 
-## Sunday (2026-05-17) — Bruno detail page + origination forms + accrual engine + scheduling + commit
+## Saturday (2026-05-16) — Brand refresh + dashboard rebrand + iOS PWA icon saga (trader track)
+
+**Parallel to Bruno work, three pieces of trader-system work landed.**
+
+**1. MesiCap brand refresh.** Hexagon honeycomb paw concept in honey amber (`#B8721A`, `#E8A526`, `#F7C948`) and bear brown (`#2B1810`). Hexagon is a non-negotiable brand element across all formats. Full asset set delivered including favicons and WhatsApp-compatible avatar. Brand kit folder at `/mnt/user-data/outputs/brand_kit/` with 31 files.
+
+**2. Dashboard rebrand (`69f9790`, `8a44bd5`, `f4b4f69`).** Replaced old branding with new MesiCap hexagon identity throughout web/templates/. Font swap. Portfolio.html title fix (`f4b4f69`). Multiple browser refreshes to confirm.
+
+**3. iOS PWA icon — multi-hour saga.** Add-to-Home-Screen on iPhone refused to use the new monogram, kept showing the old "M" letter. Multiple theories tested and discarded:
+   - Cache-busting (`?v=2`, `?v=3`) — no effect
+   - Alpha flattening, RGB encoding — no effect
+   - Edge-to-edge design — no effect
+   - Manifest 180×180 entry, sizes attribute, start_url pwa=2 hack — no effect
+   - Three commits attempted (`71e0af8`, `bbbbd94`, `caed1b8`) — all failed
+
+**Root cause discovered via `tail -f /var/log/caddy/dashboard-access.log`:** iOS was hitting root paths `/apple-touch-icon.png`, `/apple-touch-icon-precomposed.png`, `/favicon.ico` WITHOUT basic auth credentials, getting 401 from Caddy. iOS PWA subsystem ignores Safari's cached auth.
+
+**First fix (Caddyfile, no commit — `/etc/caddy/` is outside the repo):**
+- Added `@ios_icons` path matcher exempting icon paths from auth
+- Rewrites to `/static/`
+- `basicauth` moved into fallback `handle{}`
+- Backup at `/etc/caddy/Caddyfile.pre-static-fix`
+
+Share sheet started showing new icon. **Add-to-Home-Screen STILL showed M.**
+
+**Second diagnosis (comparison with son's Mesicap PWA at `http://37.0.30.34:8069/`):** Plain HTTP, no Caddy, no auth — works perfectly with the same iPhone iOS 26.4.2 beta. Self-signed cert + basic auth combo on Caddy was confusing the iOS PWA icon discovery.
+
+**Real fix shipped (no repo commits — infrastructure only):**
+1. Created DNS A record `app.rosimannus.ee` → `37.0.30.34` at registrar
+2. New Caddyfile with `email admin@rosimannus.ee`, `auto_https disable_redirects`, replaced `https://37.0.30.34` block with `https://app.rosimannus.ee` block, kept old IP as redirect (backup at `/etc/caddy/Caddyfile.pre-letsencrypt`)
+3. `sudo systemctl reload caddy` triggered Let's Encrypt ACME validation, cert obtained in 7 seconds
+
+iOS Add-to-Home-Screen on `https://app.rosimannus.ee` finally shows new monogram. **Resolved.**
+
+**Lesson added to RULES.md (#18):** Caddy access log is the FIRST stop for infrastructure debugging. Hours wasted on theories that 30 seconds of `tail -f /var/log/caddy/dashboard-access.log` would have ruled out.
+
+## Sunday (2026-05-17) — Bruno detail page + origination forms + accrual engine + scheduling + commit (Bruno track)
 
 **Major build day. Bruno went from view-only to a system that can originate loans, record financial reality, and project debt burden.** Final state committed as `c7af8d0`.
 
@@ -499,3 +554,31 @@ JSON history export built for son's clone: 37 positions, 92 trades, 127 events.
 - All commit-worthy work staged carefully (Bruno DB excluded; backup files excluded via expanded .gitignore patterns).
 
 **Committed and pushed:** `c7af8d0` "Bruno: loan portfolio management — initial system". 2,015 insertions, 14 files.
+
+## Sunday (2026-05-17) — Orphan trade_sync delete + Maggy idempotency guard + full architecture audit (trader track)
+
+**Parallel to Bruno work, three distinct pieces of trader-system work landed.**
+
+**1. Orphan `src/scheduler/trade_sync.py` deleted (`ccd3677`).** Son reported NVDA $227.5 put assigned over the weekend but still showing OPEN, "3 assignments instead of 2 open" on his Mesicap clone. Audit on this server: `src/scheduler/trade_sync.py` was COMPLETELY ORPHANED. Verified via grep across `src/`, `restart-all.sh`, `tools/`, crontab, systemd, `tests/` — all empty. Active version is `src/broker/trade_sync.py` (imported by `src/scheduler/jobs.py:1623`). **Deleted the orphan: 561 lines removed.** Removes a long-standing source of "which trade_sync is the real one" confusion.
+
+**2. Maggy idempotency guard on `wheel._handle_assignment` (`d9550e6`).** Identified the real bug behind son's NVDA report: `wheel.py:111 _handle_assignment` had no idempotency check on stock Position creation. If `_handle_assignment` fired twice (race condition between `check_assignments` and `sync_ibkr_positions`), it would create two stock Position rows for the same assignment.
+
+Fix: `_handle_assignment` now checks if an OPEN stock Position with `is_wheel=True` already exists for the symbol before creating a new one. Defensive patch — protects against the duplicate-row race during the refactor window. Not the architectural fix (that's Phase 4 of the refactor), but stops the immediate bleeding.
+
+**3. Full architecture audit — REFACTOR_PHASE1.md + REFACTOR_PHASE2.md.** Read 8 files end-to-end, mapped every Position/Trade/PortfolioHolding/PortfolioTransaction write path across the entire codebase.
+
+**Phase 1 files (Maggy side):** `src/strategy/wheel.py`, `src/broker/trade_sync.py`, `src/strategy/put_seller.py`, `src/strategy/profit_taker.py`, `src/strategy/hedge.py`. Findings: three Pattern A (DB-first, write before IBKR confirms) writers — `wheel._handle_assignment`, `put_seller._record_trade`, `hedge._buy_hedge`. One Pattern B (IBKR-first, correct) writer — `broker/trade_sync.sync_ibkr_positions`.
+
+**Phase 2 files (Winston side + dashboard):** `src/portfolio/buyer.py`, `src/web/routes/controls.py`, `src/portfolio/sync.py`, `src/portfolio/scheduler.py`, `src/scheduler/jobs.py`, `src/web/routes/api.py`, `src/consigliere/advisor.py`. Findings: same mirror pattern on the Winston side — three Pattern A writers (`buyer._handle_put_assignment`, `buyer._update_holding`, `scheduler.job_portfolio_sync_trades.put_assigned` block), one Pattern B writer (`sync.sync_ibkr_holdings`). Plus `controls.py:/close-all` is a pure DB write with no IBKR action — flagged as the single most dangerous endpoint in the codebase.
+
+**Phase 2b file (IPO Rider):** `src/ipo/trader.py`. Findings: adds a fifth Position-writing subsystem with two write paths — Maggy-side `_record_flip_exit` (creates `Position(position_type="ipo_flip", status=CLOSED)` at exit, likely duplicates with trade_sync during the holding period), Winston-side `_check_lockup_fill` (creates `PortfolioHolding` for lockup re-entry — fifth `PortfolioHolding` writer).
+
+**Total: 11 refactor commits planned for Phase 4.** Lowest-risk first: hedge → /force-close → /close-all → wheel → put_seller → IPO flip → Winston scheduler → Winston buyer × 2 → Winston IPO lockup. Each commit independently testable, ~48 hours observation between commits, 2-4 weeks calendar time, 6-10 hours active work.
+
+**Open questions documented:** Q2 (hedge close on roll), Q7 (`/close-all` future), Q8 (`/force-close` status deferral), Q11 (does `position_type="ipo_flip"` survive the refactor), Q12 (IPO lockup PortfolioTransaction dedup). All deferred to Phase 3 spec.
+
+**Committed and pushed:** REFACTOR_PHASE1.md (236 lines) and REFACTOR_PHASE2.md (306 lines, includes Phase 2b ipo/trader.py findings). Both in repo root.
+
+**Architectural pattern summary:** Same architectural failure on both sides. Both sides have multiple Pattern A writers (DB-first, race-prone, write-before-IBKR-confirms) plus one correctly-implemented Pattern B writer (IBKR-first, idempotent). The refactor doesn't introduce new code — it just removes the duplicate code paths and lets the existing Pattern B function be the sole writer.
+
+**Critical immediate action item flagged:** Winston-side idempotency guard parallel to `d9550e6` for `buyer._handle_put_assignment`. ~30 minutes of work. **Queued in L2 as next-session #1.**
