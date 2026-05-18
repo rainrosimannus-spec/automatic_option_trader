@@ -175,7 +175,7 @@
     </div>
 
     <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
-        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Movement history ({{ movements | length }})</div>
+        <div class="flex items-center justify-between mb-3"><div class="text-[10px] uppercase tracking-widest text-gray-500">Movement history ({{ movements | length }})</div><a href="/borrower/loans/{{ loan.id }}/movements-new" class="text-xs bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-3 py-1 rounded">+ Add Movement</a></div>
         {% if movements %}
         <table class="w-full text-sm">
             <thead class="text-[10px] uppercase tracking-widest text-gray-500">
@@ -260,6 +260,12 @@
                     </td>
                     <td class="py-1.5 pl-3 text-xs">{% if p.paid_date %}{{ p.paid_date.strftime('%d.%m.%Y') }}{% else %}—{% endif %}</td>
                     <td class="py-1.5 pl-3 text-xs text-gray-500 tabular-nums">{{ p.bank_reference or '—' }}</td>
+                    <td class="py-1.5 pl-3 text-xs text-right">
+                        <a href="/borrower/payments/{{ p.id }}/edit" class="text-amber-300/80 hover:text-amber-300">
+                            {% if p.status.value == 'scheduled' or p.status.value == 'overdue' %}Mark paid
+                            {% else %}Edit{% endif %}
+                        </a>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>

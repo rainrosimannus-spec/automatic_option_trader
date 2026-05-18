@@ -324,3 +324,161 @@ def borrower_counterparty_new_submit(
         raise HTTPException(status_code=400, detail=f"Failed to create counterparty: {e}")
     finally:
         session.close()
+
+
+@router.get("/loans/{loan_id}/movements-new", response_class=HTMLResponse)
+def borrower_movement_new_form(request: Request, loan_id: int):
+    """Show the New Movement form for a specific loan."""
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+
+        return templates.TemplateResponse("borrower_movement_new.html", {
+            "request": request,
+            "loan": loan,
+            "movement_types": [t.value for t in MovementType],
+        })
+    finally:
+        session.close()
+
+
+@router.post("/loans/{loan_id}/movements-new")
+def borrower_movement_new_submit(
+    request: Request,
+    loan_id: int,
+    movement_type: str = Form(...),
+    movement_date: str = Form(...),
+    amount: float = Form(...),
+    currency: str = Form(...),
+    bank_reference: str = Form(""),
+    bank_account_iban: str = Form(""),
+    description: str = Form(""),
+):
+    """Process the New Movement form submission."""
+    from datetime import datetime
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be positive")
+        if currency != loan.currency:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Currency mismatch: loan is {loan.currency}, movement was {currency}",
+            )
+
+        mv = LoanMovement(
+            loan_id=loan_id,
+            movement_date=datetime.strptime(movement_date, "%Y-%m-%d").date(),
+            movement_type=MovementType(movement_type),
+            amount=amount,
+            currency=currency,
+            bank_reference=bank_reference.strip() or None,
+            bank_account_iban=bank_account_iban.strip() or None,
+            description=description.strip() or None,
+        )
+        session.add(mv)
+        session.commit()
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"movement_create_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to create movement: {e}")
+    finally:
+        session.close()
+
+
+@router.get("/payments/{payment_id}/edit", response_class=HTMLResponse)
+def borrower_payment_edit_form(request: Request, payment_id: int):
+    """Show the Payment Edit form — used for marking paid or reverting."""
+    session = BrunoSession()
+    try:
+        payment = session.query(Payment).filter_by(id=payment_id).first()
+        if not payment:
+            raise HTTPException(status_code=404, detail=f"Payment {payment_id} not found")
+
+        return templates.TemplateResponse("borrower_payment_edit.html", {
+            "request": request,
+            "payment": payment,
+            "loan": payment.loan,
+            "payment_statuses": [s.value for s in PaymentStatus],
+        })
+    finally:
+        session.close()
+
+
+@router.post("/payments/{payment_id}/edit")
+def borrower_payment_edit_submit(
+    request: Request,
+    payment_id: int,
+    action: str = Form(...),
+    new_status: str = Form(""),
+    paid_date: str = Form(""),
+    paid_amount: float = Form(0.0),
+    bank_reference: str = Form(""),
+    notes_append: str = Form(""),
+):
+    """
+    Process a Payment edit. Two actions:
+    - 'mark_paid': set status (paid/overdue/waived), record paid_date/paid_amount/bank_reference
+    - 'revert': clear paid fields, set status back to scheduled
+    """
+    from datetime import datetime
+    session = BrunoSession()
+    try:
+        payment = session.query(Payment).filter_by(id=payment_id).first()
+        if not payment:
+            raise HTTPException(status_code=404, detail=f"Payment {payment_id} not found")
+
+        loan_id = payment.loan_id
+
+        if action == "revert":
+            payment.status = PaymentStatus.SCHEDULED
+            payment.paid_date = None
+            payment.paid_amount = None
+            payment.bank_reference = None
+            if notes_append.strip():
+                existing = payment.notes or ""
+                payment.notes = (existing + "\n" if existing else "") + f"[REVERTED] {notes_append.strip()}"
+
+        elif action == "mark_paid":
+            status_enum = PaymentStatus(new_status) if new_status else PaymentStatus.PAID
+            payment.status = status_enum
+
+            if status_enum == PaymentStatus.WAIVED:
+                # Waived payments don't need date/amount
+                payment.paid_date = None
+                payment.paid_amount = None
+                payment.bank_reference = None
+            else:
+                if not paid_date:
+                    raise HTTPException(status_code=400, detail="paid_date required for non-waived payments")
+                payment.paid_date = datetime.strptime(paid_date, "%Y-%m-%d").date()
+                payment.paid_amount = paid_amount if paid_amount > 0 else payment.scheduled_amount
+                payment.bank_reference = bank_reference.strip() or None
+
+            if notes_append.strip():
+                existing = payment.notes or ""
+                payment.notes = (existing + "\n" if existing else "") + notes_append.strip()
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+
+        session.commit()
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"payment_edit_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to edit payment: {e}")
+    finally:
+        session.close()

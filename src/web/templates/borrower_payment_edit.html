@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Edit Payment{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500">
+            <a href="/borrower" class="hover:text-gray-300">Borrower</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <a href="/borrower/loans" class="hover:text-gray-300">Loans</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <a href="/borrower/loans/{{ loan.id }}" class="hover:text-gray-300">Loan {{ loan.id }}</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <span class="text-gray-400">Edit Payment</span>
+        </p>
+        <h1 class="text-3xl font-semibold mt-2">Edit Payment</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            <span class="text-gray-300">{{ loan.lender.name }}</span> —
+            scheduled {{ payment.scheduled_date.strftime('%d.%m.%Y') }} for
+            <span class="text-gray-300">{{ "{:,.2f}".format(payment.scheduled_amount) }} {{ loan.currency }}</span>
+        </p>
+        <p class="text-xs text-gray-600 mt-1">
+            Current status:
+            <span class="
+                {% if payment.status.value == 'paid' %}text-green-400
+                {% elif payment.status.value == 'overdue' %}text-red-400
+                {% elif payment.status.value == 'waived' %}text-gray-500
+                {% else %}text-gray-400{% endif %}">{{ payment.status.value }}</span>
+            {% if payment.paid_date %}
+                — paid {{ payment.paid_date.strftime('%d.%m.%Y') }}
+                {% if payment.paid_amount %}for {{ "{:,.2f}".format(payment.paid_amount) }} {{ loan.currency }}{% endif %}
+                {% if payment.bank_reference %}(ref {{ payment.bank_reference }}){% endif %}
+            {% endif %}
+        </p>
+    </div>
+
+    {% if payment.status.value == 'paid' or payment.status.value == 'waived' %}
+    {# ============ Revert form ============ #}
+    <div class="bg-gray-900 border border-yellow-800/50 rounded p-5 mb-4">
+        <div class="text-[10px] uppercase tracking-widest text-yellow-200/80 mb-3">Revert this payment</div>
+        <p class="text-sm text-gray-400 mb-4">
+            This payment is currently marked <span class="text-gray-300">{{ payment.status.value }}</span>.
+            Reverting clears the paid date, amount, and reference, returning it to scheduled status.
+            Use this if the payment was recorded incorrectly or was reversed by the bank.
+        </p>
+        <form method="POST" action="/borrower/payments/{{ payment.id }}/edit" class="space-y-3">
+            <input type="hidden" name="action" value="revert">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Reason for revert (appended to notes)</label>
+                <textarea name="notes_append" rows="2" placeholder="e.g., 'bank reversed transaction', 'matched wrong payment'"
+                          class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none"></textarea>
+            </div>
+            <div class="flex justify-end">
+                <button type="submit" class="bg-yellow-700 hover:bg-yellow-600 text-yellow-50 font-medium px-4 py-2 rounded text-sm">
+                    Revert to Scheduled
+                </button>
+            </div>
+        </form>
+    </div>
+    {% endif %}
+
+    {% if payment.status.value != 'paid' and payment.status.value != 'waived' %}
+    {# ============ Mark-paid form ============ #}
+    <form method="POST" action="/borrower/payments/{{ payment.id }}/edit" class="space-y-6">
+        <input type="hidden" name="action" value="mark_paid">
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-5">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-4">Mark Payment Paid</div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">New Status <span class="text-red-400">*</span></label>
+                    <select name="new_status" required class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        <option value="paid" selected>paid</option>
+                        <option value="overdue">overdue</option>
+                        <option value="waived">waived (no payment expected)</option>
+                        <option value="cancelled">cancelled</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Paid Date</label>
+                    <input type="date" name="paid_date" value="{{ payment.scheduled_date.strftime('%Y-%m-%d') }}"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                    <p class="text-xs text-gray-600 mt-1">Defaulted to scheduled date. Override if actual payment differs.</p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Paid Amount</label>
+                    <input type="number" name="paid_amount" step="0.01" min="0" value="{{ "{:.2f}".format(payment.scheduled_amount) }}"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums focus:border-amber-300/50 focus:outline-none">
+                    <p class="text-xs text-gray-600 mt-1">In {{ loan.currency }}. Defaulted to scheduled amount.</p>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Bank Reference</label>
+                    <input type="text" name="bank_reference" placeholder="LHV transaction ID"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm font-mono tabular-nums focus:border-amber-300/50 focus:outline-none">
+                </div>
+            </div>
+
+            <div class="mt-4">
+                <label class="block text-xs text-gray-400 mb-1">Notes</label>
+                <textarea name="notes_append" rows="2" placeholder="Optional notes (appended to existing notes)"
+                          class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none"></textarea>
+            </div>
+        </div>
+
+        <div class="flex justify-between items-center pt-2">
+            <a href="/borrower/loans/{{ loan.id }}" class="text-sm text-gray-400 hover:text-gray-300">&larr; Cancel</a>
+            <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-5 py-2 rounded text-sm">
+                Save
+            </button>
+        </div>
+
+    </form>
+    {% endif %}
+
+</div>
+{% endblock %}

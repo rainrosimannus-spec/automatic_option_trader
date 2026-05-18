@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — New Movement{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500">
+            <a href="/borrower" class="hover:text-gray-300">Borrower</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <a href="/borrower/loans" class="hover:text-gray-300">Loans</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <a href="/borrower/loans/{{ loan.id }}" class="hover:text-gray-300">Loan {{ loan.id }}</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <span class="text-gray-400">Add Movement</span>
+        </p>
+        <h1 class="text-3xl font-semibold mt-2">Add Movement</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            Record a bank transaction or paper adjustment for
+            <span class="text-gray-300">{{ loan.lender.name }}</span> —
+            <span class="text-gray-500">{{ loan.contract_reference }}</span>
+        </p>
+    </div>
+
+    <form method="POST" action="/borrower/loans/{{ loan.id }}/movements-new" class="space-y-6">
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-5">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-4">Movement Details</div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Movement Type <span class="text-red-400">*</span></label>
+                    <select name="movement_type" required class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        <option value="">Select type...</option>
+                        {% for t in movement_types %}
+                        <option value="{{ t }}">{{ t | replace('_', ' ') }}</option>
+                        {% endfor %}
+                    </select>
+                    <p class="text-xs text-gray-600 mt-1">
+                        Disbursement = money in to MesiCap. Repayment = money out to lender.
+                        Restructure = paper adjustment (e.g. premium added).
+                    </p>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Movement Date <span class="text-red-400">*</span></label>
+                    <input type="date" name="movement_date" required
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Amount <span class="text-red-400">*</span></label>
+                    <input type="number" name="amount" required step="0.01" min="0" placeholder="0.00"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums focus:border-amber-300/50 focus:outline-none">
+                    <p class="text-xs text-gray-600 mt-1">Positive number. Direction comes from the movement type.</p>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Currency <span class="text-red-400">*</span></label>
+                    <input type="text" name="currency" required value="{{ loan.currency }}" maxlength="3"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm font-mono focus:border-amber-300/50 focus:outline-none">
+                    <p class="text-xs text-gray-600 mt-1">Must match the loan's currency ({{ loan.currency }}).</p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Bank Reference</label>
+                    <input type="text" name="bank_reference" placeholder="LHV transaction ID"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm font-mono tabular-nums focus:border-amber-300/50 focus:outline-none">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Bank Account IBAN</label>
+                    <input type="text" name="bank_account_iban" placeholder="EE..."
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm font-mono focus:border-amber-300/50 focus:outline-none">
+                </div>
+            </div>
+
+            <div class="mt-4">
+                <label class="block text-xs text-gray-400 mb-1">Description</label>
+                <textarea name="description" rows="2" placeholder="Free-form description (e.g., 'Monthly tranche per master agreement')"
+                          class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none"></textarea>
+            </div>
+        </div>
+
+        <div class="flex justify-between items-center pt-2">
+            <a href="/borrower/loans/{{ loan.id }}" class="text-sm text-gray-400 hover:text-gray-300">&larr; Cancel</a>
+            <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-5 py-2 rounded text-sm">
+                Add Movement
+            </button>
+        </div>
+
+    </form>
+</div>
+{% endblock %}
