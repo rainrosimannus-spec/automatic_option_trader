@@ -194,7 +194,7 @@ def create_suggestion(
     Returns the suggestion if valid, None if rejected by safety rules.
     """
     # Quick safety check on action
-    if action in FORBIDDEN_ACTIONS:
+    if action in FORBIDDEN_ACTIONS and not (action == "sell_stock" and source == "wheel_exit"):
         log.warning("suggestion_blocked_forbidden", symbol=symbol, action=action)
         return None
 
