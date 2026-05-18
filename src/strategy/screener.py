@@ -16,7 +16,7 @@ from ib_insync import Option as IBOption
 
 from src.broker.market_data import get_put_contracts, get_call_contracts, get_stock_price
 from src.broker.greeks import compute_put_greeks, compute_call_greeks, get_current_iv
-from src.broker.connection import get_ib
+from src.broker.connection import get_ib, get_ib_lock
 from src.core.config import get_settings
 from src.core.logger import get_logger
 
@@ -264,9 +264,10 @@ def screen_puts(
     for idx, candidate in enumerate(sorted_candidates):
         try:
             ib = get_ib()
-            ticker = ib.reqMktData(candidate.contract, "", True, False)
-            ib.sleep(2)
-            ib.cancelMktData(candidate.contract)
+            with get_ib_lock():
+                ticker = ib.reqMktData(candidate.contract, "", True, False)
+                ib.sleep(2)
+                ib.cancelMktData(candidate.contract)
 
             real_bid = ticker.bid
             real_ask = ticker.ask
@@ -435,9 +436,10 @@ def screen_calls(
     for idx, candidate in enumerate(sorted_candidates):
         try:
             ib = get_ib()
-            ticker = ib.reqMktData(candidate.contract, "", True, False)
-            ib.sleep(2)
-            ib.cancelMktData(candidate.contract)
+            with get_ib_lock():
+                ticker = ib.reqMktData(candidate.contract, "", True, False)
+                ib.sleep(2)
+                ib.cancelMktData(candidate.contract)
 
             real_bid = ticker.bid
             real_ask = ticker.ask

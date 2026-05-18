@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Optional
 
 from src.core.logger import get_logger
+from src.broker.connection import get_ib_lock
 
 log = get_logger(__name__)
 
@@ -180,19 +181,21 @@ def get_current_iv(
 
     try:
         contract = _make_stock_contract(symbol, exchange, currency)
-        ib.qualifyContracts(contract)
-        contract.exchange = "SMART"
 
-        bars = ib.reqHistoricalData(
-            contract,
-            endDateTime="",
-            durationStr="5 D",
-            barSizeSetting="1 day",
-            whatToShow="OPTION_IMPLIED_VOLATILITY",
-            useRTH=False,
-            formatDate=1,
-            timeout=10,
-        )
+        with get_ib_lock():
+            ib.qualifyContracts(contract)
+            contract.exchange = "SMART"
+
+            bars = ib.reqHistoricalData(
+                contract,
+                endDateTime="",
+                durationStr="5 D",
+                barSizeSetting="1 day",
+                whatToShow="OPTION_IMPLIED_VOLATILITY",
+                useRTH=False,
+                formatDate=1,
+                timeout=10,
+            )
 
         if bars:
             # Use the most recent IV value

@@ -108,7 +108,7 @@ class PutSeller:
                     else:
                         # If a symbol took >10 seconds and returned None,
                         # it's likely a timeout/connection issue
-                        if _time.time() - sym_start > 10:
+                        if _time.time() - sym_start > 25:
                             consecutive_failures += 1
                         else:
                             consecutive_failures = 0
