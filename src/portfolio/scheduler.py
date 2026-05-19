@@ -1451,6 +1451,8 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
     watchlist stocks regardless of whether option trader or portfolio
     manager initiated the trade.
     """
+    from src.portfolio.connection import _ensure_event_loop as _ensure_portfolio_event_loop
+    _ensure_portfolio_event_loop()
 
     if not cfg.enabled:
         return

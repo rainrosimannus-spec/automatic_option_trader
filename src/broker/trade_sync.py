@@ -544,16 +544,50 @@ def sync_ibkr_positions() -> int:
                              symbol=pos.symbol, strike=pos.strike, expiry=pos.expiry)
                     tracked_keys.add(key)
                     continue
-                # If stock appeared in account, this is an assignment — let wheel handle it
-                # Do NOT mark expired here or the wheel will never see it
-                if ibkr_stock_positions.get(pos.symbol, 0) >= 100 * pos.quantity:
+                # Short put assignment: put vanishes, stock appears. Defer so the
+                # wheel can transition put → stock + covered-call. Calls don't get
+                # "secretly assigned" via stock — covered calls always have stock
+                # behind them, so stock-presence isn't evidence the call is open.
+                if pos.position_type == "short_put" and \
+                   ibkr_stock_positions.get(pos.symbol, 0) >= 100 * pos.quantity:
                     log.info("position_sync_skipped_assignment",
                              symbol=pos.symbol, strike=pos.strike,
                              stock_qty=ibkr_stock_positions.get(pos.symbol, 0))
                     tracked_keys.add(key)
                     continue
-                pos.status = PositionStatus.EXPIRED
-                pos.closed_at = datetime.utcnow()
+
+                # Decide CLOSED vs EXPIRED vs defer from authoritative signals:
+                #   - closing fill (BUY_*) present  → CLOSED at fill time
+                #   - past expiry                   → EXPIRED
+                #   - neither yet                   → defer one cycle (sync race)
+                from datetime import date as _date
+                closing_type = TradeType.BUY_PUT if "put" in pos.position_type else TradeType.BUY_CALL
+                closing_fill = (
+                    db.query(Trade)
+                    .filter(
+                        Trade.symbol == pos.symbol,
+                        Trade.strike == pos.strike,
+                        Trade.expiry == pos.expiry,
+                        Trade.trade_type == closing_type,
+                        Trade.order_status == OrderStatus.FILLED,
+                        Trade.created_at >= pos.opened_at,
+                    )
+                    .order_by(Trade.created_at.desc())
+                    .first()
+                )
+                expiry_passed = bool(pos.expiry) and pos.expiry < _date.today().strftime("%Y%m%d")
+
+                if closing_fill:
+                    pos.status = PositionStatus.CLOSED
+                    pos.closed_at = closing_fill.created_at
+                elif expiry_passed:
+                    pos.status = PositionStatus.EXPIRED
+                    pos.closed_at = datetime.utcnow()
+                else:
+                    log.info("position_close_deferred_no_fill",
+                             symbol=pos.symbol, strike=pos.strike, expiry=pos.expiry)
+                    tracked_keys.add(key)
+                    continue
 
                 # Calculate realized PnL from trades for this position
                 pos_trades = db.query(Trade).filter(
@@ -571,9 +605,9 @@ def sync_ibkr_positions() -> int:
                 pos.realized_pnl = round(realized, 2)
 
                 changes += 1
-                log.info("position_expired_by_sync",
-                         symbol=pos.symbol, strike=pos.strike,
-                         expiry=pos.expiry, realized_pnl=pos.realized_pnl)
+                log.info("position_closed_by_sync",
+                         symbol=pos.symbol, strike=pos.strike, expiry=pos.expiry,
+                         status=pos.status.value, realized_pnl=pos.realized_pnl)
 
         # Close stock positions no longer in IBKR.
         # Realized P&L is computed from BUY_STOCK and SELL_STOCK trades only.

@@ -159,14 +159,14 @@ class PutSeller:
             return None
         if tier == "low":
             if currency == "USD":
-                return (tiers.low_vix["dte_min_usd"], tiers.low_vix["dte_max_usd"])
+                return (tiers.low_vix.dte_min_usd, tiers.low_vix.dte_max_usd)
             else:
-                return (tiers.low_vix["dte_min_other"], tiers.low_vix["dte_max_other"])
+                return (tiers.low_vix.dte_min_other, tiers.low_vix.dte_max_other)
         # mid tier (tier == "mid" or escalated from low)
         if currency == "USD":
-            return (tiers.mid_vix["dte_min_usd"], tiers.mid_vix["dte_max_usd"])
+            return (tiers.mid_vix.dte_min_usd, tiers.mid_vix.dte_max_usd)
         else:
-            return (tiers.mid_vix["dte_min_other"], tiers.mid_vix["dte_max_other"])
+            return (tiers.mid_vix.dte_min_other, tiers.mid_vix.dte_max_other)
 
     def _evaluate_symbol(self, symbol: str, current_vix: float | None, market: str | None = None) -> dict | None:
         """Evaluate a symbol for put-selling. Returns candidate dict or None."""
