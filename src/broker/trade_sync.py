@@ -68,18 +68,25 @@ def sync_ibkr_trades() -> int:
         pass
 
     try:
-        # First try fills() which returns cached fills from this session
-        fills = ib.fills()
-
-        # If empty, request executions explicitly
-        if not fills:
-            from ib_insync import ExecutionFilter
-            exec_filter = ExecutionFilter()
-            if account_id:
-                exec_filter.acctCode = account_id
-            ib.reqExecutions(exec_filter)
-            ib.sleep(3)
+        # All IB calls must run inside _ib_lock so they serialize against
+        # the portfolio screener (which also takes _ib_lock for shared-loop
+        # serialization — see tools/screen_universe.py). Without this, the
+        # 15-min trade_sync cron races the screener's self.ib.sleep(3) on the
+        # shared asyncio loop and corrupts both calls with "event loop is
+        # already running".
+        with get_ib_lock():
+            # First try fills() which returns cached fills from this session
             fills = ib.fills()
+
+            # If empty, request executions explicitly
+            if not fills:
+                from ib_insync import ExecutionFilter
+                exec_filter = ExecutionFilter()
+                if account_id:
+                    exec_filter.acctCode = account_id
+                ib.reqExecutions(exec_filter)
+                ib.sleep(3)
+                fills = ib.fills()
 
         # Filter to our account only (TWS may return fills from other accounts)
         if fills and account_id:
@@ -375,7 +382,8 @@ def sync_ibkr_trades_extended() -> int:
 
     try:
         # ib.trades() returns Trade objects for orders placed in this session
-        open_trades = ib.trades()
+        with get_ib_lock():
+            open_trades = ib.trades()
         with get_db() as db:
             existing_ids = {
                 row[0] for row in
@@ -468,7 +476,8 @@ def sync_ibkr_positions() -> int:
     account_id = cfg.ibkr.account if cfg else ""
 
     try:
-        portfolio_items = ib.portfolio()
+        with get_ib_lock():
+            portfolio_items = ib.portfolio()
     except Exception as e:
         log.error("position_sync_fetch_error", error=str(e))
         return 0

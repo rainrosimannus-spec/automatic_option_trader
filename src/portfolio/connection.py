@@ -419,7 +419,10 @@ def refresh_brkb_history(ib: IB):
     try:
         from ib_insync import Stock as _Stock
         _brkb = _Stock("BRK B", "SMART", "USD")
-        with _portfolio_lock:
+        # get_portfolio_lock() (not bare _portfolio_lock) so this serializes
+        # against the screener on the shared asyncio loop in merged mode,
+        # in the canonical ib_lock -> _portfolio_lock order.
+        with get_portfolio_lock():
             _bars = ib.reqHistoricalData(
                 _brkb, endDateTime="",
                 durationStr="365 D", barSizeSetting="1 day",
@@ -479,7 +482,9 @@ def refresh_portfolio_open_orders_cache() -> None:
         if not is_portfolio_connected():
             return  # preserve existing cache — don't wipe on transient disconnect
         ib = get_portfolio_ib()
-        with _portfolio_lock:
+        # get_portfolio_lock() serializes against the screener on the shared
+        # asyncio loop in merged mode (ib_lock -> _portfolio_lock order).
+        with get_portfolio_lock():
             positions = ib.positions()
         new_cache = []
         for pos in positions:
@@ -533,7 +538,9 @@ def refresh_portfolio_pending_orders_cache() -> None:
         if not is_portfolio_connected():
             return
         ib = get_portfolio_ib()
-        with _portfolio_lock:
+        # get_portfolio_lock() serializes against the screener on the shared
+        # asyncio loop in merged mode (ib_lock -> _portfolio_lock order).
+        with get_portfolio_lock():
             ib.reqAllOpenOrders()
             ib.sleep(2)
             trades = ib.openTrades()
