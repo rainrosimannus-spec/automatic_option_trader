@@ -3163,6 +3163,7 @@ class UniverseScreener:
         contract = Stock(symbol, exchange, currency)
         qualified = self.ib.qualifyContracts(contract)
         if not qualified:
+            print(f"  🔎 {symbol}: qualifyContracts returned empty -> None")
             return None
 
         score = StockScore(symbol=symbol, exchange=exchange, currency=currency)
@@ -3192,9 +3193,10 @@ class UniverseScreener:
                     if data and isinstance(data, list) and data[0].get("price"):
                         price = float(data[0]["price"])
                         print(f"  ℹ️  {symbol}: using FMP price ${price:.2f} (IBKR returned no data)")
-            except Exception:
-                pass
+            except Exception as _fmp_e:
+                print(f"  🔎 {symbol}: FMP price fallback exception: {type(_fmp_e).__name__}: {_fmp_e}")
         if not price or price <= 0:
+            print(f"  🔎 {symbol}: no price from IBKR or FMP -> None (final price={price})")
             return None
         # IBKR reports GBP stock prices in pence — convert to pounds
         # (same convention as src/broker/trade_sync.py:318-321)
