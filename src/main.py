@@ -614,20 +614,68 @@ def main():
     except Exception as e:
         log.warning("alerts_init_failed", error=str(e))
 
+    # Start the web dashboard BEFORE attempting any IBKR connects. A
+    # healthcheck probe of GET / can fire while the IBKR connects below
+    # stall for 2-3 min waiting on slow gateway / 2FA; if the dashboard
+    # were started after those connects it would be unreachable when
+    # probed and the trader could be killed — exactly the restart loop
+    # we want to avoid. Routes call get_ib() / get_portfolio_ib() lazily
+    # and surface "IBKR Offline" when those raise, so the dashboard works
+    # fine in IBKR-disconnected mode.
+    app = create_app()
+    web_thread = threading.Thread(
+        target=uvicorn.run,
+        kwargs=dict(
+            app=app,
+            host=settings.web.host,
+            port=settings.web.port,
+            log_level="warning",
+        ),
+        daemon=True,
+    )
+    web_thread.start()
+    log.info("web_dashboard_started", port=settings.web.port)
+
+    # Connect to IBKR. Both gateways may take 30-90s after systemd starts
+    # the unit (IBC authentication + 2FA approval), so a one-shot port
+    # probe at startup loses the race when we sync `--gateways` + trader
+    # together. We retry up to 2 minutes here; after that the periodic
+    # IBKR Health Check job (job_health_check / job_portfolio_health_check)
+    # keeps trying at its 5-min cadence, so a longer delay still recovers
+    # — just slower.
+    def _connect_with_retries(label, port_open_fn, connect_fn,
+                               max_wait_s=120, interval_s=10):
+        import time as _t
+        deadline = _t.time() + max_wait_s
+        attempt = 0
+        last_err = None
+        while _t.time() < deadline:
+            attempt += 1
+            if port_open_fn():
+                try:
+                    return connect_fn()
+                except Exception as e:
+                    last_err = e
+                    log.warning(f"{label}_connect_attempt_failed",
+                                 attempt=attempt, error=str(e))
+            else:
+                log.info(f"{label}_port_not_open_waiting", attempt=attempt)
+            _t.sleep(interval_s)
+        log.warning(f"{label}_not_ready_after_startup_retries",
+                     waited_s=max_wait_s,
+                     last_error=str(last_err) if last_err else None,
+                     msg="periodic health-check job will keep trying")
+        return None
+
     # Connect to IBKR (Options Trader account)
     from src.broker.connection import is_port_open
-    if is_port_open(settings.ibkr.host, settings.ibkr.port):
-        try:
-            ib = initial_connect()
-            log.info("ibkr_ready", accounts=ib.managedAccounts())
-        except Exception as e:
-            log.error("ibkr_connection_failed", error=str(e))
-            log.warning("starting_without_broker_connection")
-    else:
-        log.warning("options_tws_not_running",
-                     port=settings.ibkr.port,
-                     msg=f"Options Trader TWS not found on port {settings.ibkr.port} — "
-                         f"options trading disabled until TWS is started")
+    ib = _connect_with_retries(
+        "options_tws",
+        lambda: is_port_open(settings.ibkr.host, settings.ibkr.port),
+        initial_connect,
+    )
+    if ib is not None:
+        log.info("ibkr_ready", accounts=ib.managedAccounts())
 
     # Load portfolio watchlist from YAML into database
     try:
@@ -648,38 +696,19 @@ def main():
     except Exception as e:
         log.warning("ipo_watchlist_seed_failed", error=str(e))
 
-    # Connect to IBKR (Portfolio account)
+    # Connect to IBKR (Portfolio account) — same retry envelope as the
+    # options trader connect above. job_portfolio_health_check keeps
+    # trying at its periodic cadence after this returns.
     from src.portfolio.connection import initial_connect_portfolio, is_portfolio_connected
     from src.portfolio.connection import _is_port_open as _portfolio_port_open
     portfolio_cfg = settings.portfolio
-    if _portfolio_port_open(portfolio_cfg.ibkr_host, portfolio_cfg.ibkr_port):
-        try:
-            initial_connect_portfolio()
-            log.info("portfolio_ibkr_ready")
-        except Exception as e:
-            log.error("portfolio_connection_failed", error=str(e))
-            log.warning("starting_without_portfolio_connection")
-    else:
-        log.warning("portfolio_tws_not_running",
-                     port=portfolio_cfg.ibkr_port,
-                     msg=f"Portfolio TWS not found on port {portfolio_cfg.ibkr_port} — "
-                         f"portfolio disabled until TWS is started")
-
-    # Start web dashboard immediately in background thread
-    # so dashboard is available right away without waiting for scheduler
-    app = create_app()
-    web_thread = threading.Thread(
-        target=uvicorn.run,
-        kwargs=dict(
-            app=app,
-            host=settings.web.host,
-            port=settings.web.port,
-            log_level="warning",
-        ),
-        daemon=True,
+    portfolio_ib = _connect_with_retries(
+        "portfolio_tws",
+        lambda: _portfolio_port_open(portfolio_cfg.ibkr_host, portfolio_cfg.ibkr_port),
+        initial_connect_portfolio,
     )
-    web_thread.start()
-    log.info("web_dashboard_started", port=settings.web.port)
+    if portfolio_ib is not None:
+        log.info("portfolio_ibkr_ready")
 
     # Start scheduler
     scheduler = create_scheduler()
