@@ -202,6 +202,166 @@ class WheelManager:
         put_pos.closed_at = datetime.utcnow()
         put_pos.realized_pnl = put_pos.total_premium_collected
 
+    def check_pre_market_exit(self) -> list[str]:
+        """
+        Pre-market wheel-exit check.
+
+        For each currently-uncovered wheel stock position, fetch a live
+        quote and create a sell_stock suggestion if the mid-price is at
+        or above (assignment_strike + sell_fee_per_share).
+
+        Threshold uses the original ASSIGNMENT trade's strike — not the
+        stored cost_basis (which is strike - premium). Reading 1: the rule
+        fires at "called away" level. CC premium accumulated during the
+        wheel is bonus, not part of the exit threshold.
+
+        Quote validation: requires a two-sided quote with bid > 0,
+        ask > 0, and (ask - bid) / mid < 2% to reject phantom oddlot
+        pre-market quotes.
+
+        Returns list of symbols where a suggestion was created.
+        """
+        if not self.cfg.wheel_enabled:
+            return []
+
+        from src.core.config import get_settings as _gs
+        from src.core.suggestions import create_suggestion
+        from src.broker.market_data import get_stock_live_quote
+        from src.core.models import Trade, TradeType, OrderStatus
+
+        sell_fee = _gs().risk.wheel_sell_fee_per_share
+        fired: list[str] = []
+
+        log.info("wheel_exit_scan_started")
+
+        with get_db() as db:
+            stock_positions = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "stock",
+                    Position.is_wheel == True,
+                )
+                .all()
+            )
+
+            from src.broker.orders import get_cached_open_orders
+            open_orders = get_cached_open_orders()
+
+            symbols_seen = set()
+            for stock_pos in stock_positions:
+                symbol = stock_pos.symbol
+                if symbol in symbols_seen:
+                    continue
+                symbols_seen.add(symbol)
+
+                # Same uncovered-detection logic as write_covered_calls
+                all_stock = db.query(Position).filter(
+                    Position.symbol == symbol,
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "stock",
+                    Position.is_wheel == True,
+                ).all()
+                total_shares = sum(p.quantity for p in all_stock)
+                lots_needed = total_shares // 100
+
+                open_calls = db.query(Position).filter(
+                    Position.symbol == symbol,
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "covered_call",
+                ).all()
+                covered_contracts = sum(p.quantity for p in open_calls)
+
+                from datetime import date as _date
+                today_str = _date.today().strftime("%Y-%m-%d")
+                filled_calls_today = db.query(Trade).filter(
+                    Trade.symbol == symbol,
+                    Trade.trade_type == TradeType.SELL_CALL,
+                    Trade.order_status == OrderStatus.FILLED,
+                    Trade.created_at >= today_str,
+                ).count()
+                covered_contracts += filled_calls_today
+
+                pending_contracts = sum(
+                    o.get("qty", 0) for o in open_orders
+                    if o.get("symbol") == symbol and o.get("right") == "C"
+                )
+                from src.core.suggestions import TradeSuggestion
+                pending_db = db.query(TradeSuggestion).filter(
+                    TradeSuggestion.symbol == symbol,
+                    TradeSuggestion.action == "sell_covered_call",
+                    TradeSuggestion.status == "submitted",
+                ).count()
+                pending_contracts += pending_db
+
+                lots_to_cover = lots_needed - covered_contracts - pending_contracts
+                if lots_to_cover <= 0:
+                    continue  # has CC coverage — wheel handles this
+
+                # Recover assignment strike from the ASSIGNMENT trade
+                assignment_trade = db.query(Trade).filter(
+                    Trade.symbol == symbol,
+                    Trade.trade_type == TradeType.ASSIGNMENT,
+                ).order_by(Trade.created_at.desc()).first()
+
+                if not assignment_trade or not assignment_trade.strike:
+                    log.warning("wheel_exit_no_assignment_strike",
+                                symbol=symbol,
+                                note="cannot compute threshold without strike")
+                    continue
+
+                strike = assignment_trade.strike
+                threshold = strike + sell_fee
+
+                # Fetch live quote with bid/ask/last
+                quote = get_stock_live_quote(symbol)
+                if quote is None:
+                    log.info("wheel_exit_no_quote", symbol=symbol)
+                    continue
+
+                bid, ask, last = quote
+                mid = (bid + ask) / 2
+                spread_pct = (ask - bid) / mid if mid > 0 else 1.0
+
+                if spread_pct >= 0.02:
+                    log.info("wheel_exit_spread_too_wide",
+                             symbol=symbol, bid=bid, ask=ask,
+                             spread_pct=round(spread_pct, 4))
+                    continue
+
+                if mid < threshold:
+                    log.info("wheel_exit_below_threshold",
+                             symbol=symbol, mid=round(mid, 2),
+                             threshold=round(threshold, 2),
+                             strike=strike)
+                    continue
+
+                # Conditions met — create suggestion
+                create_suggestion(
+                    symbol=symbol,
+                    action="sell_stock",
+                    quantity=total_shares,
+                    limit_price=bid,  # conservative — guarantees fill at bid or better
+                    source="wheel_exit",
+                    signal=f"mid={round(mid, 2)} strike={strike} fee={sell_fee}",
+                    rationale=(
+                        f"Pre-market exit opportunity: mid ${round(mid, 2)} "
+                        f">= strike ${strike} + fee ${sell_fee}. "
+                        f"Sell {total_shares} shares of {symbol} to exit wheel "
+                        f"at or above called-away level."
+                    ),
+                    current_price=mid,
+                    order_type="LMT",
+                    funding_source="wheel",
+                )
+                log.info("wheel_exit_suggestion_fired",
+                         symbol=symbol, mid=round(mid, 2),
+                         strike=strike, shares=total_shares)
+                fired.append(symbol)
+
+        log.info("wheel_exit_scan_completed", symbols=fired)
+        return fired
+
     def write_covered_calls(self) -> list[str]:
         """
         For all stock positions from assignments, write covered calls.

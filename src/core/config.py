@@ -145,6 +145,7 @@ class RiskConfig(BaseModel):
     wheel_exit_delta_max: float = 0.55            # accepts deeper ITM than normal 0.45
     wheel_exit_margin_rate_annual: float = 0.07   # margin interest rate for surcharge in min_strike
     wheel_cc_profit_threshold: float = 0.80       # close CC when (entry - ask)/entry >= this (80% profit)
+    wheel_sell_fee_per_share: float = 0.04        # per-share sell commission used in pre-market exit threshold
 
 
 class ScheduleConfig(BaseModel):

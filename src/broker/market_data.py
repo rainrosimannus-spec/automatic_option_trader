@@ -748,6 +748,51 @@ def get_stock_live_price(
         log.debug("stock_live_price_error", symbol=symbol, error=str(e))
         return None
 
+
+def get_stock_live_quote(
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+) -> Optional[tuple[float, float, Optional[float]]]:
+    """
+    Fetch live bid/ask/last for a stock from IBKR using reqMktData.
+    Returns (bid, ask, last) tuple, or None if no valid two-sided quote.
+
+    Companion to get_stock_live_price() which returns a single price.
+    This helper preserves bid/ask separately so callers can validate spreads
+    (e.g., pre-market wheel-exit job rejecting wide-spread phantom quotes).
+
+    Requires both bid > 0 AND ask > 0 to return a result. Single-sided quotes
+    (e.g., illiquid pre-market with bid only) return None.
+    """
+    try:
+        from src.broker.connection import get_ib_lock
+        _ensure_market_data_type()
+        with get_ib_lock():
+            ib = get_ib()
+            contract = Stock(symbol, exchange, currency)
+            ib.qualifyContracts(contract)
+            ticker = ib.reqMktData(contract, "", False, False)
+            ib.sleep(3)
+            ib.cancelMktData(contract)
+
+            bid = ticker.bid if ticker.bid and ticker.bid > 0 else None
+            ask = ticker.ask if ticker.ask and ticker.ask > 0 else None
+            last = ticker.last if ticker.last and ticker.last > 0 else None
+
+            if bid is None or ask is None:
+                log.debug("stock_live_quote_no_two_sided", symbol=symbol,
+                          bid=bid, ask=ask, last=last)
+                return None
+
+            log.debug("stock_live_quote_fetched", symbol=symbol,
+                      bid=bid, ask=ask, last=last)
+            return (bid, ask, last)
+    except Exception as e:
+        log.debug("stock_live_quote_error", symbol=symbol, error=str(e))
+        return None
+
+
 def get_option_live_price(
     symbol: str,
     expiry: str,

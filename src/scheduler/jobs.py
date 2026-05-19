@@ -810,6 +810,33 @@ def job_premarket_regime_check():
     except Exception as e:
         log.error("premarket_regime_error", error=str(e))
 
+
+def job_wheel_exit_check():
+    """🎯  Pre-market wheel-exit check.
+
+    For each uncovered wheel stock position, fetch a live quote and create a
+    sell_stock suggestion if the mid-price >= assignment_strike + sell_fee.
+
+    Runs at 15-min intervals 07:30-09:15 ET pre-market, plus a 09:35 ET RTH
+    safety net. Only fires for wheel stocks without an open covered call.
+    """
+    _ensure_event_loop()
+
+    try:
+        universe = UniverseManager()
+        risk = RiskManager(universe)
+        wheel = WheelManager(risk, universe)
+        fired = wheel.check_pre_market_exit()
+
+        if fired:
+            log.info("wheel_exit_check_completed", symbols=fired, count=len(fired))
+        else:
+            log.debug("wheel_exit_check_no_suggestions")
+
+    except Exception as e:
+        log.error("wheel_exit_check_error", error=str(e))
+
+
 def job_heartbeat():
     """💚 Daily heartbeat — proof of life sent every morning.
     If you stop receiving this, something is wrong."""
@@ -1219,6 +1246,42 @@ def create_scheduler() -> BackgroundScheduler:
         CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone=us_tz),
         id="premarket_regime",
         name="Pre-Market Regime Check",
+        max_instances=1,
+    )
+
+    # ── Wheel-exit check — pre-market 07:30/45 ET ──
+    scheduler.add_job(
+        job_wheel_exit_check,
+        CronTrigger(hour=7, minute="30,45", day_of_week="mon-fri", timezone=us_tz),
+        id="wheel_exit_check_premarket_early",
+        name="Wheel Exit Check (Pre-market early)",
+        max_instances=1,
+    )
+
+    # ── Wheel-exit check — pre-market 08:00-08:45 ET ──
+    scheduler.add_job(
+        job_wheel_exit_check,
+        CronTrigger(hour=8, minute="0,15,30,45", day_of_week="mon-fri", timezone=us_tz),
+        id="wheel_exit_check_premarket_mid",
+        name="Wheel Exit Check (Pre-market mid)",
+        max_instances=1,
+    )
+
+    # ── Wheel-exit check — pre-market 09:00/15 ET ──
+    scheduler.add_job(
+        job_wheel_exit_check,
+        CronTrigger(hour=9, minute="0,15", day_of_week="mon-fri", timezone=us_tz),
+        id="wheel_exit_check_premarket_late",
+        name="Wheel Exit Check (Pre-market late)",
+        max_instances=1,
+    )
+
+    # ── Wheel-exit check — 09:35 ET RTH safety net ──
+    scheduler.add_job(
+        job_wheel_exit_check,
+        CronTrigger(hour=9, minute=35, day_of_week="mon-fri", timezone=us_tz),
+        id="wheel_exit_check_rth",
+        name="Wheel Exit Check (RTH safety net)",
         max_instances=1,
     )
 
