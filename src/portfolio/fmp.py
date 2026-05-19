@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import time
+import threading
 import requests
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from src.core.logger import get_logger
@@ -208,3 +210,178 @@ def clear_cache(symbol: str = None) -> None:
         cache.pop(symbol, None)
         _save_cache(cache)
         log.info("fmp_cache_cleared_symbol", symbol=symbol)
+
+
+# ── Earnings calendar (bulk refresh + per-symbol lookup) ──────────────
+# Ported from son's 1cf5ef0 (MildConcussion/mesicap_trader) and adapted
+# to the father's existing EarningsCache schema (`status` field; no `source`
+# column). FMP is the sole earnings data source post-port — the IBKR
+# CalendarReport path is dead on these gateways (Error 10276 'News feed
+# is not allowed' verified 2026-05-19).
+
+_EARNINGS_REFRESH_TTL_HOURS = 24
+_EARNINGS_REFRESH_KEY = "earnings_calendar_last_refresh"
+_EARNINGS_REFRESH_LOCK = threading.Lock()
+_FMP_PAGE_LIMIT = 4000  # per FMP docs
+
+
+def _earnings_get_last_refresh() -> Optional[datetime]:
+    try:
+        from src.core.database import get_db
+        from src.core.models import SystemState
+        with get_db() as session:
+            row = session.get(SystemState, _EARNINGS_REFRESH_KEY)
+            if row is None or not row.value:
+                return None
+            return datetime.fromisoformat(row.value)
+    except Exception as e:
+        log.debug("earnings_refresh_state_read_failed", error=str(e))
+        return None
+
+
+def _earnings_set_last_refresh(dt: datetime) -> None:
+    try:
+        from src.core.database import get_db
+        from src.core.models import SystemState
+        with get_db() as session:
+            row = session.get(SystemState, _EARNINGS_REFRESH_KEY)
+            if row is None:
+                row = SystemState(key=_EARNINGS_REFRESH_KEY, value=dt.isoformat())
+                session.add(row)
+            else:
+                row.value = dt.isoformat()
+    except Exception as e:
+        log.warning("earnings_refresh_state_write_failed", error=str(e))
+
+
+def _fetch_earnings_page(from_date: date, to_date: date, page: int) -> Optional[list]:
+    """Single FMP earnings-calendar page request. Returns [] on success-empty,
+    None on failure (so caller can distinguish)."""
+    key = get_fmp_key()
+    if not key:
+        log.error("fmp_api_key_missing")
+        return None
+    try:
+        params = {
+            "from": from_date.isoformat(),
+            "to": to_date.isoformat(),
+            "page": page,
+            "apikey": key,
+        }
+        resp = requests.get(f"{FMP_BASE}/earnings-calendar", params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        log.warning("fmp_earnings_calendar_request_failed",
+                     page=page, error=str(e))
+        return None
+
+
+def refresh_earnings_calendar(days_ahead: int = 7, force: bool = False) -> bool:
+    """Bulk-fetch FMP earnings-calendar for the next `days_ahead` days and
+    repopulate the earnings_cache table. Returns True on success.
+
+    Default 7 days = gate's `earnings_avoid_days` (3) + 24h refresh staleness +
+    ~1d buffer. Pagination implemented but 7-day windows fit in a single page
+    in practice. Writes rows compatible with the father's existing schema
+    (status='found'; no `source` column). FMP is the sole source post-port,
+    so the table is wiped before repopulating.
+    """
+    with _EARNINGS_REFRESH_LOCK:
+        if not force:
+            last = _earnings_get_last_refresh()
+            if last and datetime.utcnow() - last < timedelta(hours=_EARNINGS_REFRESH_TTL_HOURS):
+                log.debug("earnings_refresh_skipped_recent",
+                           last=last.isoformat())
+                return True
+
+        today = date.today()
+        to_date = today + timedelta(days=days_ahead)
+
+        all_records: list[dict] = []
+        for page in range(20):  # hard cap to prevent runaway
+            chunk = _fetch_earnings_page(today, to_date, page)
+            if chunk is None:
+                # Network/auth/HTTP failure — abort without stamping refresh.
+                log.warning("earnings_refresh_aborted", page=page)
+                return False
+            if not chunk:
+                break
+            all_records.extend(chunk)
+            if len(chunk) < _FMP_PAGE_LIMIT:
+                break
+        else:
+            log.warning("earnings_refresh_pagination_overflow",
+                         pages_consumed=20)
+
+        # Pick earliest future date per symbol
+        next_by_symbol: dict[str, date] = {}
+        for rec in all_records:
+            sym = rec.get("symbol")
+            d_str = rec.get("date")
+            if not sym or not d_str:
+                continue
+            try:
+                d = datetime.strptime(d_str, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if d < today:
+                continue
+            existing = next_by_symbol.get(sym)
+            if existing is None or d < existing:
+                next_by_symbol[sym] = d
+
+        # Repopulate cache atomically. FMP is sole source post-port — wipe all.
+        try:
+            from src.core.database import get_db
+            from src.core.models import EarningsCache
+            now = datetime.utcnow()
+            with get_db() as session:
+                session.query(EarningsCache).delete()
+                for sym, d in next_by_symbol.items():
+                    session.add(EarningsCache(
+                        symbol=sym,
+                        next_earnings_date=d.isoformat(),
+                        status="found",  # father's schema
+                        fetched_at=now,
+                    ))
+        except Exception as e:
+            log.error("earnings_refresh_db_write_failed", error=str(e))
+            return False
+
+        _earnings_set_last_refresh(datetime.utcnow())
+        log.info("earnings_refresh_succeeded",
+                  records=len(all_records),
+                  symbols=len(next_by_symbol),
+                  days_ahead=days_ahead)
+        return True
+
+
+def get_next_earnings_date(symbol: str) -> tuple[Optional[date], bool]:
+    """Return (next_earnings_date_or_None, refresh_ok).
+
+    `refresh_ok` is True iff the cache reflects a successful refresh within
+    the last 24h. If False, callers must treat absence-of-row as 'we don't
+    know' rather than 'no upcoming earnings' (fail-CLOSED).
+
+    A row missing for a symbol with `refresh_ok=True` is positive evidence
+    the symbol has no earnings inside the refresh window (default 7 days).
+    """
+    refresh_ok = refresh_earnings_calendar()
+
+    try:
+        from src.core.database import get_db
+        from src.core.models import EarningsCache
+        with get_db() as session:
+            row = session.get(EarningsCache, symbol)
+            if row is None or not row.next_earnings_date:
+                return (None, refresh_ok)
+            try:
+                return (datetime.strptime(row.next_earnings_date, "%Y-%m-%d").date(),
+                        refresh_ok)
+            except ValueError:
+                return (None, refresh_ok)
+    except Exception as e:
+        log.warning("earnings_cache_read_failed", symbol=symbol, error=str(e))
+        return (None, False)

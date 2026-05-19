@@ -633,98 +633,53 @@ def has_upcoming_earnings(
     """
     Block puts on stocks with imminent earnings.
 
-    FAIL-CLOSED: if we cannot determine the next earnings date for any
-    reason (no IB connection, qualify failure, fetch error, parse error),
-    return True (block the trade). Earnings is the most predictable cause
-    of overnight gap risk on a CSP — better to skip a trade than mis-trade
-    through earnings.
+    FAIL-CLOSED: if we cannot determine the next earnings date (FMP refresh
+    stale or failed, DB error), return True (block the trade). Earnings is
+    the most predictable cause of overnight gap risk on a CSP — better to
+    skip a trade than mis-trade through earnings.
 
-    Backed by IBKR CalendarReport via src.portfolio.ibkr_fundamentals.
-    Result cached for 24h in the earnings_cache table; cached entries whose
-    date has passed are auto-invalidated and refetched.
+    Data source: FMP /stable/earnings-calendar via
+    src.portfolio.fmp.get_next_earnings_date(), which bulk-fetches the next
+    7 days once per 24h and caches per-symbol in the `earnings_cache` table.
+
+    Previously backed by IBKR CalendarReport via ibkr_fundamentals; that
+    path is dead on these gateways (Error 10276 'News feed is not allowed'
+    — verified 2026-05-19 with AAPL/MSFT/NVDA/GOOGL/META, all returned
+    empty XML). Swap to FMP keeps the father's fail-CLOSED shell and the
+    EarningsCache(status) schema; the bulk-refresh writes status='found'
+    rows for symbols inside the 7d window and the absence of a row (when
+    refresh is fresh) is positive evidence of 'no earnings in window'.
+
+    `exchange`/`currency` kept for caller-signature compatibility with
+    risk.check_earnings() and portfolio/buyer.py.
     """
-    from datetime import date, datetime, timedelta
-    from src.core.database import get_db
-    from src.core.models import EarningsCache
-    from src.portfolio.ibkr_fundamentals import get_next_earnings_date
-
-    today = date.today()
-    cache_cutoff = datetime.utcnow() - timedelta(hours=24)
-
-    # 1. Cache check
-    with get_db() as db:
-        cached = db.query(EarningsCache).filter(EarningsCache.symbol == symbol).first()
-        if cached and cached.fetched_at >= cache_cutoff:
-            if cached.status == "found" and cached.next_earnings_date:
-                try:
-                    cached_date = date.fromisoformat(cached.next_earnings_date)
-                    if cached_date >= today:
-                        days_until = (cached_date - today).days
-                        is_imminent = days_until <= within_days
-                        log.debug("earnings_cache_hit",
-                                  symbol=symbol, date=cached.next_earnings_date,
-                                  days_until=days_until, blocked=is_imminent)
-                        return is_imminent
-                    # cached date is past — fall through to refetch
-                except ValueError:
-                    pass  # malformed cache — fall through to refetch
-            elif cached.status == "none_scheduled":
-                log.debug("earnings_cache_hit_none_scheduled", symbol=symbol)
-                return False
-            elif cached.status == "fetch_failed":
-                log.warning("earnings_cache_hit_fetch_failed_blocking",
-                            symbol=symbol)
-                return True  # FAIL-CLOSED
-
-    # 2. Live fetch
+    from datetime import date as _date
     try:
-        ib = get_ib()
-        if ib is None or not ib.isConnected():
-            log.warning("earnings_check_no_ib_blocking", symbol=symbol)
-            return True  # FAIL-CLOSED
-        contract = _make_stock_contract(symbol, exchange, currency)
-        qualified = ib.qualifyContracts(contract)
-        if not qualified:
-            log.warning("earnings_qualify_failed_blocking", symbol=symbol)
-            return True  # FAIL-CLOSED
+        from src.portfolio.fmp import get_next_earnings_date
+        next_date, refresh_ok = get_next_earnings_date(symbol)
     except Exception as e:
-        log.warning("earnings_check_setup_failed_blocking",
-                    symbol=symbol, error=str(e))
+        log.warning("earnings_check_failed", symbol=symbol, error=str(e))
         return True  # FAIL-CLOSED
 
-    result = get_next_earnings_date(ib, contract)
-
-    # 3. Write cache
-    iso = result.next_date.isoformat() if result.next_date else None
-    with get_db() as db:
-        existing = db.query(EarningsCache).filter(EarningsCache.symbol == symbol).first()
-        if existing:
-            existing.next_earnings_date = iso
-            existing.status = result.status
-            existing.fetched_at = datetime.utcnow()
-        else:
-            db.add(EarningsCache(
-                symbol=symbol,
-                next_earnings_date=iso,
-                status=result.status,
-                fetched_at=datetime.utcnow(),
-            ))
-
-    # 4. Decide
-    if result.status == "found" and result.next_date:
-        days_until = (result.next_date - today).days
-        is_imminent = 0 <= days_until <= within_days
-        log.info("earnings_check",
-                 symbol=symbol, date=result.next_date.isoformat(),
-                 days_until=days_until, within_days=within_days,
-                 blocked=is_imminent)
-        return is_imminent
-    elif result.status == "none_scheduled":
-        log.debug("earnings_none_scheduled", symbol=symbol)
-        return False
-    else:  # fetch_failed
-        log.warning("earnings_fetch_failed_blocking", symbol=symbol)
+    if not refresh_ok:
+        log.info("earnings_check_unknown_blocked", symbol=symbol,
+                  reason="fmp_refresh_stale_or_failed")
         return True  # FAIL-CLOSED
+
+    if next_date is None:
+        log.debug("earnings_check_no_upcoming", symbol=symbol)
+        return False  # FMP refresh fresh + no row → no earnings in window
+
+    days_until = (next_date - _date.today()).days
+    blocked = 0 <= days_until <= within_days
+    if blocked:
+        log.info("earnings_check_blocked", symbol=symbol,
+                  next_date=next_date.isoformat(), days_until=days_until,
+                  within_days=within_days)
+    else:
+        log.debug("earnings_check_allowed", symbol=symbol,
+                   next_date=next_date.isoformat(), days_until=days_until)
+    return blocked
 
 
 
