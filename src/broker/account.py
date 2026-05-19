@@ -8,7 +8,7 @@ from typing import Optional
 
 from ib_insync import PortfolioItem
 
-from src.broker.connection import get_ib
+from src.broker.connection import get_ib, get_ib_lock
 from src.core.logger import get_logger
 
 log = get_logger(__name__)
@@ -31,13 +31,14 @@ def get_account_summary() -> AccountSummary:
         # Use accountValues() — this returns data that IBKR pushes automatically
         # on connection, so it doesn't require a separate request/response cycle.
         # Much more reliable from scheduler threads than accountSummary().
-        values = ib.accountValues()
-        
-        if not values:
-            # Trigger a refresh and wait
-            ib.reqAccountUpdates(True, "")
-            ib.sleep(2)
+        with get_ib_lock():
             values = ib.accountValues()
+
+            if not values:
+                # Trigger a refresh and wait
+                ib.reqAccountUpdates(True, "")
+                ib.sleep(2)
+                values = ib.accountValues()
 
         if not values:
             log.warning("account_values_empty")
@@ -90,7 +91,8 @@ def get_account_summary() -> AccountSummary:
 def get_portfolio_positions() -> list[PortfolioItem]:
     """Get current portfolio positions from IBKR for the options account only."""
     ib = get_ib()
-    positions = ib.portfolio()
+    with get_ib_lock():
+        positions = ib.portfolio()
     # Filter to options account only (TWS returns positions from all accounts)
     try:
         from src.core.config import get_settings

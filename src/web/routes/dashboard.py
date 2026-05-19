@@ -322,15 +322,26 @@ def dashboard(request: Request):
             .limit(50)
             .all()
         )
-        # Find symbol+date pairs that have an ASSIGNMENT — suppress buy_put/buy_stock for those
+        # Suppress IBKR-side BUY_PUT (@$0) + BUY_STOCK rows when a wheel-side
+        # ASSIGNMENT row exists for the same conceptual event. Keyed on
+        # (symbol, strike, expiry) so it works across days — the wheel's
+        # overnight cron writes ASSIGNMENT a day later than ibkr_sync writes
+        # the IBKR rows.
         _assignment_keys = set()
+        _assignment_symbols = set()
         for t in _all_recent:
             if t.trade_type == TradeType.ASSIGNMENT:
-                _assignment_keys.add((t.symbol, t.created_at.date()))
+                _assignment_keys.add((t.symbol, t.strike, t.expiry))
+                _assignment_symbols.add(t.symbol)
         recent_trades = []
         for t in _all_recent:
-            if t.trade_type in (TradeType.BUY_PUT, TradeType.BUY_STOCK):
-                if (t.symbol, t.created_at.date()) in _assignment_keys:
+            if t.trade_type == TradeType.BUY_PUT:
+                if (t.symbol, t.strike, t.expiry) in _assignment_keys:
+                    continue
+            elif t.trade_type == TradeType.BUY_STOCK:
+                # IBKR's assignment BUY_STOCK has strike=0/expiry='' — can't
+                # match on the full triple. Fall back to symbol-only.
+                if t.symbol in _assignment_symbols:
                     continue
             recent_trades.append(t)
         recent_trades = recent_trades[:15]
