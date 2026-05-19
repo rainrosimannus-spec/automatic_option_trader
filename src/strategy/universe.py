@@ -30,6 +30,7 @@ class UniverseManager:
         "SWX":   ("Europe/Zurich", 9, 0, 17, 30),          # SIX Swiss Exchange
         "BM":    ("Europe/Madrid", 9, 0, 17, 30),          # Bolsa de Madrid
         "BVME":  ("Europe/Rome", 9, 0, 17, 30),            # Borsa Italiana
+        "VSE":   ("Europe/Vienna", 9, 0, 17, 30),          # Wiener Börse (Vienna)
         "SFB":   ("Europe/Stockholm", 9, 0, 17, 30),       # Nasdaq Stockholm
         "CSE":   ("Europe/Copenhagen", 9, 0, 17, 0),       # Nasdaq Copenhagen
         "HEX":   ("Europe/Helsinki", 10, 0, 18, 30),       # Nasdaq Helsinki

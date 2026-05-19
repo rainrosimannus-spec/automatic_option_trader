@@ -25,6 +25,17 @@ _PRICE_FAIL_THRESHOLD = 5       # failures before temporary skip
 _PRICE_FAIL_COOLDOWN_MIN = 5   # minutes to skip after threshold reached
 
 
+# Exchanges where IBKR's SMART router can re-route after qualifyContracts.
+# Direct-only markets (MEXI, JSE, TASE, BVMF, VSE) must keep their original exchange
+# after qualification — overriding to SMART breaks historical-data requests with Error 200.
+_SMART_ROUTABLE_EXCHANGES = {
+    "SMART", "NYSE", "NASDAQ", "ARCA", "BATS", "AMEX", "ISLAND",
+    "LSE", "IBIS", "SBF", "AEB", "SWX", "BM", "BVME", "SFB",
+    "CSE", "HEX", "OSE", "ENEXT.BE", "ISE",
+    "TSE", "TSEJ", "SEHK", "SGX", "ASX", "KSE", "NSE", "IDX", "TWSE",
+}
+
+
 def _is_symbol_blocked(symbol: str) -> bool:
     """Check if a symbol is temporarily blocked due to repeated failures."""
     until = _price_fail_until.get(symbol)
@@ -97,7 +108,8 @@ def get_stock_price(
             ib = get_ib()
             contract = _make_stock_contract(symbol, exchange, currency)
             ib.qualifyContracts(contract)
-            contract.exchange = "SMART"  # force SMART routing
+            if exchange in _SMART_ROUTABLE_EXCHANGES:
+                contract.exchange = "SMART"  # force SMART routing where supported
 
             # Try TRADES first, then MIDPOINT (needed for many European stocks)
             for what in ("TRADES", "MIDPOINT"):
@@ -561,7 +573,8 @@ def get_iv_rank(
             ib = get_ib()
             contract = _make_stock_contract(symbol, exchange, currency)
             ib.qualifyContracts(contract)
-            contract.exchange = "SMART"  # force SMART routing for data
+            if exchange in _SMART_ROUTABLE_EXCHANGES:
+                contract.exchange = "SMART"  # force SMART routing for data where supported
 
             # Get historical volatility data via option implied volatility
             bars = ib.reqHistoricalData(
