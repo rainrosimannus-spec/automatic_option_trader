@@ -28,6 +28,99 @@
         </div>
     </div>
 
+    {% if debt_capacity %}
+    <div class="bg-gray-900 border rounded p-4 mb-6
+        {% if debt_capacity.status == 'red' %}border-red-900
+        {% elif debt_capacity.status == 'amber' %}border-amber-700
+        {% elif debt_capacity.status == 'green' %}border-green-900
+        {% else %}border-gray-800{% endif %}">
+
+        <div class="flex items-baseline justify-between gap-2 flex-wrap mb-3">
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">External-debt capacity</div>
+                <div class="text-xs text-gray-500 mt-0.5">
+                    Asset Coverage ≥ {{ debt_capacity.threshold }}× → max external debt is gross NLV ÷ {{ debt_capacity.threshold }}.
+                    Subordinated/shareholder debt doesn't count against this ceiling.
+                </div>
+            </div>
+            <a href="/borrower/headroom" class="text-xs text-amber-300/80 hover:text-amber-300 shrink-0">full four-metric view →</a>
+        </div>
+
+        {% if not debt_capacity.nlv_configured %}
+        <div class="text-sm text-gray-400">
+            Capacity is undetermined — gross NLV is not yet configured.
+            Set it at <a href="/borrower/headroom" class="text-amber-300/80 hover:text-amber-300">/borrower/headroom</a>
+            (manually now; auto-populated from IBKR on production once <code>bruno_run_integrations</code> is on).
+        </div>
+        {% else %}
+        <!-- Three key numbers -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Max external debt</div>
+                <div class="text-lg font-semibold tabular-nums mt-0.5 break-words">{{ "{:,.0f}".format(debt_capacity.max_external_eur) }} EUR</div>
+                <div class="text-xs text-gray-600 mt-0.5">NLV {{ "{:,.0f}".format(debt_capacity.gross_nlv_eur) }} ÷ {{ debt_capacity.threshold }}</div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Used (external only)</div>
+                <div class="text-lg font-semibold tabular-nums mt-0.5 break-words
+                    {% if debt_capacity.status == 'red' %}text-red-300
+                    {% elif debt_capacity.status == 'amber' %}text-amber-300
+                    {% elif debt_capacity.status == 'green' %}text-green-300{% endif %}">
+                    {{ "{:,.0f}".format(debt_capacity.external_debt_eur) }} EUR
+                </div>
+                <div class="text-xs text-gray-600 mt-0.5">
+                    {% if debt_capacity.used_pct is not none %}{{ "%.1f"|format(debt_capacity.used_pct) }}% of capacity{% else %}—{% endif %}
+                </div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Headroom</div>
+                <div class="text-lg font-semibold tabular-nums mt-0.5 break-words">{{ "{:,.0f}".format(debt_capacity.headroom_eur) }} EUR</div>
+                <div class="text-xs text-gray-600 mt-0.5">More external debt MesiCap can take in</div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Subordinated debt</div>
+                <div class="text-lg font-semibold tabular-nums mt-0.5 break-words text-gray-400">{{ "{:,.0f}".format(debt_capacity.subordinated_debt_eur) }} EUR</div>
+                <div class="text-xs text-gray-600 mt-0.5">Shareholder loans — doesn't count against the ceiling</div>
+            </div>
+        </div>
+
+        <!-- Horizontal bar -->
+        {% set pct = (debt_capacity.used_pct or 0) %}
+        {% set clamped = (100 if pct > 100 else pct) %}
+        <div class="h-6 rounded border border-gray-800 bg-gray-950 overflow-hidden relative">
+            <div class="h-full transition-all
+                {% if debt_capacity.status == 'red' %}bg-red-500/80
+                {% elif debt_capacity.status == 'amber' %}bg-amber-400/80
+                {% else %}bg-green-500/70{% endif %}"
+                style="width: {{ '%.1f'|format(clamped) }}%"></div>
+            <div class="absolute inset-0 flex items-center justify-center text-xs font-medium tabular-nums text-gray-100">
+                {% if debt_capacity.used_pct is not none %}
+                {{ "%.1f"|format(debt_capacity.used_pct) }}% used · {{ "%.1f"|format(100 - clamped) }}% headroom
+                {% else %}
+                no external debt
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="text-xs text-gray-500 mt-2 flex items-baseline justify-between gap-2 flex-wrap">
+            <span>
+                Inputs source: <span class="text-gray-300">{{ debt_capacity.inputs_source }}</span> ·
+                as of {{ debt_capacity.inputs_as_of.strftime('%d.%m.%Y') if debt_capacity.inputs_as_of else '—' }}
+            </span>
+            <span>
+                {% if debt_capacity.status == 'red' %}
+                <span class="text-red-300">Above 100% — Asset Coverage breached. Refuse any new external loan; restructure existing.</span>
+                {% elif debt_capacity.status == 'amber' %}
+                <span class="text-amber-300">≥ 70% used. Approaching the binding 2.0× line.</span>
+                {% else %}
+                <span class="text-green-300">Well within Asset Coverage. Other binding metrics (Liquidity, OpCash) may differ — see Headroom.</span>
+                {% endif %}
+            </span>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
     {% if missing_agreement_ids %}
     <div class="bg-amber-950/40 border border-amber-800 rounded p-3 mb-6">
         <div class="flex items-baseline justify-between gap-2 flex-wrap">

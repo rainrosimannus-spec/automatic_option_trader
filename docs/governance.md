@@ -105,7 +105,7 @@ by a month. Only affects statutory reporting.
 ### 2.5 Portal compromised
 
 Master kill switch: a single environment variable / config setting that
-disables `lenders.mesicap.com` entirely (`PORTAL_DISABLED=true` →
+disables `lender.mesicap.com` entirely (`PORTAL_DISABLED=true` →
 all routes return a static "temporarily unavailable" page). Must be settable
 without a deploy (config reload sufficient). See §5.5.
 
@@ -350,7 +350,7 @@ Phase 3:  Lender portal (§5)
 
 ---
 
-## 5. Lender Portal — lenders.mesicap.com
+## 5. Lender Portal — lender.mesicap.com
 
 Not previously designed beyond a one-line mention. This section proposes a
 v1 design. Existing `borrower_lender_admin.html` page is a stub and stays
@@ -534,7 +534,7 @@ a procedural discipline backed by the audit log.
 
 ### 5.4 Architecture
 
-Separate FastAPI app at `lenders.mesicap.com`. Different domain, different
+Separate FastAPI app at `lender.mesicap.com`. Different domain, different
 process, different deploy. Shares the read side of `bruno.db` via a SQLAlchemy
 session opened with a read-only sqlite connection (`?mode=ro`).
 
@@ -542,7 +542,7 @@ Why separate process: blast-radius isolation. A bug or compromise in the
 lender app cannot mutate the borrower DB.
 
 ```
-lenders.mesicap.com         dashboard.mesicap.com (Bruno admin lives here)
+lender.mesicap.com         dashboard.mesicap.com (Bruno admin lives here)
        │                                  │
        └──────read-only SQLite────────────┴──── data/bruno.db
 ```

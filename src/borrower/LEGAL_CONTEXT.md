@@ -45,7 +45,7 @@ These are non-negotiable. If Bruno code or generated content would breach any of
 6. **No pooled language.** Avoid "fund," "portfolio of lenders," "investment pool." Each loan is a bilateral agreement.
 7. **Subordination clauses in shareholder loans.** Before Phase 3 launches, shareholder loans (Waddy, Arvutitugi operational + all trading capital) must be formally subordinated to external lenders via master agreement amendment.
 8. **No financial advice to lenders.** Bruno doesn't recommend; it just records terms the parties already agreed.
-9. **Truthful disclosure to lenders.** When lender-facing portal launches at lenders.mesicap.com (Phase 3), it must show accurate loan terms, accurate accrued interest, and accurate MesiCap solvency posture. Misrepresentation creates personal liability for the principals.
+9. **Truthful disclosure to lenders.** When lender-facing portal launches at lender.mesicap.com (Phase 3), it must show accurate loan terms, accurate accrued interest, and accurate MesiCap solvency posture. Misrepresentation creates personal liability for the principals.
 10. **AML/KYC on external lenders.** When taking money from someone outside the three principals (Rain, Rasmus, Lauri), basic KYC is required: identification, source-of-funds declaration, beneficial ownership disclosure for entities. Estonian AML law applies even to non-bank lending arrangements.
 
 ## What's allowed

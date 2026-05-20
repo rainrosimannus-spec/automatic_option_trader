@@ -16,7 +16,7 @@ focuses on the host setup, not the code.
 - Python ≥ 3.11
 - `git` with read access to `rainrosimannus-spec/automatic_option_trader`
 - A host with persistent disk (SQLite + uploaded PDFs)
-- DNS control of `mesicap.com` and `lenders.mesicap.com`
+- DNS control of `mesicap.com` and `lender.mesicap.com`
 - TLS termination (Let's Encrypt via caddy/nginx, or Cloudflare in front)
 - An LHV business banking account (for CAMT.053 file exports)
 - A Merit Aktiva account (for the quarterly reconciliation pull-side)
@@ -155,13 +155,13 @@ APScheduler prints "Adding job tentatively" or similar at boot.
 | Hostname                 | Routes to                          | Notes |
 | ------------------------ | ---------------------------------- | ----- |
 | `mesicap.com` (or sub)   | the main FastAPI process at `/`    | Maggy/Winston dashboard + Bruno admin at `/borrower/*` |
-| `lenders.mesicap.com`    | the same FastAPI process at `/lenders/*` | future: split to its own process (governance.md §5.4) |
+| `lender.mesicap.com`    | the same FastAPI process at `/lenders/*` | future: split to its own process (governance.md §5.4) |
 
 Both terminate TLS at the reverse proxy. Bruno does not handle TLS itself.
 
 For first pilot it's fine to leave both on the same process; the `/lenders/`
 prefix + the admin auth middleware on `/borrower/*` enforce the separation.
-Splitting `lenders.mesicap.com` into a separate process is a future step for
+Splitting `lender.mesicap.com` into a separate process is a future step for
 blast-radius isolation (the design is in governance.md §5.4 already; the
 code change is mostly an `app.mount(...)` move).
 
@@ -182,7 +182,7 @@ code change is mostly an `app.mount(...)` move).
 3. **Invite a lender:**
    - Open the lender's counterparty detail page (`/borrower/counterparties/{id}`)
    - Use the "Portal users" panel to add their email
-   - Tell them to visit `https://lenders.mesicap.com/`, enter their email, click the magic link in their inbox
+   - Tell them to visit `https://lender.mesicap.com/`, enter their email, click the magic link in their inbox
    - They land on their lender dashboard showing only their own loans
 
 ---
@@ -196,13 +196,13 @@ Curl these after deploy. All should be quick.
 curl -fsS https://mesicap.com/borrower/login | grep -q "Sign in"
 
 # Lender login page same
-curl -fsS https://lenders.mesicap.com/lenders/login | grep -q "Sign in"
+curl -fsS https://lender.mesicap.com/lenders/login | grep -q "Sign in"
 
 # Without auth, /borrower/ redirects to /borrower/login (303)
 curl -fsS -o /dev/null -w "%{http_code}" https://mesicap.com/borrower/ # → 303
 
 # /lenders/ unauthed redirects to /lenders/login
-curl -fsS -o /dev/null -w "%{http_code}" https://lenders.mesicap.com/lenders/ # → 303
+curl -fsS -o /dev/null -w "%{http_code}" https://lender.mesicap.com/lenders/ # → 303
 
 # Banned-terminology lint should pass on lender templates
 .venv/bin/python tools/lint_lender_copy.py # → exit 0
@@ -329,7 +329,7 @@ operational states.
 ## 13. Quick reference — paths
 
 - Admin: `https://mesicap.com/borrower/`
-- Lender portal: `https://lenders.mesicap.com/`
+- Lender portal: `https://lender.mesicap.com/`
 - Loan list: `/borrower/loans`
 - Headroom: `/borrower/headroom`
 - Bank transactions (CAMT.053 staging): `/borrower/bank-transactions`
