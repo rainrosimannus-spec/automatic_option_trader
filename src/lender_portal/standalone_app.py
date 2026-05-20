@@ -24,6 +24,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 # Load config/.env if present — same pattern as the trader (src/core/config.py).
 # This lets the standalone lender process pick up BRUNO_ADMIN_AUTH_DISABLE,
@@ -51,6 +52,13 @@ def create_lender_app() -> FastAPI:
         redoc_url=None,
         openapi_url=None,
     )
+
+    # Static assets (MesiCap logo, favicon). Served at /static/* from the
+    # lender_portal/static/ directory — kept separate from the trading
+    # dashboard's /static/ (which has M&W branding).
+    _static_dir = Path(__file__).resolve().parent / "static"
+    if _static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
     app.include_router(lender_router.router, prefix="/lenders")
 

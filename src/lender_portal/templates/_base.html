@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>{% block title %}MesiCap — Lender Portal{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/mesicap-favicon.svg">
+    <link rel="apple-touch-icon" href="/static/mesicap-favicon.svg">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
@@ -21,7 +23,10 @@
 
 <header class="bg-gray-900 border-b border-gray-800">
     <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
-        <a href="/lenders/" class="font-display text-xl tracking-tight text-amber-300/90">MesiCap</a>
+        <a href="/lenders/" class="flex items-center gap-2.5 hover:opacity-90 transition">
+            <img src="/static/mesicap-logo.svg" alt="MesiCap" class="w-8 h-8 shrink-0">
+            <span class="font-display text-xl tracking-tight text-amber-300/90">MesiCap</span>
+        </a>
         {% if user is defined and user %}
         <nav class="flex items-center gap-4 text-sm">
             <a href="/lenders/dashboard" class="text-gray-300 hover:text-amber-300/90">Loans</a>
