@@ -52,13 +52,14 @@
 {% if documents %}
 <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
     <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Signed documents ({{ documents | length }})</div>
-    <table class="w-full text-sm">
+    <div class="overflow-x-auto -mx-4 px-4">
+    <table class="w-full text-sm min-w-[480px]">
         <thead class="text-[10px] uppercase tracking-widest text-gray-500">
             <tr>
-                <th class="text-left py-2">Uploaded</th>
-                <th class="text-left py-2">Type</th>
+                <th class="text-left py-2 whitespace-nowrap">Uploaded</th>
+                <th class="text-left py-2 whitespace-nowrap">Type</th>
                 <th class="text-left py-2">Filename</th>
-                <th class="text-right py-2"></th>
+                <th class="text-right py-2 whitespace-nowrap"></th>
             </tr>
         </thead>
         <tbody class="divide-y divide-gray-800">
@@ -77,6 +78,7 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
     <p class="text-xs text-gray-600 mt-3">
         Your signed loan agreement and any signed amendments. For binding terms refer to these documents.
     </p>

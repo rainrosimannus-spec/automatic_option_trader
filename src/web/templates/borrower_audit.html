@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Audit Log{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500"><a href="/borrower" class="hover:text-gray-300">&larr; Back to Borrower</a></p>
+        <h1 class="text-3xl font-semibold mt-2">Audit Log</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            Every mutation to Bruno data is logged with actor, before/after JSON, IP, and user agent. Latest first.
+        </p>
+    </div>
+
+    <form method="get" action="/borrower/audit" class="bg-gray-900 border border-gray-800 rounded p-4 mb-6 grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Entity type</label>
+            <select name="entity_type" class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                <option value="">all</option>
+                {% for t in distinct_entity_types %}
+                <option value="{{ t }}" {% if entity_type == t %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Actor</label>
+            <select name="actor" class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                <option value="">all</option>
+                {% for a in distinct_actors %}
+                <option value="{{ a }}" {% if actor == a %}selected{% endif %}>{{ a }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Action</label>
+            <select name="action" class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                <option value="">all</option>
+                {% for a in distinct_actions %}
+                <option value="{{ a }}" {% if action == a %}selected{% endif %}>{{ a }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Limit</label>
+            <select name="limit" class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                {% for n in [50, 100, 200, 500] %}
+                <option value="{{ n }}" {% if limit == n %}selected{% endif %}>{{ n }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <button type="submit" class="w-full bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-3 py-1.5 rounded text-sm">Filter</button>
+        </div>
+    </form>
+
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
+        <div class="overflow-x-auto">
+        <table class="w-full text-sm min-w-[900px]">
+            <thead class="bg-gray-800 text-[10px] uppercase tracking-widest text-gray-400">
+                <tr>
+                    <th class="text-left px-3 py-2">When (UTC)</th>
+                    <th class="text-left px-3 py-2">Actor</th>
+                    <th class="text-left px-3 py-2">Action</th>
+                    <th class="text-left px-3 py-2">Entity</th>
+                    <th class="text-left px-3 py-2">Notes</th>
+                    <th class="text-left px-3 py-2">IP</th>
+                    <th class="text-right px-3 py-2"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for r in rows %}
+                <tr>
+                    <td class="px-3 py-2 tabular-nums whitespace-nowrap text-xs">{{ r.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td class="px-3 py-2 text-xs">{{ r.actor or '—' }}</td>
+                    <td class="px-3 py-2 text-xs whitespace-nowrap">
+                        {% if r.action in ('create','approve') %}<span class="text-green-400">{{ r.action }}</span>
+                        {% elif r.action in ('delete','revoke_approval','lock') %}<span class="text-red-400">{{ r.action }}</span>
+                        {% elif r.action == 'status_change' %}<span class="text-blue-400">{{ r.action }}</span>
+                        {% else %}<span class="text-gray-300">{{ r.action }}</span>{% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-xs whitespace-nowrap">{{ r.entity_type }}{% if r.entity_id %} #{{ r.entity_id }}{% endif %}</td>
+                    <td class="px-3 py-2 text-xs text-gray-400 max-w-[200px] break-words">{{ r.notes or '' }}</td>
+                    <td class="px-3 py-2 text-xs text-gray-500 tabular-nums whitespace-nowrap">{{ r.ip_address or '—' }}</td>
+                    <td class="px-3 py-2 text-right whitespace-nowrap">
+                        {% if r.before_json or r.after_json %}
+                        <details class="inline-block text-xs">
+                            <summary class="cursor-pointer text-amber-300/80 hover:text-amber-300 list-none">diff</summary>
+                            <div class="absolute right-4 mt-2 z-10 w-[480px] max-w-[90vw] bg-gray-950 border border-gray-700 rounded p-3 shadow-lg text-left">
+                                {% if r.before_json %}
+                                <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Before</div>
+                                <pre class="text-[11px] text-gray-300 whitespace-pre-wrap break-all font-mono max-h-48 overflow-y-auto mb-2">{{ r.before_json }}</pre>
+                                {% endif %}
+                                {% if r.after_json %}
+                                <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">After</div>
+                                <pre class="text-[11px] text-gray-300 whitespace-pre-wrap break-all font-mono max-h-48 overflow-y-auto">{{ r.after_json }}</pre>
+                                {% endif %}
+                            </div>
+                        </details>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+
+    <p class="text-xs text-gray-500 mt-4">
+        {{ rows | length }} rows shown (limit {{ limit }}).
+        Audit log is append-only by design; rows are never deleted.
+    </p>
+
+</div>
+{% endblock %}

@@ -10,28 +10,30 @@
 
 {% if statements %}
 <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
-    <table class="w-full text-sm">
+    <div class="overflow-x-auto">
+    <table class="w-full text-sm {% if multi_entity %}min-w-[560px]{% else %}min-w-[480px]{% endif %}">
         <thead class="bg-gray-800 text-[10px] uppercase tracking-widest text-gray-400">
             <tr>
-                <th class="text-left px-3 py-2">Period</th>
-                {% if multi_entity %}<th class="text-left px-3 py-2">Entity</th>{% endif %}
-                <th class="text-left px-3 py-2">Issued</th>
-                <th class="text-right px-3 py-2">Size</th>
-                <th class="text-right px-3 py-2"></th>
+                <th class="text-left px-3 py-2 whitespace-nowrap">Period</th>
+                {% if multi_entity %}<th class="text-left px-3 py-2 whitespace-nowrap">Entity</th>{% endif %}
+                <th class="text-left px-3 py-2 whitespace-nowrap">Issued</th>
+                <th class="text-right px-3 py-2 whitespace-nowrap">Size</th>
+                <th class="text-right px-3 py-2 whitespace-nowrap"></th>
             </tr>
         </thead>
         <tbody class="divide-y divide-gray-800">
             {% for s in statements %}
             <tr>
-                <td class="px-3 py-2">{{ s.period }}</td>
-                {% if multi_entity %}<td class="px-3 py-2 text-xs text-gray-400">{{ s.counterparty_name }}</td>{% endif %}
-                <td class="px-3 py-2 text-gray-500">{{ s.issued_at.strftime('%d.%m.%Y') }}</td>
-                <td class="px-3 py-2 text-right tabular-nums text-xs text-gray-500">{{ s.size_kb }} KB</td>
-                <td class="px-3 py-2 text-right"><a href="{{ s.download_url }}" class="text-amber-300/90 hover:text-amber-300 text-xs">Download PDF</a></td>
+                <td class="px-3 py-2 whitespace-nowrap">{{ s.period }}</td>
+                {% if multi_entity %}<td class="px-3 py-2 text-xs text-gray-400 break-words">{{ s.counterparty_name }}</td>{% endif %}
+                <td class="px-3 py-2 text-gray-500 whitespace-nowrap">{{ s.issued_at.strftime('%d.%m.%Y') }}</td>
+                <td class="px-3 py-2 text-right tabular-nums text-xs text-gray-500 whitespace-nowrap">{{ s.size_kb }} KB</td>
+                <td class="px-3 py-2 text-right whitespace-nowrap"><a href="{{ s.download_url }}" class="text-amber-300/90 hover:text-amber-300 text-xs">Download PDF</a></td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
+    </div>
 </div>
 {% else %}
 <div class="bg-gray-900 border border-gray-800 rounded p-6 text-sm text-gray-400">

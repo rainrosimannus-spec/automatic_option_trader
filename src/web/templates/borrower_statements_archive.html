@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Statement Archive{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500"><a href="/borrower" class="hover:text-gray-300">&larr; Back to Borrower</a></p>
+        <h1 class="text-3xl font-semibold mt-2">Statement Archive</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            Every lender statement PDF that has been generated, grouped per lender.
+            Filesystem source of truth: <code>data/statements/{cp_id}/YYYY-Qn.pdf</code>.
+        </p>
+    </div>
+
+    {% if groups %}
+    <div class="space-y-4">
+        {% for g in groups %}
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <div class="flex items-baseline justify-between gap-2 mb-3 flex-wrap">
+                <div>
+                    <span class="text-sm font-medium">{{ g.cp_name }}</span>
+                    <span class="text-xs text-gray-500 ml-1">cp #{{ g.cp_id }} · {{ g.pdfs | length }} statement{{ '' if g.pdfs|length == 1 else 's' }}</span>
+                </div>
+                <a href="/borrower/counterparties/{{ g.cp_id }}" class="text-xs text-amber-300/80 hover:text-amber-300">counterparty →</a>
+            </div>
+            <table class="w-full text-sm">
+                <thead class="text-[10px] uppercase tracking-widest text-gray-500">
+                    <tr>
+                        <th class="text-left py-1">Period</th>
+                        <th class="text-left py-1">Generated</th>
+                        <th class="text-right py-1">Size</th>
+                        <th class="text-right py-1"></th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-800">
+                    {% for p in g.pdfs %}
+                    <tr>
+                        <td class="py-1.5">{{ p.year }} Q{{ p.quarter }}</td>
+                        <td class="py-1.5 text-xs text-gray-500 tabular-nums">{{ p.mtime.strftime('%d.%m.%Y %H:%M') }}</td>
+                        <td class="py-1.5 text-right tabular-nums text-xs text-gray-500">{{ p.size_kb }} KB</td>
+                        <td class="py-1.5 text-right"><a href="{{ p.download_url }}" class="text-xs text-amber-300/80 hover:text-amber-300">Download</a></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endfor %}
+    </div>
+
+    <p class="text-xs text-gray-500 mt-6">
+        Total: {{ total }} PDF{{ '' if total == 1 else 's' }} across {{ groups | length }} lender{{ '' if groups|length == 1 else 's' }}.
+        Use <a href="/borrower/exports" class="text-amber-300/80 hover:text-amber-300">Exports</a> to (re-)generate a quarter.
+    </p>
+    {% else %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-6 text-sm text-gray-400">
+        No statement PDFs found in <code>data/statements/</code>. Visit
+        <a href="/borrower/exports" class="text-amber-300/80 hover:text-amber-300">/borrower/exports</a>
+        to generate the first quarter's batch.
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}

@@ -22,10 +22,11 @@ from src.borrower.admin_auth import (
 )
 from src.borrower.audit import snapshot, write_audit
 from src.borrower.models import (
-    Loan, LoanApproval, LoanMovement, MovementType, LoanAmendment, Payment, PaymentStatus,
-    LoanStatus, PrincipalUser, RepaymentStructure, LoanType, InterestRateType,
-    DayCountConvention, InterestTreatment, PaymentFrequency, LoanPurpose,
-    Counterparty, DocumentType, LoanDocument, PortalUser, get_session_factory,
+    AuditLog, Loan, LoanApproval, LoanMovement, MovementType, LoanAmendment, Payment,
+    PaymentStatus, LoanStatus, PrincipalUser, RepaymentStructure, LoanType,
+    InterestRateType, DayCountConvention, InterestTreatment, PaymentFrequency,
+    LoanPurpose, Counterparty, DocumentType, LoanDocument, PortalUser,
+    get_session_factory,
 )
 
 router = APIRouter()
@@ -604,6 +605,112 @@ def borrower_generate_statements(request: Request, year: int, quarter: int):
         log.error(f"statements_generate_error: {e}")
         raise HTTPException(status_code=400, detail=f"Failed: {e}")
     return RedirectResponse(url="/borrower/exports", status_code=303)
+
+
+@router.get("/audit", response_class=HTMLResponse)
+def borrower_audit(
+    request: Request,
+    entity_type: str = "",
+    actor: str = "",
+    action: str = "",
+    limit: int = 100,
+):
+    """Recent audit_log rows with filters. Show before/after JSON inline so the
+    diff is visible without leaving the page."""
+    session = BrunoSession()
+    try:
+        q = session.query(AuditLog)
+        if entity_type:
+            q = q.filter(AuditLog.entity_type == entity_type)
+        if actor:
+            q = q.filter(AuditLog.actor == actor)
+        if action:
+            q = q.filter(AuditLog.action == action)
+        limit = max(10, min(int(limit or 100), 500))
+        rows = q.order_by(AuditLog.timestamp.desc()).limit(limit).all()
+
+        # Distinct values to populate the filter dropdowns
+        distinct_entity_types = [r[0] for r in session.query(AuditLog.entity_type).distinct().all() if r[0]]
+        distinct_actors = [r[0] for r in session.query(AuditLog.actor).distinct().all() if r[0]]
+        distinct_actions = [r[0] for r in session.query(AuditLog.action).distinct().all() if r[0]]
+
+        return templates.TemplateResponse("borrower_audit.html", {
+            "request": request,
+            "rows": rows,
+            "entity_type": entity_type,
+            "actor": actor,
+            "action": action,
+            "limit": limit,
+            "distinct_entity_types": sorted(distinct_entity_types),
+            "distinct_actors": sorted(distinct_actors),
+            "distinct_actions": sorted(distinct_actions),
+        })
+    finally:
+        session.close()
+
+
+@router.get("/statements-archive", response_class=HTMLResponse)
+def borrower_statements_archive(request: Request):
+    """List all generated lender statement PDFs grouped per counterparty.
+    Walks data/statements/ on the filesystem; cross-references counterparty
+    names from Bruno."""
+    from src.borrower.statements import STATEMENTS_DIR
+    from pathlib import Path
+    session = BrunoSession()
+    try:
+        cp_by_id = {cp.id: cp.name for cp in session.query(Counterparty).all()}
+        groups = []
+        for cp_dir in sorted(STATEMENTS_DIR.glob("*")) if STATEMENTS_DIR.exists() else []:
+            if not cp_dir.is_dir():
+                continue
+            try:
+                cp_id = int(cp_dir.name)
+            except ValueError:
+                continue
+            pdfs = []
+            for pdf in sorted(cp_dir.glob("*.pdf"), reverse=True):
+                stem = pdf.stem  # YYYY-Qn
+                try:
+                    y, q = stem.split("-Q")
+                    year, quarter = int(y), int(q)
+                except (ValueError, AttributeError):
+                    continue
+                stat = pdf.stat()
+                from datetime import datetime
+                pdfs.append({
+                    "filename": pdf.name,
+                    "year": year, "quarter": quarter,
+                    "size_kb": stat.st_size // 1024,
+                    "mtime": datetime.fromtimestamp(stat.st_mtime),
+                    "download_url": f"/borrower/statements-archive/{cp_id}/{pdf.name}",
+                })
+            if pdfs:
+                groups.append({
+                    "cp_id": cp_id,
+                    "cp_name": cp_by_id.get(cp_id, f"Counterparty #{cp_id}"),
+                    "pdfs": pdfs,
+                })
+        return templates.TemplateResponse("borrower_statements_archive.html", {
+            "request": request,
+            "groups": groups,
+            "total": sum(len(g["pdfs"]) for g in groups),
+        })
+    finally:
+        session.close()
+
+
+@router.get("/statements-archive/{cp_id}/{filename}")
+def borrower_statements_archive_download(request: Request, cp_id: int, filename: str):
+    """Admin-side download of an issued statement PDF. Strict filename pattern
+    against path traversal."""
+    import re
+    from src.borrower.statements import STATEMENTS_DIR
+    if not re.fullmatch(r"\d{4}-Q[1-4]\.pdf", filename):
+        raise HTTPException(status_code=404, detail="Not found")
+    path = STATEMENTS_DIR / str(cp_id) / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(str(path), media_type="application/pdf", filename=filename)
 
 
 @router.get("/exports/merit-{year}-Q{quarter}.csv")

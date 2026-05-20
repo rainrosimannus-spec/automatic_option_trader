@@ -54,24 +54,26 @@
 
 <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
     <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Top 5 stock holdings</div>
-    <table class="w-full text-sm">
+    <div class="overflow-x-auto -mx-4 px-4">
+    <table class="w-full text-sm min-w-[360px]">
         <thead class="text-[10px] uppercase tracking-widest text-gray-500">
             <tr>
-                <th class="text-left py-2">Ticker</th>
-                <th class="text-right py-2">Value</th>
-                <th class="text-right py-2">% of collateral</th>
+                <th class="text-left py-2 whitespace-nowrap">Ticker</th>
+                <th class="text-right py-2 whitespace-nowrap">Value</th>
+                <th class="text-right py-2 whitespace-nowrap">% of collateral</th>
             </tr>
         </thead>
         <tbody class="divide-y divide-gray-800">
             {% for s in view.top_stocks %}
             <tr>
-                <td class="py-2">{{ s.ticker }}</td>
-                <td class="py-2 text-right tabular-nums">{{ "{:,.2f}".format(s.value_eur) }} EUR</td>
-                <td class="py-2 text-right tabular-nums">{{ "%.1f"|format(s.pct_of_collateral) }}%</td>
+                <td class="py-2 whitespace-nowrap">{{ s.ticker }}</td>
+                <td class="py-2 text-right tabular-nums whitespace-nowrap">{{ "{:,.2f}".format(s.value_eur) }} EUR</td>
+                <td class="py-2 text-right tabular-nums whitespace-nowrap">{{ "%.1f"|format(s.pct_of_collateral) }}%</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
+    </div>
 </div>
 
 <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
