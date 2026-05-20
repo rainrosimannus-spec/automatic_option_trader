@@ -27,6 +27,17 @@ _ADMIN_AUTH_EXEMPT_PREFIXES = (
 )
 
 
+def _admin_auth_disabled() -> bool:
+    """The admin-auth middleware can be disabled when /borrower/* is already
+    behind an outer auth layer (e.g., Caddy basic-auth on app.rosimannus.ee).
+
+    Set env BRUNO_ADMIN_AUTH_DISABLE=1 to skip Tier G's magic-link gate.
+    Default off — i.e., the magic-link gate is active by default. Re-enable
+    after deploys that move /borrower/* past the outer auth boundary."""
+    import os as _os
+    return _os.environ.get("BRUNO_ADMIN_AUTH_DISABLE") == "1"
+
+
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
@@ -52,11 +63,12 @@ def create_app() -> FastAPI:
         # Match /borrower exactly OR /borrower/anything — but not /borrowerXYZ.
         if path == "/borrower" or path.startswith("/borrower/"):
             exempt = any(path.startswith(p) for p in _ADMIN_AUTH_EXEMPT_PREFIXES)
-            if not exempt and _current_admin_principal(request) is None:
+            disabled = _admin_auth_disabled()
+            if not exempt and not disabled and _current_admin_principal(request) is None:
                 return RedirectResponse(url="/borrower/login", status_code=303)
             # Dead-man freeze: block writes when frozen. Read paths still serve
             # (so the principal can see what's happening) — only POST/PUT/
-            # PATCH/DELETE are blocked.
+            # PATCH/DELETE are blocked. Independent of admin-auth being on.
             if not exempt and request.method in ("POST", "PUT", "PATCH", "DELETE"):
                 state = _compute_deadman_state()
                 if state.is_frozen:
