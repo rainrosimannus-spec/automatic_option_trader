@@ -9,6 +9,28 @@
         <p class="text-gray-400 text-sm mt-1">Bruno — MesiCap loan portfolio management</p>
     </div>
 
+    {% if pending_approvals %}
+    <div class="bg-amber-950/40 border border-amber-800 rounded p-4 mb-6">
+        <div class="flex items-baseline justify-between gap-2 flex-wrap mb-2">
+            <span class="text-amber-300 font-medium text-sm">
+                {{ pending_approvals | length }} loan{{ '' if pending_approvals|length == 1 else 's' }} awaiting your approval
+            </span>
+            <span class="text-xs text-amber-100/70">Access quorum (governance.md §3.3)</span>
+        </div>
+        <ul class="text-xs text-amber-100 space-y-1">
+            {% for p in pending_approvals %}
+            <li>
+                <a href="/borrower/loans/{{ p.loan.id }}" class="underline hover:text-amber-300">
+                    #{{ p.loan.id }} · {{ p.loan.description or p.loan.contract_reference }}
+                </a>
+                <span class="text-amber-100/60">— €{{ "{:,.0f}".format(p.loan.principal_max) }} face value;
+                    {{ p.state.have }} / {{ p.state.needed }} approvals</span>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
     {% if deadman and deadman.enabled and deadman.state != 'normal' %}
     <div class="rounded p-4 mb-6 border
         {% if deadman.state == 'frozen' %}bg-red-950/40 border-red-800{% else %}bg-amber-950/40 border-amber-800{% endif %}">

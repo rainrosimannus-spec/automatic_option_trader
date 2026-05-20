@@ -22,8 +22,8 @@ from src.borrower.admin_auth import (
 )
 from src.borrower.audit import snapshot, write_audit
 from src.borrower.models import (
-    Loan, LoanMovement, MovementType, LoanAmendment, Payment, PaymentStatus,
-    LoanStatus, RepaymentStructure, LoanType, InterestRateType,
+    Loan, LoanApproval, LoanMovement, MovementType, LoanAmendment, Payment, PaymentStatus,
+    LoanStatus, PrincipalUser, RepaymentStructure, LoanType, InterestRateType,
     DayCountConvention, InterestTreatment, PaymentFrequency, LoanPurpose,
     Counterparty, DocumentType, LoanDocument, PortalUser, get_session_factory,
 )
@@ -97,11 +97,15 @@ def borrower_logout(request: Request):
 @router.get("/", response_class=HTMLResponse)
 def borrower_landing(request: Request):
     from src.borrower.deadman import compute_state, executor_contact
+    from src.borrower.quorum import pending_approval_loans
+    principal = current_principal(request)
+    pending = pending_approval_loans(principal.id) if principal else []
     return templates.TemplateResponse("borrower.html", {
         "request": request,
-        "current_principal": current_principal(request),
+        "current_principal": principal,
         "deadman": compute_state(),
         "deadman_executor": executor_contact(),
+        "pending_approvals": pending,
     })
 
 
@@ -254,6 +258,14 @@ def borrower_loan_detail(request: Request, loan_id: int):
             reverse=True,
         )
         has_agreement = any(d.document_type == DocumentType.AGREEMENT for d in documents_sorted)
+        # Access quorum state for this loan (governance.md §3.3)
+        from src.borrower.quorum import quorum_state
+        qstate = quorum_state(loan, session=session)
+        principal_now = current_principal(request)
+        principal_has_approved = (
+            principal_now is not None
+            and any(a["principal_id"] == principal_now.id for a in qstate.approvers)
+        )
         return templates.TemplateResponse("borrower_loan_detail.html", {
             "request": request,
             "loan": loan,
@@ -275,6 +287,9 @@ def borrower_loan_detail(request: Request, loan_id: int):
             "documents": documents_sorted,
             "document_types": [t.value for t in DocumentType],
             "has_agreement": has_agreement,
+            "qstate": qstate,
+            "principal_has_approved": principal_has_approved,
+            "current_principal": principal_now,
         })
     finally:
         session.close()
@@ -314,6 +329,20 @@ def borrower_loan_change_status(
                     status_code=400,
                     detail=("Cannot activate this loan: no signed agreement on file. "
                             "Upload the signed PDF via the Documents panel on the loan detail page first."),
+                )
+
+            # Access quorum (governance.md §3.3): loans ≥ threshold need 2-of-N
+            # principal approvals before activation.
+            from src.borrower.quorum import quorum_state, QUORUM_THRESHOLD_EUR
+            qs = quorum_state(loan, session=session)
+            if qs.required and not qs.can_activate:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Quorum: this loan's face value (€{loan.principal_max:,.0f}) is at or above "
+                        f"€{QUORUM_THRESHOLD_EUR:,.0f}, so {qs.needed} principal approvals are required. "
+                        f"Currently have {qs.have}; need {qs.remaining} more before DRAFT → ACTIVE."
+                    ),
                 )
 
         before = snapshot(loan)
@@ -1068,6 +1097,73 @@ def borrower_counterparty_edit_submit(
         session.rollback()
         log.error(f"counterparty_edit_error: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to update counterparty: {e}")
+    finally:
+        session.close()
+
+
+@router.post("/loans/{loan_id}/approve")
+def borrower_loan_approve(request: Request, loan_id: int, notes: str = Form("")):
+    """Record the calling principal's approval on a loan (for the quorum gate)."""
+    from datetime import datetime
+    from src.borrower.quorum import has_approved
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+        principal = current_principal(request)
+        if principal is None:
+            raise HTTPException(status_code=401, detail="Login required")
+        # principal here is an AuthedPrincipal snapshot; look up the DB row
+        pu = session.query(PrincipalUser).filter_by(id=principal.id).first()
+        if pu is None:
+            raise HTTPException(status_code=401, detail="Principal not found")
+        if has_approved(loan_id, pu.id, session=session):
+            raise HTTPException(status_code=400, detail="You have already approved this loan")
+
+        appr = LoanApproval(
+            loan_id=loan_id,
+            approver_id=pu.id,
+            approved_at=datetime.utcnow(),
+            notes=notes.strip() or None,
+        )
+        session.add(appr)
+        session.flush()
+        write_audit(session, action="approve", entity_type="LoanApproval", entity_id=appr.id,
+                    after=snapshot(appr), request=request,
+                    notes=f"loan {loan_id} approved by {pu.email}")
+        session.commit()
+        log.info(f"loan_approved loan_id={loan_id} approver={pu.email}")
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"loan_approve_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to approve: {e}")
+    finally:
+        session.close()
+
+
+@router.post("/loans/{loan_id}/approve/{approval_id}/revoke")
+def borrower_loan_approval_revoke(request: Request, loan_id: int, approval_id: int):
+    """A principal may revoke their own approval before activation (e.g. on
+    second thought). Cannot revoke another principal's approval."""
+    session = BrunoSession()
+    try:
+        appr = session.query(LoanApproval).filter_by(id=approval_id, loan_id=loan_id).first()
+        if not appr:
+            raise HTTPException(status_code=404, detail="Approval not found")
+        principal = current_principal(request)
+        if principal is None or principal.id != appr.approver_id:
+            raise HTTPException(status_code=403, detail="Cannot revoke another principal's approval")
+        before = snapshot(appr)
+        session.delete(appr)
+        write_audit(session, action="revoke_approval", entity_type="LoanApproval",
+                    entity_id=approval_id, before=before, request=request)
+        session.commit()
+        log.info(f"loan_approval_revoked loan_id={loan_id} approver_id={appr.approver_id}")
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
     finally:
         session.close()
 

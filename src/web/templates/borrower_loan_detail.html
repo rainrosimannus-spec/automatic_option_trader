@@ -203,6 +203,60 @@
         </table>
     </div>
 
+    {% if loan.status.value == 'draft' and qstate.required %}
+    <div class="rounded p-4 mb-6 border
+        {% if qstate.can_activate %}bg-green-950/30 border-green-800{% else %}bg-amber-950/30 border-amber-800{% endif %}">
+        <div class="flex items-baseline justify-between gap-2 flex-wrap mb-3">
+            <div>
+                <span class="text-sm font-medium {% if qstate.can_activate %}text-green-300{% else %}text-amber-300{% endif %}">
+                    Access quorum {% if qstate.can_activate %}met{% else %}pending{% endif %}: {{ qstate.have }} / {{ qstate.needed }} principals
+                </span>
+                <span class="text-xs text-gray-400 ml-2">
+                    Threshold: €{{ "{:,.0f}".format(qstate.threshold_eur) }}; this loan: €{{ "{:,.0f}".format(loan.principal_max) }}
+                </span>
+            </div>
+            {% if not principal_has_approved %}
+            <form method="post" action="/borrower/loans/{{ loan.id }}/approve" class="inline">
+                <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-3 py-1.5 rounded text-xs"
+                        onclick="return confirm('Record your approval for this loan?');">
+                    Approve as principal
+                </button>
+            </form>
+            {% else %}
+            <span class="text-xs text-green-400">You have already approved.</span>
+            {% endif %}
+        </div>
+        {% if qstate.approvers %}
+        <table class="w-full text-xs">
+            <thead class="text-[10px] uppercase tracking-widest text-gray-500">
+                <tr><th class="text-left py-1">Approved by</th><th class="text-left py-1">At</th><th class="text-right py-1"></th></tr>
+            </thead>
+            <tbody>
+                {% for a in qstate.approvers %}
+                <tr>
+                    <td class="py-1">{{ a.name }} <span class="text-gray-500">({{ a.email }})</span></td>
+                    <td class="py-1 tabular-nums text-gray-500">{{ a.approved_at.strftime('%d.%m.%Y %H:%M') }}</td>
+                    <td class="py-1 text-right">
+                        {% if principal_has_approved and current_principal and a.principal_id == current_principal.id %}
+                        <form method="post" action="/borrower/loans/{{ loan.id }}/approve/{{ a.approval_id }}/revoke" class="inline">
+                            <button type="submit" class="text-red-300/80 hover:text-red-300"
+                                    onclick="return confirm('Revoke your approval?');">revoke</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+        {% if not qstate.can_activate %}
+        <p class="text-xs text-amber-100/80 mt-2">
+            {{ qstate.remaining }} more approval{{ '' if qstate.remaining == 1 else 's' }} needed before this loan can transition DRAFT → ACTIVE.
+        </p>
+        {% endif %}
+    </div>
+    {% endif %}
+
     <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
         <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
             <div class="text-[10px] uppercase tracking-widest text-gray-500">Documents ({{ documents | length }})</div>

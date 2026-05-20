@@ -352,6 +352,29 @@ class Payment(Base):
     loan = relationship("Loan", back_populates="payments")
 
 
+class LoanApproval(Base):
+    """
+    Principal approval on a loan. Required for DRAFT → ACTIVE transition when
+    the loan's principal_max meets or exceeds the quorum threshold (governance.md
+    §3.3 / src/borrower/quorum.py). Two DISTINCT approvers are needed; the
+    activating principal counts as one if they've recorded their approval.
+
+    See `quorum_state(loan_id)` for the queue-evaluation logic. Approvals are
+    permanent records — once a principal has approved, the row stays in the
+    audit trail even if the loan is later cancelled or amended.
+    """
+    __tablename__ = "loan_approvals"
+
+    id = Column(Integer, primary_key=True)
+    loan_id = Column(Integer, ForeignKey("loans.id"), nullable=False, index=True)
+    approver_id = Column(Integer, ForeignKey("principal_users.id"), nullable=False)
+    approved_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    notes = Column(Text, nullable=True)
+
+    loan = relationship("Loan", foreign_keys=[loan_id])
+    approver = relationship("PrincipalUser", foreign_keys=[approver_id])
+
+
 class HeadroomInputs(Base):
     """
     Inputs to the Headroom Calculator (docs/governance.md "debt burden control"
