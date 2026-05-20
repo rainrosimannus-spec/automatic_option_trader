@@ -35,7 +35,7 @@ HIDE_HOURS = 72
 class TopStock:
     ticker: str
     value_eur: float
-    pct_of_pool: float
+    pct_of_collateral: float
 
 
 @dataclass
@@ -45,20 +45,25 @@ class CollateralView:
     NLV-collateralized loan. Every field is an aggregate; no individual
     positions, no P&L, no holdings ranked 6+, no share counts (governance.md
     §5.3).
+
+    Field names use "collateral" rather than "pool" because the latter trips
+    the banned-terminology lint (LEGAL_CONTEXT.md §1-2 risk of fund/AIF
+    misclassification). Internal docs may still use "pool"; lender-facing
+    surfaces and the code that feeds them should not.
     """
     available: bool                         # False until IBKR NLV is wired
     staleness: str                          # 'fresh' | 'stale_banner' | 'stale_hidden' | 'not_ready'
     as_of: Optional[datetime] = None        # snapshot timestamp (UTC) or None
     currency: str = "EUR"
-    pool_nlv_eur: Optional[float] = None
+    collateral_nlv_eur: Optional[float] = None
     pct_stocks: Optional[float] = None      # allocation pie — sums to 100
     pct_cash: Optional[float] = None
     pct_other: Optional[float] = None       # options, bonds, etc. — lumped, never broken out
     top_stocks: List[TopStock] = field(default_factory=list)   # exactly top 5, no more
     cash_value_eur: Optional[float] = None
-    cash_pct_of_pool: Optional[float] = None
+    cash_pct_of_collateral: Optional[float] = None
     loan_outstanding_eur: Optional[float] = None
-    asset_coverage_ratio: Optional[float] = None    # pool_nlv / loan_outstanding
+    asset_coverage_ratio: Optional[float] = None    # collateral_nlv / loan_outstanding
 
     def to_dict(self) -> dict:
         return {
@@ -66,10 +71,10 @@ class CollateralView:
             "staleness": self.staleness,
             "as_of": self.as_of.isoformat() if self.as_of else None,
             "currency": self.currency,
-            "pool_nlv_eur": self.pool_nlv_eur,
+            "collateral_nlv_eur": self.collateral_nlv_eur,
             "allocation": {"stocks": self.pct_stocks, "cash": self.pct_cash, "other": self.pct_other},
-            "top_stocks": [{"ticker": s.ticker, "value_eur": s.value_eur, "pct_of_pool": s.pct_of_pool} for s in self.top_stocks],
-            "cash": {"value_eur": self.cash_value_eur, "pct_of_pool": self.cash_pct_of_pool},
+            "top_stocks": [{"ticker": s.ticker, "value_eur": s.value_eur, "pct_of_collateral": s.pct_of_collateral} for s in self.top_stocks],
+            "cash": {"value_eur": self.cash_value_eur, "pct_of_collateral": self.cash_pct_of_collateral},
             "asset_coverage": {
                 "loan_outstanding_eur": self.loan_outstanding_eur,
                 "ratio": self.asset_coverage_ratio,

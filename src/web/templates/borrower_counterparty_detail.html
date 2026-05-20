@@ -132,6 +132,70 @@
         {% endif %}
     </div>
 
+    {% if portal_users is defined %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Portal users ({{ portal_users | length }})</div>
+            <span class="text-xs text-gray-600">Magic-link login at <code>/lenders/</code></span>
+        </div>
+
+        {% if portal_users %}
+        <table class="w-full text-sm">
+            <thead class="text-[10px] uppercase tracking-widest text-gray-500">
+                <tr>
+                    <th class="text-left py-2">Email</th>
+                    <th class="text-left py-2">Last login</th>
+                    <th class="text-left py-2">Status</th>
+                    <th class="text-right py-2"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for pu in portal_users %}
+                <tr>
+                    <td class="py-2 break-all">{{ pu.email }}</td>
+                    <td class="py-2 text-xs text-gray-500">{{ pu.last_login_at.strftime('%d.%m.%Y %H:%M') if pu.last_login_at else '—' }}</td>
+                    <td class="py-2 text-xs">
+                        {% if pu.locked_at %}
+                        <span class="text-red-400" title="{{ pu.locked_reason or '' }}">locked</span>
+                        {% else %}
+                        <span class="text-green-400">active</span>
+                        {% endif %}
+                    </td>
+                    <td class="py-2 text-right text-xs">
+                        {% if pu.locked_at %}
+                        <form method="post" action="/borrower/portal-users/{{ pu.id }}/unlock" class="inline">
+                            <button type="submit" class="text-amber-300/80 hover:text-amber-300">unlock</button>
+                        </form>
+                        {% else %}
+                        <form method="post" action="/borrower/portal-users/{{ pu.id }}/lock" class="inline"
+                              onsubmit="this.querySelector('input[name=reason]').value = prompt('Lock reason?') || ''; return confirm('Lock this portal user? Active sessions will be invalidated.');">
+                            <input type="hidden" name="reason" value="">
+                            <button type="submit" class="text-red-300/80 hover:text-red-300">lock</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+
+        <form method="post" action="/borrower/counterparties/{{ cp.id }}/portal-users" class="mt-4 flex gap-2 items-end flex-wrap">
+            <div class="flex-1 min-w-[200px]">
+                <label class="block text-xs text-gray-400 mb-1">Add portal user (email)</label>
+                <input type="email" name="email" required placeholder="name@example.com"
+                       class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+            </div>
+            <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-4 py-2 rounded text-sm">
+                Add
+            </button>
+        </form>
+        <p class="text-xs text-gray-600 mt-2">
+            User receives a magic-link login at <code>/lenders/login</code>. No password is set.
+        </p>
+    </div>
+    {% endif %}
+
     {% if cp.notes %}
     <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
         <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Notes</div>

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-950">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>{% block title %}MesiCap — Lender Portal{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'DM Sans', system-ui, sans-serif; }
+        .font-display { font-family: 'Cormorant Garamond', Georgia, serif; }
+        body {
+            padding-top: env(safe-area-inset-top);
+            padding-bottom: env(safe-area-inset-bottom);
+            padding-left: env(safe-area-inset-left);
+            padding-right: env(safe-area-inset-right);
+        }
+    </style>
+</head>
+<body class="h-full text-gray-100 min-h-screen flex flex-col">
+
+<header class="bg-gray-900 border-b border-gray-800">
+    <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+        <a href="/lenders/" class="font-display text-xl tracking-tight text-amber-300/90">MesiCap</a>
+        {% if user is defined and user %}
+        <nav class="flex items-center gap-4 text-sm">
+            <a href="/lenders/dashboard" class="text-gray-300 hover:text-amber-300/90">Loans</a>
+            <a href="/lenders/statements" class="text-gray-300 hover:text-amber-300/90">Statements</a>
+            <a href="/lenders/contact" class="text-gray-300 hover:text-amber-300/90">Contact</a>
+            <span class="text-gray-600">·</span>
+            <a href="/lenders/logout" class="text-gray-500 hover:text-gray-300 text-xs">Sign out</a>
+        </nav>
+        {% endif %}
+    </div>
+</header>
+
+<main class="flex-1 max-w-5xl w-full mx-auto px-4 py-6">
+    {% block content %}{% endblock %}
+</main>
+
+<footer class="bg-gray-900 border-t border-gray-800 mt-8">
+    <div class="max-w-5xl mx-auto px-4 py-4 text-xs text-gray-500">
+        This view is informational and does not modify the terms of your signed loan agreement.
+        For binding terms, refer to your contract. MesiCap Technologies OÜ · Estonia.
+    </div>
+</footer>
+
+</body>
+</html>

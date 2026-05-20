@@ -17,7 +17,7 @@ from src.borrower.models import (
     Loan, LoanMovement, MovementType, LoanAmendment, Payment, PaymentStatus,
     LoanStatus, RepaymentStructure, LoanType, InterestRateType,
     DayCountConvention, InterestTreatment, PaymentFrequency, LoanPurpose,
-    Counterparty, get_session_factory,
+    Counterparty, PortalUser, get_session_factory,
 )
 
 router = APIRouter()
@@ -228,6 +228,179 @@ def borrower_loan_change_status(
         session.close()
 
 
+@router.get("/bank-transactions", response_class=HTMLResponse)
+def borrower_bank_transactions(request: Request, status: str = "unmatched"):
+    """List bank transactions in staging with status filter."""
+    from src.borrower.models import BankTransaction
+    session = BrunoSession()
+    try:
+        status_norm = (status or "unmatched").lower()
+        q = session.query(BankTransaction)
+        if status_norm != "all":
+            q = q.filter(BankTransaction.status == status_norm)
+        rows = q.order_by(BankTransaction.value_date.desc(), BankTransaction.id.desc()).limit(500).all()
+        counts = dict(
+            session.query(BankTransaction.status, func.count(BankTransaction.id))
+            .group_by(BankTransaction.status).all()
+        )
+        counts["all"] = sum(counts.values())
+        # Pre-fetch movements for the manual-match dropdown — recent unlinked-to-bt movements
+        movements = session.query(LoanMovement).order_by(LoanMovement.movement_date.desc()).limit(50).all()
+        return templates.TemplateResponse("borrower_bank_transactions.html", {
+            "request": request,
+            "rows": rows,
+            "current_status": status_norm,
+            "counts": counts,
+            "movements": movements,
+        })
+    finally:
+        session.close()
+
+
+@router.post("/bank-transactions/upload")
+def borrower_bank_transactions_upload(request: Request, file_path: str = Form(...)):
+    """
+    Ingest a CAMT.053 statement file from a local server-side path.
+
+    Why path-on-server rather than browser upload: this admin tool runs in a
+    trusted environment (Rain's dev box or Rasmus's clone) where the principal
+    drops the file into a known folder. Browser upload could come later if
+    needed; path-based keeps the dependency surface tiny.
+    """
+    from src.borrower.lhv_ingest import ingest_camt053_file
+    session = BrunoSession()
+    try:
+        result = ingest_camt053_file(session, file_path)
+        log.info(f"camt053_ingested file={file_path} result={result}")
+        return RedirectResponse(
+            url=f"/borrower/bank-transactions?status=unmatched",
+            status_code=303,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+    except Exception as e:
+        log.error(f"camt053_ingest_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to ingest: {e}")
+    finally:
+        session.close()
+
+
+@router.post("/bank-transactions/{bt_id}/match")
+def borrower_bank_transactions_match(request: Request, bt_id: int, movement_id: int = Form(...)):
+    """Manually link a bank transaction to a LoanMovement."""
+    from src.borrower.models import BankTransaction
+    session = BrunoSession()
+    try:
+        bt = session.query(BankTransaction).filter_by(id=bt_id).first()
+        if not bt:
+            raise HTTPException(status_code=404, detail="Bank transaction not found")
+        mv = session.query(LoanMovement).filter_by(id=movement_id).first()
+        if not mv:
+            raise HTTPException(status_code=404, detail="Movement not found")
+        before = snapshot(bt)
+        bt.matched_movement_id = mv.id
+        bt.status = "matched"
+        write_audit(session, action="match", entity_type="BankTransaction", entity_id=bt.id,
+                    before=before, after=snapshot(bt), request=request,
+                    notes=f"linked to movement {mv.id}")
+        session.commit()
+        return RedirectResponse(url="/borrower/bank-transactions?status=unmatched", status_code=303)
+    finally:
+        session.close()
+
+
+@router.post("/bank-transactions/{bt_id}/ignore")
+def borrower_bank_transactions_ignore(request: Request, bt_id: int):
+    """Mark a bank transaction as ignored (not relevant to any loan)."""
+    from src.borrower.models import BankTransaction
+    session = BrunoSession()
+    try:
+        bt = session.query(BankTransaction).filter_by(id=bt_id).first()
+        if not bt:
+            raise HTTPException(status_code=404, detail="Bank transaction not found")
+        before = snapshot(bt)
+        bt.status = "ignored"
+        write_audit(session, action="ignore", entity_type="BankTransaction", entity_id=bt.id,
+                    before=before, after=snapshot(bt), request=request)
+        session.commit()
+        return RedirectResponse(url="/borrower/bank-transactions?status=unmatched", status_code=303)
+    finally:
+        session.close()
+
+
+@router.get("/exports", response_class=HTMLResponse)
+def borrower_exports(request: Request):
+    """Landing page for downloadable accounting exports."""
+    from datetime import date as _date
+    today = _date.today()
+    # Surface the most recent 4 completed quarters
+    items = []
+    y, q = today.year, ((today.month - 1) // 3 + 1)
+    # Go back to the most recently *completed* quarter
+    q -= 1
+    if q == 0:
+        q = 4; y -= 1
+    for _ in range(4):
+        items.append({"year": y, "quarter": q,
+                      "url": f"/borrower/exports/merit-{y}-Q{q}.csv",
+                      "label": f"{y} Q{q}"})
+        q -= 1
+        if q == 0:
+            q = 4; y -= 1
+    return templates.TemplateResponse("borrower_exports.html", {
+        "request": request,
+        "items": items,
+    })
+
+
+@router.get("/exports/merit-{year}-Q{quarter}.csv")
+def borrower_merit_quarterly(request: Request, year: int, quarter: int):
+    """Download a Merit-formatted CSV for the given quarter (governance.md §4.2)."""
+    from fastapi.responses import Response
+    from src.borrower.merit_export import write_quarterly_csv
+    try:
+        csv_body = write_quarterly_csv(year, quarter)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not csv_body:
+        # Still return a header-only CSV rather than 404, so the bookkeeper
+        # gets a deterministic file for any quarter and can confirm "no activity"
+        csv_body = "loan_id,lender_name,currency,opening_principal,disbursements_qtr,repayments_qtr,restructures_qtr,closing_principal,interest_accrued_qtr,closing_accrued_interest,contract_reference\n"
+    filename = f"merit-{year}-Q{quarter}.csv"
+    return Response(
+        content=csv_body,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/bank-accounts", response_class=HTMLResponse)
+def borrower_bank_accounts(request: Request):
+    """Show registered LHV bank accounts + tally how many movements reference each."""
+    from src.borrower.lhv_accounts import ACCOUNTS
+    session = BrunoSession()
+    try:
+        rows = []
+        for a in ACCOUNTS:
+            mv_count = session.query(LoanMovement).filter(
+                LoanMovement.bank_account_iban == a.iban
+            ).count()
+            rows.append({"acct": a, "movement_count": mv_count})
+        # Any movements with IBANs that aren't in the registry
+        all_used = session.query(LoanMovement.bank_account_iban).filter(
+            LoanMovement.bank_account_iban.isnot(None)
+        ).distinct().all()
+        known = {a.iban for a in ACCOUNTS}
+        orphans = [iban for (iban,) in all_used if iban and iban not in known]
+        return templates.TemplateResponse("borrower_bank_accounts.html", {
+            "request": request,
+            "rows": rows,
+            "orphan_ibans": orphans,
+        })
+    finally:
+        session.close()
+
+
 @router.get("/lender-admin", response_class=HTMLResponse)
 def borrower_lender_admin(request: Request):
     """Admin view of all lender counterparties with KYC + exposure + count guard."""
@@ -326,6 +499,8 @@ def borrower_counterparty_detail(request: Request, cp_id: int):
         active_exposure_by_ccy = dict(active_exposure_by_ccy)
         facility_by_ccy = dict(facility_by_ccy)
 
+        portal_users = session.query(PortalUser).filter_by(counterparty_id=cp.id).order_by(PortalUser.created_at).all()
+
         return templates.TemplateResponse("borrower_counterparty_detail.html", {
             "request": request,
             "cp": cp,
@@ -333,7 +508,97 @@ def borrower_counterparty_detail(request: Request, cp_id: int):
             "active_loans_count": sum(1 for l in loan_rows if l["status"] == "active"),
             "active_exposure_by_ccy": active_exposure_by_ccy,
             "facility_by_ccy": facility_by_ccy,
+            "portal_users": portal_users,
         })
+    finally:
+        session.close()
+
+
+@router.post("/counterparties/{cp_id}/portal-users")
+def borrower_portal_user_add(
+    request: Request,
+    cp_id: int,
+    email: str = Form(...),
+):
+    """Create a portal_users row for a lender. Pilot seeding affordance."""
+    from datetime import datetime
+    session = BrunoSession()
+    try:
+        cp = session.query(Counterparty).filter_by(id=cp_id).first()
+        if not cp:
+            raise HTTPException(status_code=404, detail=f"Counterparty {cp_id} not found")
+        email_norm = email.strip().lower()
+        if not email_norm or "@" not in email_norm:
+            raise HTTPException(status_code=400, detail="Valid email required")
+
+        existing = session.query(PortalUser).filter_by(email=email_norm).first()
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Email already registered (counterparty #{existing.counterparty_id})",
+            )
+
+        pu = PortalUser(
+            counterparty_id=cp_id,
+            email=email_norm,
+            invited_by="rain",  # hardcoded until dashboard auth ships
+            invitation_date=datetime.utcnow(),
+        )
+        session.add(pu)
+        session.flush()
+        write_audit(session, action="create", entity_type="PortalUser", entity_id=pu.id,
+                    after=snapshot(pu), request=request)
+        session.commit()
+        log.info(f"portal_user_added cp_id={cp_id} email={email_norm}")
+        return RedirectResponse(url=f"/borrower/counterparties/{cp_id}", status_code=303)
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"portal_user_add_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to add portal user: {e}")
+    finally:
+        session.close()
+
+
+@router.post("/portal-users/{pu_id}/lock")
+def borrower_portal_user_lock(request: Request, pu_id: int, reason: str = Form("")):
+    """Lock a portal user (no delete — keeps audit trail)."""
+    from datetime import datetime
+    session = BrunoSession()
+    try:
+        pu = session.query(PortalUser).filter_by(id=pu_id).first()
+        if not pu:
+            raise HTTPException(status_code=404, detail=f"Portal user {pu_id} not found")
+        before = snapshot(pu)
+        pu.locked_at = datetime.utcnow()
+        pu.locked_reason = reason.strip() or "manual lock"
+        # Also invalidate any active sessions for this user
+        from src.borrower.models import PortalSession
+        session.query(PortalSession).filter_by(portal_user_id=pu.id).delete()
+        write_audit(session, action="lock", entity_type="PortalUser", entity_id=pu.id,
+                    before=before, after=snapshot(pu), request=request, notes=reason or None)
+        session.commit()
+        return RedirectResponse(url=f"/borrower/counterparties/{pu.counterparty_id}", status_code=303)
+    finally:
+        session.close()
+
+
+@router.post("/portal-users/{pu_id}/unlock")
+def borrower_portal_user_unlock(request: Request, pu_id: int):
+    """Unlock a previously locked portal user."""
+    session = BrunoSession()
+    try:
+        pu = session.query(PortalUser).filter_by(id=pu_id).first()
+        if not pu:
+            raise HTTPException(status_code=404, detail=f"Portal user {pu_id} not found")
+        before = snapshot(pu)
+        pu.locked_at = None
+        pu.locked_reason = None
+        write_audit(session, action="unlock", entity_type="PortalUser", entity_id=pu.id,
+                    before=before, after=snapshot(pu), request=request)
+        session.commit()
+        return RedirectResponse(url=f"/borrower/counterparties/{pu.counterparty_id}", status_code=303)
     finally:
         session.close()
 

@@ -13,6 +13,7 @@ from src.web.routes import portfolio as portfolio_route
 from src.web.routes import consigliere as consigliere_route
 from src.web.routes import ipo as ipo_route
 from src.web.routes import borrower as borrower_route
+from src.lender_portal import router as lender_portal_route
 
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(consigliere_route.router)
     app.include_router(ipo_route.router, prefix="/ipo")
     app.include_router(borrower_route.router, prefix="/borrower")
+    app.include_router(lender_portal_route.router, prefix="/lenders")
 
     # Convenience redirect for nav link
     from fastapi.responses import RedirectResponse as _RR

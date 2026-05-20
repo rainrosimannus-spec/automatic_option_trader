@@ -1,0 +1,90 @@
+{% extends "_base.html" %}
+
+{% block title %}Collateral — Loan {{ loan.id }}{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <p class="text-sm text-gray-500">
+        <a href="/lenders/loans/{{ loan.id }}" class="hover:text-gray-300">&larr; Back to loan {{ loan.id }}</a>
+    </p>
+    <h1 class="text-2xl font-semibold mt-2">Collateral position</h1>
+    <p class="text-sm text-gray-400 mt-1">Aggregated view of MesiCap's brokerage holdings — your loan is secured against this collateral.</p>
+</div>
+
+{% if view.staleness == 'not_ready' %}
+<div class="bg-gray-900 border border-gray-800 rounded p-6">
+    <div class="text-sm text-gray-400">
+        Collateral view is being prepared. Once MesiCap's daily portfolio snapshot is in place, this page will show the collateral size, allocation, top holdings, and your loan's asset coverage. Check back later.
+    </div>
+</div>
+{% elif view.staleness == 'stale_hidden' %}
+<div class="bg-gray-900 border border-gray-800 rounded p-6">
+    <div class="text-sm text-gray-400">
+        Collateral data is temporarily unavailable. We will restore it as soon as the portfolio snapshot refresh resumes.
+    </div>
+</div>
+{% else %}
+
+{% if view.staleness == 'stale_banner' %}
+<div class="bg-amber-950/40 border border-amber-800 rounded p-3 mb-4 text-xs text-amber-200">
+    Snapshot delayed — data shown is from {{ view.as_of.strftime('%d.%m.%Y') if view.as_of else 'previous day' }}.
+</div>
+{% endif %}
+
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+    <div class="bg-gray-900 border border-gray-800 rounded p-3">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500">Collateral NLV</div>
+        <div class="text-lg font-semibold tabular-nums mt-0.5 break-words">{{ "{:,.2f}".format(view.collateral_nlv_eur) }} EUR</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded p-3">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500">Stocks · Cash · Other</div>
+        <div class="text-sm font-semibold tabular-nums mt-0.5">
+            {{ "%.0f"|format(view.pct_stocks) }}% · {{ "%.0f"|format(view.pct_cash) }}% · {{ "%.0f"|format(view.pct_other) }}%
+        </div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded p-3">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500">Your loan outstanding</div>
+        <div class="text-lg font-semibold tabular-nums mt-0.5 break-words">{{ "{:,.2f}".format(view.loan_outstanding_eur) }} EUR</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded p-3">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500">Asset coverage</div>
+        <div class="text-lg font-semibold tabular-nums mt-0.5">{{ "%.2f"|format(view.asset_coverage_ratio) }}×</div>
+    </div>
+</div>
+
+<div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+    <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Top 5 stock holdings</div>
+    <table class="w-full text-sm">
+        <thead class="text-[10px] uppercase tracking-widest text-gray-500">
+            <tr>
+                <th class="text-left py-2">Ticker</th>
+                <th class="text-right py-2">Value</th>
+                <th class="text-right py-2">% of collateral</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800">
+            {% for s in view.top_stocks %}
+            <tr>
+                <td class="py-2">{{ s.ticker }}</td>
+                <td class="py-2 text-right tabular-nums">{{ "{:,.2f}".format(s.value_eur) }} EUR</td>
+                <td class="py-2 text-right tabular-nums">{{ "%.1f"|format(s.pct_of_collateral) }}%</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+    <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Cash position</div>
+    <div class="text-sm text-gray-300">
+        <span class="tabular-nums">{{ "{:,.2f}".format(view.cash_value_eur) }} EUR</span>
+        <span class="text-gray-500"> · {{ "%.1f"|format(view.cash_pct_of_collateral) }}% of collateral</span>
+    </div>
+</div>
+
+<p class="text-xs text-gray-600">
+    Snapshot {% if view.as_of %}as of {{ view.as_of.strftime('%d.%m.%Y') }}{% else %}pending{% endif %}.
+    Aggregated values only — individual positions are not disclosed.
+</p>
+{% endif %}
+{% endblock %}

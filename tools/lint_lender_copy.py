@@ -10,16 +10,14 @@ docs/governance.md §5.7. This script is a CI guard against accidentally
 introducing those words on the lender-facing surface.
 
 Scope: scans only files inside the lender-facing surface, identified by path:
-    src/web/lender_templates/**/*.html   (Phase 3 portal templates)
-    src/web/lender_templates/**/*.txt
-    data/statements/templates/**/*.html  (Phase 2 quarterly statement PDF templates)
+    src/lender_portal/templates/**/*.html   (Phase 3 portal templates)
+    src/lender_portal/templates/**/*.txt
+    data/statements/templates/**/*.html      (Phase 2 quarterly statement PDF templates)
     data/statements/templates/**/*.txt
 
 The admin-side borrower_*.html templates (where "bank account IBAN" appears
-as a legitimate data-entry label) are NOT in scope. Until the lender portal
-ships, this lint will usually find no files — that is intentional. As soon
-as the portal directory exists with content, every commit runs through the
-gate.
+as a legitimate data-entry label) are NOT in scope. Lender-facing emails
+should live under src/lender_portal/templates/ too so they're caught.
 
 Usage:
     python3 tools/lint_lender_copy.py             # scan + report + exit 1 on any hit
@@ -42,8 +40,8 @@ BANNED = [
 ]
 
 SCAN_GLOBS = [
-    "src/web/lender_templates/**/*.html",
-    "src/web/lender_templates/**/*.txt",
+    "src/lender_portal/templates/**/*.html",
+    "src/lender_portal/templates/**/*.txt",
     "data/statements/templates/**/*.html",
     "data/statements/templates/**/*.txt",
 ]

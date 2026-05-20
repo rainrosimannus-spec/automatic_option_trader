@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Bank Transactions{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500"><a href="/borrower" class="hover:text-gray-300">&larr; Back to Borrower</a></p>
+        <h1 class="text-3xl font-semibold mt-2">Bank Transactions</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            CAMT.053 staging — ingested LHV statement entries waiting to be matched to loan movements.
+        </p>
+
+        {% set filters = [
+            ('unmatched', 'Unmatched'),
+            ('matched',   'Matched'),
+            ('ignored',   'Ignored'),
+            ('all',       'All'),
+        ] %}
+        <div class="flex gap-2 mt-4 flex-wrap">
+            {% for key, label in filters %}
+            <a href="/borrower/bank-transactions?status={{ key }}"
+               class="text-xs px-3 py-1 rounded border {% if current_status == key %}bg-amber-300/90 text-gray-950 border-amber-300/90 font-medium{% else %}border-gray-700 text-gray-300 hover:border-amber-300/50 hover:text-amber-300/90{% endif %}">
+                {{ label }}{% if counts.get(key) %} <span class="opacity-60">({{ counts[key] }})</span>{% endif %}
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded p-5 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Ingest a CAMT.053 file</div>
+        <form method="post" action="/borrower/bank-transactions/upload" class="flex gap-2 items-end flex-wrap">
+            <div class="flex-1 min-w-[300px]">
+                <label class="block text-xs text-gray-400 mb-1">Server-side file path</label>
+                <input type="text" name="file_path" required placeholder="/path/to/statement.xml"
+                       class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm font-mono focus:border-amber-300/50 focus:outline-none">
+            </div>
+            <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-4 py-2 rounded text-sm">
+                Ingest
+            </button>
+        </form>
+        <p class="text-xs text-gray-600 mt-2">
+            Path is on the server filesystem. Idempotent on (file, entry reference) — re-ingesting the same file is safe.
+        </p>
+    </div>
+
+    {% if rows %}
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
+        <div class="overflow-x-auto">
+        <table class="w-full text-sm min-w-[960px]">
+            <thead class="bg-gray-800 text-[10px] uppercase tracking-widest text-gray-400">
+                <tr>
+                    <th class="text-left px-3 py-2">Value date</th>
+                    <th class="text-right px-3 py-2">Amount</th>
+                    <th class="text-left px-3 py-2">Account</th>
+                    <th class="text-left px-3 py-2">Counterparty</th>
+                    <th class="text-left px-3 py-2">Reference</th>
+                    <th class="text-left px-3 py-2">Status</th>
+                    <th class="text-right px-3 py-2"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for bt in rows %}
+                <tr>
+                    <td class="px-3 py-2 tabular-nums whitespace-nowrap">{{ bt.value_date.strftime('%d.%m.%Y') }}</td>
+                    <td class="px-3 py-2 text-right tabular-nums whitespace-nowrap">
+                        <span class="{% if bt.amount < 0 %}text-red-300{% else %}text-green-300{% endif %}">
+                            {{ "{:+,.2f}".format(bt.amount) }} {{ bt.currency }}
+                        </span>
+                    </td>
+                    <td class="px-3 py-2 text-xs font-mono break-all">{{ bt.account_iban[-8:] }}</td>
+                    <td class="px-3 py-2 text-xs">
+                        <div>{{ bt.counterparty_name or '—' }}</div>
+                        {% if bt.counterparty_iban %}<div class="text-gray-500 font-mono break-all">{{ bt.counterparty_iban }}</div>{% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-xs text-gray-400 max-w-[280px] break-words">{{ bt.reference_text or bt.entry_ref or '—' }}</td>
+                    <td class="px-3 py-2 text-xs">
+                        {% if bt.status == 'matched' %}
+                        <span class="text-green-400">matched → #{{ bt.matched_movement_id }}</span>
+                        {% elif bt.status == 'ignored' %}
+                        <span class="text-gray-500">ignored</span>
+                        {% else %}
+                        <span class="text-amber-300">unmatched</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-right whitespace-nowrap">
+                        {% if bt.status == 'unmatched' %}
+                        <details class="inline-block relative">
+                            <summary class="cursor-pointer text-xs text-amber-300/80 hover:text-amber-300 list-none">match ▾</summary>
+                            <form method="post" action="/borrower/bank-transactions/{{ bt.id }}/match" class="absolute right-0 mt-2 z-10 w-72 bg-gray-900 border border-gray-700 rounded p-3 shadow-lg">
+                                <label class="block text-xs text-gray-400 mb-1">Link to movement</label>
+                                <select name="movement_id" required class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2">
+                                    {% for mv in movements %}
+                                    <option value="{{ mv.id }}">#{{ mv.id }} · loan {{ mv.loan_id }} · {{ "{:,.2f}".format(mv.amount) }} {{ mv.currency }} · {{ mv.movement_date.strftime('%d.%m.%Y') }}</option>
+                                    {% endfor %}
+                                </select>
+                                <button type="submit" class="w-full bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-2 py-1 rounded text-xs">Link</button>
+                            </form>
+                        </details>
+                        <form method="post" action="/borrower/bank-transactions/{{ bt.id }}/ignore" class="inline ml-2">
+                            <button type="submit" class="text-xs text-gray-500 hover:text-gray-300" onclick="return confirm('Mark as ignored?');">ignore</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-6 text-sm text-gray-400">
+        No transactions in the <span class="text-gray-300">{{ current_status }}</span> view. Ingest a CAMT.053 file above to populate.
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}

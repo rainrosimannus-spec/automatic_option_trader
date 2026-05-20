@@ -1,0 +1,297 @@
+"""
+Lender portal FastAPI router. Mounted at /lenders/ in the main app.
+
+Read-only, magic-link authenticated. See docs/governance.md §5 and
+CLAUDE.md "Lender portal privacy" for the architectural invariants this
+module enforces.
+
+What this router is allowed to read:
+- The authenticated user's own Counterparty record
+- Loans where Counterparty is the lender (loans_as_lender)
+- Movements + payments on those loans
+- Statement files in data/statements/{counterparty_id}/
+
+What this router is forbidden from reading:
+- Any other counterparty's data
+- Any Maggy/Winston tables (positions, account, trades, etc.)
+- The audit log
+- System config
+
+The single allowed exception is via src/borrower/collateral.py:collateral_view(loan_id)
+for loans where loan.is_nlv_collateralized=True (see governance.md §5.3).
+"""
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import date
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+
+from src.borrower.accrual import compute_accrual
+from src.borrower.collateral import collateral_view, is_collateral_viewable
+from src.borrower.models import (
+    Loan, LoanMovement, LoanStatus, MovementType, Payment, PaymentStatus,
+    get_session_factory,
+)
+from src.lender_portal.auth import (
+    AuthedUser, SESSION_COOKIE, clear_session, consume_magic_link, current_user,
+    request_magic_link, set_session_cookie,
+)
+
+
+router = APIRouter()
+
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+
+_BrunoSession = get_session_factory()
+
+
+# === Helpers ===
+
+def _require_user(request: Request) -> AuthedUser:
+    """Resolve session → user or raise to redirect to /lenders/login."""
+    user = current_user(request)
+    if user is None:
+        # 401 here would force the caller to handle; cleaner to raise
+        # and let the outer wrapper convert to a redirect.
+        raise _NeedsLogin()
+    return user
+
+
+class _NeedsLogin(Exception):
+    pass
+
+
+def _require_loan_owned_by_user(loan_id: int, user: AuthedUser, session) -> Loan:
+    """
+    Single ownership check. Per CLAUDE.md "Lender portal privacy" — the only
+    place loan-ownership is verified in this router. A bypass requires editing
+    this function, not adding a new route.
+    """
+    loan = session.query(Loan).filter_by(id=loan_id).first()
+    if loan is None:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    if loan.lender_id != user.counterparty_id:
+        # Don't leak that the loan exists; 404 not 403.
+        raise HTTPException(status_code=404, detail="Loan not found")
+    return loan
+
+
+def _outstanding(loan: Loan) -> float:
+    out = 0.0
+    for m in loan.movements:
+        if m.movement_type == MovementType.DISBURSEMENT:
+            out += m.amount
+        elif m.movement_type == MovementType.PRINCIPAL_RESTRUCTURE:
+            out += m.amount
+        elif m.movement_type == MovementType.PRINCIPAL_REPAYMENT:
+            out -= m.amount
+    return out
+
+
+# === Routes ===
+
+@router.get("/", response_class=HTMLResponse)
+def lender_root(request: Request):
+    """Root: redirect to dashboard if logged in, else login page."""
+    user = current_user(request)
+    if user is None:
+        return RedirectResponse(url="/lenders/login", status_code=303)
+    return RedirectResponse(url="/lenders/dashboard", status_code=303)
+
+
+@router.get("/login", response_class=HTMLResponse)
+def lender_login_form(request: Request):
+    if current_user(request) is not None:
+        return RedirectResponse(url="/lenders/dashboard", status_code=303)
+    return templates.TemplateResponse("lender_login.html", {
+        "request": request,
+        "message": None,
+        "email_value": "",
+    })
+
+
+@router.post("/login", response_class=HTMLResponse)
+def lender_login_submit(request: Request, email: str = Form(...)):
+    result = request_magic_link(email, request=request)
+    # Always show a generic message in prod; dev surfaces the link inline below.
+    message = (
+        "If that email is registered, a magic link has been sent. "
+        "Check your inbox; the link is valid for 15 minutes."
+    )
+    if result.get("status") == "rate_limited":
+        message = "Too many requests in a short window — please wait a few minutes before trying again."
+    elif result.get("status") == "locked":
+        message = "This account is currently locked. Contact MesiCap to restore access."
+    return templates.TemplateResponse("lender_login.html", {
+        "request": request,
+        "message": message,
+        "email_value": email,
+        # Only present in dev mode (see auth.DEV_LOG_MAGIC_LINKS)
+        "dev_magic_url": result.get("magic_url"),
+    })
+
+
+@router.get("/magic/{token}")
+def lender_magic_consume(request: Request, token: str):
+    session_token = consume_magic_link(token, request=request)
+    if session_token is None:
+        return templates.TemplateResponse("lender_login.html", {
+            "request": request,
+            "message": "That link is invalid or has expired. Request a new one.",
+            "email_value": "",
+        }, status_code=400)
+    response = RedirectResponse(url="/lenders/dashboard", status_code=303)
+    set_session_cookie(response, session_token)
+    return response
+
+
+@router.get("/logout")
+def lender_logout(request: Request):
+    response = RedirectResponse(url="/lenders/login", status_code=303)
+    clear_session(request, response)
+    return response
+
+
+@router.get("/dashboard", response_class=HTMLResponse)
+def lender_dashboard(request: Request):
+    try:
+        user = _require_user(request)
+    except _NeedsLogin:
+        return RedirectResponse(url="/lenders/login", status_code=303)
+
+    session = _BrunoSession()
+    try:
+        # The user object came from a different session (detached); refetch the
+        # counterparty within this request's session for relationship traversal.
+        from src.borrower.models import Counterparty
+        cp = session.query(Counterparty).filter_by(id=user.counterparty_id).first()
+        loans = sorted(
+            [l for l in (cp.loans_as_lender if cp else []) if l.status == LoanStatus.ACTIVE],
+            key=lambda l: l.origination_date,
+        )
+
+        rows = []
+        for loan in loans:
+            outstanding = _outstanding(loan)
+            acc = compute_accrual(loan, date.today())
+            # Find next unpaid payment, if any
+            pending = [p for p in loan.payments if p.status in (PaymentStatus.SCHEDULED, PaymentStatus.OVERDUE)]
+            next_payment = min(pending, key=lambda p: p.scheduled_date) if pending else None
+            rows.append({
+                "id": loan.id,
+                "description": loan.description or loan.contract_reference,
+                "currency": loan.currency,
+                "outstanding": outstanding,
+                "accrued_interest": acc.accrued_interest,
+                "total_owed": acc.total_owed,
+                "rate_pct": loan.interest_rate_annual * 100,
+                "maturity_date": loan.maturity_date,
+                "next_payment_date": next_payment.scheduled_date if next_payment else None,
+                "next_payment_amount": next_payment.scheduled_amount if next_payment else None,
+                "is_nlv_collateralized": loan.is_nlv_collateralized,
+            })
+
+        return templates.TemplateResponse("lender_dashboard.html", {
+            "request": request,
+            "user": user,
+            "counterparty": cp,
+            "loans": rows,
+            "as_of": date.today(),
+        })
+    finally:
+        session.close()
+
+
+@router.get("/loans/{loan_id}", response_class=HTMLResponse)
+def lender_loan_detail(request: Request, loan_id: int):
+    try:
+        user = _require_user(request)
+    except _NeedsLogin:
+        return RedirectResponse(url="/lenders/login", status_code=303)
+
+    session = _BrunoSession()
+    try:
+        loan = _require_loan_owned_by_user(loan_id, user, session)
+        outstanding = _outstanding(loan)
+        acc = compute_accrual(loan, date.today())
+        movements_sorted = sorted(loan.movements, key=lambda m: m.movement_date)
+        payments_sorted = sorted(loan.payments, key=lambda p: p.scheduled_date)
+        amendments_sorted = sorted(loan.amendments, key=lambda a: a.amendment_date)
+        return templates.TemplateResponse("lender_loan_detail.html", {
+            "request": request,
+            "user": user,
+            "loan": loan,
+            "outstanding": outstanding,
+            "accrual": acc,
+            "movements": movements_sorted,
+            "payments": payments_sorted,
+            "amendments": amendments_sorted,
+            "rate_pct": loan.interest_rate_annual * 100,
+            "has_collateral_view": is_collateral_viewable(loan),
+        })
+    finally:
+        session.close()
+
+
+@router.get("/loans/{loan_id}/collateral", response_class=HTMLResponse)
+def lender_loan_collateral(request: Request, loan_id: int):
+    """Collateral view — only shown if loan.is_nlv_collateralized (governance.md §5.3)."""
+    try:
+        user = _require_user(request)
+    except _NeedsLogin:
+        return RedirectResponse(url="/lenders/login", status_code=303)
+
+    session = _BrunoSession()
+    try:
+        loan = _require_loan_owned_by_user(loan_id, user, session)
+        if not is_collateral_viewable(loan):
+            # 404, not 403 — don't leak that the flag exists on other loans
+            raise HTTPException(status_code=404, detail="Not found")
+        view = collateral_view(loan_id)
+        return templates.TemplateResponse("lender_collateral.html", {
+            "request": request,
+            "user": user,
+            "loan": loan,
+            "view": view,
+        })
+    finally:
+        session.close()
+
+
+@router.get("/statements", response_class=HTMLResponse)
+def lender_statements(request: Request):
+    try:
+        user = _require_user(request)
+    except _NeedsLogin:
+        return RedirectResponse(url="/lenders/login", status_code=303)
+    # Statement PDF generation is Phase 2.5/3 work. Placeholder for now.
+    return templates.TemplateResponse("lender_statements.html", {
+        "request": request,
+        "user": user,
+        "statements": [],
+    })
+
+
+@router.get("/contact", response_class=HTMLResponse)
+def lender_contact(request: Request):
+    try:
+        user = _require_user(request)
+    except _NeedsLogin:
+        return RedirectResponse(url="/lenders/login", status_code=303)
+    session = _BrunoSession()
+    try:
+        from src.borrower.models import Counterparty
+        cp = session.query(Counterparty).filter_by(id=user.counterparty_id).first()
+        return templates.TemplateResponse("lender_contact.html", {
+            "request": request,
+            "user": user,
+            "counterparty": cp,
+        })
+    finally:
+        session.close()

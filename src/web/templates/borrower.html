@@ -16,8 +16,28 @@
         </a>
 
         <a href="/borrower/lender-admin" class="block bg-gray-900 border border-gray-800 hover:border-amber-300/40 rounded p-5 transition">
-            <h2 class="text-xl font-semibold text-amber-300/90">Lender Site Admin</h2>
-            <p class="text-sm text-gray-400 mt-2">Manage the lender-facing portal: invite new lenders, view portal access logs, publish quarterly statements, manage lender accounts.</p>
+            <h2 class="text-xl font-semibold text-amber-300/90">Lender Admin</h2>
+            <p class="text-sm text-gray-400 mt-2">Per-lender view: exposure, KYC, contact, portal users. Soft ceiling at 20 active lenders per LEGAL_CONTEXT.md.</p>
+        </a>
+
+        <a href="/borrower/bank-accounts" class="block bg-gray-900 border border-gray-800 hover:border-amber-300/40 rounded p-5 transition">
+            <h2 class="text-xl font-semibold text-amber-300/90">Bank Accounts</h2>
+            <p class="text-sm text-gray-400 mt-2">LHV accounts registered with Bruno. Used for CAMT.053 ingestion + as the canonical source of cash truth.</p>
+        </a>
+
+        <a href="/borrower/bank-transactions" class="block bg-gray-900 border border-gray-800 hover:border-amber-300/40 rounded p-5 transition">
+            <h2 class="text-xl font-semibold text-amber-300/90">Bank Transactions</h2>
+            <p class="text-sm text-gray-400 mt-2">CAMT.053 staging. Ingest LHV statement files; match to loan movements; reconcile.</p>
+        </a>
+
+        <a href="/borrower/exports" class="block bg-gray-900 border border-gray-800 hover:border-amber-300/40 rounded p-5 transition">
+            <h2 class="text-xl font-semibold text-amber-300/90">Exports</h2>
+            <p class="text-sm text-gray-400 mt-2">Quarterly Merit CSV for the bookkeeper. One row per loan per quarter — opening, movements, accrued interest, closing.</p>
+        </a>
+
+        <a href="/lenders/" target="_blank" class="block bg-gray-900 border border-gray-800 hover:border-amber-300/40 rounded p-5 transition">
+            <h2 class="text-xl font-semibold text-amber-300/90">Lender Portal &nearr;</h2>
+            <p class="text-sm text-gray-400 mt-2">Open the lender-facing portal at <code>/lenders/</code> in a new tab. Live behind magic-link login.</p>
         </a>
     </div>
 </div>

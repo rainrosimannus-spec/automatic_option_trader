@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Bank Accounts{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500"><a href="/borrower" class="hover:text-gray-300">&larr; Back to Borrower</a></p>
+        <h1 class="text-3xl font-semibold mt-2">Bank accounts</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            MesiCap's registered LHV accounts. Used by CAMT.053 ingestion + as the source of
+            cash truth for loan movement reconciliation.
+        </p>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden mb-6">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-800 text-[10px] uppercase tracking-widest text-gray-400">
+                <tr>
+                    <th class="text-left px-3 py-2">Label</th>
+                    <th class="text-left px-3 py-2">IBAN</th>
+                    <th class="text-left px-3 py-2">Role · Ccy</th>
+                    <th class="text-right px-3 py-2">Linked movements</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for row in rows %}
+                <tr>
+                    <td class="px-3 py-2 font-medium">{{ row.acct.label }}</td>
+                    <td class="px-3 py-2 font-mono text-xs break-all">{{ row.acct.iban }}</td>
+                    <td class="px-3 py-2 text-xs text-gray-400">{{ row.acct.role }} · {{ row.acct.currency }}</td>
+                    <td class="px-3 py-2 text-right tabular-nums">{{ row.movement_count }}</td>
+                </tr>
+                {% if row.acct.notes %}
+                <tr>
+                    <td colspan="4" class="px-3 pb-3 text-xs text-gray-500">{{ row.acct.notes }}</td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if orphan_ibans %}
+    <div class="bg-amber-950/40 border border-amber-800 rounded p-4 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-amber-300 mb-2">Unregistered IBANs on movements ({{ orphan_ibans | length }})</div>
+        <p class="text-xs text-amber-100 mb-2">
+            Movements reference IBANs not in the registry. Either add them to
+            <code>src/borrower/lhv_accounts.py</code> or correct the movement.
+        </p>
+        <ul class="text-xs font-mono space-y-1">
+            {% for iban in orphan_ibans %}
+            <li class="break-all">{{ iban }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <p class="text-xs text-gray-500">
+        Edits go through a code change to <code>src/borrower/lhv_accounts.py</code> — bank accounts
+        rarely turn over and this is intentional friction.
+    </p>
+
+</div>
+{% endblock %}

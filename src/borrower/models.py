@@ -352,6 +352,104 @@ class Payment(Base):
     loan = relationship("Loan", back_populates="payments")
 
 
+class BankTransaction(Base):
+    """
+    Staging table for LHV bank transactions ingested from CAMT.053 statement
+    files (governance.md §4.1). Each Ntry in a CAMT.053 file becomes one row.
+
+    Status lifecycle:
+      'unmatched' → 'matched' (linked to a LoanMovement)
+      'unmatched' → 'ignored' (acknowledged as not relevant — e.g. payroll)
+
+    Idempotency: (source_file, entry_ref) is treated as a natural key — re-
+    ingesting the same file doesn't create duplicates.
+    """
+    __tablename__ = "bank_transactions"
+
+    id = Column(Integer, primary_key=True)
+    source = Column(String(32), nullable=False, default="camt053")
+    source_file = Column(String(512), nullable=False)        # filename of the CAMT.053 file
+    statement_id = Column(String(128), nullable=True)        # CAMT statement Id
+    entry_ref = Column(String(128), nullable=True)           # CAMT NtryRef / AcctSvcrRef
+
+    value_date = Column(Date, nullable=False)
+    booking_date = Column(Date, nullable=True)
+    amount = Column(Float, nullable=False)                   # signed: + = credit to us, - = debit
+    currency = Column(String(3), nullable=False)
+
+    account_iban = Column(String(64), nullable=False)        # one of our LHV accounts
+    counterparty_iban = Column(String(64), nullable=True)
+    counterparty_name = Column(String(255), nullable=True)
+    reference_text = Column(Text, nullable=True)
+
+    matched_movement_id = Column(Integer, ForeignKey("loan_movements.id"), nullable=True)
+    status = Column(String(16), nullable=False, default="unmatched", index=True)
+
+    ingested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class PortalUser(Base):
+    """
+    Lender-portal login identity. Belongs to a Counterparty (the lender entity).
+    One Counterparty can have multiple PortalUsers (e.g., principal + accountant)
+    but never zero — a PortalUser without a Counterparty has no loans to see.
+
+    Magic-link auth: no password. User enters email → backend issues a one-shot
+    token by email → token consumer creates a PortalSession.
+
+    See docs/governance.md §5.5.
+    """
+    __tablename__ = "portal_users"
+
+    id = Column(Integer, primary_key=True)
+    counterparty_id = Column(Integer, ForeignKey("counterparties.id"), nullable=False)
+    email = Column(String(255), nullable=False, unique=True, index=True)
+
+    # Current pending magic-link token (cleared on consumption). Hashed at rest
+    # so a DB leak doesn't grant logins.
+    magic_link_token_hash = Column(String(128), nullable=True)
+    magic_link_expires_at = Column(DateTime, nullable=True)
+    magic_link_sent_at = Column(DateTime, nullable=True)
+
+    last_login_at = Column(DateTime, nullable=True)
+
+    # Lockout (manual, not auto). NULL = active.
+    locked_at = Column(DateTime, nullable=True)
+    locked_reason = Column(String(255), nullable=True)
+
+    invited_by = Column(String(64), nullable=True)   # actor name from audit_log
+    invitation_date = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    counterparty = relationship("Counterparty", foreign_keys=[counterparty_id])
+
+
+class PortalSession(Base):
+    """
+    Active lender-portal session. Cookie's value is the session token, stored
+    here hashed. Deleting rows from this table mass-invalidates sessions —
+    useful as a compromise-response step.
+
+    See docs/governance.md §5.7.
+    """
+    __tablename__ = "portal_sessions"
+
+    id = Column(Integer, primary_key=True)
+    portal_user_id = Column(Integer, ForeignKey("portal_users.id"), nullable=False, index=True)
+
+    session_token_hash = Column(String(128), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    ip_address = Column(String(64), nullable=True)
+    user_agent = Column(String(512), nullable=True)
+
+    user = relationship("PortalUser", foreign_keys=[portal_user_id])
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 

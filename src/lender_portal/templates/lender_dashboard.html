@@ -1,0 +1,63 @@
+{% extends "_base.html" %}
+
+{% block title %}Your loans — MesiCap{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-semibold">Your loans with MesiCap</h1>
+    <p class="text-sm text-gray-400 mt-1">
+        {{ counterparty.name if counterparty else user.email }} · as of {{ as_of.strftime('%d.%m.%Y') }}
+    </p>
+</div>
+
+{% if loans %}
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    {% for loan in loans %}
+    <a href="/lenders/loans/{{ loan.id }}" class="block bg-gray-900 border border-gray-800 hover:border-amber-300/40 rounded p-5 transition">
+        <div class="flex items-baseline justify-between gap-2">
+            <h2 class="text-base font-medium break-words">{{ loan.description }}</h2>
+            <span class="text-xs text-gray-500 shrink-0">#{{ loan.id }}</span>
+        </div>
+
+        <div class="mt-4 grid grid-cols-2 gap-3">
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Principal outstanding</div>
+                <div class="text-xl font-semibold tabular-nums mt-0.5">{{ "{:,.2f}".format(loan.outstanding) }} {{ loan.currency }}</div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Accrued interest</div>
+                <div class="text-xl font-semibold tabular-nums mt-0.5">{{ "{:,.2f}".format(loan.accrued_interest) }} {{ loan.currency }}</div>
+            </div>
+        </div>
+
+        <div class="mt-3 pt-3 border-t border-gray-800 grid grid-cols-2 gap-3 text-xs text-gray-400">
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Total owed today</div>
+                <div class="tabular-nums mt-0.5">{{ "{:,.2f}".format(loan.total_owed) }} {{ loan.currency }}</div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Rate · maturity</div>
+                <div class="tabular-nums mt-0.5">{{ "%.2f"|format(loan.rate_pct) }}% · {{ loan.maturity_date.strftime('%d.%m.%Y') }}</div>
+            </div>
+        </div>
+
+        {% if loan.next_payment_date %}
+        <div class="mt-3 pt-3 border-t border-gray-800 text-xs">
+            <span class="text-gray-500">Next payment:</span>
+            <span class="text-gray-300 tabular-nums">{{ "{:,.2f}".format(loan.next_payment_amount) }} {{ loan.currency }} on {{ loan.next_payment_date.strftime('%d.%m.%Y') }}</span>
+        </div>
+        {% endif %}
+
+        {% if loan.is_nlv_collateralized %}
+        <div class="mt-3 text-xs text-amber-300/80">Collateral view available →</div>
+        {% endif %}
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="bg-gray-900 border border-gray-800 rounded p-6 text-sm text-gray-400">
+    No active loans on file. If you believe this is incorrect, please reach out via the
+    <a href="/lenders/contact" class="text-amber-300/90 hover:text-amber-300">contact page</a>.
+</div>
+{% endif %}
+{% endblock %}

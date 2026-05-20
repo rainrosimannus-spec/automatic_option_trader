@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Exports{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500"><a href="/borrower" class="hover:text-gray-300">&larr; Back to Borrower</a></p>
+        <h1 class="text-3xl font-semibold mt-2">Exports</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            Bookkeeping-ready CSVs. The bookkeeper imports these into Merit; Bruno does not write to Merit directly
+            (see <code>docs/governance.md §4.2</code>).
+        </p>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded p-5 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Merit — quarterly loan summary</div>
+        <p class="text-sm text-gray-400 mb-4">
+            One row per active loan per quarter: opening principal, disbursements, repayments, restructures, closing
+            principal, interest accrued, closing accrued interest. Use these to post journals for the period.
+        </p>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {% for item in items %}
+            <a href="{{ item.url }}" class="block bg-gray-950 border border-gray-700 hover:border-amber-300/40 rounded px-3 py-2 text-sm text-center">
+                {{ item.label }} <span class="text-xs text-gray-500">CSV</span>
+            </a>
+            {% endfor %}
+        </div>
+        <p class="text-xs text-gray-600 mt-4">
+            Need an older or future quarter? Construct the URL: <code>/borrower/exports/merit-YYYY-Qn.csv</code>.
+        </p>
+    </div>
+
+</div>
+{% endblock %}
