@@ -89,6 +89,26 @@ Status: Headroom Calculator not yet built. Depends on LHV cash reads + IBKR NLV 
 
 All shareholder loans must be formally subordinated to external lenders before Phase 3 launches. Currently `is_subordinated=False` on all loan records — this needs to change via master agreement amendment before any external loan is taken. Flag for action when Phase 3 timing approaches.
 
+### Lender portal privacy (load-bearing invariant)
+
+**Legal authority:** `LEGAL_CONTEXT.md` is the regulatory reference. The rules in this section operationalize it but do not replace it. Where they disagree, LEGAL_CONTEXT.md wins until updated.
+
+**Framing:** the portal is a **courtesy feature** for friends/family/selected lenders — not a regulated product, not a deposit interface, not an investor platform. The design should not feel like one. See `docs/governance.md` §5.0 for the philosophy preamble.
+
+The lender portal at `lenders.mesicap.com` (Phase 3) is **read-only** and lenders see **only their own** counterparty record, loans, payments, and statements. Lenders never see MesiCap's trading data, bank statements, P&L, tax data, other lenders, or any other operational view.
+
+**The single exception:** when a loan is collateralized against MesiCap's brokerage NLV (`loan.is_nlv_collateralized=True`), the lender of that loan sees an aggregated, EOD-snapshot collateral view: total pool NLV, % stocks/cash/other allocation pie, top 5 stock holdings (ticker + € + % of pool), cash position (€ + % of pool), and the asset-coverage ratio on their loan. Snapshot at 05:30 UTC, gated on staleness (banner at 24h, hidden at 72h). No individual option positions, no P&L, no positions ranked 6+, no share counts, no cost basis, no other lender's view of the same pool.
+
+The portal contains no write paths of any kind — no cancel, no withdraw, no instruct. Rights that affect the loan (acceleration, demand for collateral, etc.) exist in the signed agreement and execute out-of-band.
+
+Enforcement is technical, not procedural:
+- Portal app runs as a separate FastAPI process; reads `bruno.db` via a read-only SQLite connection
+- Every loan-scoped route calls a single `require_loan_owned_by_user(loan_id, user)` helper — bypass requires changing the helper
+- Portal process is **forbidden from reading the trading DB** except via one explicit aggregator `collateral_view(loan_id)` that returns the §5.3 aggregates only. Any other read from positions/account/trades is a bug; CI grep should fail builds that introduce one
+- Master kill switch `PORTAL_DISABLED=true` (config reload, no deploy) disables every portal route
+
+Full spec: `docs/governance.md` §5 (Lender Portal) and §5.3 (Privacy boundary & collateral disclosure exception).
+
 ## Coding conventions (Bruno-specific)
 
 ### Money handling
@@ -164,3 +184,10 @@ This is a coordination item, not urgent until Rasmus is ready.
 - Don't mark up loan amounts with FX conversions at storage time. Store original currency, convert at display time only.
 - Don't break the idempotency of the snapshot recorder or seed scripts.
 - Don't add fields to the Counterparty or Loan tables without considering whether they need to round-trip through the New * forms (currently nothing prevents adding orphan fields that no form populates).
+- Don't add any read path in the lender portal (Phase 3, `lenders.mesicap.com`) that touches Maggy/Winston tables directly. The only allowed cross-product read is via the single `collateral_view(loan_id)` aggregator returning the `docs/governance.md` §5.3 aggregates. Adding a second cross-product read path is a privacy breach, not a feature.
+- Don't add any write path of any kind in the lender portal — no buttons, no forms, no action links. The portal is read-only by architectural decision.
+- Don't use "deposit", "savings", "account", "balance", "fund", "pool", or "investment" in any lender-facing text — templates, statement PDFs, emails, anything that reaches a lender. Use "loan", "credit", "principal", "facility", "outstanding". This is a misclassification guard (`LEGAL_CONTEXT.md` §1–2), not a stylistic choice. CI grep should fail builds.
+- Don't add advisory or evaluative copy to the lender portal or its statement PDFs. No "your loan is healthy," no "consider X," no "recommended Y." We're a record-keeper, not the lender's advisor (`LEGAL_CONTEXT.md` rule #8). Facts only, signed agreement as the binding reference.
+- Don't add transferability or assignment UI to the portal. Loan agreements are non-transferable (`LEGAL_CONTEXT.md` rule #5). No "transfer," no "assign," no "sell position" affordance — not even disabled-state buttons.
+- Don't add a KYC / document-upload UI to the portal. AML, where it applies, is tiered to the relationship (`docs/governance.md` §5.5 has the table): shareholders + close circle = none, less familiar / second-round = basic (ID + source-of-funds + beneficial ownership for entities + sanctions/PEP check), larger/higher-risk = enhanced. All of it happens off-portal during a private onboarding conversation and is recorded in `counterparty.kyc_status` + notes. The portal trusts what's there and doesn't gate, prompt, or re-verify.
+- Don't onboard the 19th, 20th, or beyond lender without an explicit principal sign-off. `LEGAL_CONTEXT.md` rule #3 caps active lenders at ~20; the soft counter on the admin lender page should be amber at 18 and red at 20.
