@@ -171,6 +171,9 @@ class Counterparty(Base):
     kyc_status = Column(String(32), nullable=True, default="not_required")  # for now
     kyc_completed_at = Column(DateTime, nullable=True)
 
+    # Merit Aktiva mapping (for quarterly reconciliation, see merit_balances)
+    merit_account_id = Column(String(64), nullable=True)
+
     # Timestamps
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -350,6 +353,65 @@ class Payment(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     loan = relationship("Loan", back_populates="payments")
+
+
+class ContactUpdateRequest(Base):
+    """
+    A lender's request to update their contact info on file. Lenders cannot
+    edit themselves — the portal collects the message here and the admins act
+    on it (governance.md §5.2 "request contact info update" workflow).
+
+    Status lifecycle:
+      'new'        — just submitted, awaiting an admin
+      'acknowledged' — an admin saw it
+      'applied'    — admin updated the Counterparty record per the request
+      'rejected'   — admin chose not to apply (e.g., needs a phone confirmation)
+    """
+    __tablename__ = "contact_update_requests"
+
+    id = Column(Integer, primary_key=True)
+    portal_user_id = Column(Integer, ForeignKey("portal_users.id"), nullable=False)
+    counterparty_id = Column(Integer, ForeignKey("counterparties.id"), nullable=False, index=True)
+
+    subject = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    status = Column(String(32), nullable=False, default="new", index=True)
+    admin_notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    portal_user = relationship("PortalUser", foreign_keys=[portal_user_id])
+    counterparty = relationship("Counterparty", foreign_keys=[counterparty_id])
+
+
+class MeritBalance(Base):
+    """
+    Staging row for a Merit Aktiva account balance pulled at quarter-end.
+
+    Merit is the bookkeeper's authoritative ledger (governance.md §1 row 5).
+    Bruno does not write to Merit; the bookkeeper posts journals based on
+    Bruno's quarterly CSV export. After each quarter Bruno pulls Merit's
+    closing balances for the lender accounts and surfaces a per-lender diff
+    against Bruno's own closing outstandings, so divergences are caught
+    instead of accumulating.
+
+    See governance.md §4.2 for the design.
+    """
+    __tablename__ = "merit_balances"
+
+    id = Column(Integer, primary_key=True)
+    period_start = Column(Date, nullable=False, index=True)
+    period_end = Column(Date, nullable=False, index=True)
+
+    merit_account_id = Column(String(64), nullable=False, index=True)
+    merit_account_name = Column(String(255), nullable=True)
+    currency = Column(String(3), nullable=False, default="EUR")
+    closing_balance = Column(Float, nullable=False)
+
+    source = Column(String(32), nullable=False, default="csv_import")   # 'api' | 'csv_import'
+    pulled_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    notes = Column(Text, nullable=True)
 
 
 class LoanApproval(Base):

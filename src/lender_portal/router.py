@@ -34,8 +34,9 @@ from fastapi.templating import Jinja2Templates
 from src.borrower.accrual import compute_accrual
 from src.borrower.collateral import collateral_view, is_collateral_viewable
 from src.borrower.models import (
-    DocumentType, Loan, LoanDocument, LoanMovement, LoanStatus, MovementType,
-    Payment, PaymentStatus, get_session_factory,
+    ContactUpdateRequest, DocumentType, Loan, LoanDocument, LoanMovement,
+    LoanStatus, MovementType, Payment, PaymentStatus, PortalUser,
+    get_session_factory,
 )
 from src.lender_portal.auth import (
     AuthedUser, SESSION_COOKIE, clear_session, consume_magic_link, current_user,
@@ -404,6 +405,66 @@ def lender_contact(request: Request):
             "request": request,
             "user": user,
             "counterparties": counterparties,
+            "submitted": False,
+        })
+    finally:
+        session.close()
+
+
+@router.post("/contact/request", response_class=HTMLResponse)
+def lender_contact_submit(
+    request: Request,
+    subject: str = Form(...),
+    message: str = Form(...),
+):
+    """Lender submits a contact-info update request. Writes a ContactUpdateRequest
+    row + audit_log entry; admins pick it up on /borrower/."""
+    try:
+        user = _require_user(request)
+    except _NeedsLogin:
+        return RedirectResponse(url="/lenders/login", status_code=303)
+    subject = (subject or "").strip()[:255]
+    message = (message or "").strip()
+    if not subject or not message:
+        raise HTTPException(status_code=400, detail="Subject and message are required.")
+    if len(message) > 5000:
+        raise HTTPException(status_code=400, detail="Message too long (5000 char limit).")
+
+    session = _BrunoSession()
+    try:
+        from src.borrower.audit import snapshot, write_audit
+        pu = session.query(PortalUser).filter_by(id=user.id).first()
+        if pu is None:
+            raise HTTPException(status_code=401, detail="Not logged in")
+        # Bind to whichever counterparty in the user's set is the primary
+        # (lowest cp_id is fine — admin can re-route later via admin_notes).
+        cp_id = min(user.counterparty_ids) if user.counterparty_ids else pu.counterparty_id
+        req_row = ContactUpdateRequest(
+            portal_user_id=pu.id,
+            counterparty_id=cp_id,
+            subject=subject,
+            message=message,
+            status="new",
+        )
+        session.add(req_row)
+        session.flush()
+        write_audit(session, action="create", entity_type="ContactUpdateRequest",
+                    entity_id=req_row.id, after=snapshot(req_row), request=request,
+                    actor=f"portal:{pu.email}")
+        session.commit()
+
+        from src.borrower.models import Counterparty
+        counterparties = (
+            session.query(Counterparty)
+            .filter(Counterparty.id.in_(user.counterparty_ids))
+            .order_by(Counterparty.name)
+            .all()
+        )
+        return templates.TemplateResponse("lender_contact.html", {
+            "request": request,
+            "user": user,
+            "counterparties": counterparties,
+            "submitted": True,
         })
     finally:
         session.close()

@@ -9,6 +9,28 @@
         <p class="text-gray-400 text-sm mt-1">Bruno — MesiCap loan portfolio management</p>
     </div>
 
+    {% if open_contact_requests %}
+    <div class="bg-blue-950/40 border border-blue-800 rounded p-4 mb-6">
+        <div class="flex items-baseline justify-between gap-2 flex-wrap mb-2">
+            <span class="text-blue-300 font-medium text-sm">
+                {{ open_contact_requests | length }} contact-update request{{ '' if open_contact_requests|length == 1 else 's' }} from lenders
+            </span>
+            <span class="text-xs text-blue-100/70"><a href="/borrower/contact-requests" class="underline">view all →</a></span>
+        </div>
+        <ul class="text-xs text-blue-100 space-y-1">
+            {% for r in open_contact_requests[:5] %}
+            <li>
+                <a href="/borrower/contact-requests/{{ r.id }}" class="underline hover:text-blue-300">{{ r.subject }}</a>
+                <span class="text-blue-100/60">— from {{ r.cp_name }} on {{ r.created_at.strftime('%d.%m.%Y') }}</span>
+            </li>
+            {% endfor %}
+            {% if open_contact_requests | length > 5 %}
+            <li class="text-blue-100/60">…and {{ open_contact_requests | length - 5 }} more</li>
+            {% endif %}
+        </ul>
+    </div>
+    {% endif %}
+
     {% if pending_approvals %}
     <div class="bg-amber-950/40 border border-amber-800 rounded p-4 mb-6">
         <div class="flex items-baseline justify-between gap-2 flex-wrap mb-2">
@@ -94,6 +116,11 @@
         <a href="/borrower/exports" class="block bg-gray-900 border border-gray-800 hover:border-amber-300/40 rounded p-5 transition">
             <h2 class="text-xl font-semibold text-amber-300/90">Exports</h2>
             <p class="text-sm text-gray-400 mt-2">Quarterly Merit CSV for the bookkeeper + manual statement generation.</p>
+        </a>
+
+        <a href="/borrower/merit-reconcile" class="block bg-gray-900 border border-gray-800 hover:border-amber-300/40 rounded p-5 transition">
+            <h2 class="text-xl font-semibold text-amber-300/90">Merit reconciliation</h2>
+            <p class="text-sm text-gray-400 mt-2">Quarterly diff: Bruno's per-lender closing outstanding vs Merit Aktiva's closing balance. Flags divergences before they accumulate.</p>
         </a>
 
         <a href="/borrower/statements-archive" class="block bg-gray-900 border border-gray-800 hover:border-amber-300/40 rounded p-5 transition">

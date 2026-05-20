@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
+from src.borrower.fx import to_eur
 from src.borrower.models import (
     LoanApproval, Loan, LoanStatus, PrincipalUser, get_session_factory,
 )
@@ -45,8 +46,13 @@ class QuorumState:
 
 
 def quorum_required(loan: Loan) -> bool:
-    """Does this loan need quorum approval to activate?"""
-    return float(loan.principal_max or 0.0) >= QUORUM_THRESHOLD_EUR
+    """Does this loan need quorum approval to activate?
+
+    Compares face value converted to EUR-equivalent using the soft rates in
+    src/borrower/fx.py — accurate enough to gate workflow, deliberately not
+    used for accounting amounts."""
+    eur_equiv = to_eur(loan.principal_max or 0.0, loan.currency or "EUR") or 0.0
+    return eur_equiv >= QUORUM_THRESHOLD_EUR
 
 
 def quorum_state(loan: Loan, session=None) -> QuorumState:

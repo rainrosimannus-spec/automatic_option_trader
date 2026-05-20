@@ -32,6 +32,23 @@
         </p>
     </div>
 
+    {% if not is_edit and active_lender_count is defined and active_lender_count >= limit_amber %}
+    {% set at_limit = active_lender_count >= limit_red %}
+    <div class="rounded p-3 mb-6 border {% if at_limit %}bg-red-950/40 border-red-800{% else %}bg-amber-950/40 border-amber-800{% endif %}">
+        <span class="text-sm font-medium {% if at_limit %}text-red-300{% else %}text-amber-300{% endif %}">
+            {% if at_limit %}At ceiling.{% else %}Approaching ceiling.{% endif %}
+        </span>
+        <span class="text-xs text-amber-100/80 ml-1">
+            {{ active_lender_count }} active lenders today. LEGAL_CONTEXT.md rule #3 caps at ~{{ limit_red }}.
+            {% if at_limit %}
+            Onboarding additional lenders requires explicit principal sign-off and a lawyer check on credit-institution exposure.
+            {% else %}
+            Plan ahead before onboarding the next few.
+            {% endif %}
+        </span>
+    </div>
+    {% endif %}
+
     <form method="POST" action="{% if is_edit %}/borrower/counterparties/{{ cp.id }}/edit{% else %}/borrower/counterparties-new{% endif %}" class="space-y-6">
 
         <div class="bg-gray-900 border border-gray-800 rounded p-5">
@@ -93,6 +110,14 @@
                            value="{{ cp.related_principal or '' if is_edit else '' }}"
                            class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
                     <p class="text-xs text-gray-600 mt-1">Useful when an OÜ is controlled by a known individual.</p>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Merit account ID</label>
+                    <input type="text" name="merit_account_id" placeholder="e.g., 2410"
+                           value="{{ cp.merit_account_id or '' if is_edit else '' }}"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm font-mono tabular-nums focus:border-amber-300/50 focus:outline-none">
+                    <p class="text-xs text-gray-600 mt-1">Optional. Used to map this lender to a Merit Aktiva account for quarterly reconciliation. Leave blank if not applicable.</p>
                 </div>
 
                 <div>

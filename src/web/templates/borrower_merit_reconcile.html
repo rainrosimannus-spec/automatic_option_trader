@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Merit reconciliation{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500"><a href="/borrower" class="hover:text-gray-300">&larr; Back to Borrower</a></p>
+        <h1 class="text-3xl font-semibold mt-2">Merit reconciliation</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            Per-lender diff of Bruno's closing outstanding against Merit Aktiva's closing balance for {{ report.year }} Q{{ report.quarter }}
+            ({{ report.period_start.strftime('%d.%m.%Y') }} – {{ report.period_end.strftime('%d.%m.%Y') }}).
+        </p>
+    </div>
+
+    <!-- Quarter picker -->
+    <form method="get" action="/borrower/merit-reconcile" class="bg-gray-900 border border-gray-800 rounded p-4 mb-6 flex items-end gap-3 flex-wrap">
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Year</label>
+            <input type="number" name="year" value="{{ report.year }}" min="2020" max="2099" class="w-24 bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm tabular-nums">
+        </div>
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Quarter</label>
+            <select name="quarter" class="w-20 bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                {% for q in [1,2,3,4] %}
+                <option value="{{ q }}" {% if report.quarter == q %}selected{% endif %}>Q{{ q }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-3 py-1.5 rounded text-sm">View</button>
+        <div class="text-xs text-gray-500 ml-auto">
+            {% if report.pulled_at %}
+            Merit data pulled {{ report.pulled_at[:19].replace('T', ' ') }} ({{ report.source }})
+            {% else %}
+            No Merit balances on file for this quarter yet — import below.
+            {% endif %}
+        </div>
+    </form>
+
+    <!-- Status summary -->
+    {% if report.rows %}
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <div class="bg-gray-900 border border-gray-800 rounded p-3">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Red diffs</div>
+            <div class="text-2xl font-semibold {% if report.red_count %}text-red-300{% else %}text-gray-400{% endif %} mt-0.5">{{ report.red_count }}</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded p-3">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Amber diffs</div>
+            <div class="text-2xl font-semibold {% if report.amber_count %}text-amber-300{% else %}text-gray-400{% endif %} mt-0.5">{{ report.amber_count }}</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded p-3">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Not mapped</div>
+            <div class="text-2xl font-semibold {% if report.unmapped_count %}text-blue-300{% else %}text-gray-400{% endif %} mt-0.5">{{ report.unmapped_count }}</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded p-3">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Missing Merit balance</div>
+            <div class="text-2xl font-semibold {% if report.missing_merit_count %}text-blue-300{% else %}text-gray-400{% endif %} mt-0.5">{{ report.missing_merit_count }}</div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Diff table -->
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden mb-6">
+        <div class="overflow-x-auto">
+        <table class="w-full text-sm min-w-[720px]">
+            <thead class="bg-gray-800 text-[10px] uppercase tracking-widest text-gray-400">
+                <tr>
+                    <th class="text-left px-3 py-2">Lender</th>
+                    <th class="text-left px-3 py-2">Merit account</th>
+                    <th class="text-right px-3 py-2">Bruno close</th>
+                    <th class="text-right px-3 py-2">Merit close</th>
+                    <th class="text-right px-3 py-2">Diff</th>
+                    <th class="text-left px-3 py-2">Status</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for r in report.rows %}
+                <tr>
+                    <td class="px-3 py-2">
+                        <a href="/borrower/counterparties/{{ r.cp_id }}" class="hover:text-amber-300/90">{{ r.cp_name }}</a>
+                    </td>
+                    <td class="px-3 py-2 text-xs">
+                        {% if r.merit_account_id %}
+                        <span class="font-mono">{{ r.merit_account_id }}</span>
+                        {% if r.merit_account_name %}<span class="text-gray-500"> · {{ r.merit_account_name }}</span>{% endif %}
+                        {% else %}
+                        <span class="text-blue-400">— not mapped</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-right tabular-nums whitespace-nowrap">{{ "{:,.2f}".format(r.bruno_closing) }} {{ r.currency }}</td>
+                    <td class="px-3 py-2 text-right tabular-nums whitespace-nowrap">
+                        {% if r.merit_closing is not none %}{{ "{:,.2f}".format(r.merit_closing) }} {{ r.currency }}{% else %}—{% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-right tabular-nums whitespace-nowrap
+                        {% if r.status == 'red' %}text-red-300{% elif r.status == 'amber' %}text-amber-300{% elif r.status == 'green' %}text-green-300{% endif %}">
+                        {% if r.diff is not none %}{{ "{:+,.2f}".format(r.diff) }} {{ r.currency }}{% else %}—{% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-xs">
+                        {% if r.status == 'green' %}<span class="text-green-400">✓ matched</span>
+                        {% elif r.status == 'amber' %}<span class="text-amber-300">amber</span>
+                        {% elif r.status == 'red' %}<span class="text-red-300">red</span>
+                        {% elif r.status == 'not_mapped' %}<span class="text-blue-300">map merit_account_id on counterparty</span>
+                        {% elif r.status == 'no_merit_balance' %}<span class="text-blue-300">import Merit balance for this period</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not report.rows %}
+                <tr><td colspan="6" class="px-3 py-4 text-gray-500 italic">No lender counterparties with activity in this period.</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+
+    <!-- CSV import -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-5 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Import Merit closing balances (CSV)</div>
+        <p class="text-sm text-gray-400 mb-4">
+            Export from Merit Aktiva → save as CSV with header row
+            <code>merit_account_id, merit_account_name, currency, closing_balance</code>.
+            Idempotent: re-uploading the same file updates existing rows in place.
+        </p>
+        <form method="post" action="/borrower/merit-reconcile/import" enctype="multipart/form-data" class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Year</label>
+                <input type="number" name="year" value="{{ report.year }}" required class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm tabular-nums">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Quarter</label>
+                <select name="quarter" class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                    {% for q in [1,2,3,4] %}
+                    <option value="{{ q }}" {% if report.quarter == q %}selected{% endif %}>Q{{ q }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="md:col-span-2">
+                <label class="block text-xs text-gray-400 mb-1">CSV file</label>
+                <input type="file" name="file" accept=".csv,text/csv" required class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+            </div>
+            <div class="md:col-span-4 flex justify-end">
+                <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-4 py-1.5 rounded text-sm">Import</button>
+            </div>
+        </form>
+        <p class="text-xs text-gray-600 mt-3">
+            On Rasmus's production clone with <code>bruno_run_integrations=True</code>, Merit balances will be pulled
+            automatically via the Merit API; CSV import is the dev/manual fallback.
+        </p>
+    </div>
+
+    <p class="text-xs text-gray-500">
+        Counterparty Merit account mapping lives on the counterparty's edit page
+        (<code>counterparty.merit_account_id</code>). Set it to the Merit account code that holds this lender's loan balance.
+    </p>
+
+</div>
+{% endblock %}

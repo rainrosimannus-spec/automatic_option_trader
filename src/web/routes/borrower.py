@@ -22,11 +22,11 @@ from src.borrower.admin_auth import (
 )
 from src.borrower.audit import snapshot, write_audit
 from src.borrower.models import (
-    AuditLog, Loan, LoanApproval, LoanMovement, MovementType, LoanAmendment, Payment,
-    PaymentStatus, LoanStatus, PrincipalUser, RepaymentStructure, LoanType,
-    InterestRateType, DayCountConvention, InterestTreatment, PaymentFrequency,
-    LoanPurpose, Counterparty, DocumentType, LoanDocument, PortalUser,
-    get_session_factory,
+    AuditLog, Loan, LoanApproval, LoanMovement, MeritBalance, MovementType,
+    LoanAmendment, Payment, PaymentStatus, LoanStatus, PrincipalUser,
+    RepaymentStructure, LoanType, InterestRateType, DayCountConvention,
+    InterestTreatment, PaymentFrequency, LoanPurpose, Counterparty,
+    DocumentType, LoanDocument, PortalUser, get_session_factory,
 )
 
 router = APIRouter()
@@ -99,15 +99,35 @@ def borrower_logout(request: Request):
 def borrower_landing(request: Request):
     from src.borrower.deadman import compute_state, executor_contact
     from src.borrower.quorum import pending_approval_loans
+    from src.borrower.models import ContactUpdateRequest, Counterparty
     principal = current_principal(request)
     pending = pending_approval_loans(principal.id) if principal else []
-    return templates.TemplateResponse("borrower.html", {
-        "request": request,
-        "current_principal": principal,
-        "deadman": compute_state(),
-        "deadman_executor": executor_contact(),
-        "pending_approvals": pending,
-    })
+    session = BrunoSession()
+    try:
+        # Open contact-update requests from lenders
+        open_requests_rows = (
+            session.query(ContactUpdateRequest)
+            .filter(ContactUpdateRequest.status == "new")
+            .order_by(ContactUpdateRequest.created_at.desc())
+            .limit(20).all()
+        )
+        cp_by_id = {c.id: c.name for c in session.query(Counterparty).all()}
+        open_requests = [{
+            "id": r.id,
+            "cp_name": cp_by_id.get(r.counterparty_id, f"cp #{r.counterparty_id}"),
+            "subject": r.subject,
+            "created_at": r.created_at,
+        } for r in open_requests_rows]
+        return templates.TemplateResponse("borrower.html", {
+            "request": request,
+            "current_principal": principal,
+            "deadman": compute_state(),
+            "deadman_executor": executor_contact(),
+            "pending_approvals": pending,
+            "open_contact_requests": open_requests,
+        })
+    finally:
+        session.close()
 
 
 @router.get("/loans", response_class=HTMLResponse)
@@ -607,6 +627,206 @@ def borrower_generate_statements(request: Request, year: int, quarter: int):
     return RedirectResponse(url="/borrower/exports", status_code=303)
 
 
+@router.get("/contact-requests", response_class=HTMLResponse)
+def borrower_contact_requests(request: Request, status: str = "new"):
+    """List contact-update requests filtered by status (default 'new')."""
+    from src.borrower.models import ContactUpdateRequest
+    session = BrunoSession()
+    try:
+        q = session.query(ContactUpdateRequest)
+        if status and status != "all":
+            q = q.filter(ContactUpdateRequest.status == status)
+        rows = q.order_by(ContactUpdateRequest.created_at.desc()).limit(200).all()
+        cp_by_id = {c.id: c.name for c in session.query(Counterparty).all()}
+        counts = dict(
+            session.query(ContactUpdateRequest.status, func.count(ContactUpdateRequest.id))
+            .group_by(ContactUpdateRequest.status).all()
+        )
+        counts["all"] = sum(counts.values())
+        return templates.TemplateResponse("borrower_contact_requests.html", {
+            "request": request,
+            "rows": rows,
+            "cp_by_id": cp_by_id,
+            "current_status": status,
+            "counts": counts,
+        })
+    finally:
+        session.close()
+
+
+@router.get("/contact-requests/{req_id}", response_class=HTMLResponse)
+def borrower_contact_request_detail(request: Request, req_id: int):
+    from src.borrower.models import ContactUpdateRequest, PortalUser
+    session = BrunoSession()
+    try:
+        r = session.query(ContactUpdateRequest).filter_by(id=req_id).first()
+        if not r:
+            raise HTTPException(status_code=404, detail="Request not found")
+        cp = session.query(Counterparty).filter_by(id=r.counterparty_id).first()
+        portal_user = session.query(PortalUser).filter_by(id=r.portal_user_id).first()
+        return templates.TemplateResponse("borrower_contact_request_detail.html", {
+            "request": request,
+            "r": r,
+            "cp": cp,
+            "portal_user": portal_user,
+        })
+    finally:
+        session.close()
+
+
+@router.post("/contact-requests/{req_id}/resolve")
+def borrower_contact_request_resolve(
+    request: Request,
+    req_id: int,
+    new_status: str = Form(...),
+    admin_notes: str = Form(""),
+):
+    """Mark a contact-update request as acknowledged / applied / rejected."""
+    from src.borrower.models import ContactUpdateRequest
+    if new_status not in ("new", "acknowledged", "applied", "rejected"):
+        raise HTTPException(status_code=400, detail="Invalid status")
+    session = BrunoSession()
+    try:
+        r = session.query(ContactUpdateRequest).filter_by(id=req_id).first()
+        if not r:
+            raise HTTPException(status_code=404, detail="Request not found")
+        before = snapshot(r)
+        r.status = new_status
+        if admin_notes.strip():
+            existing = r.admin_notes or ""
+            r.admin_notes = (existing + "\n" if existing else "") + admin_notes.strip()
+        write_audit(session, action="update", entity_type="ContactUpdateRequest",
+                    entity_id=r.id, before=before, after=snapshot(r), request=request,
+                    notes=f"status: {before.get('status')} -> {new_status}")
+        session.commit()
+        return RedirectResponse(url=f"/borrower/contact-requests/{req_id}", status_code=303)
+    finally:
+        session.close()
+
+
+@router.get("/test-mail")
+def borrower_test_mail(request: Request, to: str = ""):
+    """Send a test email to `to` to verify SMTP credentials.
+    Returns a JSON status. Returns 400 if `to` is missing or invalid."""
+    from src.borrower.mail import is_configured, send_email
+    from fastapi.responses import JSONResponse
+    if not to or "@" not in to:
+        raise HTTPException(status_code=400, detail="Pass ?to=<email> with a valid address")
+    if not is_configured():
+        return JSONResponse({
+            "smtp_configured": False,
+            "sent": False,
+            "reason": "SMTP_HOST env var not set; configure SMTP creds in .env",
+        })
+    result = send_email(to, "MesiCap SMTP test", "If you got this, Bruno's SMTP wiring works.\n— Bruno")
+    return JSONResponse({"smtp_configured": True, **result})
+
+
+@router.get("/merit-reconcile", response_class=HTMLResponse)
+def borrower_merit_reconcile(request: Request, year: int = 0, quarter: int = 0):
+    """Quarterly diff of Bruno's closing outstandings against Merit Aktiva's
+    closing balances per lender (governance.md §4.2)."""
+    from src.borrower.merit_reconcile import reconcile_quarter
+    from datetime import date as _date
+    # Default to the just-ended quarter if not given
+    if not year or not quarter:
+        today = _date.today()
+        cq = ((today.month - 1) // 3) + 1
+        if cq == 1:
+            year, quarter = today.year - 1, 4
+        else:
+            year, quarter = today.year, cq - 1
+    try:
+        report = reconcile_quarter(year, quarter)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return templates.TemplateResponse("borrower_merit_reconcile.html", {
+        "request": request,
+        "report": report,
+        "year": year, "quarter": quarter,
+    })
+
+
+@router.post("/merit-reconcile/import")
+async def borrower_merit_import(
+    request: Request,
+    year: int = Form(...),
+    quarter: int = Form(...),
+    file: UploadFile = File(...),
+):
+    """Import a CSV exported from Merit Aktiva into the merit_balances staging
+    table for a given quarter. CSV columns expected:
+        merit_account_id, merit_account_name, currency, closing_balance
+    Header row required. Idempotent on (period, account_id, source='csv_import')."""
+    import csv as _csv
+    import io
+    from datetime import datetime
+    from src.borrower.merit_export import _quarter_bounds
+    try:
+        period_start, period_end = _quarter_bounds(year, quarter)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    raw = (await file.read()).decode("utf-8-sig", errors="replace")
+    reader = _csv.DictReader(io.StringIO(raw))
+    required = {"merit_account_id", "currency", "closing_balance"}
+    missing = required - set([h.strip() for h in reader.fieldnames or []])
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"CSV missing required columns: {sorted(missing)}. Header must include {sorted(required)}.",
+        )
+
+    session = BrunoSession()
+    written, updated, skipped = 0, 0, 0
+    try:
+        for row in reader:
+            acct = (row.get("merit_account_id") or "").strip()
+            if not acct:
+                skipped += 1
+                continue
+            try:
+                closing = float((row.get("closing_balance") or "0").replace(",", "."))
+            except ValueError:
+                skipped += 1
+                continue
+            existing = (
+                session.query(MeritBalance)
+                .filter_by(period_start=period_start, period_end=period_end,
+                           merit_account_id=acct, source="csv_import")
+                .first()
+            )
+            name = (row.get("merit_account_name") or "").strip() or None
+            currency = (row.get("currency") or "EUR").strip().upper()
+            if existing is not None:
+                existing.merit_account_name = name
+                existing.currency = currency
+                existing.closing_balance = closing
+                existing.pulled_at = datetime.utcnow()
+                updated += 1
+            else:
+                session.add(MeritBalance(
+                    period_start=period_start, period_end=period_end,
+                    merit_account_id=acct, merit_account_name=name,
+                    currency=currency, closing_balance=closing,
+                    source="csv_import",
+                ))
+                written += 1
+        session.commit()
+        log.info(f"merit_import year={year} quarter={quarter} written={written} updated={updated} skipped={skipped}")
+        return RedirectResponse(
+            url=f"/borrower/merit-reconcile?year={year}&quarter={quarter}", status_code=303,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"merit_import_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed: {e}")
+    finally:
+        session.close()
+
+
 @router.get("/audit", response_class=HTMLResponse)
 def borrower_audit(
     request: Request,
@@ -1074,11 +1294,26 @@ def borrower_loan_new_submit(
 def borrower_counterparty_new_form(request: Request):
     """Show the New Counterparty form."""
     from src.borrower.models import CounterpartyType, CounterpartyTier
-    return templates.TemplateResponse("borrower_counterparty_new.html", {
-        "request": request,
-        "counterparty_types": [t.value for t in CounterpartyType],
-        "counterparty_tiers": [t.value for t in CounterpartyTier],
-    })
+    session = BrunoSession()
+    try:
+        # Count of counterparties that have ≥1 active loan as lender. Same
+        # definition as the lender-admin page. Soft-gate banner shows when
+        # approaching LEGAL_CONTEXT.md rule #3 ceiling (~20 active lenders).
+        all_cps = session.query(Counterparty).filter(Counterparty.type != CounterpartyType.INTERNAL).all()
+        active_lender_count = 0
+        for cp in all_cps:
+            if any(ln.status == LoanStatus.ACTIVE for ln in cp.loans_as_lender):
+                active_lender_count += 1
+        return templates.TemplateResponse("borrower_counterparty_new.html", {
+            "request": request,
+            "counterparty_types": [t.value for t in CounterpartyType],
+            "counterparty_tiers": [t.value for t in CounterpartyTier],
+            "active_lender_count": active_lender_count,
+            "limit_amber": 18,
+            "limit_red": 20,
+        })
+    finally:
+        session.close()
 
 
 @router.post("/counterparties-new")
@@ -1096,6 +1331,7 @@ def borrower_counterparty_new_submit(
     related_principal: str = Form(""),
     contact_email: str = Form(""),
     contact_phone: str = Form(""),
+    merit_account_id: str = Form(""),
     kyc_status: str = Form("not_required"),
     notes: str = Form(""),
 ):
@@ -1116,6 +1352,7 @@ def borrower_counterparty_new_submit(
             related_principal=related_principal.strip() or None,
             contact_email=contact_email.strip() or None,
             contact_phone=contact_phone.strip() or None,
+            merit_account_id=merit_account_id.strip() or None,
             kyc_status=kyc_status.strip() or "not_required",
             notes=notes.strip() or None,
         )
@@ -1169,6 +1406,7 @@ def borrower_counterparty_edit_submit(
     related_principal: str = Form(""),
     contact_email: str = Form(""),
     contact_phone: str = Form(""),
+    merit_account_id: str = Form(""),
     kyc_status: str = Form("not_required"),
     notes: str = Form(""),
 ):
@@ -1192,6 +1430,7 @@ def borrower_counterparty_edit_submit(
         cp.related_principal = related_principal.strip() or None
         cp.contact_email = contact_email.strip() or None
         cp.contact_phone = contact_phone.strip() or None
+        cp.merit_account_id = merit_account_id.strip() or None
         cp.kyc_status = kyc_status.strip() or "not_required"
         cp.notes = notes.strip() or None
         write_audit(session, action="update", entity_type="Counterparty", entity_id=cp.id,

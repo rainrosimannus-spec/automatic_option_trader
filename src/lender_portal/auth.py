@@ -120,7 +120,12 @@ def request_magic_link(email: str, request: Optional[Request] = None) -> dict:
         if DEV_LOG_MAGIC_LINKS:
             print(f"[lender-portal] magic link for {email_norm}: {magic_url} (expires {user.magic_link_expires_at}Z)")
 
-        out = {"status": "sent"}
+        # Email delivery (no-op if SMTP env isn't set).
+        from src.borrower.mail import send_magic_link
+        base_url = os.environ.get("LENDER_BASE_URL", "")
+        send_result = send_magic_link(email_norm, magic_url, surface="lender", base_url=base_url)
+
+        out = {"status": "sent", "smtp_sent": send_result.get("sent", False)}
         if DEV_LOG_MAGIC_LINKS:
             out["magic_url"] = magic_url
         return out

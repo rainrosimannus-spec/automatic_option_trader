@@ -1016,6 +1016,26 @@ def job_write_backup_ledger():
         log.error("bruno_backup_ledger_error", error=str(e))
 
 
+def job_merit_pull_quarter():
+    """Pull the just-ended quarter's Merit closing balances. No-op when
+    `bruno_run_integrations` is off; on Rasmus's production clone this runs
+    every 1st of Feb/May/Aug/Nov (30 days after quarter-end) to give the
+    bookkeeper time to post the quarter."""
+    try:
+        from datetime import date as _date
+        from src.borrower.merit_api import pull_quarter
+        today = _date.today()
+        cq = ((today.month - 1) // 3) + 1
+        if cq == 1:
+            year, quarter = today.year - 1, 4
+        else:
+            year, quarter = today.year, cq - 1
+        result = pull_quarter(year, quarter)
+        log.info("bruno_merit_pulled", year=year, quarter=quarter, **result)
+    except Exception as e:
+        log.error("bruno_merit_pull_error", error=str(e))
+
+
 def job_deadman_check():
     """Daily dead-man state check (docs/governance.md §3.2). No-op when the
     switch is disabled (default on dev codebase). When warning or frozen,
@@ -1780,6 +1800,17 @@ def create_scheduler() -> BackgroundScheduler:
         CronTrigger(month="1,4,7,10", day=2, hour=6, minute=0, timezone=utc_tz),
         id="bruno_generate_statements",
         name="Bruno: Quarterly Lender Statements",
+        max_instances=1,
+    )
+
+    # Bruno: Merit balance pull — 1st of Feb/May/Aug/Nov at 07:00 UTC (governance.md §4.2).
+    # No-op when bruno_run_integrations is off; gives the bookkeeper 30 days
+    # after quarter-end to post the quarter before Bruno pulls.
+    scheduler.add_job(
+        job_merit_pull_quarter,
+        CronTrigger(month="2,5,8,11", day=1, hour=7, minute=0, timezone=utc_tz),
+        id="bruno_merit_pull",
+        name="Bruno: Quarterly Merit Balance Pull",
         max_instances=1,
     )
 

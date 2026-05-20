@@ -81,7 +81,14 @@ def request_magic_link(email: str, request: Optional[Request] = None) -> dict:
         if DEV_LOG_MAGIC_LINKS:
             print(f"[bruno-admin] magic link for {email_norm}: {magic_url} (expires {user.magic_link_expires_at}Z)")
 
-        out = {"status": "sent"}
+        # Send the email if SMTP is configured. In dev mode the console log
+        # above remains the primary surface; the email is sent additionally
+        # if creds happen to be set (useful for staging).
+        from src.borrower.mail import send_magic_link
+        base_url = os.environ.get("ADMIN_BASE_URL", "")
+        send_result = send_magic_link(email_norm, magic_url, surface="admin", base_url=base_url)
+
+        out = {"status": "sent", "smtp_sent": send_result.get("sent", False)}
         if DEV_LOG_MAGIC_LINKS:
             out["magic_url"] = magic_url
         return out

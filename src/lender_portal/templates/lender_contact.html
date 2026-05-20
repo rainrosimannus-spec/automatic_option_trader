@@ -33,14 +33,39 @@
 </div>
 {% endfor %}
 
-<div class="bg-gray-900 border border-gray-800 rounded p-5">
-    <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Reach MesiCap</div>
-    <p class="text-sm text-gray-300">
-        For anything related to your loan — questions, term updates, contact-info corrections —
-        email <a href="mailto:rain@mesicap.com" class="text-amber-300/90 hover:text-amber-300">rain@mesicap.com</a>.
+{% if submitted %}
+<div class="bg-green-950/40 border border-green-800 rounded p-5 mb-6">
+    <p class="text-sm text-green-300 font-medium">Request received.</p>
+    <p class="text-xs text-green-100/80 mt-1">
+        A MesiCap principal will see it on their next sign-in and reach back to you within two working days.
     </p>
-    <p class="text-xs text-gray-500 mt-2">
-        We respond within two working days. For urgent matters, please indicate that in the subject line.
+</div>
+{% endif %}
+
+<div class="bg-gray-900 border border-gray-800 rounded p-5">
+    <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Request a contact-info update</div>
+    <p class="text-sm text-gray-400 mb-4">
+        Send a short note — e.g. new IBAN, new email, change of phone, or anything else about your loan.
+        MesiCap will action it and confirm back to you.
+    </p>
+    <form method="post" action="/lenders/contact/request" class="space-y-3">
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Subject</label>
+            <input type="text" name="subject" required maxlength="255" placeholder="e.g., New IBAN for repayments"
+                   class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+        </div>
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Message</label>
+            <textarea name="message" required rows="4" maxlength="5000" placeholder="Details — what should change and why."
+                      class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none"></textarea>
+        </div>
+        <div class="flex justify-end">
+            <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-4 py-2 rounded text-sm">Send</button>
+        </div>
+    </form>
+    <p class="text-xs text-gray-500 mt-3">
+        Or email directly: <a href="mailto:rain@mesicap.com" class="text-amber-300/90 hover:text-amber-300">rain@mesicap.com</a>.
+        Either way reaches a principal.
     </p>
 </div>
 {% endblock %}

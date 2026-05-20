@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Contact Requests{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500"><a href="/borrower" class="hover:text-gray-300">&larr; Back to Borrower</a></p>
+        <h1 class="text-3xl font-semibold mt-2">Contact-update requests</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            Lenders' requests to update IBAN, contact, or other counterparty info, submitted via the lender portal.
+        </p>
+
+        {% set filters = [
+            ('new',          'New'),
+            ('acknowledged', 'Acknowledged'),
+            ('applied',      'Applied'),
+            ('rejected',     'Rejected'),
+            ('all',          'All'),
+        ] %}
+        <div class="flex gap-2 mt-4 flex-wrap">
+            {% for key, label in filters %}
+            <a href="/borrower/contact-requests?status={{ key }}"
+               class="text-xs px-3 py-1 rounded border {% if current_status == key %}bg-amber-300/90 text-gray-950 border-amber-300/90 font-medium{% else %}border-gray-700 text-gray-300 hover:border-amber-300/50 hover:text-amber-300/90{% endif %}">
+                {{ label }}{% if counts.get(key) %} <span class="opacity-60">({{ counts[key] }})</span>{% endif %}
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+
+    {% if rows %}
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-800 text-[10px] uppercase tracking-widest text-gray-400">
+                <tr>
+                    <th class="text-left px-3 py-2">Received</th>
+                    <th class="text-left px-3 py-2">From</th>
+                    <th class="text-left px-3 py-2">Subject</th>
+                    <th class="text-left px-3 py-2">Status</th>
+                    <th class="text-right px-3 py-2"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for r in rows %}
+                <tr>
+                    <td class="px-3 py-2 tabular-nums text-xs whitespace-nowrap">{{ r.created_at.strftime('%d.%m.%Y %H:%M') }}</td>
+                    <td class="px-3 py-2 text-xs">{{ cp_by_id.get(r.counterparty_id, 'cp #' ~ r.counterparty_id) }}</td>
+                    <td class="px-3 py-2"><a href="/borrower/contact-requests/{{ r.id }}" class="hover:text-amber-300/90">{{ r.subject }}</a></td>
+                    <td class="px-3 py-2 text-xs">
+                        {% if r.status == 'new' %}<span class="text-blue-300">new</span>
+                        {% elif r.status == 'acknowledged' %}<span class="text-amber-300">acknowledged</span>
+                        {% elif r.status == 'applied' %}<span class="text-green-400">applied</span>
+                        {% elif r.status == 'rejected' %}<span class="text-red-400">rejected</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-right"><a href="/borrower/contact-requests/{{ r.id }}" class="text-xs text-amber-300/80 hover:text-amber-300">open</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-6 text-sm text-gray-400">No requests in this view.</div>
+    {% endif %}
+
+</div>
+{% endblock %}
