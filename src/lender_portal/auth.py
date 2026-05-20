@@ -28,10 +28,22 @@ from src.borrower.models import PortalSession, PortalUser, get_session_factory
 class AuthedUser:
     """Plain snapshot of the authenticated portal user. Avoids the
     SQLAlchemy detached-instance trap by carrying only the fields callers
-    actually need."""
+    actually need.
+
+    One human (one email) can own multiple lender entities — Rain has SK4 +
+    Thirona + Waddy, for example. `id` points at the specific portal_users
+    row whose magic link was consumed (used for last_seen_at writes), but
+    every authorization check uses `counterparty_ids` — the union of
+    counterparties that any portal_users row with this email has."""
     id: int
     email: str
-    counterparty_id: int
+    counterparty_ids: tuple[int, ...]   # tuple so the dataclass stays hashable
+
+    @property
+    def primary_counterparty_id(self) -> int:
+        """Smallest counterparty_id in the access set — used as a tie-breaker
+        when a single id is needed (e.g. for the audit log actor)."""
+        return min(self.counterparty_ids) if self.counterparty_ids else 0
 
 
 # === Config ===
@@ -194,7 +206,15 @@ def current_user(request: Request) -> Optional[AuthedUser]:
         user = session.query(PortalUser).filter(PortalUser.id == ps.portal_user_id).first()
         if user is None or user.locked_at is not None:
             return None
-        snap = AuthedUser(id=user.id, email=user.email, counterparty_id=user.counterparty_id)
+        # Aggregate access across every portal_users row sharing this email,
+        # minus any locked ones.
+        peers = (
+            session.query(PortalUser)
+            .filter(PortalUser.email == user.email, PortalUser.locked_at.is_(None))
+            .all()
+        )
+        cp_ids = tuple(sorted({p.counterparty_id for p in peers}))
+        snap = AuthedUser(id=user.id, email=user.email, counterparty_ids=cp_ids)
         ps.last_seen_at = datetime.utcnow()
         session.commit()
         return snap

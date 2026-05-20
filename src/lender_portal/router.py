@@ -72,11 +72,14 @@ def _require_loan_owned_by_user(loan_id: int, user: AuthedUser, session) -> Loan
     Single ownership check. Per CLAUDE.md "Lender portal privacy" — the only
     place loan-ownership is verified in this router. A bypass requires editing
     this function, not adding a new route.
+
+    A loan is "owned" by the user iff its lender_id is in the user's
+    counterparty access set (one email may have access to multiple entities).
     """
     loan = session.query(Loan).filter_by(id=loan_id).first()
     if loan is None:
         raise HTTPException(status_code=404, detail="Loan not found")
-    if loan.lender_id != user.counterparty_id:
+    if loan.lender_id not in user.counterparty_ids:
         # Don't leak that the loan exists; 404 not 403.
         raise HTTPException(status_code=404, detail="Loan not found")
     return loan
@@ -167,14 +170,24 @@ def lender_dashboard(request: Request):
 
     session = _BrunoSession()
     try:
-        # The user object came from a different session (detached); refetch the
-        # counterparty within this request's session for relationship traversal.
         from src.borrower.models import Counterparty
-        cp = session.query(Counterparty).filter_by(id=user.counterparty_id).first()
+        # The user's email may have access to multiple lender entities.
+        # Aggregate all active loans across every counterparty in the access set.
+        counterparties = (
+            session.query(Counterparty)
+            .filter(Counterparty.id.in_(user.counterparty_ids))
+            .order_by(Counterparty.name)
+            .all()
+        )
         loans = sorted(
-            [l for l in (cp.loans_as_lender if cp else []) if l.status == LoanStatus.ACTIVE],
+            session.query(Loan).filter(
+                Loan.lender_id.in_(user.counterparty_ids),
+                Loan.status == LoanStatus.ACTIVE,
+            ).all(),
             key=lambda l: l.origination_date,
         )
+        # Build a display name: either one entity name, or "Entity A · Entity B · ..."
+        viewing_as = " · ".join(c.name for c in counterparties) if counterparties else user.email
 
         rows = []
         for loan in loans:
@@ -197,10 +210,17 @@ def lender_dashboard(request: Request):
                 "is_nlv_collateralized": loan.is_nlv_collateralized,
             })
 
+        # Build lender-side row for each active loan with its specific entity name
+        # so the dashboard can show which entity owns which loan in multi-entity views.
+        loan_to_lender = {l.id: l.lender.name for l in loans}
+        for r in rows:
+            r["lender_name"] = loan_to_lender.get(r["id"])
+
         return templates.TemplateResponse("lender_dashboard.html", {
             "request": request,
             "user": user,
-            "counterparty": cp,
+            "viewing_as": viewing_as,
+            "multi_entity": len(counterparties) > 1,
             "loans": rows,
             "as_of": date.today(),
         })
@@ -287,11 +307,16 @@ def lender_contact(request: Request):
     session = _BrunoSession()
     try:
         from src.borrower.models import Counterparty
-        cp = session.query(Counterparty).filter_by(id=user.counterparty_id).first()
+        counterparties = (
+            session.query(Counterparty)
+            .filter(Counterparty.id.in_(user.counterparty_ids))
+            .order_by(Counterparty.name)
+            .all()
+        )
         return templates.TemplateResponse("lender_contact.html", {
             "request": request,
             "user": user,
-            "counterparty": cp,
+            "counterparties": counterparties,
         })
     finally:
         session.close()

@@ -403,7 +403,11 @@ class PortalUser(Base):
 
     id = Column(Integer, primary_key=True)
     counterparty_id = Column(Integer, ForeignKey("counterparties.id"), nullable=False)
-    email = Column(String(255), nullable=False, unique=True, index=True)
+    # email is NOT unique on its own. One human (one email) can own multiple
+    # lender entities — e.g. Rain on SK4 + Thirona + Waddy. The natural key is
+    # (email, counterparty_id). After login, the portal aggregates loans across
+    # every row that shares the email.
+    email = Column(String(255), nullable=False, index=True)
 
     # Current pending magic-link token (cleared on consumption). Hashed at rest
     # so a DB leak doesn't grant logins.

@@ -8,26 +8,30 @@
     <p class="text-sm text-gray-400 mt-1">If anything below is out of date, email us and we'll update it.</p>
 </div>
 
-<div class="bg-gray-900 border border-gray-800 rounded p-5 mb-6">
-    <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Your details on file</div>
+{% for cp in counterparties %}
+<div class="bg-gray-900 border border-gray-800 rounded p-5 mb-4">
+    <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">{{ cp.name }} — details on file</div>
     <table class="w-full text-sm">
         <tbody class="divide-y divide-gray-800">
-            <tr><td class="py-2 text-gray-400 w-1/3">Name</td><td class="py-2">{{ counterparty.name }}</td></tr>
-            {% if counterparty.contact_email %}
-            <tr><td class="py-2 text-gray-400">Email</td><td class="py-2 break-all">{{ counterparty.contact_email }}</td></tr>
+            {% if cp.contact_email %}
+            <tr><td class="py-2 text-gray-400 w-1/3">Email</td><td class="py-2 break-all">{{ cp.contact_email }}</td></tr>
             {% endif %}
-            {% if counterparty.contact_phone %}
-            <tr><td class="py-2 text-gray-400">Phone</td><td class="py-2 tabular-nums">{{ counterparty.contact_phone }}</td></tr>
+            {% if cp.contact_phone %}
+            <tr><td class="py-2 text-gray-400">Phone</td><td class="py-2 tabular-nums">{{ cp.contact_phone }}</td></tr>
             {% endif %}
-            {% if counterparty.iban %}
-            <tr><td class="py-2 text-gray-400">IBAN</td><td class="py-2 font-mono text-xs break-all">{{ counterparty.iban }}</td></tr>
+            {% if cp.iban %}
+            <tr><td class="py-2 text-gray-400">IBAN</td><td class="py-2 font-mono text-xs break-all">{{ cp.iban }}</td></tr>
             {% endif %}
-            {% if counterparty.address %}
-            <tr><td class="py-2 text-gray-400">Address</td><td class="py-2 whitespace-pre-line">{{ counterparty.address }}</td></tr>
+            {% if cp.address %}
+            <tr><td class="py-2 text-gray-400">Address</td><td class="py-2 whitespace-pre-line">{{ cp.address }}</td></tr>
+            {% endif %}
+            {% if not (cp.contact_email or cp.contact_phone or cp.iban or cp.address) %}
+            <tr><td class="py-2 text-gray-500 italic" colspan="2">No details on file.</td></tr>
             {% endif %}
         </tbody>
     </table>
 </div>
+{% endfor %}
 
 <div class="bg-gray-900 border border-gray-800 rounded p-5">
     <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Reach MesiCap</div>

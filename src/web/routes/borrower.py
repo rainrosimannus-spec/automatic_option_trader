@@ -531,11 +531,15 @@ def borrower_portal_user_add(
         if not email_norm or "@" not in email_norm:
             raise HTTPException(status_code=400, detail="Valid email required")
 
-        existing = session.query(PortalUser).filter_by(email=email_norm).first()
+        # Same email can map to multiple counterparties (one human can own
+        # multiple lender entities) — but only one row per (email, counterparty).
+        existing = session.query(PortalUser).filter_by(
+            email=email_norm, counterparty_id=cp_id
+        ).first()
         if existing:
             raise HTTPException(
                 status_code=400,
-                detail=f"Email already registered (counterparty #{existing.counterparty_id})",
+                detail=f"Email already registered for this counterparty",
             )
 
         pu = PortalUser(

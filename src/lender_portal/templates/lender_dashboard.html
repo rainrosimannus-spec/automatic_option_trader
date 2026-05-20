@@ -6,7 +6,7 @@
 <div class="mb-6">
     <h1 class="text-2xl font-semibold">Your loans with MesiCap</h1>
     <p class="text-sm text-gray-400 mt-1">
-        {{ counterparty.name if counterparty else user.email }} · as of {{ as_of.strftime('%d.%m.%Y') }}
+        {{ viewing_as }} · as of {{ as_of.strftime('%d.%m.%Y') }}
     </p>
 </div>
 
@@ -18,6 +18,9 @@
             <h2 class="text-base font-medium break-words">{{ loan.description }}</h2>
             <span class="text-xs text-gray-500 shrink-0">#{{ loan.id }}</span>
         </div>
+        {% if multi_entity and loan.lender_name %}
+        <div class="text-xs text-gray-500 mt-1">via {{ loan.lender_name }}</div>
+        {% endif %}
 
         <div class="mt-4 grid grid-cols-2 gap-3">
             <div>
