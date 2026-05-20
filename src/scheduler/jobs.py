@@ -1006,6 +1006,16 @@ def job_record_accruals():
         log.error("bruno_accruals_error", error=str(e))
 
 
+def job_write_backup_ledger():
+    """Write the weekly offline backup ledger (docs/governance.md §2.2)."""
+    try:
+        from src.borrower.backup_ledger import write_ledger
+        path = write_ledger()
+        log.info("bruno_backup_ledger_written", path=str(path))
+    except Exception as e:
+        log.error("bruno_backup_ledger_error", error=str(e))
+
+
 def create_scheduler() -> BackgroundScheduler:
     """
     Create and configure the multi-market job scheduler.
@@ -1702,6 +1712,15 @@ def create_scheduler() -> BackgroundScheduler:
         CronTrigger(hour=5, minute=30, timezone=utc_tz),
         id="bruno_record_accruals",
         name="Bruno: Record Daily Accruals",
+        max_instances=1,
+    )
+
+    # Bruno: write offline backup ledger CSV — Sundays 05:45 UTC (governance.md §2.2)
+    scheduler.add_job(
+        job_write_backup_ledger,
+        CronTrigger(day_of_week="sun", hour=5, minute=45, timezone=utc_tz),
+        id="bruno_backup_ledger",
+        name="Bruno: Weekly Offline Backup Ledger",
         max_instances=1,
     )
 

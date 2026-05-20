@@ -230,7 +230,56 @@ def borrower_loan_change_status(
 
 @router.get("/lender-admin", response_class=HTMLResponse)
 def borrower_lender_admin(request: Request):
-    return templates.TemplateResponse("borrower_lender_admin.html", {"request": request})
+    """Admin view of all lender counterparties with KYC + exposure + count guard."""
+    from src.borrower.models import CounterpartyType
+    session = BrunoSession()
+    try:
+        # Lenders = counterparties that appear on at least one loan as lender,
+        # excluding MesiCap itself (which is always borrower).
+        all_cps = session.query(Counterparty).filter(
+            Counterparty.type != CounterpartyType.INTERNAL
+        ).order_by(Counterparty.name).all()
+
+        rows = []
+        active_lender_count = 0
+        for cp in all_cps:
+            loans = list(cp.loans_as_lender)
+            if not loans:
+                continue
+            active_loans = [l for l in loans if l.status == LoanStatus.ACTIVE]
+            exposure_by_ccy = defaultdict(float)
+            for loan in active_loans:
+                outstanding = sum(
+                    m.amount if m.movement_type == MovementType.DISBURSEMENT
+                    else m.amount if m.movement_type == MovementType.PRINCIPAL_RESTRUCTURE
+                    else -m.amount if m.movement_type == MovementType.PRINCIPAL_REPAYMENT
+                    else 0
+                    for m in loan.movements
+                )
+                exposure_by_ccy[loan.currency] += outstanding
+            if active_loans:
+                active_lender_count += 1
+            rows.append({
+                "id": cp.id,
+                "name": cp.name,
+                "tier": cp.tier.value if cp.tier else None,
+                "kyc_status": cp.kyc_status or "not_required",
+                "active_loans": len(active_loans),
+                "total_loans": len(loans),
+                "exposure_by_ccy": dict(exposure_by_ccy),
+                "contact_email": cp.contact_email,
+                "contact_phone": cp.contact_phone,
+            })
+
+        return templates.TemplateResponse("borrower_lender_admin.html", {
+            "request": request,
+            "rows": rows,
+            "active_lender_count": active_lender_count,
+            "limit_amber": 18,
+            "limit_red": 20,
+        })
+    finally:
+        session.close()
 
 
 @router.get("/counterparties/{cp_id}", response_class=HTMLResponse)
@@ -339,6 +388,7 @@ def borrower_loan_new_submit(
     is_subordinated: bool = Form(False),
     early_repayment_allowed: bool = Form(True),
     early_repayment_notice_days: int = Form(30),
+    is_nlv_collateralized: bool = Form(False),
     notes: str = Form(""),
     initial_status: str = Form("draft"),
 ):
@@ -372,6 +422,7 @@ def borrower_loan_new_submit(
             is_subordinated=is_subordinated,
             early_repayment_allowed=early_repayment_allowed,
             early_repayment_notice_days=early_repayment_notice_days,
+            is_nlv_collateralized=is_nlv_collateralized,
             notes=notes.strip() or None,
             status=LoanStatus(initial_status),
         )
@@ -416,6 +467,7 @@ def borrower_counterparty_new_submit(
     related_principal: str = Form(""),
     contact_email: str = Form(""),
     contact_phone: str = Form(""),
+    kyc_status: str = Form("not_required"),
     notes: str = Form(""),
 ):
     """Process the New Counterparty form submission."""
@@ -435,6 +487,7 @@ def borrower_counterparty_new_submit(
             related_principal=related_principal.strip() or None,
             contact_email=contact_email.strip() or None,
             contact_phone=contact_phone.strip() or None,
+            kyc_status=kyc_status.strip() or "not_required",
             notes=notes.strip() or None,
         )
         session.add(cp)
@@ -487,6 +540,7 @@ def borrower_counterparty_edit_submit(
     related_principal: str = Form(""),
     contact_email: str = Form(""),
     contact_phone: str = Form(""),
+    kyc_status: str = Form("not_required"),
     notes: str = Form(""),
 ):
     """Process Counterparty edit submission."""
@@ -509,6 +563,7 @@ def borrower_counterparty_edit_submit(
         cp.related_principal = related_principal.strip() or None
         cp.contact_email = contact_email.strip() or None
         cp.contact_phone = contact_phone.strip() or None
+        cp.kyc_status = kyc_status.strip() or "not_required"
         cp.notes = notes.strip() or None
         write_audit(session, action="update", entity_type="Counterparty", entity_id=cp.id,
                     before=before, after=snapshot(cp), request=request)

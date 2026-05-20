@@ -94,6 +94,23 @@
                            class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
                     <p class="text-xs text-gray-600 mt-1">Useful when an OÜ is controlled by a known individual.</p>
                 </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">KYC status</label>
+                    {% set current_kyc = (cp.kyc_status if is_edit and cp.kyc_status else 'not_required') %}
+                    <select name="kyc_status" class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        {% for v, label in [
+                            ('not_required', 'not_required — shareholders / close circle'),
+                            ('basic',        'basic — ID + source-of-funds + BO + sanctions/PEP'),
+                            ('enhanced',     'enhanced — above + verified docs + ongoing review'),
+                            ('pending',      'pending — onboarding in progress'),
+                            ('flagged',      'flagged — needs principal review')
+                        ] %}
+                        <option value="{{ v }}" {% if current_kyc == v %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                    <p class="text-xs text-gray-600 mt-1">Tiered to the relationship. See <code>docs/governance.md §5.5</code>.</p>
+                </div>
             </div>
         </div>
 

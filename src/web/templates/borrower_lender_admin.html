@@ -1,18 +1,109 @@
 {% extends "base.html" %}
 
-{% block title %}Borrower — Lender Site Admin{% endblock %}
+{% block title %}Borrower — Lender Admin{% endblock %}
 
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 py-6">
+
     <div class="mb-6">
         <p class="text-sm text-gray-500"><a href="/borrower" class="hover:text-gray-300">&larr; Back to Borrower</a></p>
-        <h1 class="text-3xl font-semibold mt-2">Lender Site Admin</h1>
-        <p class="text-gray-400 text-sm mt-1">Manage the lender-facing portal (lenders.mesicap.com)</p>
+        <div class="flex items-start justify-between gap-3 mt-2 flex-wrap">
+            <div>
+                <h1 class="text-3xl font-semibold">Lender Admin</h1>
+                <p class="text-gray-400 text-sm mt-1">Counterparties that lend to MesiCap — exposure, KYC, contact</p>
+            </div>
+            <a href="/borrower/counterparties-new" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-4 py-2 rounded text-sm shrink-0">+ New Counterparty</a>
+        </div>
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded p-5">
-        <p class="text-sm text-gray-300">This page will manage the separate lender-facing portal: invite new lenders, view their portal access logs, publish quarterly statements, manage lender accounts and access.</p>
-        <p class="text-xs text-gray-500 italic mt-3">Skeleton — content to be built (Phase 3).</p>
+    {% set near_limit = active_lender_count >= limit_amber and active_lender_count < limit_red %}
+    {% set at_limit   = active_lender_count >= limit_red %}
+    <div class="bg-gray-900 border rounded p-4 mb-6
+                {% if at_limit %}border-red-900{% elif near_limit %}border-amber-700{% else %}border-gray-800{% endif %}">
+        <div class="flex items-baseline justify-between gap-2 flex-wrap">
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Active lenders</div>
+                <div class="text-3xl font-semibold mt-1 tabular-nums
+                            {% if at_limit %}text-red-300{% elif near_limit %}text-amber-300{% else %}text-gray-100{% endif %}">
+                    {{ active_lender_count }}
+                    <span class="text-sm text-gray-500 font-normal">/ {{ limit_red }} ceiling</span>
+                </div>
+            </div>
+            <div class="text-xs text-gray-400 max-w-md text-right">
+                {% if at_limit %}
+                    <span class="text-red-300 font-medium">At ceiling.</span>
+                    LEGAL_CONTEXT.md rule #3 caps active lenders at ~{{ limit_red }}.
+                    Onboarding additional lenders requires explicit principal sign-off and a lawyer check on credit-institution exposure.
+                {% elif near_limit %}
+                    <span class="text-amber-300 font-medium">Approaching ceiling.</span>
+                    LEGAL_CONTEXT.md rule #3 caps active lenders at ~{{ limit_red }}.
+                    Plan ahead before onboarding the next few.
+                {% else %}
+                    Headroom of {{ limit_red - active_lender_count }} before the soft ceiling at {{ limit_red }}
+                    (amber from {{ limit_amber }}; LEGAL_CONTEXT.md rule #3).
+                {% endif %}
+            </div>
+        </div>
     </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
+        <div class="overflow-x-auto">
+        <table class="w-full text-sm min-w-[720px]">
+            <thead class="bg-gray-800 text-[10px] uppercase tracking-widest text-gray-400">
+                <tr>
+                    <th class="text-left px-3 py-2">Lender</th>
+                    <th class="text-left px-3 py-2">Tier</th>
+                    <th class="text-left px-3 py-2">KYC</th>
+                    <th class="text-right px-3 py-2">Active loans</th>
+                    <th class="text-right px-3 py-2">Total exposure</th>
+                    <th class="text-left px-3 py-2">Contact</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for row in rows %}
+                <tr>
+                    <td class="px-3 py-2">
+                        <a href="/borrower/counterparties/{{ row.id }}" class="font-medium hover:text-amber-300/90">{{ row.name }}</a>
+                    </td>
+                    <td class="px-3 py-2 text-xs">
+                        {% if row.tier %}{{ row.tier | replace('_', ' ') }}{% else %}<span class="text-gray-600">—</span>{% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-xs">
+                        {% if row.kyc_status == 'not_required' %}<span class="text-gray-500">not required</span>
+                        {% elif row.kyc_status == 'basic' %}<span class="text-green-400">basic</span>
+                        {% elif row.kyc_status == 'enhanced' %}<span class="text-blue-400">enhanced</span>
+                        {% elif row.kyc_status == 'pending' %}<span class="text-amber-300">pending</span>
+                        {% elif row.kyc_status == 'flagged' %}<span class="text-red-400">flagged</span>
+                        {% else %}<span class="text-gray-400">{{ row.kyc_status }}</span>{% endif %}
+                    </td>
+                    <td class="text-right px-3 py-2 tabular-nums">
+                        {{ row.active_loans }}<span class="text-gray-500"> / {{ row.total_loans }}</span>
+                    </td>
+                    <td class="text-right px-3 py-2 tabular-nums">
+                        {% if row.exposure_by_ccy %}
+                            {% for ccy, amt in row.exposure_by_ccy.items() %}
+                            <div>{{ "{:,.2f}".format(amt) }} {{ ccy }}</div>
+                            {% endfor %}
+                        {% else %}
+                            <span class="text-gray-600">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-xs text-gray-400">
+                        {% if row.contact_email %}<div class="break-all">{{ row.contact_email }}</div>{% endif %}
+                        {% if row.contact_phone %}<div class="tabular-nums">{{ row.contact_phone }}</div>{% endif %}
+                        {% if not (row.contact_email or row.contact_phone) %}<span class="text-gray-600">—</span>{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+
+    <p class="mt-6 text-xs text-gray-500">
+        Counterparties with zero lender-side loans are omitted. The lender portal at
+        <code>lenders.mesicap.com</code> is Phase 3; see <code>docs/governance.md §5</code>.
+    </p>
+
 </div>
 {% endblock %}

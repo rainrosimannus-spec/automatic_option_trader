@@ -180,6 +180,16 @@
                     <td class="py-2">{% if loan.is_subordinated %}Subordinated{% else %}Senior / pari passu{% endif %}</td>
                 </tr>
                 <tr>
+                    <td class="py-2 text-gray-400">NLV collateralization</td>
+                    <td class="py-2">
+                        {% if loan.is_nlv_collateralized %}
+                            <span class="text-amber-300/90">Yes</span> — lender sees collateral view in portal
+                        {% else %}
+                            <span class="text-gray-500">No</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr>
                     <td class="py-2 text-gray-400">Early repayment</td>
                     <td class="py-2">
                         {% if loan.early_repayment_allowed %}

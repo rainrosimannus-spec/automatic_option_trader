@@ -239,6 +239,19 @@
             </div>
 
             <div class="mt-4">
+                <label class="flex items-start text-sm text-gray-300 cursor-pointer">
+                    <input type="checkbox" name="is_nlv_collateralized" value="true" class="mr-2 mt-0.5 accent-amber-300">
+                    <span>
+                        Collateralized against MesiCap brokerage NLV
+                        <span class="block text-xs text-gray-600 mt-0.5">
+                            Only flip on if the signed agreement contains a lawyer-reviewed NLV-collateralization clause.
+                            Unlocks the collateral view for this lender in the future portal.
+                        </span>
+                    </span>
+                </label>
+            </div>
+
+            <div class="mt-4">
                 <label class="block text-xs text-gray-400 mb-1">Notes</label>
                 <textarea name="notes" rows="3" placeholder="Free-form notes about this loan"
                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none"></textarea>

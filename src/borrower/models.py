@@ -222,6 +222,12 @@ class Loan(Base):
 
     # Collateral
     collateral_description = Column(Text, nullable=True)
+    # True iff the loan is collateralized against MesiCap's brokerage NLV
+    # (cash + open positions + long-term portfolio). Unlocks the lender-side
+    # collateral view in the future lender portal (docs/governance.md §5.3).
+    # Flipping to True requires a lawyer-reviewed collateralization clause
+    # in the signed agreement — procedural discipline, not technical gate.
+    is_nlv_collateralized = Column(Boolean, nullable=False, default=False)
 
     # Back-to-back / pass-through structure
     parent_loan_description = Column(Text, nullable=True)  # e.g. "Thirona's bank loan at 11.337%, maturing 15.10.2031"
