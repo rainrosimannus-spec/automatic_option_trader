@@ -12,6 +12,7 @@ from sqlalchemy import func
 from src.web.template_engine import templates
 from src.core.logger import get_logger
 from src.borrower.accrual import compute_accrual
+from src.borrower.audit import snapshot, write_audit
 from src.borrower.models import (
     Loan, LoanMovement, MovementType, LoanAmendment, Payment, PaymentStatus,
     LoanStatus, RepaymentStructure, LoanType, InterestRateType,
@@ -205,11 +206,15 @@ def borrower_loan_change_status(
         if status_enum == old_status:
             return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
 
+        before = snapshot(loan)
         loan.status = status_enum
         note = f"[STATUS] {old_status.value} → {status_enum.value}"
         if notes_append.strip():
             note += f": {notes_append.strip()}"
         loan.notes = ((loan.notes + "\n") if loan.notes else "") + note
+        write_audit(session, action="status_change", entity_type="Loan", entity_id=loan.id,
+                    before=before, after=snapshot(loan), request=request,
+                    notes=f"{old_status.value} -> {status_enum.value}")
         session.commit()
         log.info(f"loan_status_changed loan_id={loan_id} {old_status.value}->{status_enum.value}")
         return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
@@ -371,6 +376,9 @@ def borrower_loan_new_submit(
             status=LoanStatus(initial_status),
         )
         session.add(loan)
+        session.flush()
+        write_audit(session, action="create", entity_type="Loan", entity_id=loan.id,
+                    after=snapshot(loan), request=request)
         session.commit()
         session.refresh(loan)
         return RedirectResponse(url=f"/borrower/loans/{loan.id}", status_code=303)
@@ -430,6 +438,9 @@ def borrower_counterparty_new_submit(
             notes=notes.strip() or None,
         )
         session.add(cp)
+        session.flush()
+        write_audit(session, action="create", entity_type="Counterparty", entity_id=cp.id,
+                    after=snapshot(cp), request=request)
         session.commit()
         session.refresh(cp)
         return RedirectResponse(url="/borrower/loans-new", status_code=303)
@@ -485,6 +496,7 @@ def borrower_counterparty_edit_submit(
         cp = session.query(Counterparty).filter_by(id=cp_id).first()
         if not cp:
             raise HTTPException(status_code=404, detail=f"Counterparty {cp_id} not found")
+        before = snapshot(cp)
         cp.name = name.strip()
         cp.type = CounterpartyType(type)
         cp.tier = CounterpartyTier(tier) if tier else None
@@ -498,6 +510,8 @@ def borrower_counterparty_edit_submit(
         cp.contact_email = contact_email.strip() or None
         cp.contact_phone = contact_phone.strip() or None
         cp.notes = notes.strip() or None
+        write_audit(session, action="update", entity_type="Counterparty", entity_id=cp.id,
+                    before=before, after=snapshot(cp), request=request)
         session.commit()
         return RedirectResponse(url=f"/borrower/counterparties/{cp_id}", status_code=303)
     except HTTPException:
@@ -567,6 +581,9 @@ def borrower_movement_new_submit(
             description=description.strip() or None,
         )
         session.add(mv)
+        session.flush()
+        write_audit(session, action="create", entity_type="LoanMovement", entity_id=mv.id,
+                    after=snapshot(mv), request=request)
         session.commit()
         return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
     except HTTPException:
@@ -625,6 +642,7 @@ def borrower_movement_edit_submit(
                 detail=f"Currency mismatch: loan is {movement.loan.currency}, movement was {currency}",
             )
 
+        before = snapshot(movement)
         movement.movement_date = datetime.strptime(movement_date, "%Y-%m-%d").date()
         movement.movement_type = MovementType(movement_type)
         movement.amount = amount
@@ -634,6 +652,8 @@ def borrower_movement_edit_submit(
         movement.description = description.strip() or None
 
         loan_id = movement.loan_id
+        write_audit(session, action="update", entity_type="LoanMovement", entity_id=movement.id,
+                    before=before, after=snapshot(movement), request=request)
         session.commit()
         return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
     except HTTPException:
@@ -655,7 +675,10 @@ def borrower_movement_delete(request: Request, movement_id: int):
         if not movement:
             raise HTTPException(status_code=404, detail=f"Movement {movement_id} not found")
         loan_id = movement.loan_id
+        before = snapshot(movement)
         session.delete(movement)
+        write_audit(session, action="delete", entity_type="LoanMovement", entity_id=movement_id,
+                    before=before, request=request)
         session.commit()
         log.info(f"movement_deleted movement_id={movement_id} loan_id={loan_id}")
         return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
@@ -712,6 +735,9 @@ def borrower_amendment_new_submit(
             description=description.strip() or None,
         )
         session.add(am)
+        session.flush()
+        write_audit(session, action="create", entity_type="LoanAmendment", entity_id=am.id,
+                    after=snapshot(am), request=request)
         session.commit()
         return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
     except HTTPException:
@@ -767,6 +793,7 @@ def borrower_payment_edit_submit(
             raise HTTPException(status_code=404, detail=f"Payment {payment_id} not found")
 
         loan_id = payment.loan_id
+        before = snapshot(payment)
 
         if action == "revert":
             payment.status = PaymentStatus.SCHEDULED
@@ -800,6 +827,8 @@ def borrower_payment_edit_submit(
         else:
             raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 
+        write_audit(session, action=f"payment_{action}", entity_type="Payment", entity_id=payment.id,
+                    before=before, after=snapshot(payment), request=request)
         session.commit()
         return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
 

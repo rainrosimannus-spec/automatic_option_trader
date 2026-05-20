@@ -52,12 +52,12 @@ class CounterpartyType(str, enum.Enum):
 
 
 class CounterpartyTier(str, enum.Enum):
-    # For external lenders only; internal/borrower entities use None
-    TIER_A = "tier_a"  # closest trust
-    TIER_B = "tier_b"  # friends/extended network
-    TIER_C = "tier_c"  # business contacts
-    TIER_D = "tier_d"  # sophisticated lenders
-    SHAREHOLDER = "shareholder"  # MesiCap shareholders / their entities
+    # For lender entities only; internal/borrower entities use None.
+    # Distinguishes risk/regulatory treatment and drives Headroom Calculator gating.
+    SHAREHOLDER = "shareholder"          # MesiCap shareholders / their entities (subordinated debt)
+    EXTERNAL_PRIVATE = "external_private"  # Phase 3 external private lenders
+    BANK = "bank"                        # institutional lenders
+    OTHER = "other"                      # uncategorized
 
 
 class LoanType(str, enum.Enum):
