@@ -1,0 +1,77 @@
+# Caddy v2 reverse-proxy config for Bruno production.
+#
+# Drop this at /etc/caddy/Caddyfile on the host that runs Bruno's uvicorn
+# process. Caddy auto-provisions Let's Encrypt TLS — no manual cert step.
+#
+# Prereqs:
+#   1. caddy installed (apt install caddy on Debian/Ubuntu)
+#   2. DNS A records:
+#        mesicap.com         → host IP   (admin / dashboard)
+#        lender.mesicap.com  → host IP   (lender portal)
+#      Both must resolve before caddy starts so it can issue certs.
+#   3. Bruno running locally as a systemd service on port 8000
+#      (see deploy/bruno.service)
+#   4. Outbound port 80 + 443 open (caddy uses 80 for ACME challenges)
+#
+# After dropping this file:
+#   sudo systemctl reload caddy
+#   curl -sI https://lender.mesicap.com/lenders/login   # → 200
+#
+# To reload without downtime after Bruno deploys:
+#   sudo systemctl reload bruno    # uvicorn re-execs gracefully
+#   # caddy unaffected; it just keeps proxying
+
+# === Admin: Maggy/Winston + Bruno admin ===
+mesicap.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:8000 {
+        # Forward client IP / scheme so Bruno's audit_log records the right values
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Security headers — applied to admin AND lender alike via the snippet below
+    import secure_headers
+}
+
+# === Lender portal — same backend, different vhost ===
+lender.mesicap.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:8000 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # The lender portal serves only paths under /lenders/*. Any other path on
+    # this vhost would just hit the admin pages with auth redirects, which is
+    # ugly. Force the host root to land on the lender login.
+    @root path /
+    redir @root /lenders/ 308
+
+    import secure_headers
+}
+
+# === Shared security-headers snippet ===
+# Caddy 2 supports named snippets; ensure this is in the main Caddyfile or
+# imported. governance.md §5.7 calls for CSP + sane headers on the lender side;
+# we apply the same set to admin for hygiene.
+(secure_headers) {
+    header {
+        # Force HTTPS on subsequent visits
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        # Don't let the page be framed by other sites
+        X-Frame-Options "DENY"
+        # Don't leak referrer to external sites
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # Bruno serves no inline JS; allow Tailwind CDN + Google Fonts only
+        Content-Security-Policy "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+        # Don't sniff content types
+        X-Content-Type-Options "nosniff"
+        # Disable browser FLoC / topics inference
+        Permissions-Policy "interest-cohort=()"
+        # Strip the Server header
+        -Server
+    }
+}

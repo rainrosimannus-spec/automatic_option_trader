@@ -1,0 +1,61 @@
+# systemd unit for the Bruno + Maggy/Winston FastAPI process.
+#
+# Install:
+#   sudo cp deploy/bruno.service /etc/systemd/system/bruno.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now bruno
+#
+# Update env vars: edit /etc/bruno.env (gitignored on the host), then:
+#   sudo systemctl restart bruno
+#
+# View logs:
+#   journalctl -u bruno -f
+#
+# Adjust User/Group/WorkingDirectory below to match the host's setup. The
+# WorkingDirectory must be the repo root so relative paths like data/bruno.db
+# work.
+
+[Unit]
+Description=Bruno + Maggy/Winston FastAPI app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Run as a dedicated user. Create with:
+#   sudo useradd -r -d /var/lib/bruno -m bruno
+User=bruno
+Group=bruno
+
+# Repo location on the host
+WorkingDirectory=/var/lib/bruno/automatic_option_trader
+
+# Production env is sourced from a file outside the repo, gitignored, with 0600 perms.
+# Sample content in deploy/bruno.env.example
+EnvironmentFile=/etc/bruno.env
+
+# Bind to localhost only — caddy proxies. No external port exposure on the host.
+ExecStart=/var/lib/bruno/automatic_option_trader/.venv/bin/uvicorn \
+    src.web.app:create_app --factory \
+    --host 127.0.0.1 --port 8000 \
+    --workers 2 \
+    --no-access-log
+
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/bruno/automatic_option_trader/data /var/lib/bruno/automatic_option_trader/logs
+
+# A graceful reload (SIGHUP) re-execs uvicorn workers without dropping connections
+KillSignal=SIGINT
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=multi-user.target
