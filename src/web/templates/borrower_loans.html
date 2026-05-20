@@ -142,6 +142,174 @@
     </div>
     {% endif %}
 
+    <!-- ═══ Loan-portfolio databox ═══ -->
+    {% if databox %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-5 mb-6">
+        <div class="flex items-baseline justify-between gap-2 mb-3 flex-wrap">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Loan-book snapshot</div>
+            <div class="text-xs text-gray-500">As of {{ as_of.strftime('%d.%m.%Y') if as_of is defined and as_of else '' }}</div>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Active loans</div>
+                <div class="text-xl font-semibold tabular-nums mt-0.5">{{ databox.n_active_loans }}</div>
+                <div class="text-xs text-gray-600">across {{ databox.n_active_lenders }} lenders</div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Total outstanding</div>
+                <div class="text-xl font-semibold tabular-nums mt-0.5 break-words">{{ "{:,.0f}".format(databox.total_outstanding_eur) }} <span class="text-sm text-gray-500">EUR</span></div>
+                <div class="text-xs text-gray-600">
+                    ext {{ "{:,.0f}".format(databox.external_outstanding_eur) }} · sub {{ "{:,.0f}".format(databox.subordinated_outstanding_eur) }}
+                </div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Avg cost of capital</div>
+                <div class="text-xl font-semibold tabular-nums mt-0.5">
+                    {% if databox.weighted_avg_rate_pct is not none %}{{ "%.2f"|format(databox.weighted_avg_rate_pct) }}%{% else %}—{% endif %}
+                </div>
+                <div class="text-xs text-gray-600">weighted by outstanding</div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Avg loan term</div>
+                <div class="text-xl font-semibold tabular-nums mt-0.5">
+                    {% if databox.avg_term_months %}{{ "%.0f"|format(databox.avg_term_months) }} <span class="text-sm text-gray-500">months</span>{% else %}—{% endif %}
+                </div>
+                <div class="text-xs text-gray-600">at origination</div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">12-month cash service</div>
+                <div class="text-xl font-semibold tabular-nums mt-0.5 break-words">{{ "{:,.0f}".format(databox.cash_service_12m_eur) }} <span class="text-sm text-gray-500">EUR</span></div>
+                <div class="text-xs text-gray-600">scheduled payments next 365d</div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Current LTV</div>
+                <div class="text-xl font-semibold tabular-nums mt-0.5">
+                    {% if databox.current_ltv_pct is not none %}{{ "%.1f"|format(databox.current_ltv_pct) }}%{% else %}—{% endif %}
+                </div>
+                <div class="text-xs text-gray-600">
+                    {% if databox.gross_nlv_eur > 0 %}NLV {{ "{:,.0f}".format(databox.gross_nlv_eur) }} EUR{% else %}set NLV at /borrower/headroom{% endif %}
+                </div>
+            </div>
+            {% if databox.next_payment %}
+            <div class="md:col-span-1">
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Next payment</div>
+                <div class="text-base font-semibold tabular-nums mt-0.5">{{ databox.next_payment.date.strftime('%d.%m.%Y') }}</div>
+                <div class="text-xs text-gray-600 break-words">{{ "{:,.0f}".format(databox.next_payment.amount_eur) }} EUR · {{ databox.next_payment.lender_name }}</div>
+            </div>
+            {% endif %}
+            <div class="md:col-span-1">
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Top 3 by exposure</div>
+                <div class="text-xs mt-0.5 space-y-0.5">
+                    {% for x in databox.top_3_lenders %}
+                    <div class="flex justify-between gap-2">
+                        <span class="truncate"><a href="/borrower/counterparties/{{ x.cp_id }}" class="hover:text-amber-300/90">{{ x.name }}</a></span>
+                        <span class="tabular-nums text-gray-400 shrink-0">{{ "%.1f"|format(x.share_pct) }}%</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ═══ Three time-series charts ═══ -->
+    {% if ts_cost_of_capital or ts_debt_outstanding or ts_debt_service %}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-2">Cost of capital over time</div>
+            <div class="text-xs text-gray-500 mb-3">Weighted-average interest rate across all active loans, monthly</div>
+            <canvas id="chart-cost-of-capital" height="200"></canvas>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-2">Debt outstanding over time</div>
+            <div class="text-xs text-gray-500 mb-3">Total principal owed, split external vs subordinated. LTV history will appear here once NLV snapshots accumulate.</div>
+            <canvas id="chart-debt-outstanding" height="200"></canvas>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded p-4 lg:col-span-2">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-2">Monthly debt service — last 6 + next 18 months</div>
+            <div class="text-xs text-gray-500 mb-3">Scheduled (bar) vs actually paid (overlay). Forward months show planned cash burden.</div>
+            <canvas id="chart-debt-service" height="160"></canvas>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        const COC_LABELS  = {{ ts_cost_of_capital | map(attribute='label')   | list | tojson }};
+        const COC_RATES   = {{ ts_cost_of_capital | map(attribute='rate_pct') | list | tojson }};
+        const DEBT_LABELS = {{ ts_debt_outstanding | map(attribute='label')          | list | tojson }};
+        const DEBT_EXT    = {{ ts_debt_outstanding | map(attribute='external_eur')   | list | tojson }};
+        const DEBT_SUB    = {{ ts_debt_outstanding | map(attribute='subordinated_eur') | list | tojson }};
+        const SVC_LABELS  = {{ ts_debt_service | map(attribute='label')         | list | tojson }};
+        const SVC_SCHED   = {{ ts_debt_service | map(attribute='scheduled_eur') | list | tojson }};
+        const SVC_PAID    = {{ ts_debt_service | map(attribute='paid_eur')      | list | tojson }};
+        const SVC_FUTURE  = {{ ts_debt_service | map(attribute='is_future')     | list | tojson }};
+
+        const baseOpts = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#9ca3af', font: { size: 11 } } } },
+            scales: {
+                x: { ticks: { color: '#6b7280', font: { size: 10 } }, grid: { color: 'rgba(75,85,99,0.2)' } },
+                y: { ticks: { color: '#6b7280', font: { size: 10 } }, grid: { color: 'rgba(75,85,99,0.2)' } },
+            },
+        };
+
+        if (COC_LABELS.length) {
+            new Chart(document.getElementById('chart-cost-of-capital'), {
+                type: 'line',
+                data: { labels: COC_LABELS, datasets: [{
+                    label: 'Weighted-avg rate (%)',
+                    data: COC_RATES,
+                    borderColor: '#fbbf24', backgroundColor: 'rgba(251,191,36,0.15)',
+                    tension: 0.2, fill: true, pointRadius: 3,
+                }]},
+                options: Object.assign({}, baseOpts, {
+                    scales: Object.assign({}, baseOpts.scales, { y: Object.assign({}, baseOpts.scales.y, { ticks: Object.assign({}, baseOpts.scales.y.ticks, { callback: v => v.toFixed(2) + '%' }) }) }),
+                }),
+            });
+        }
+
+        if (DEBT_LABELS.length) {
+            new Chart(document.getElementById('chart-debt-outstanding'), {
+                type: 'line',
+                data: { labels: DEBT_LABELS, datasets: [
+                    { label: 'External (€)',        data: DEBT_EXT, borderColor: '#f87171', backgroundColor: 'rgba(248,113,113,0.15)', tension: 0.2, fill: true, pointRadius: 2 },
+                    { label: 'Subordinated (€)', data: DEBT_SUB, borderColor: '#60a5fa', backgroundColor: 'rgba(96,165,250,0.15)', tension: 0.2, fill: true, pointRadius: 2 },
+                ]},
+                options: Object.assign({}, baseOpts, {
+                    scales: Object.assign({}, baseOpts.scales, {
+                        y: Object.assign({}, baseOpts.scales.y, {
+                            stacked: true,
+                            ticks: Object.assign({}, baseOpts.scales.y.ticks, { callback: v => (v/1000).toFixed(0) + 'k €' }),
+                        }),
+                    }),
+                }),
+            });
+        }
+
+        if (SVC_LABELS.length) {
+            // Color scheduled bars differently for past vs future
+            const schedColors = SVC_FUTURE.map(f => f ? 'rgba(251,191,36,0.65)' : 'rgba(96,165,250,0.4)');
+            new Chart(document.getElementById('chart-debt-service'), {
+                type: 'bar',
+                data: { labels: SVC_LABELS, datasets: [
+                    { label: 'Scheduled (€)',    data: SVC_SCHED, backgroundColor: schedColors, borderColor: 'rgba(255,255,255,0.1)', borderWidth: 1 },
+                    { label: 'Actually paid (€)', data: SVC_PAID,  backgroundColor: 'rgba(74,222,128,0.85)', borderColor: 'rgba(255,255,255,0.1)', borderWidth: 1 },
+                ]},
+                options: Object.assign({}, baseOpts, {
+                    scales: Object.assign({}, baseOpts.scales, {
+                        y: Object.assign({}, baseOpts.scales.y, {
+                            beginAtZero: true,
+                            ticks: Object.assign({}, baseOpts.scales.y.ticks, { callback: v => v.toFixed(0) + ' €' }),
+                        }),
+                    }),
+                }),
+            });
+        }
+    })();
+    </script>
+    {% endif %}
+
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         {% for ccy, t in totals_by_currency.items() %}
         <div class="bg-gray-900 border border-gray-800 rounded p-4">

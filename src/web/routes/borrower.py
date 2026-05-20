@@ -227,12 +227,17 @@ def borrower_loans(request: Request, status: str = "active"):
             if not has_agreement:
                 missing_agreement_ids.append(ln.id)
 
-        # Debt-capacity widget: how much more external (non-shareholder) debt
-        # can MesiCap take in before Asset Coverage drops below 2.0×?
-        # (governance.md "debt burden control" — the face-value-most-meaningful
-        # of the three binding metrics.)
+        # Debt-capacity widget + analytical dashboard.
         from src.borrower.headroom import compute_capacity_summary
+        from src.borrower.analytics import (
+            cost_of_capital_timeseries, debt_outstanding_timeseries,
+            forward_debt_service, dashboard_databox,
+        )
         debt_capacity = compute_capacity_summary(session=session)
+        databox = dashboard_databox(session)
+        ts_cost_of_capital = cost_of_capital_timeseries(session)
+        ts_debt_outstanding = debt_outstanding_timeseries(session)
+        ts_debt_service = forward_debt_service(session)
 
         return templates.TemplateResponse("borrower_loans.html", {
             "request": request,
@@ -243,6 +248,10 @@ def borrower_loans(request: Request, status: str = "active"):
             "status_counts": status_counts,
             "missing_agreement_ids": missing_agreement_ids,
             "debt_capacity": debt_capacity,
+            "databox": databox,
+            "ts_cost_of_capital": ts_cost_of_capital,
+            "ts_debt_outstanding": ts_debt_outstanding,
+            "ts_debt_service": ts_debt_service,
         })
     finally:
         session.close()
