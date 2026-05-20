@@ -7,15 +7,32 @@ Read this at the start of any session that touches Bruno code.
 Bruno is MesiCap Technologies OÜ's internal loan portfolio management system. It tracks loans where MesiCap is the borrower (initially shareholder loans, eventually external private loans in Phase 3). Lives at `/borrower` in the trader dashboard, but is otherwise independent of Maggy/Winston code.
 
 **Source:**
-- `src/borrower/models.py` — SQLAlchemy data model (7 tables)
+- `src/borrower/models.py` — SQLAlchemy data model
 - `src/borrower/accrual.py` — interest accrual engine
-- `src/web/routes/borrower.py` — FastAPI routes under `/borrower`
-- `src/web/templates/borrower_*.html` — page templates
-- `src/scheduler/jobs.py` — `job_record_accruals` runs daily at 05:30 UTC
+- `src/borrower/audit.py` — audit-log helpers (snapshot + write_audit)
+- `src/borrower/documents.py` — signed-PDF storage layer
+- `src/borrower/collateral.py` — single aggregator for NLV-collateral view (lender portal)
+- `src/borrower/headroom.py` — four-metric debt-burden gate
+- `src/borrower/quorum.py` — 2-of-N principal-approval logic for ≥ €25k loans
+- `src/borrower/deadman.py` — dead-man switch state computer
+- `src/borrower/backup_ledger.py` — weekly offline CSV ledger
+- `src/borrower/statements.py` — quarterly lender PDF statements (reportlab)
+- `src/borrower/lhv_accounts.py` + `src/borrower/lhv_ingest.py` — LHV account registry + CAMT.053 file ingestion
+- `src/borrower/merit_export.py` — Merit quarterly CSV for the bookkeeper
+- `src/borrower/admin_auth.py` — magic-link auth for `/borrower/*` admin
+- `src/lender_portal/` — Phase 3 portal sub-app (`auth.py`, `router.py`, `templates/`)
+- `src/web/routes/borrower.py` — admin FastAPI routes under `/borrower`
+- `src/web/templates/borrower_*.html` — admin page templates
+- `src/scheduler/jobs.py` — daily accrual snapshots (05:30 UTC), weekly backup ledger (Sun 05:45 UTC), quarterly statement PDFs (Apr/Jul/Oct/Jan 2 06:00 UTC), daily dead-man check (06:15 UTC)
+- `tools/seed_pilot.py` — pilot user + Hologram OÜ seeder
+- `tools/lint_lender_copy.py` — banned-terminology CI gate
+- `LEGAL_CONTEXT.md` (this dir) — regulatory perimeter; wins over anything here if they disagree
+- `docs/governance.md` — design + operational policy
+- `docs/deployment.md` — runbook for standing Bruno up on Rasmus's clone
 
 **Database:**
-- `data/bruno.db` — SQLite, separate from Maggy's `trades.db`. Gitignored.
-- 7 tables: counterparties, loans, loan_movements, loan_amendments, interest_accruals, payments, audit_log
+- `data/bruno.db` — SQLite, separate from Maggy's `trading.db`. Gitignored.
+- Tables: counterparties, loans, loan_movements, loan_amendments, interest_accruals, payments, audit_log, **loan_documents**, **bank_transactions**, **portal_users**, **portal_sessions**, **principal_users**, **principal_sessions**, **loan_approvals**, **headroom_inputs**
 
 ## Critical context
 
@@ -68,7 +85,7 @@ All loan principals reconcile exactly to LHV bank statements at €0.00 / $0.00 
 - **Path 3:** Build contract template + generation infrastructure (not just data tracking)
 - **Option C (hybrid):** Bruno is the source of truth for loan data; contracts are generated from templates filled with Bruno's variables; both parties sign externally; signed PDF uploaded back as the canonical legal artifact attached to the loan record
 
-Status: data tracking done. Contract generation depends on lawyer-drafted Estonian templates (parallel legal track, not yet started). Document attachment storage (`contract_document` table + upload UI) not yet built.
+Status: data tracking done. **Document attachment storage built** — `loan_documents` table, upload UI on loan detail (PDF-only, ≤ 10 MB, SHA-256 hashed), tied-document rule enforced (`DRAFT → ACTIVE` requires an attached `agreement`). Lender-side download exposes `agreement` + `amendment` only (no `side_letter` / `other`). Contract generation from templates depends on lawyer-drafted Estonian templates (parallel legal track, not yet started).
 
 ### Debt burden control: four-metric framework
 
@@ -83,7 +100,7 @@ A new loan/amendment is acceptable only if all three binding metrics stay green/
 
 **Denominator definition:** Asset Coverage uses **gross unencumbered assets** (cash + market value of positions), NOT net-of-debt. Subordinated debt doesn't reduce the collateral pool because in a wind-down, subordinated creditors stand behind external lenders. This is the bank-style approach.
 
-Status: Headroom Calculator not yet built. Depends on LHV cash reads + IBKR NLV reads (both gated, run on Rasmus's clone).
+Status: **Headroom Calculator built** at `/borrower/headroom`. Logic in `src/borrower/headroom.py`; inputs (gross NLV, cash, expected annual return) live in `headroom_inputs` table, populated either manually or — when Rasmus's clone has `bruno_run_integrations=True` — from a daily IBKR snapshot job (the auto-populate wire is the last unbuilt piece; see "What's next" below). The page surfaces a verdict banner (GO / CAUTION / REFUSE / NA) and an "evaluate hypothetical loan" form that overlays a candidate loan and re-renders the metrics.
 
 ### Subordination
 
@@ -145,27 +162,64 @@ Rate changes (via LoanAmendment with `field_changed='interest_rate_annual'`) are
 
 If you touch accrual math, verify against hand calculations on at least one loan of each type before deploying.
 
-## What's done
+## What's done (status: 2026-05-20)
 
-- Loans index, loan detail, new loan form, new counterparty form
-- Movement recording form (disbursements, repayments, restructures)
+**Core (Phase 1):**
+- Loans index, loan detail, new loan form, new counterparty form + counterparty edit
+- Counterparty detail page (per-lender exposure, contact, portal-user admin)
+- Movement recording form + edit + delete
+- Amendment recording form
 - Payment edit form with revert capability
-- Interest accrual engine (correct, with rate amendments)
-- Daily snapshot scheduler at 05:30 UTC
-- 819 historical snapshots backfilled
-- Config gating mechanism
-- All committed and pushed (commits `c7af8d0` and `ec16325`)
+- Interest accrual engine (rate-amendment-aware)
+- Daily accrual-snapshot scheduler at 05:30 UTC; 819 historical snapshots backfilled
+- Audit log helper (`src/borrower/audit.py`) wired into every mutating route
 
-## What's next (rough priority)
+**Phase 2 (operational gates):**
+- Document attachment storage: `loan_documents` table, upload UI, SHA-256 hashing, tied-document rule (DRAFT → ACTIVE requires `agreement`)
+- Headroom Calculator (four-metric framework) at `/borrower/headroom` with hypothetical-loan evaluator
+- LHV CAMT.053 file ingestion: `bank_transactions` staging table, parser, manual-match UI, ignore action, idempotent on (file, entry_ref)
+- LHV account registry (`src/borrower/lhv_accounts.py`) with the two known IBANs
+- Merit quarterly CSV exporter at `/borrower/exports/merit-YYYY-Qn.csv`
+- Quarterly lender statement PDFs (reportlab); manual-generate buttons on `/borrower/exports`; scheduler at quarter-end + 1 day
+- Banned-terminology lint (`tools/lint_lender_copy.py`) gating lender-facing templates
 
-1. **Mobile UX pass** on loan detail page (Sunday May 17 frustration: tables overflow, key facts cramped)
-2. **Counterparty detail page** — equivalent to loan detail but for counterparties; shows their loans, total exposure, contact info, eventual KYC documents
-3. **Headroom Calculator** with the four-metric framework — needs LHV cash + IBKR NLV (gated, runs on Rasmus's clone with real data; here can run on manual inputs for testing the math)
-4. **Contract template engine + PDF generation** — blocked on lawyer-drafted Estonian templates
-5. **Document attachment storage** — `contract_document` table + upload UI, can also retrofit signed PDFs for existing 7 loans
-6. **LHV API integration** — gated, production-only
-7. **IBKR NLV reads for Bruno** — gated, production-only
-8. **Lender portal** at lenders.mesicap.com — Phase 3, separate app
+**Phase 2.5 (auth + continuity):**
+- Admin magic-link auth on `/borrower/*` (PrincipalUser + PrincipalSession tables, 30-day sessions, rate limit, lockout)
+- Lender magic-link auth on `/lenders/*` (PortalUser + PortalSession tables; one email can map to multiple counterparties)
+- Offline backup ledger (`src/borrower/backup_ledger.py`) — Sunday 05:45 UTC CSV write
+- Dead-man switch (`src/borrower/deadman.py`) — opt-in via env, banner + 423 freeze when no principal logs in for N days
+
+**Phase 3 (external-lender-ready):**
+- Lender portal sub-app at `/lenders/` — login, dashboard, loan detail, payment history, statements list with downloads, collateral view scaffold, contact, logout
+- Counterparty isolation via single `_require_loan_owned_by_user` helper; collateral_view aggregator is the only allowed Maggy/Winston cross-product read
+- Lender-side signed-doc download (`agreement` / `amendment` only; `side_letter` / `other` never lender-visible)
+- Access quorum (`src/borrower/quorum.py`): loans ≥ €25k face value need 2 distinct principal approvals before DRAFT → ACTIVE; approve/revoke routes + inbox panel on `/borrower/` landing
+- Hologram OÜ placeholder counterparty for Rasmus (shareholder via sweat equity); pilot portal users seeded for Rain × 2 emails, Rasmus, Lauri
+
+All committed and pushed through `8193370` on `main`.
+
+## What's next
+
+Buildable today:
+1. **Merit API pull-side reconciliation** (`docs/governance.md §4.2`) — creds are in `.env`; build the per-lender balance diff page + a CSV-import path (LHV-style: file first, live API gated for Rasmus's side).
+2. **Production deployment runbook** (`docs/deployment.md`) — done in this same batch as the docs refresh.
+
+Blocked on credentials / external state:
+3. **SMTP magic-link delivery** — currently dev mode logs the magic URL to stdout. Replace with real outbound email once SMTP credentials are provided. The send-helper has a clean injection point (`auth.DEV_LOG_MAGIC_LINKS`).
+4. **IBKR NLV auto-populate** for the Headroom Calculator + Collateral view — gated to Rasmus's clone via `bruno_run_integrations`. Today the `HeadroomInputs` row is filled manually; on Rasmus's side a job reads from his existing `account` table and writes the row daily.
+
+Blocked on legal:
+5. **Subordination flip** — master-agreement amendment is legal work, not code. Once signed, the 4 shareholder loans get `is_subordinated=True` via a small migration.
+
+Polish (nice-to-have, not load-bearing):
+6. Mobile pass on lender portal templates (admin side already passed).
+7. Statement-archive admin view (currently can regenerate but no per-issued-PDF history view).
+8. Audit-log admin view (data is in `audit_log` table, no UI yet).
+9. FX-aware quorum threshold (v1 is currency-naive; rare edge case).
+10. Lender-count soft-gate on counterparty-new form when approaching ~20 active lenders.
+11. 2FA on the lender portal; CSP headers; tighter session inactivity.
+
+See `docs/governance.md §6` for the same roadmap from a design angle.
 
 ## Coordination with Rasmus's clone
 

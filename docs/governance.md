@@ -725,14 +725,29 @@ trail remains).
 
 ## 6. Roadmap
 
-Re-statement of the sequencing with this document in hand:
+Current status (2026-05-20): Bruno is functionally feature-complete on the dev
+side. Outstanding work falls into three buckets — buildable, blocked on
+credentials, blocked on legal.
 
-| Phase | Items                                                                        | Blockers                                  |
-| ----- | ---------------------------------------------------------------------------- | ----------------------------------------- |
-| 1 ✅  | Bruno local: data model, accrual engine, forms, audit log                    | done                                      |
-| 2     | Headroom Calc · IBKR NLV · LHV CAMT.053 ingestion · Merit quarterly CSV · PDF storage · Document Attachments · Tied-document rule | lawyer-drafted Estonian PDF templates (for contracts) |
-| 2.5   | **Auth** · Offline backup ledger · Dead-man switch · Tiered IBKR staleness   | nothing — can start any time              |
-| 3     | Lender portal (§5) · Merit API pull side · Access quorum · Subordination flip (master-agreement amendment) | Phase 2.5 auth · lawyer-drafted Estonian portal copy + statement template · subordination amendment · LEGAL_CONTEXT.md rule #7 (subordination) and rule #10 (external-lender AML/KYC playbook) satisfied |
+| Phase | Items                                                                        | Status                                              |
+| ----- | ---------------------------------------------------------------------------- | --------------------------------------------------- |
+| 1     | Data model · accrual engine · forms · audit log                              | ✅ done                                             |
+| 2     | Headroom Calc · LHV CAMT.053 ingestion · Merit quarterly CSV · PDF storage · Document Attachments · Tied-document rule · Lender statement PDFs | ✅ done                                             |
+| 2 wire | IBKR NLV auto-populate of `headroom_inputs`                                 | ⏸️ gated to Rasmus's clone (`bruno_run_integrations`) — manual mode works today |
+| 2.5   | Admin auth · Lender auth · Multi-entity portal users · Offline backup ledger · Dead-man switch · Tiered IBKR staleness logic | ✅ done                                             |
+| 3     | Lender portal · Lender-side signed-doc download · Access quorum · Banned-terminology lint · Pilot user seeding | ✅ done                                             |
+| 3 follow | Merit API pull-side reconciliation                                        | 🔨 buildable (creds in `.env`) — not yet wired      |
+| 3 prod | SMTP magic-link delivery · Statement-issued notifications                   | 🔨 blocked on SMTP credentials                      |
+| 3 legal | Subordination flip on all shareholder loans                                | 📝 master-agreement amendment, then 5-line migration |
+| polish | Mobile lender-portal pass · Statement-archive admin view · Audit-log admin view · FX-aware quorum · 2FA · CSP headers | 🔨 buildable, deferred                              |
+
+Where things sit today, in one paragraph: Bruno can be handed to Rasmus's
+clone right now and operated end-to-end for the existing 4 shareholders.
+Headroom Calculator works with manually-entered NLV/cash/return until the
+IBKR wire is flipped on. Magic-link login works for dev-style use (the link
+prints to the server log). The system is ready for external-lender
+onboarding the moment the master-agreement subordination amendment is signed
+and SMTP credentials are configured.
 
 **Subordination reminder:** all 4 shareholder loans currently have
 `is_subordinated=False`. Must flip via master-agreement amendment before
@@ -740,9 +755,12 @@ Phase 3 launches (any external lender taken in). This is legal work, not
 code. See LEGAL_CONTEXT.md rule #7.
 
 **Lender-count reminder:** LEGAL_CONTEXT.md rule #3 caps active lenders
-at ~20. Today: 4 (shareholders). Plenty of headroom, but the soft counter
-(§5.5) flips amber at 18, red at 20. Approaching either is a decision
-that warrants a quick legal check-in.
+at ~20. Today: 4 active + 1 placeholder (Hologram OÜ, Rasmus, no loans).
+The soft counter on `/borrower/lender-admin` flips amber at 18 and red at
+20. Approaching either is a decision that warrants a quick legal check-in.
+
+**Deployment:** see `docs/deployment.md` for the runbook to stand Bruno up
+on Rasmus's clone (env vars, DB init, seed, scheduler, health checks).
 
 ---
 
