@@ -229,6 +229,46 @@ growth:
     consistent growth, and expanding margins through route density optimization. The
     company generates high returns on invested capital with strong free cash flow
     conversion, while strategic acquisitions and technology investments s
+- symbol: FAST
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 63.0
+  added_date: '2026-05-19'
+  thesis: Fastenal has sustained ROIC consistently above 25% for a decade with an
+    asset-light distribution model and virtually no goodwill bloat from M&A. Operating
+    leverage is structurally embedded via its Onsite and FMI vending programmes, which
+    expand margins as penetration grows. Low share dilution, stron
+- symbol: VRSK
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 72.2
+  added_date: '2026-05-19'
+  thesis: Verisk Analytics operates subscription-based data and analytics franchises
+    in insurance and energy with 5-year revenue CAGR above 7% and highly consistent
+    annual growth. ROIC has been sustained above 15% even post the divestiture restructuring,
+    operating margins are expanding toward 50%+ as the busi
+- symbol: DSGX
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 69.9
+  added_date: '2026-05-19'
+  thesis: Descartes Systems delivers cloud-based logistics and supply-chain software
+    with 5-year revenue CAGR above 15% driven by highly recurring SaaS and transaction
+    revenues, and ROIC sustained above 15% on an adjusted basis. Operating margins
+    have expanded materially as the business scales, FCF conversion
+- symbol: MEDP
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 78.1
+  added_date: '2026-05-19'
+  thesis: Medpace Holdings is a clinical CRO with a focused oncology and metabolic
+    niche, delivering 5-year revenue CAGR above 20% with exceptional consistency and
+    operating margins above 20% that have expanded every year. ROIC exceeds 50% because
+    the business is almost entirely working-capital-funded with ne
 dividend: []
 breakthrough:
 - symbol: FORM
@@ -251,7 +291,7 @@ breakthrough:
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
 - symbol: RKLB
   exchange: SMART
   currency: USD
@@ -262,7 +302,7 @@ breakthrough:
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
 - symbol: ARVN
   exchange: SMART
   currency: USD
@@ -294,7 +334,7 @@ breakthrough:
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
 - symbol: KTOS
   exchange: SMART
   currency: USD
@@ -327,7 +367,7 @@ breakthrough:
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
 - symbol: NVTS
   exchange: SMART
   currency: USD
@@ -434,7 +474,7 @@ breakthrough:
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
 - symbol: STEM
   exchange: SMART
   currency: USD
@@ -445,7 +485,7 @@ breakthrough:
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
 - symbol: SMCI
   exchange: SMART
   currency: USD
@@ -456,7 +496,7 @@ breakthrough:
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
 - symbol: CVNA
   exchange: SMART
   currency: USD
@@ -479,7 +519,7 @@ breakthrough:
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
 - symbol: SITM
   exchange: SMART
   currency: USD
@@ -559,7 +599,7 @@ breakthrough:
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
 - symbol: ZS
   exchange: SMART
   currency: USD
@@ -594,7 +634,7 @@ breakthrough:
   first_seen: 2026-05
   last_seen: 2026-05
   appearance_count: 1
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
 - symbol: DKNG
   exchange: SMART
   currency: USD
@@ -661,7 +701,7 @@ breakthrough:
     revenue scales with authentic conversation data licensing to LLM developers.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: EQT
   exchange: SMART
@@ -696,7 +736,7 @@ breakthrough:
     expansion.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: MDB
   exchange: SMART
@@ -707,7 +747,7 @@ breakthrough:
     flexible data structures, Atlas cloud service drives recurring revenue growth.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: AEHR
   exchange: SMART
@@ -719,7 +759,7 @@ breakthrough:
     gains.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: VRNS
   exchange: SMART
@@ -730,7 +770,7 @@ breakthrough:
     SaaS transition and AI-powered threat detection drive recurring revenue growth.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: ZIM
   exchange: SMART
@@ -741,7 +781,7 @@ breakthrough:
     flag carrier gains strategic premium for Western trade security.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: NMDC
   exchange: NSE
@@ -774,7 +814,7 @@ breakthrough:
     services, capturing aging population's asset monetization needs.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: HIMS
   exchange: SMART
@@ -785,7 +825,7 @@ breakthrough:
     weight management access drives subscriber growth and retention expansion.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: LAC
   exchange: SMART
@@ -796,7 +836,7 @@ breakthrough:
     largest US lithium source, benefiting from domestic supply chain requirements.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: OKTA
   exchange: SMART
@@ -807,7 +847,7 @@ breakthrough:
     capturing enterprise security transformation and remote work authentication demands.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: IREN
   exchange: SMART
@@ -818,7 +858,7 @@ breakthrough:
     energy assets provide low-cost power for hyperscaler data centers.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: POWL
   exchange: SMART
@@ -829,7 +869,7 @@ breakthrough:
     surge; custom switchgear and transformers command premium pricing for AI facilities.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: CGNT
   exchange: SMART
@@ -841,7 +881,7 @@ breakthrough:
     globally.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: MLAB
   exchange: SMART
@@ -853,7 +893,7 @@ breakthrough:
     revenue.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
 - symbol: FTAI
   exchange: SMART
@@ -864,5 +904,5 @@ breakthrough:
     assets benefit from reshoring-driven rail and port capacity needs.
   first_seen: 2026-05
   last_seen: 2026-05
-  last_run_at: '2026-05-11T18:28:40'
+  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
