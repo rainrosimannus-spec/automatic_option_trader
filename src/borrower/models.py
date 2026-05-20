@@ -352,6 +352,28 @@ class Payment(Base):
     loan = relationship("Loan", back_populates="payments")
 
 
+class HeadroomInputs(Base):
+    """
+    Inputs to the Headroom Calculator (docs/governance.md "debt burden control"
+    / CLAUDE.md "four-metric framework"). Single mutable row; updated either by
+    a principal (source='manual') or by the daily IBKR snapshot job (source=
+    'ibkr_snapshot') when bruno_run_integrations is enabled on Rasmus's clone.
+
+    Holds the *exogenous* inputs only — the four metric ratios are derived
+    live from these inputs + Bruno's own loan/payment data.
+    """
+    __tablename__ = "headroom_inputs"
+
+    id = Column(Integer, primary_key=True)
+    gross_nlv_eur = Column(Float, nullable=False, default=0.0)
+    cash_eur = Column(Float, nullable=False, default=0.0)
+    expected_annual_return_eur = Column(Float, nullable=False, default=0.0)
+    source = Column(String(32), nullable=False, default="manual")   # 'manual' | 'ibkr_snapshot'
+    as_of = Column(DateTime, nullable=False, default=datetime.utcnow)
+    notes = Column(Text, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class DocumentType(str, enum.Enum):
     AGREEMENT = "agreement"           # the master loan agreement — required before DRAFT → ACTIVE
     AMENDMENT = "amendment"           # signed amendment / addendum

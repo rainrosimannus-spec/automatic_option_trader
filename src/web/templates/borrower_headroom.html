@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Headroom Calculator{% endblock %}
+
+{% macro metric_card(m) %}
+<div class="bg-gray-900 border rounded p-4
+    {% if m.status == 'green' %}border-green-900{% elif m.status == 'amber' %}border-amber-700{% elif m.status == 'red' %}border-red-900{% else %}border-gray-800{% endif %}">
+    <div class="text-[10px] uppercase tracking-widest text-gray-500">{{ m.name }}</div>
+    <div class="text-2xl font-semibold mt-1 tabular-nums
+        {% if m.status == 'green' %}text-green-300{% elif m.status == 'amber' %}text-amber-300{% elif m.status == 'red' %}text-red-300{% else %}text-gray-400{% endif %}">
+        {% if m.value is not none %}{{ "%.2f"|format(m.value) }}×{% else %}n/a{% endif %}
+    </div>
+    <div class="text-xs text-gray-500 mt-1 tabular-nums">
+        {{ "{:,.0f}".format(m.numerator) }} {{ m.numerator_label }} / {{ "{:,.0f}".format(m.denominator) }} {{ m.denominator_label }}
+    </div>
+    <div class="text-xs text-gray-500 mt-2">{{ m.description }}</div>
+</div>
+{% endmacro %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500"><a href="/borrower" class="hover:text-gray-300">&larr; Back to Borrower</a></p>
+        <h1 class="text-3xl font-semibold mt-2">Headroom Calculator</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            Four-metric debt-burden gate per <code>docs/governance.md</code> "debt burden control".
+            Decides "is it safe to take this new loan?" based on current NLV, cash, expected operating return,
+            and outstanding debt by tier.
+        </p>
+    </div>
+
+    <!-- Composite verdict banner -->
+    <div class="rounded p-4 mb-6 border
+        {% if report.verdict == 'go' %}bg-green-950/40 border-green-800
+        {% elif report.verdict == 'caution' %}bg-amber-950/40 border-amber-800
+        {% elif report.verdict == 'refuse' %}bg-red-950/40 border-red-800
+        {% else %}bg-gray-900 border-gray-800{% endif %}">
+        <div class="flex items-baseline justify-between gap-2 flex-wrap">
+            <div>
+                <span class="text-sm font-medium
+                    {% if report.verdict == 'go' %}text-green-300
+                    {% elif report.verdict == 'caution' %}text-amber-300
+                    {% elif report.verdict == 'refuse' %}text-red-300
+                    {% else %}text-gray-400{% endif %}">Current verdict: {{ report.verdict | upper }}</span>
+                <span class="text-xs text-gray-400 ml-2">
+                    {% if report.verdict == 'na' %}
+                        No external debt yet — ratios not applicable. Net worth informational only.
+                    {% elif report.verdict == 'go' %}
+                        All three binding metrics green.
+                    {% elif report.verdict == 'caution' %}
+                        At least one metric in amber. Proceed only with awareness.
+                    {% elif report.verdict == 'refuse' %}
+                        At least one metric in red. New loans should be refused or restructured.
+                    {% endif %}
+                </span>
+            </div>
+            <div class="text-xs text-gray-500">
+                Net worth: <span class="tabular-nums">{{ "{:,.0f}".format(report.net_worth_eur) }}</span> EUR (informational)
+            </div>
+        </div>
+    </div>
+
+    <!-- Three binding metrics -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        {{ metric_card(report.asset_coverage) }}
+        {{ metric_card(report.liquidity_reserve) }}
+        {{ metric_card(report.operating_cash_coverage) }}
+    </div>
+
+    <!-- Debt aggregate -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Debt aggregate (active loans only)</div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+            <div>
+                <div class="text-xs text-gray-500">External debt</div>
+                <div class="text-lg font-semibold tabular-nums">{{ "{:,.0f}".format(report.external_debt_eur) }} EUR</div>
+                <div class="text-xs text-gray-600">Non-shareholder lenders</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500">Subordinated / shareholder debt</div>
+                <div class="text-lg font-semibold tabular-nums">{{ "{:,.0f}".format(report.subordinated_debt_eur) }} EUR</div>
+                <div class="text-xs text-gray-600">Stands behind external in wind-down</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500">12-month cash debt service</div>
+                <div class="text-lg font-semibold tabular-nums">{{ "{:,.0f}".format(report.cash_debt_service_12m_eur) }} EUR</div>
+                <div class="text-xs text-gray-600">Scheduled payments on external loans in next 365 days</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Inputs form -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-5 mb-6">
+        <div class="flex items-baseline justify-between gap-2 mb-3 flex-wrap">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Inputs</div>
+            <div class="text-xs text-gray-500">
+                Source: <span class="text-gray-300">{{ inputs.source }}</span> ·
+                As of: <span class="tabular-nums">{{ inputs.as_of.strftime('%d.%m.%Y %H:%M') if inputs.as_of else '—' }}</span>
+            </div>
+        </div>
+        <form method="post" action="/borrower/headroom/inputs" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Gross NLV (EUR)</label>
+                <input type="number" name="gross_nlv_eur" step="0.01" required
+                       value="{{ '%.2f' | format(inputs.gross_nlv_eur) }}"
+                       class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums">
+                <p class="text-xs text-gray-600 mt-1">Cash + market value of all positions. Gross, not net of debt.</p>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Cash (EUR)</label>
+                <input type="number" name="cash_eur" step="0.01" required
+                       value="{{ '%.2f' | format(inputs.cash_eur) }}"
+                       class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums">
+                <p class="text-xs text-gray-600 mt-1">Liquid balance available for debt service. Subset of NLV.</p>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Expected annual return (EUR)</label>
+                <input type="number" name="expected_annual_return_eur" step="0.01" required
+                       value="{{ '%.2f' | format(inputs.expected_annual_return_eur) }}"
+                       class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums">
+                <p class="text-xs text-gray-600 mt-1">Forward 12-month projection from Maggy + Winston operations.</p>
+            </div>
+            <div class="md:col-span-3">
+                <label class="block text-xs text-gray-400 mb-1">Notes (optional)</label>
+                <input type="text" name="notes" placeholder="e.g., snapshot taken after Q2 close"
+                       value="{{ inputs.notes or '' }}"
+                       class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm">
+            </div>
+            <div class="md:col-span-3 flex justify-end">
+                <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-4 py-2 rounded text-sm">Save inputs</button>
+            </div>
+        </form>
+        <p class="text-xs text-gray-600 mt-3">
+            On Rasmus's production clone (<code>bruno_run_integrations=True</code>) these values will be auto-populated daily
+            from the IBKR snapshot. On Rain's dev codebase, fill manually.
+        </p>
+    </div>
+
+    <!-- Evaluate hypothetical -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-5 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Evaluate a hypothetical new loan</div>
+        <form method="post" action="/borrower/headroom/evaluate" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Principal (EUR)</label>
+                <input type="number" name="new_principal_eur" step="0.01" required min="0"
+                       value="{{ '%.2f' | format(evaluation.principal) if evaluation else '0' }}"
+                       class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Annual cash debt service (EUR)</label>
+                <input type="number" name="new_annual_cash_service_eur" step="0.01" min="0"
+                       value="{{ '%.2f' | format(evaluation.annual_cash_service) if evaluation else '0' }}"
+                       class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums">
+                <p class="text-xs text-gray-600 mt-1">Use 0 for capitalizing loans (no cash service until maturity).</p>
+            </div>
+            <div class="flex items-center pt-5">
+                <label class="flex items-center text-sm text-gray-300 cursor-pointer">
+                    <input type="checkbox" name="new_is_external" value="true" {% if not evaluation or evaluation.is_external %}checked{% endif %} class="mr-2 accent-amber-300">
+                    External lender (not shareholder)
+                </label>
+            </div>
+            <div class="md:col-span-3 flex justify-end">
+                <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-4 py-2 rounded text-sm">Evaluate</button>
+            </div>
+        </form>
+
+        {% if evaluation %}
+        <div class="mt-6 pt-4 border-t border-gray-800">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">
+                After adding €{{ "{:,.0f}".format(evaluation.principal) }}
+                {% if evaluation.is_external %}external{% else %}shareholder{% endif %} loan
+                ({{ "{:,.0f}".format(evaluation.annual_cash_service) }} annual service)
+            </div>
+            <div class="rounded p-3 mb-4
+                {% if evaluation.hypothetical.verdict == 'go' %}bg-green-950/40 border border-green-800
+                {% elif evaluation.hypothetical.verdict == 'caution' %}bg-amber-950/40 border border-amber-800
+                {% elif evaluation.hypothetical.verdict == 'refuse' %}bg-red-950/40 border border-red-800
+                {% else %}bg-gray-900 border border-gray-800{% endif %}">
+                Verdict: <span class="font-medium">{{ evaluation.hypothetical.verdict | upper }}</span>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {{ metric_card(evaluation.hypothetical.asset_coverage) }}
+                {{ metric_card(evaluation.hypothetical.liquidity_reserve) }}
+                {{ metric_card(evaluation.hypothetical.operating_cash_coverage) }}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

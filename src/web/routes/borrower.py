@@ -438,6 +438,105 @@ def borrower_bank_transactions_ignore(request: Request, bt_id: int):
         session.close()
 
 
+@router.get("/headroom", response_class=HTMLResponse)
+def borrower_headroom(request: Request):
+    """Headroom Calculator — current ratios + edit form for inputs +
+    'evaluate hypothetical loan' form."""
+    from src.borrower.headroom import compute_headroom, get_or_init_inputs
+    session = BrunoSession()
+    try:
+        inputs = get_or_init_inputs(session)
+        report = compute_headroom(
+            gross_nlv_eur=inputs.gross_nlv_eur,
+            cash_eur=inputs.cash_eur,
+            expected_annual_return_eur=inputs.expected_annual_return_eur,
+            inputs_source=inputs.source,
+            inputs_as_of=inputs.as_of.isoformat() if inputs.as_of else None,
+        )
+        return templates.TemplateResponse("borrower_headroom.html", {
+            "request": request,
+            "inputs": inputs,
+            "report": report,
+            "evaluation": None,
+        })
+    finally:
+        session.close()
+
+
+@router.post("/headroom/inputs")
+def borrower_headroom_inputs(
+    request: Request,
+    gross_nlv_eur: float = Form(...),
+    cash_eur: float = Form(...),
+    expected_annual_return_eur: float = Form(...),
+    notes: str = Form(""),
+):
+    """Update the manual HeadroomInputs row."""
+    from datetime import datetime
+    from src.borrower.headroom import get_or_init_inputs
+    session = BrunoSession()
+    try:
+        inputs = get_or_init_inputs(session)
+        before = snapshot(inputs)
+        inputs.gross_nlv_eur = float(gross_nlv_eur)
+        inputs.cash_eur = float(cash_eur)
+        inputs.expected_annual_return_eur = float(expected_annual_return_eur)
+        inputs.notes = notes.strip() or None
+        inputs.source = "manual"
+        inputs.as_of = datetime.utcnow()
+        write_audit(session, action="update", entity_type="HeadroomInputs",
+                    entity_id=inputs.id, before=before, after=snapshot(inputs),
+                    request=request)
+        session.commit()
+        return RedirectResponse(url="/borrower/headroom", status_code=303)
+    finally:
+        session.close()
+
+
+@router.post("/headroom/evaluate", response_class=HTMLResponse)
+def borrower_headroom_evaluate(
+    request: Request,
+    new_principal_eur: float = Form(...),
+    new_is_external: bool = Form(True),
+    new_annual_cash_service_eur: float = Form(0.0),
+):
+    """Evaluate a hypothetical new loan against current inputs."""
+    from src.borrower.headroom import compute_headroom, get_or_init_inputs
+    session = BrunoSession()
+    try:
+        inputs = get_or_init_inputs(session)
+        current = compute_headroom(
+            gross_nlv_eur=inputs.gross_nlv_eur,
+            cash_eur=inputs.cash_eur,
+            expected_annual_return_eur=inputs.expected_annual_return_eur,
+            inputs_source=inputs.source,
+            inputs_as_of=inputs.as_of.isoformat() if inputs.as_of else None,
+        )
+        hypothetical = compute_headroom(
+            gross_nlv_eur=inputs.gross_nlv_eur,
+            cash_eur=inputs.cash_eur,
+            expected_annual_return_eur=inputs.expected_annual_return_eur,
+            new_loan_principal_eur=float(new_principal_eur),
+            new_loan_is_external=bool(new_is_external),
+            new_loan_annual_cash_service_eur=float(new_annual_cash_service_eur),
+            inputs_source=inputs.source,
+            inputs_as_of=inputs.as_of.isoformat() if inputs.as_of else None,
+        )
+        return templates.TemplateResponse("borrower_headroom.html", {
+            "request": request,
+            "inputs": inputs,
+            "report": current,
+            "evaluation": {
+                "principal": new_principal_eur,
+                "is_external": new_is_external,
+                "annual_cash_service": new_annual_cash_service_eur,
+                "hypothetical": hypothetical,
+            },
+        })
+    finally:
+        session.close()
+
+
 @router.get("/exports", response_class=HTMLResponse)
 def borrower_exports(request: Request):
     """Landing page for downloadable accounting exports."""
