@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date
-from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sqlalchemy import func
 
 from src.web.template_engine import templates
@@ -25,7 +25,7 @@ from src.borrower.models import (
     Loan, LoanMovement, MovementType, LoanAmendment, Payment, PaymentStatus,
     LoanStatus, RepaymentStructure, LoanType, InterestRateType,
     DayCountConvention, InterestTreatment, PaymentFrequency, LoanPurpose,
-    Counterparty, PortalUser, get_session_factory,
+    Counterparty, DocumentType, LoanDocument, PortalUser, get_session_factory,
 )
 
 router = APIRouter()
@@ -185,6 +185,18 @@ def borrower_loans(request: Request, status: str = "active"):
         totals_by_currency = dict(totals_by_currency)
         totals_by_purpose = {k: dict(v) for k, v in totals_by_purpose.items()}
 
+        # Tied-document rule warning: how many ACTIVE loans are missing an
+        # agreement document? (docs/governance.md §1 — pre-rule legacy loans
+        # are grandfathered but should be backfilled.)
+        active_loans = session.query(Loan).filter(Loan.status == LoanStatus.ACTIVE).all()
+        missing_agreement_ids = []
+        for ln in active_loans:
+            has_agreement = session.query(LoanDocument).filter_by(
+                loan_id=ln.id, document_type=DocumentType.AGREEMENT,
+            ).first() is not None
+            if not has_agreement:
+                missing_agreement_ids.append(ln.id)
+
         return templates.TemplateResponse("borrower_loans.html", {
             "request": request,
             "loans": loan_rows,
@@ -192,6 +204,7 @@ def borrower_loans(request: Request, status: str = "active"):
             "totals_by_purpose": totals_by_purpose,
             "current_status": status_norm,
             "status_counts": status_counts,
+            "missing_agreement_ids": missing_agreement_ids,
         })
     finally:
         session.close()
@@ -232,6 +245,12 @@ def borrower_loan_detail(request: Request, loan_id: int):
         headroom = max(0.0, loan.principal_max - outstanding) if is_revolving else None
 
         accrual = compute_accrual(loan, date.today())
+        documents_sorted = sorted(
+            session.query(LoanDocument).filter_by(loan_id=loan.id).all(),
+            key=lambda d: d.uploaded_at,
+            reverse=True,
+        )
+        has_agreement = any(d.document_type == DocumentType.AGREEMENT for d in documents_sorted)
         return templates.TemplateResponse("borrower_loan_detail.html", {
             "request": request,
             "loan": loan,
@@ -250,6 +269,9 @@ def borrower_loan_detail(request: Request, loan_id: int):
             "rate_pct": loan.interest_rate_annual * 100,
             "accrual": accrual,
             "loan_statuses": [s.value for s in LoanStatus],
+            "documents": documents_sorted,
+            "document_types": [t.value for t in DocumentType],
+            "has_agreement": has_agreement,
         })
     finally:
         session.close()
@@ -276,6 +298,20 @@ def borrower_loan_change_status(
         old_status = loan.status
         if status_enum == old_status:
             return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
+
+        # Tied-document rule (docs/governance.md §1): a loan can only
+        # transition DRAFT → ACTIVE once an agreement document is on file.
+        if old_status == LoanStatus.DRAFT and status_enum == LoanStatus.ACTIVE:
+            has_agreement = session.query(LoanDocument).filter_by(
+                loan_id=loan.id,
+                document_type=DocumentType.AGREEMENT,
+            ).first() is not None
+            if not has_agreement:
+                raise HTTPException(
+                    status_code=400,
+                    detail=("Cannot activate this loan: no signed agreement on file. "
+                            "Upload the signed PDF via the Documents panel on the loan detail page first."),
+                )
 
         before = snapshot(loan)
         loan.status = status_enum
@@ -930,6 +966,127 @@ def borrower_counterparty_edit_submit(
         session.rollback()
         log.error(f"counterparty_edit_error: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to update counterparty: {e}")
+    finally:
+        session.close()
+
+
+@router.post("/loans/{loan_id}/documents")
+async def borrower_document_upload(
+    request: Request,
+    loan_id: int,
+    document_type: str = Form(...),
+    description: str = Form(""),
+    file: UploadFile = File(...),
+):
+    """Attach a document (typically a signed PDF) to a loan."""
+    from src.borrower.documents import DocumentValidationError, store_upload
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+        try:
+            dtype = DocumentType(document_type)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Unknown document_type: {document_type}")
+
+        content = await file.read()
+        try:
+            stored = store_upload(loan_id, content=content,
+                                  filename=file.filename or "upload.pdf",
+                                  mime_type=file.content_type or "")
+        except DocumentValidationError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        principal = current_principal(request)
+        doc = LoanDocument(
+            loan_id=loan_id,
+            document_type=dtype,
+            filename=file.filename or "upload.pdf",
+            storage_path=stored.storage_path,
+            sha256_hash=stored.sha256_hash,
+            size_bytes=stored.size_bytes,
+            mime_type=stored.mime_type,
+            description=description.strip() or None,
+            uploaded_by=(principal.email if principal else "unknown"),
+        )
+        session.add(doc)
+        session.flush()
+        write_audit(session, action="create", entity_type="LoanDocument", entity_id=doc.id,
+                    after=snapshot(doc), request=request)
+        # Mirror into Loan.agreement_document_path for the canonical agreement.
+        # This keeps the "single canonical signed PDF" pointer up to date for
+        # quick lookups; if multiple agreements are attached, the latest wins.
+        if dtype == DocumentType.AGREEMENT:
+            loan.agreement_document_path = stored.storage_path
+        session.commit()
+        log.info(f"loan_document_uploaded loan_id={loan_id} doc_id={doc.id} type={document_type} size={stored.size_bytes}")
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"loan_document_upload_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to upload: {e}")
+    finally:
+        session.close()
+
+
+@router.get("/loans/{loan_id}/documents/{doc_id}")
+def borrower_document_download(request: Request, loan_id: int, doc_id: int):
+    """Download a loan document."""
+    from src.borrower.documents import read_for_download
+    session = BrunoSession()
+    try:
+        doc = session.query(LoanDocument).filter_by(id=doc_id, loan_id=loan_id).first()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        path = read_for_download(doc.storage_path)
+        if path is None:
+            raise HTTPException(status_code=404, detail="File missing on disk")
+        return FileResponse(str(path), media_type=doc.mime_type, filename=doc.filename)
+    finally:
+        session.close()
+
+
+@router.post("/loans/{loan_id}/documents/{doc_id}/delete")
+def borrower_document_delete(request: Request, loan_id: int, doc_id: int):
+    """Delete a loan document (file + DB row)."""
+    from src.borrower.documents import delete_file
+    session = BrunoSession()
+    try:
+        doc = session.query(LoanDocument).filter_by(id=doc_id, loan_id=loan_id).first()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        before = snapshot(doc)
+        path = doc.storage_path
+        was_agreement = doc.document_type == DocumentType.AGREEMENT
+
+        session.delete(doc)
+        write_audit(session, action="delete", entity_type="LoanDocument", entity_id=doc_id,
+                    before=before, request=request)
+
+        # If we just removed the canonical agreement pointer, clear it.
+        # (If another AGREEMENT doc remains, point at the most recent.)
+        if was_agreement:
+            loan = session.query(Loan).filter_by(id=loan_id).first()
+            if loan:
+                next_agreement = session.query(LoanDocument).filter_by(
+                    loan_id=loan_id, document_type=DocumentType.AGREEMENT,
+                ).order_by(LoanDocument.uploaded_at.desc()).first()
+                loan.agreement_document_path = next_agreement.storage_path if next_agreement else None
+
+        session.commit()
+        # Best-effort file removal — if it fails, DB row is already gone; not catastrophic.
+        delete_file(path)
+        log.info(f"loan_document_deleted loan_id={loan_id} doc_id={doc_id}")
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"loan_document_delete_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to delete: {e}")
     finally:
         session.close()
 

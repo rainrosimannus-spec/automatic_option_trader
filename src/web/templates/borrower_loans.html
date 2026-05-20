@@ -28,6 +28,27 @@
         </div>
     </div>
 
+    {% if missing_agreement_ids %}
+    <div class="bg-amber-950/40 border border-amber-800 rounded p-3 mb-6">
+        <div class="flex items-baseline justify-between gap-2 flex-wrap">
+            <div>
+                <span class="text-amber-300 font-medium text-sm">Tied-document rule:</span>
+                <span class="text-xs text-amber-100 ml-1">
+                    {{ missing_agreement_ids | length }} active loan{{ '' if missing_agreement_ids|length == 1 else 's' }}
+                    without an attached agreement PDF.
+                </span>
+            </div>
+            <div class="text-xs text-amber-300/90">
+                {% for lid in missing_agreement_ids %}<a href="/borrower/loans/{{ lid }}" class="underline mr-2">#{{ lid }}</a>{% endfor %}
+            </div>
+        </div>
+        <p class="text-xs text-amber-100/70 mt-1">
+            New loans need an agreement on file before transitioning DRAFT → ACTIVE.
+            Legacy active loans are grandfathered but should be backfilled — open each and use the Documents panel.
+        </p>
+    </div>
+    {% endif %}
+
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         {% for ccy, t in totals_by_currency.items() %}
         <div class="bg-gray-900 border border-gray-800 rounded p-4">

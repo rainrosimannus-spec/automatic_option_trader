@@ -47,6 +47,7 @@ data/bruno.db
 data/bruno.db-journal
 data/statements/
 data/backups/
+data/contracts/
 
 # Historical backup files (kept locally, never committed)
 *.v1-backup

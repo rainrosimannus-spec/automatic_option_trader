@@ -204,6 +204,83 @@
     </div>
 
     <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+        <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Documents ({{ documents | length }})</div>
+            <span class="text-xs">
+                {% if has_agreement %}
+                <span class="text-green-400">✓ agreement on file</span>
+                {% else %}
+                <span class="text-amber-300">no agreement — required for DRAFT → ACTIVE</span>
+                {% endif %}
+            </span>
+        </div>
+
+        {% if documents %}
+        <div class="overflow-x-auto -mx-4 px-4">
+        <table class="w-full text-sm min-w-[640px]">
+            <thead class="text-[10px] uppercase tracking-widest text-gray-500">
+                <tr>
+                    <th class="text-left py-2 whitespace-nowrap">Uploaded</th>
+                    <th class="text-left py-2 whitespace-nowrap">Type</th>
+                    <th class="text-left py-2 whitespace-nowrap">Filename</th>
+                    <th class="text-right py-2 whitespace-nowrap">Size</th>
+                    <th class="text-left py-2 pl-3">Description</th>
+                    <th class="text-right py-2 pl-3"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for d in documents %}
+                <tr>
+                    <td class="py-2 tabular-nums whitespace-nowrap">{{ d.uploaded_at.strftime('%d.%m.%Y') }}</td>
+                    <td class="py-2 whitespace-nowrap text-xs">
+                        {% if d.document_type.value == 'agreement' %}<span class="text-green-400">{{ d.document_type.value }}</span>
+                        {% elif d.document_type.value == 'amendment' %}<span class="text-blue-400">{{ d.document_type.value }}</span>
+                        {% else %}<span class="text-gray-400">{{ d.document_type.value | replace('_', ' ') }}</span>{% endif %}
+                    </td>
+                    <td class="py-2 text-xs break-all">{{ d.filename }}</td>
+                    <td class="py-2 text-right tabular-nums text-xs text-gray-500 whitespace-nowrap">{{ (d.size_bytes // 1024) }} KB</td>
+                    <td class="py-2 pl-3 text-xs text-gray-400">{{ d.description or '' }}</td>
+                    <td class="py-2 pl-3 text-right whitespace-nowrap">
+                        <a href="/borrower/loans/{{ loan.id }}/documents/{{ d.id }}" class="text-xs text-amber-300/80 hover:text-amber-300">download</a>
+                        <form method="post" action="/borrower/loans/{{ loan.id }}/documents/{{ d.id }}/delete" class="inline ml-2">
+                            <button type="submit" class="text-xs text-red-300/80 hover:text-red-300" onclick="return confirm('Delete this document permanently?');">delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <p class="text-sm text-gray-500 italic mb-3">No documents attached.</p>
+        {% endif %}
+
+        <form method="post" action="/borrower/loans/{{ loan.id }}/documents" enctype="multipart/form-data" class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Type</label>
+                <select name="document_type" required class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                    {% for t in document_types %}
+                    <option value="{{ t }}" {% if t == 'agreement' %}selected{% endif %}>{{ t | replace('_', ' ') }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">PDF file (≤ 10 MB)</label>
+                <input type="file" name="file" accept="application/pdf" required class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+            </div>
+            <div class="md:col-span-1 flex gap-2">
+                <input type="text" name="description" placeholder="Optional description"
+                       class="flex-1 bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-3 py-1.5 rounded text-sm whitespace-nowrap">+ Upload</button>
+            </div>
+        </form>
+        <p class="text-xs text-gray-600 mt-2">
+            Agreement = the signed loan contract (required to transition from DRAFT to ACTIVE).
+            Amendment / side letter / other = signed addenda or correspondence.
+        </p>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
         <div class="flex items-center justify-between gap-2 mb-3 flex-wrap"><div class="text-[10px] uppercase tracking-widest text-gray-500">Movement history ({{ movements | length }})</div><a href="/borrower/loans/{{ loan.id }}/movements-new" class="text-xs bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-3 py-1 rounded">+ Add Movement</a></div>
         {% if movements %}
         <div class="overflow-x-auto -mx-4 px-4">

@@ -352,6 +352,43 @@ class Payment(Base):
     loan = relationship("Loan", back_populates="payments")
 
 
+class DocumentType(str, enum.Enum):
+    AGREEMENT = "agreement"           # the master loan agreement — required before DRAFT → ACTIVE
+    AMENDMENT = "amendment"           # signed amendment / addendum
+    SIDE_LETTER = "side_letter"       # side letter / non-binding correspondence
+    OTHER = "other"
+
+
+class LoanDocument(Base):
+    """
+    Attached signed documents per loan. Required by the tied-document rule
+    (docs/governance.md §1): a loan can only transition DRAFT → ACTIVE once
+    at least one DocumentType.AGREEMENT row exists on it. Other document
+    types are informational.
+
+    Files live on disk at data/contracts/{loan_id}/{uuid}.pdf (paths are
+    UUID-based to avoid filename collisions). SHA-256 of the file body is
+    stored so we can detect tampering between backups.
+    """
+    __tablename__ = "loan_documents"
+
+    id = Column(Integer, primary_key=True)
+    loan_id = Column(Integer, ForeignKey("loans.id"), nullable=False, index=True)
+
+    document_type = Column(SqlEnum(DocumentType), nullable=False)
+    filename = Column(String(255), nullable=False)          # original filename from upload
+    storage_path = Column(String(512), nullable=False)      # relative path under data/contracts/
+    sha256_hash = Column(String(64), nullable=False)        # hex digest of file body
+    size_bytes = Column(Integer, nullable=False)
+    mime_type = Column(String(64), nullable=False, default="application/pdf")
+
+    description = Column(Text, nullable=True)
+    uploaded_by = Column(String(255), nullable=True)        # principal email at upload time
+    uploaded_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    loan = relationship("Loan", foreign_keys=[loan_id])
+
+
 class BankTransaction(Base):
     """
     Staging table for LHV bank transactions ingested from CAMT.053 statement
