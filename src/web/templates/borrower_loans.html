@@ -6,8 +6,26 @@
 <div class="max-w-7xl mx-auto px-4 py-6">
     <div class="mb-6">
         <p class="text-sm text-gray-500"><a href="/borrower" class="hover:text-gray-300">&larr; Back to Borrower</a></p>
-        <div class="flex items-baseline justify-between mt-2"><h1 class="text-3xl font-semibold">Loans</h1><a href="/borrower/loans-new" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-4 py-2 rounded text-sm">+ New Loan</a></div>
+        <div class="flex items-baseline justify-between gap-2 mt-2 flex-wrap"><h1 class="text-3xl font-semibold">Loans</h1><a href="/borrower/loans-new" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-4 py-2 rounded text-sm">+ New Loan</a></div>
         <p class="text-gray-400 text-sm mt-1">MesiCap loan portfolio — admin view</p>
+
+        {% set filters = [
+            ('active',    'Active'),
+            ('draft',     'Draft'),
+            ('matured',   'Matured'),
+            ('repaid',    'Repaid'),
+            ('defaulted', 'Defaulted'),
+            ('cancelled', 'Cancelled'),
+            ('all',       'All'),
+        ] %}
+        <div class="flex gap-2 mt-4 flex-wrap">
+            {% for key, label in filters %}
+            <a href="/borrower/loans?status={{ key }}"
+               class="text-xs px-3 py-1 rounded border {% if current_status == key %}bg-amber-300/90 text-gray-950 border-amber-300/90 font-medium{% else %}border-gray-700 text-gray-300 hover:border-amber-300/50 hover:text-amber-300/90{% endif %}">
+                {{ label }}{% if status_counts.get(key) %} <span class="opacity-60">({{ status_counts[key] }})</span>{% endif %}
+            </a>
+            {% endfor %}
+        </div>
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -30,7 +48,8 @@
     </div>
 
     <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
-        <table class="w-full text-sm">
+        <div class="overflow-x-auto">
+        <table class="w-full text-sm min-w-[720px]">
             <thead class="bg-gray-800 text-[10px] uppercase tracking-widest text-gray-400">
                 <tr>
                     <th class="text-left px-3 py-2">Lender</th>
@@ -90,10 +109,14 @@
                 {% endfor %}
             </tbody>
         </table>
+        </div>
     </div>
 
     <div class="mt-6 text-xs text-gray-500">
-        <p>{{ loans | length }} active loans. Excludes matured, repaid, defaulted, cancelled.</p>
+        <p>
+            {{ loans | length }} loan{{ '' if loans|length == 1 else 's' }} shown
+            {% if current_status == 'all' %}(all statuses){% else %}(filter: {{ current_status }}){% endif %}.
+        </p>
         <p class="mt-1">Outstanding = original capital + earned premium added at restructure − repayments. Headroom only shown for revolving facilities.</p>
     </div>
 </div>

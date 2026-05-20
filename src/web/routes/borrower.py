@@ -31,13 +31,28 @@ def borrower_landing(request: Request):
 
 
 @router.get("/loans", response_class=HTMLResponse)
-def borrower_loans(request: Request):
-    """Loans subpage — admin view of loan portfolio."""
+def borrower_loans(request: Request, status: str = "active"):
+    """Loans subpage — admin view of loan portfolio. ?status=active|all|draft|matured|repaid|defaulted|cancelled"""
     session = BrunoSession()
     try:
-        loans = session.query(Loan).filter(
-            Loan.status == LoanStatus.ACTIVE
-        ).order_by(Loan.origination_date).all()
+        status_norm = (status or "active").lower()
+        q = session.query(Loan)
+        if status_norm == "all":
+            pass
+        else:
+            try:
+                status_enum = LoanStatus(status_norm)
+            except ValueError:
+                status_enum = LoanStatus.ACTIVE
+                status_norm = "active"
+            q = q.filter(Loan.status == status_enum)
+        loans = q.order_by(Loan.origination_date).all()
+
+        status_counts = dict(
+            session.query(Loan.status, func.count(Loan.id)).group_by(Loan.status).all()
+        )
+        status_counts = {s.value: c for s, c in status_counts.items()}
+        status_counts["all"] = sum(status_counts.values())
 
         loan_rows = []
         totals_by_currency = defaultdict(lambda: {"outstanding": 0.0, "facility": 0.0})
@@ -102,6 +117,8 @@ def borrower_loans(request: Request):
             "loans": loan_rows,
             "totals_by_currency": totals_by_currency,
             "totals_by_purpose": totals_by_purpose,
+            "current_status": status_norm,
+            "status_counts": status_counts,
         })
     finally:
         session.close()
@@ -159,7 +176,48 @@ def borrower_loan_detail(request: Request, loan_id: int):
             "payments_pending_count": len(payments_pending),
             "rate_pct": loan.interest_rate_annual * 100,
             "accrual": accrual,
+            "loan_statuses": [s.value for s in LoanStatus],
         })
+    finally:
+        session.close()
+
+
+@router.post("/loans/{loan_id}/status")
+def borrower_loan_change_status(
+    request: Request,
+    loan_id: int,
+    new_status: str = Form(...),
+    notes_append: str = Form(""),
+):
+    """Change a loan's status (ACTIVE → REPAID/MATURED/DEFAULTED/CANCELLED, etc)."""
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+        try:
+            status_enum = LoanStatus(new_status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Unknown status: {new_status}")
+
+        old_status = loan.status
+        if status_enum == old_status:
+            return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
+
+        loan.status = status_enum
+        note = f"[STATUS] {old_status.value} → {status_enum.value}"
+        if notes_append.strip():
+            note += f": {notes_append.strip()}"
+        loan.notes = ((loan.notes + "\n") if loan.notes else "") + note
+        session.commit()
+        log.info(f"loan_status_changed loan_id={loan_id} {old_status.value}->{status_enum.value}")
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"loan_status_change_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to change status: {e}")
     finally:
         session.close()
 

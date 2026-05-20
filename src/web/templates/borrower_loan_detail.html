@@ -13,37 +13,56 @@
             <span class="text-gray-700 mx-2">/</span>
             <span class="text-gray-400">Loan {{ loan.id }}</span>
         </p>
-        <div class="flex items-baseline justify-between mt-2">
-            <h1 class="text-3xl font-semibold">{{ loan.lender.name }}</h1>
-            <span class="inline-block px-2 py-1 text-xs rounded uppercase tracking-widest
-                {% if loan.status.value == 'active' %}bg-green-900 text-green-200
-                {% elif loan.status.value == 'matured' %}bg-blue-900 text-blue-200
-                {% elif loan.status.value == 'repaid' %}bg-gray-700 text-gray-300
-                {% elif loan.status.value == 'defaulted' %}bg-red-900 text-red-200
-                {% else %}bg-gray-800 text-gray-300{% endif %}">
-                {{ loan.status.value }}
-            </span>
+        <div class="flex items-start justify-between gap-3 mt-2">
+            <h1 class="text-2xl md:text-3xl font-semibold break-words min-w-0">{{ loan.lender.name }}</h1>
+            <details class="shrink-0 relative group">
+                <summary class="cursor-pointer list-none inline-block px-2 py-1 text-xs rounded uppercase tracking-widest
+                    {% if loan.status.value == 'active' %}bg-green-900 text-green-200
+                    {% elif loan.status.value == 'matured' %}bg-blue-900 text-blue-200
+                    {% elif loan.status.value == 'repaid' %}bg-gray-700 text-gray-300
+                    {% elif loan.status.value == 'defaulted' %}bg-red-900 text-red-200
+                    {% else %}bg-gray-800 text-gray-300{% endif %}">
+                    {{ loan.status.value }} <span class="opacity-60">▾</span>
+                </summary>
+                <form method="post" action="/borrower/loans/{{ loan.id }}/status"
+                      class="absolute right-0 mt-2 z-10 w-72 bg-gray-900 border border-gray-700 rounded p-3 shadow-lg">
+                    <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-2">Change status</div>
+                    <label class="block text-xs text-gray-400 mb-1">New status</label>
+                    <select name="new_status" required
+                            class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm mb-3">
+                        {% for s in loan_statuses %}
+                        <option value="{{ s }}" {% if s == loan.status.value %}selected{% endif %}>{{ s }}</option>
+                        {% endfor %}
+                    </select>
+                    <label class="block text-xs text-gray-400 mb-1">Reason (appended to notes)</label>
+                    <input type="text" name="notes_append" placeholder="optional"
+                           class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm mb-3" />
+                    <button type="submit"
+                            class="w-full bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-3 py-1.5 rounded text-sm"
+                            onclick="return confirm('Change loan status?');">Apply</button>
+                </form>
+            </details>
         </div>
         <p class="text-gray-400 text-sm mt-1">{{ loan.description }}</p>
-        <p class="text-xs text-gray-600 mt-1">Contract: {{ loan.contract_reference }}</p>
+        <p class="text-xs text-gray-600 mt-1 break-all">Contract: {{ loan.contract_reference }}</p>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6">
+        <div class="bg-gray-900 border border-gray-800 rounded p-3 md:p-4">
             <div class="text-[10px] uppercase tracking-widest text-gray-500">Outstanding</div>
-            <div class="text-2xl font-semibold mt-1 tabular-nums">{{ "{:,.2f}".format(outstanding) }} {{ loan.currency }}</div>
+            <div class="text-lg md:text-2xl font-semibold mt-1 tabular-nums break-words">{{ "{:,.2f}".format(outstanding) }} {{ loan.currency }}</div>
             <div class="text-xs text-gray-500 mt-1">principal balance owed</div>
         </div>
 
-        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+        <div class="bg-gray-900 border border-gray-800 rounded p-3 md:p-4">
             <div class="text-[10px] uppercase tracking-widest text-gray-500">Rate</div>
-            <div class="text-2xl font-semibold mt-1 tabular-nums">{{ "%.2f"|format(rate_pct) }}%</div>
-            <div class="text-xs text-gray-500 mt-1">{{ loan.interest_rate_type.value }} / {{ loan.day_count_convention.value }} / {{ loan.interest_treatment.value }}</div>
+            <div class="text-lg md:text-2xl font-semibold mt-1 tabular-nums">{{ "%.2f"|format(rate_pct) }}%</div>
+            <div class="text-xs text-gray-500 mt-1 break-words">{{ loan.interest_rate_type.value }} / {{ loan.day_count_convention.value }} / {{ loan.interest_treatment.value }}</div>
         </div>
 
-        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+        <div class="bg-gray-900 border border-gray-800 rounded p-3 md:p-4">
             <div class="text-[10px] uppercase tracking-widest text-gray-500">Maturity</div>
-            <div class="text-2xl font-semibold mt-1">{{ loan.maturity_date.strftime('%d.%m.%Y') }}</div>
+            <div class="text-lg md:text-2xl font-semibold mt-1">{{ loan.maturity_date.strftime('%d.%m.%Y') }}</div>
             <div class="text-xs text-gray-500 mt-1">
                 {% if days_to_maturity > 0 %}{{ days_to_maturity }} days remaining
                 {% elif days_to_maturity == 0 %}due today
@@ -51,15 +70,15 @@
             </div>
         </div>
 
-        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+        <div class="bg-gray-900 border border-gray-800 rounded p-3 md:p-4">
             <div class="text-[10px] uppercase tracking-widest text-gray-500">
                 {% if is_revolving %}Facility / Headroom{% else %}Structure{% endif %}
             </div>
             {% if is_revolving %}
-                <div class="text-2xl font-semibold mt-1 tabular-nums">{{ "{:,.2f}".format(loan.principal_max) }}</div>
+                <div class="text-lg md:text-2xl font-semibold mt-1 tabular-nums break-words">{{ "{:,.2f}".format(loan.principal_max) }}</div>
                 <div class="text-xs text-gray-500 mt-1">{{ "{:,.2f}".format(headroom) }} headroom</div>
             {% else %}
-                <div class="text-2xl font-semibold mt-1">{{ loan.repayment_structure.value | replace('_', ' ') }}</div>
+                <div class="text-lg md:text-2xl font-semibold mt-1 break-words">{{ loan.repayment_structure.value | replace('_', ' ') }}</div>
                 <div class="text-xs text-gray-500 mt-1">{{ loan.payment_frequency.value }}</div>
             {% endif %}
         </div>
@@ -175,30 +194,32 @@
     </div>
 
     <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
-        <div class="flex items-center justify-between mb-3"><div class="text-[10px] uppercase tracking-widest text-gray-500">Movement history ({{ movements | length }})</div><a href="/borrower/loans/{{ loan.id }}/movements-new" class="text-xs bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-3 py-1 rounded">+ Add Movement</a></div>
+        <div class="flex items-center justify-between gap-2 mb-3 flex-wrap"><div class="text-[10px] uppercase tracking-widest text-gray-500">Movement history ({{ movements | length }})</div><a href="/borrower/loans/{{ loan.id }}/movements-new" class="text-xs bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-3 py-1 rounded">+ Add Movement</a></div>
         {% if movements %}
-        <table class="w-full text-sm">
+        <div class="overflow-x-auto -mx-4 px-4">
+        <table class="w-full text-sm min-w-[640px]">
             <thead class="text-[10px] uppercase tracking-widest text-gray-500">
                 <tr>
-                    <th class="text-left py-2">Date</th>
-                    <th class="text-left py-2">Type</th>
-                    <th class="text-right py-2">Amount</th>
-                    <th class="text-left py-2 pl-3">Reference</th>
+                    <th class="text-left py-2 whitespace-nowrap">Date</th>
+                    <th class="text-left py-2 whitespace-nowrap">Type</th>
+                    <th class="text-right py-2 whitespace-nowrap">Amount</th>
+                    <th class="text-left py-2 pl-3 whitespace-nowrap">Reference</th>
                     <th class="text-left py-2 pl-3">Description</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-800">
                 {% for mv in movements %}
                 <tr>
-                    <td class="py-2 tabular-nums">{{ mv.movement_date.strftime('%d.%m.%Y') }}</td>
-                    <td class="py-2">{{ mv.movement_type.value | replace('_', ' ') }}</td>
-                    <td class="py-2 text-right tabular-nums">{{ "{:,.2f}".format(mv.amount) }} {{ mv.currency }}</td>
-                    <td class="py-2 pl-3 text-xs text-gray-500 tabular-nums">{{ mv.bank_reference or '—' }}</td>
+                    <td class="py-2 tabular-nums whitespace-nowrap">{{ mv.movement_date.strftime('%d.%m.%Y') }}</td>
+                    <td class="py-2 whitespace-nowrap">{{ mv.movement_type.value | replace('_', ' ') }}</td>
+                    <td class="py-2 text-right tabular-nums whitespace-nowrap">{{ "{:,.2f}".format(mv.amount) }} {{ mv.currency }}</td>
+                    <td class="py-2 pl-3 text-xs text-gray-500 tabular-nums whitespace-nowrap">{{ mv.bank_reference or '—' }}</td>
                     <td class="py-2 pl-3 text-xs text-gray-400">{{ mv.description or '' }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
+        </div>
         {% else %}
         <p class="text-sm text-gray-500 italic">No movements recorded.</p>
         {% endif %}
@@ -207,28 +228,30 @@
     {% if amendments %}
     <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
         <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Amendments ({{ amendments | length }})</div>
-        <table class="w-full text-sm">
+        <div class="overflow-x-auto -mx-4 px-4">
+        <table class="w-full text-sm min-w-[640px]">
             <thead class="text-[10px] uppercase tracking-widest text-gray-500">
                 <tr>
-                    <th class="text-left py-2">Date</th>
-                    <th class="text-left py-2">Field changed</th>
-                    <th class="text-left py-2">Old value</th>
-                    <th class="text-left py-2">New value</th>
+                    <th class="text-left py-2 whitespace-nowrap">Date</th>
+                    <th class="text-left py-2 whitespace-nowrap">Field changed</th>
+                    <th class="text-left py-2 whitespace-nowrap">Old value</th>
+                    <th class="text-left py-2 whitespace-nowrap">New value</th>
                     <th class="text-left py-2 pl-3">Description</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-800">
                 {% for a in amendments %}
                 <tr>
-                    <td class="py-2 tabular-nums">{{ a.amendment_date.strftime('%d.%m.%Y') }}</td>
-                    <td class="py-2">{{ a.field_changed }}</td>
-                    <td class="py-2 tabular-nums text-gray-400">{{ a.old_value }}</td>
-                    <td class="py-2 tabular-nums">{{ a.new_value }}</td>
+                    <td class="py-2 tabular-nums whitespace-nowrap">{{ a.amendment_date.strftime('%d.%m.%Y') }}</td>
+                    <td class="py-2 whitespace-nowrap">{{ a.field_changed }}</td>
+                    <td class="py-2 tabular-nums text-gray-400 whitespace-nowrap">{{ a.old_value }}</td>
+                    <td class="py-2 tabular-nums whitespace-nowrap">{{ a.new_value }}</td>
                     <td class="py-2 pl-3 text-xs text-gray-400">{{ a.description or '' }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
+        </div>
     </div>
     {% endif %}
 
@@ -237,30 +260,32 @@
         <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">
             Payment schedule — {{ payments_paid_count }} paid, {{ payments_pending_count }} scheduled
         </div>
-        <table class="w-full text-sm">
+        <div class="overflow-x-auto -mx-4 px-4">
+        <table class="w-full text-sm min-w-[720px]">
             <thead class="text-[10px] uppercase tracking-widest text-gray-500">
                 <tr>
-                    <th class="text-left py-2">Scheduled date</th>
-                    <th class="text-right py-2">Amount</th>
-                    <th class="text-left py-2 pl-3">Status</th>
-                    <th class="text-left py-2 pl-3">Paid date</th>
-                    <th class="text-left py-2 pl-3">Reference</th>
+                    <th class="text-left py-2 whitespace-nowrap">Scheduled date</th>
+                    <th class="text-right py-2 whitespace-nowrap">Amount</th>
+                    <th class="text-left py-2 pl-3 whitespace-nowrap">Status</th>
+                    <th class="text-left py-2 pl-3 whitespace-nowrap">Paid date</th>
+                    <th class="text-left py-2 pl-3 whitespace-nowrap">Reference</th>
+                    <th class="text-right py-2 pl-3"></th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-800">
                 {% for p in payments %}
                 <tr {% if p.status.value == 'paid' %}class="text-gray-500"{% endif %}>
-                    <td class="py-1.5 tabular-nums">{{ p.scheduled_date.strftime('%d.%m.%Y') }}</td>
-                    <td class="py-1.5 text-right tabular-nums">{{ "{:,.2f}".format(p.scheduled_amount) }} {{ loan.currency }}</td>
-                    <td class="py-1.5 pl-3 text-xs">
+                    <td class="py-1.5 tabular-nums whitespace-nowrap">{{ p.scheduled_date.strftime('%d.%m.%Y') }}</td>
+                    <td class="py-1.5 text-right tabular-nums whitespace-nowrap">{{ "{:,.2f}".format(p.scheduled_amount) }} {{ loan.currency }}</td>
+                    <td class="py-1.5 pl-3 text-xs whitespace-nowrap">
                         {% if p.status.value == 'paid' %}<span class="text-green-400">paid</span>
                         {% elif p.status.value == 'overdue' %}<span class="text-red-400">overdue</span>
                         {% elif p.status.value == 'waived' %}<span class="text-gray-500">waived</span>
                         {% else %}<span class="text-gray-400">scheduled</span>{% endif %}
                     </td>
-                    <td class="py-1.5 pl-3 text-xs">{% if p.paid_date %}{{ p.paid_date.strftime('%d.%m.%Y') }}{% else %}—{% endif %}</td>
-                    <td class="py-1.5 pl-3 text-xs text-gray-500 tabular-nums">{{ p.bank_reference or '—' }}</td>
-                    <td class="py-1.5 pl-3 text-xs text-right">
+                    <td class="py-1.5 pl-3 text-xs whitespace-nowrap">{% if p.paid_date %}{{ p.paid_date.strftime('%d.%m.%Y') }}{% else %}—{% endif %}</td>
+                    <td class="py-1.5 pl-3 text-xs text-gray-500 tabular-nums whitespace-nowrap">{{ p.bank_reference or '—' }}</td>
+                    <td class="py-1.5 pl-3 text-xs text-right whitespace-nowrap">
                         <a href="/borrower/payments/{{ p.id }}/edit" class="text-amber-300/80 hover:text-amber-300">
                             {% if p.status.value == 'scheduled' or p.status.value == 'overdue' %}Mark paid
                             {% else %}Edit{% endif %}
@@ -270,6 +295,7 @@
                 {% endfor %}
             </tbody>
         </table>
+        </div>
     </div>
     {% endif %}
 
