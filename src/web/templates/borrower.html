@@ -9,6 +9,103 @@
         <p class="text-gray-400 text-sm mt-1">Bruno — MesiCap loan portfolio management</p>
     </div>
 
+    {% if capacity %}
+    <div class="bg-gray-900 border rounded p-5 mb-6
+        {% if capacity.status == 'red' %}border-red-900
+        {% elif capacity.status == 'amber' %}border-amber-700
+        {% elif capacity.status == 'green' %}border-green-900
+        {% else %}border-gray-800{% endif %}">
+        <div class="flex items-baseline justify-between gap-2 mb-3 flex-wrap">
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Debt capacity — how much more MesiCap can borrow externally</div>
+                <div class="text-xs text-gray-500 mt-1">
+                    Asset Coverage ≥ {{ capacity.threshold }}× rule: external debt ≤ gross NLV ÷ {{ capacity.threshold }}.
+                    Shareholder/subordinated debt doesn't count against this ceiling.
+                </div>
+            </div>
+            <a href="/borrower/headroom" class="text-xs text-amber-300/80 hover:text-amber-300 shrink-0">configure NLV · full four-metric view →</a>
+        </div>
+
+        {% if not capacity.nlv_configured %}
+        <div class="text-sm text-gray-400 py-2">
+            Gross NLV is not yet configured — capacity undetermined.
+            Set it at <a href="/borrower/headroom" class="text-amber-300/80 hover:text-amber-300">/borrower/headroom</a>
+            (manually, or via the IBKR snapshot job once <code>bruno_run_integrations=True</code>).
+        </div>
+        {% else %}
+        <!-- Four big numbers in EUR -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Gross NLV (current)</div>
+                <div class="text-2xl font-semibold tabular-nums mt-0.5 break-words">{{ "{:,.0f}".format(capacity.gross_nlv_eur) }} <span class="text-sm text-gray-500">EUR</span></div>
+                <div class="text-xs text-gray-600 mt-0.5">MesiCap brokerage value</div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Max external debt</div>
+                <div class="text-2xl font-semibold tabular-nums mt-0.5 break-words text-gray-100">{{ "{:,.0f}".format(capacity.max_external_eur) }} <span class="text-sm text-gray-500">EUR</span></div>
+                <div class="text-xs text-gray-600 mt-0.5">NLV ÷ {{ capacity.threshold }}</div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Used (external)</div>
+                <div class="text-2xl font-semibold tabular-nums mt-0.5 break-words
+                    {% if capacity.status == 'red' %}text-red-300
+                    {% elif capacity.status == 'amber' %}text-amber-300
+                    {% elif capacity.status == 'green' %}text-green-300{% endif %}">
+                    {{ "{:,.0f}".format(capacity.external_debt_eur) }} <span class="text-sm text-gray-500">EUR</span>
+                </div>
+                <div class="text-xs text-gray-600 mt-0.5">
+                    {% if capacity.used_pct is not none %}{{ "%.1f"|format(capacity.used_pct) }}% of capacity{% else %}—{% endif %}
+                </div>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-500">Headroom (still can lend)</div>
+                <div class="text-2xl font-semibold tabular-nums mt-0.5 break-words text-amber-300/90">{{ "{:,.0f}".format(capacity.headroom_eur) }} <span class="text-sm text-gray-500">EUR</span></div>
+                <div class="text-xs text-gray-600 mt-0.5">More external debt we could take in today</div>
+            </div>
+        </div>
+
+        <!-- Proportional bar -->
+        {% set pct = (capacity.used_pct or 0) %}
+        {% set clamped = (100 if pct > 100 else pct) %}
+        <div class="h-7 rounded border border-gray-800 bg-gray-950 overflow-hidden relative">
+            <div class="h-full transition-all
+                {% if capacity.status == 'red' %}bg-red-500/80
+                {% elif capacity.status == 'amber' %}bg-amber-400/80
+                {% else %}bg-green-500/70{% endif %}"
+                style="width: {{ '%.1f'|format(clamped) }}%"></div>
+            <div class="absolute inset-0 flex items-center justify-center text-xs font-medium tabular-nums text-gray-100">
+                {% if capacity.used_pct is not none %}
+                {{ "{:,.0f}".format(capacity.external_debt_eur) }} EUR used
+                · {{ "{:,.0f}".format(capacity.headroom_eur) }} EUR headroom
+                ({{ "%.1f"|format(capacity.used_pct) }}% used)
+                {% else %}
+                no external debt yet — full capacity available
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="text-xs text-gray-500 mt-3 flex items-baseline justify-between gap-2 flex-wrap">
+            <span>
+                NLV source: <span class="text-gray-300">{{ capacity.inputs_source }}</span> ·
+                as of {{ capacity.inputs_as_of.strftime('%d.%m.%Y %H:%M') if capacity.inputs_as_of else '—' }}
+                {% if capacity.subordinated_debt_eur > 0 %}
+                · <span class="text-gray-400">{{ "{:,.0f}".format(capacity.subordinated_debt_eur) }} EUR subordinated/shareholder debt is separate, doesn't count</span>
+                {% endif %}
+            </span>
+            <span>
+                {% if capacity.status == 'red' %}
+                <span class="text-red-300">Above 100% — Asset Coverage breached. No new external debt.</span>
+                {% elif capacity.status == 'amber' %}
+                <span class="text-amber-300">≥ 70% used. Approaching the 2.0× line.</span>
+                {% elif capacity.status == 'green' %}
+                <span class="text-green-300">Well within Asset Coverage. (Liquidity + Op Cash may add their own constraints — see Headroom.)</span>
+                {% endif %}
+            </span>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
     {% if open_contact_requests %}
     <div class="bg-blue-950/40 border border-blue-800 rounded p-4 mb-6">
         <div class="flex items-baseline justify-between gap-2 flex-wrap mb-2">

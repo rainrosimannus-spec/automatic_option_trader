@@ -99,12 +99,13 @@ def borrower_logout(request: Request):
 def borrower_landing(request: Request):
     from src.borrower.deadman import compute_state, executor_contact
     from src.borrower.quorum import pending_approval_loans
+    from src.borrower.headroom import compute_capacity_summary
     from src.borrower.models import ContactUpdateRequest, Counterparty
     principal = current_principal(request)
     pending = pending_approval_loans(principal.id) if principal else []
     session = BrunoSession()
     try:
-        # Open contact-update requests from lenders
+        capacity = compute_capacity_summary(session=session)
         open_requests_rows = (
             session.query(ContactUpdateRequest)
             .filter(ContactUpdateRequest.status == "new")
@@ -125,6 +126,7 @@ def borrower_landing(request: Request):
             "deadman_executor": executor_contact(),
             "pending_approvals": pending,
             "open_contact_requests": open_requests,
+            "capacity": capacity,
         })
     finally:
         session.close()
@@ -229,39 +231,8 @@ def borrower_loans(request: Request, status: str = "active"):
         # can MesiCap take in before Asset Coverage drops below 2.0×?
         # (governance.md "debt burden control" — the face-value-most-meaningful
         # of the three binding metrics.)
-        from src.borrower.headroom import (
-            get_or_init_inputs, aggregate_debt, ASSET_COVERAGE_GREEN,
-        )
-        inputs = get_or_init_inputs(session)
-        debt_agg = aggregate_debt(session)
-        gross_nlv_eur = float(inputs.gross_nlv_eur or 0.0)
-        max_external_eur = gross_nlv_eur / ASSET_COVERAGE_GREEN if gross_nlv_eur > 0 else 0.0
-        external_debt_eur = float(debt_agg["external_debt_eur"])
-        used_pct = (external_debt_eur / max_external_eur * 100.0) if max_external_eur > 0 else None
-        headroom_eur = max(0.0, max_external_eur - external_debt_eur) if max_external_eur > 0 else 0.0
-        # Status: green < 70%, amber 70–100%, red ≥ 100%
-        if used_pct is None:
-            capacity_status = "unknown"
-        elif used_pct >= 100.0:
-            capacity_status = "red"
-        elif used_pct >= 70.0:
-            capacity_status = "amber"
-        else:
-            capacity_status = "green"
-
-        debt_capacity = {
-            "nlv_configured": gross_nlv_eur > 0,
-            "gross_nlv_eur": gross_nlv_eur,
-            "max_external_eur": max_external_eur,
-            "external_debt_eur": external_debt_eur,
-            "subordinated_debt_eur": float(debt_agg["subordinated_debt_eur"]),
-            "headroom_eur": headroom_eur,
-            "used_pct": used_pct,
-            "status": capacity_status,
-            "threshold": ASSET_COVERAGE_GREEN,
-            "inputs_source": inputs.source,
-            "inputs_as_of": inputs.as_of,
-        }
+        from src.borrower.headroom import compute_capacity_summary
+        debt_capacity = compute_capacity_summary(session=session)
 
         return templates.TemplateResponse("borrower_loans.html", {
             "request": request,

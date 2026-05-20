@@ -278,6 +278,72 @@ def compute_headroom(
     )
 
 
+def compute_capacity_summary(session=None) -> dict:
+    """Compact summary of debt capacity for landing/header display.
+
+    Returns the headline numbers the principal cares about at a glance:
+      - gross_nlv_eur (current value of MesiCap's brokerage)
+      - cash_eur, expected_annual_return_eur (the other two binding-metric inputs)
+      - max_external_eur (gross NLV / Asset Coverage = how much external debt is allowed)
+      - external_debt_eur, subordinated_debt_eur (what's currently outstanding)
+      - headroom_eur (how much more external debt we could take in)
+      - used_pct, capacity_status (green / amber / red bucket for the visual bar)
+      - nlv_configured (False if no NLV input yet → page should prompt to set it)
+      - inputs_source, inputs_as_of (manual vs ibkr_snapshot, freshness)
+
+    Used by /borrower/, /borrower/loans, and anywhere else "how much can MesiCap
+    take in" needs to be answered without recomputing the same logic per route.
+    """
+    own_session = session is None
+    if own_session:
+        session = get_session_factory()()
+    try:
+        inputs = get_or_init_inputs(session)
+        debt = aggregate_debt(session)
+
+        gross_nlv_eur = float(inputs.gross_nlv_eur or 0.0)
+        cash_eur = float(inputs.cash_eur or 0.0)
+        expected_return_eur = float(inputs.expected_annual_return_eur or 0.0)
+        external_debt_eur = float(debt["external_debt_eur"])
+        subordinated_debt_eur = float(debt["subordinated_debt_eur"])
+        cash_service_12m_eur = float(debt["cash_debt_service_12m_eur"])
+
+        max_external_eur = (
+            gross_nlv_eur / ASSET_COVERAGE_GREEN if gross_nlv_eur > 0 else 0.0
+        )
+        headroom_eur = max(0.0, max_external_eur - external_debt_eur) if max_external_eur > 0 else 0.0
+        used_pct = (external_debt_eur / max_external_eur * 100.0) if max_external_eur > 0 else None
+
+        if used_pct is None:
+            capacity_status = "unknown"
+        elif used_pct >= 100.0:
+            capacity_status = "red"
+        elif used_pct >= 70.0:
+            capacity_status = "amber"
+        else:
+            capacity_status = "green"
+
+        return {
+            "nlv_configured": gross_nlv_eur > 0,
+            "gross_nlv_eur": gross_nlv_eur,
+            "cash_eur": cash_eur,
+            "expected_annual_return_eur": expected_return_eur,
+            "max_external_eur": max_external_eur,
+            "external_debt_eur": external_debt_eur,
+            "subordinated_debt_eur": subordinated_debt_eur,
+            "cash_debt_service_12m_eur": cash_service_12m_eur,
+            "headroom_eur": headroom_eur,
+            "used_pct": used_pct,
+            "status": capacity_status,
+            "threshold": ASSET_COVERAGE_GREEN,
+            "inputs_source": inputs.source,
+            "inputs_as_of": inputs.as_of,
+        }
+    finally:
+        if own_session:
+            session.close()
+
+
 def get_or_init_inputs(session) -> HeadroomInputs:
     """Fetch the single HeadroomInputs row, creating an empty one if missing."""
     row = session.query(HeadroomInputs).first()
