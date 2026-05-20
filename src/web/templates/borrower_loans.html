@@ -218,17 +218,17 @@
         <div class="bg-gray-900 border border-gray-800 rounded p-4">
             <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-2">Cost of capital over time</div>
             <div class="text-xs text-gray-500 mb-3">Weighted-average interest rate across all active loans, monthly</div>
-            <canvas id="chart-cost-of-capital" height="200"></canvas>
+            <div style="height: 240px; position: relative;"><canvas id="chart-cost-of-capital"></canvas></div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded p-4">
             <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-2">Debt outstanding over time</div>
             <div class="text-xs text-gray-500 mb-3">Total principal owed, split external vs subordinated. LTV history will appear here once NLV snapshots accumulate.</div>
-            <canvas id="chart-debt-outstanding" height="200"></canvas>
+            <div style="height: 240px; position: relative;"><canvas id="chart-debt-outstanding"></canvas></div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded p-4 lg:col-span-2">
             <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-2">Monthly debt service — last 6 + next 18 months</div>
             <div class="text-xs text-gray-500 mb-3">Scheduled (bar) vs actually paid (overlay). Forward months show planned cash burden.</div>
-            <canvas id="chart-debt-service" height="160"></canvas>
+            <div style="height: 260px; position: relative;"><canvas id="chart-debt-service"></canvas></div>
         </div>
     </div>
 
