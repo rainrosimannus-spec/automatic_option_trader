@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+.env.*
 venv/
 .venv/
 env/
@@ -44,6 +45,8 @@ data/fmp_cache.json
 # Bruno (loan portfolio system)
 data/bruno.db
 data/bruno.db-journal
+data/statements/
+data/backups/
 
 # Historical backup files (kept locally, never committed)
 *.v1-backup

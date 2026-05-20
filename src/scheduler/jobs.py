@@ -1016,6 +1016,25 @@ def job_write_backup_ledger():
         log.error("bruno_backup_ledger_error", error=str(e))
 
 
+def job_generate_quarterly_statements():
+    """Generate quarterly lender statement PDFs for the just-ended quarter.
+    Idempotent: re-generating the same period overwrites existing PDFs."""
+    try:
+        from datetime import date
+        from src.borrower.statements import generate_quarter_for_all_lenders
+        today = date.today()
+        # The just-ended quarter is the one before the current one
+        current_q = ((today.month - 1) // 3) + 1
+        if current_q == 1:
+            year, quarter = today.year - 1, 4
+        else:
+            year, quarter = today.year, current_q - 1
+        result = generate_quarter_for_all_lenders(year, quarter)
+        log.info("bruno_statements_generated", year=year, quarter=quarter, **result)
+    except Exception as e:
+        log.error("bruno_statements_error", error=str(e))
+
+
 def create_scheduler() -> BackgroundScheduler:
     """
     Create and configure the multi-market job scheduler.
@@ -1721,6 +1740,16 @@ def create_scheduler() -> BackgroundScheduler:
         CronTrigger(day_of_week="sun", hour=5, minute=45, timezone=utc_tz),
         id="bruno_backup_ledger",
         name="Bruno: Weekly Offline Backup Ledger",
+        max_instances=1,
+    )
+
+    # Bruno: generate quarterly lender statement PDFs — quarter-end + 1 day,
+    # 06:00 UTC (governance.md §5.8). Apr 2 / Jul 2 / Oct 2 / Jan 2.
+    scheduler.add_job(
+        job_generate_quarterly_statements,
+        CronTrigger(month="1,4,7,10", day=2, hour=6, minute=0, timezone=utc_tz),
+        id="bruno_generate_statements",
+        name="Bruno: Quarterly Lender Statements",
         max_instances=1,
     )
 

@@ -34,11 +34,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.borrower.models import (  # noqa: E402
-    Counterparty, CounterpartyTier, CounterpartyType, PortalUser, get_session_factory,
+    Counterparty, CounterpartyTier, CounterpartyType, PortalUser, PrincipalUser,
+    get_session_factory,
 )
 
 
-# (email, lender_entity_name) pairs to seed
+# (email, lender_entity_name) pairs for lender-portal access
 SEED: list[tuple[str, str]] = [
     ("rain.rosimannus@gmail.com",   "Thirona Capital OÜ"),
     ("rain.rosimannus@gmail.com",   "SK4 HoldCo OÜ"),
@@ -48,6 +49,14 @@ SEED: list[tuple[str, str]] = [
     ("rain.rosimannus@mac.com",     "Waddy Holding OÜ"),
     ("lauriluik1982@gmail.com",     "Arvutitugi OÜ"),
     ("rasmus.rosimannus@gmail.com", "Hologram OÜ"),
+]
+
+# (email, display_name) pairs for admin-side principal access
+PRINCIPALS: list[tuple[str, str]] = [
+    ("rain.rosimannus@gmail.com",   "Rain Rosimannus"),
+    ("rain.rosimannus@mac.com",     "Rain Rosimannus"),
+    ("rasmus.rosimannus@gmail.com", "Rasmus Rosimannus"),
+    ("lauriluik1982@gmail.com",     "Lauri Luik"),
 ]
 
 
@@ -72,6 +81,8 @@ def main(dry_run: bool = False) -> int:
     created_cp = 0
     created_pu = 0
     skipped_pu = 0
+    created_principals = 0
+    skipped_principals = 0
     missing_entities: list[str] = []
 
     try:
@@ -118,10 +129,28 @@ def main(dry_run: bool = False) -> int:
         if not dry_run:
             sess.commit()
 
-        # 3) Report
+        # 3) Admin principal_users seeding (Tier G)
+        for email, name in PRINCIPALS:
+            existing = sess.query(PrincipalUser).filter_by(email=email).first()
+            if existing is not None:
+                print(f"  skip principal (exists): {email:36s} → {existing.name}")
+                skipped_principals += 1
+                continue
+            if dry_run:
+                print(f"  would seed principal:    {email:36s} → {name}")
+                continue
+            sess.add(PrincipalUser(email=email, name=name))
+            print(f"  seeded principal:        {email:36s} → {name}")
+            created_principals += 1
+
+        if not dry_run:
+            sess.commit()
+
+        # 4) Report
         print()
         print(f"summary: created {created_cp} counterparty, "
-              f"seeded {created_pu} portal_users, skipped {skipped_pu} existing")
+              f"seeded {created_pu} portal_users + {created_principals} principals, "
+              f"skipped {skipped_pu + skipped_principals} existing")
         if missing_entities:
             unique = sorted(set(missing_entities))
             print()

@@ -430,6 +430,58 @@ class PortalUser(Base):
     counterparty = relationship("Counterparty", foreign_keys=[counterparty_id])
 
 
+class PrincipalUser(Base):
+    """
+    Admin-side login identity for MesiCap principals. Used to gate `/borrower/*`
+    routes (the admin dashboard). Separate from PortalUser because the role
+    + access scope is different: principals read+write everything; portal_users
+    read only their own loans.
+
+    A single human (Rain) can have both a PrincipalUser row (admin) and one or
+    more PortalUser rows (lender on his own entities). They authenticate via
+    the same magic-link mechanism but with separate session cookies and
+    separate /login pages.
+    """
+    __tablename__ = "principal_users"
+
+    id = Column(Integer, primary_key=True)
+    email = Column(String(255), nullable=False, unique=True, index=True)
+    name = Column(String(128), nullable=False)  # display name, e.g. "Rain Rosimannus"
+
+    magic_link_token_hash = Column(String(128), nullable=True)
+    magic_link_expires_at = Column(DateTime, nullable=True)
+    magic_link_sent_at = Column(DateTime, nullable=True)
+
+    last_login_at = Column(DateTime, nullable=True)
+
+    locked_at = Column(DateTime, nullable=True)
+    locked_reason = Column(String(255), nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PrincipalSession(Base):
+    """
+    Active admin session for a PrincipalUser. Mirrors PortalSession but on
+    its own table so the two session pools are independently revocable.
+    """
+    __tablename__ = "principal_sessions"
+
+    id = Column(Integer, primary_key=True)
+    principal_user_id = Column(Integer, ForeignKey("principal_users.id"), nullable=False, index=True)
+
+    session_token_hash = Column(String(128), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    ip_address = Column(String(64), nullable=True)
+    user_agent = Column(String(512), nullable=True)
+
+    user = relationship("PrincipalUser", foreign_keys=[principal_user_id])
+
+
 class PortalSession(Base):
     """
     Active lender-portal session. Cookie's value is the session token, stored

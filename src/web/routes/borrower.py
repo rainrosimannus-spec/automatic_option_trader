@@ -12,6 +12,14 @@ from sqlalchemy import func
 from src.web.template_engine import templates
 from src.core.logger import get_logger
 from src.borrower.accrual import compute_accrual
+from src.borrower.admin_auth import (
+    SESSION_COOKIE as ADMIN_SESSION_COOKIE,
+    clear_session as admin_clear_session,
+    consume_magic_link as admin_consume_magic_link,
+    current_principal,
+    request_magic_link as admin_request_magic_link,
+    set_session_cookie as admin_set_session_cookie,
+)
 from src.borrower.audit import snapshot, write_audit
 from src.borrower.models import (
     Loan, LoanMovement, MovementType, LoanAmendment, Payment, PaymentStatus,
@@ -26,9 +34,72 @@ log = get_logger(__name__)
 BrunoSession = get_session_factory()
 
 
+# =============================================================================
+# Admin auth — login / magic / logout. These routes are exempt from the
+# auth middleware that gates the rest of /borrower/*.
+# =============================================================================
+
+@router.get("/login", response_class=HTMLResponse)
+def borrower_login_form(request: Request):
+    if current_principal(request) is not None:
+        return RedirectResponse(url="/borrower/", status_code=303)
+    return templates.TemplateResponse("borrower_login.html", {
+        "request": request,
+        "message": None,
+        "email_value": "",
+    })
+
+
+@router.post("/login", response_class=HTMLResponse)
+def borrower_login_submit(request: Request, email: str = Form(...)):
+    result = admin_request_magic_link(email, request=request)
+    message = (
+        "If that email is registered as a MesiCap principal, a magic link has been sent. "
+        "The link is valid for 15 minutes."
+    )
+    if result.get("status") == "rate_limited":
+        message = "Too many requests in a short window — please wait a few minutes before trying again."
+    elif result.get("status") == "locked":
+        message = "This account is currently locked."
+    return templates.TemplateResponse("borrower_login.html", {
+        "request": request,
+        "message": message,
+        "email_value": email,
+        "dev_magic_url": result.get("magic_url"),
+    })
+
+
+@router.get("/magic/{token}")
+def borrower_magic_consume(request: Request, token: str):
+    session_token = admin_consume_magic_link(token, request=request)
+    if session_token is None:
+        return templates.TemplateResponse("borrower_login.html", {
+            "request": request,
+            "message": "That link is invalid or has expired. Request a new one.",
+            "email_value": "",
+        }, status_code=400)
+    response = RedirectResponse(url="/borrower/", status_code=303)
+    admin_set_session_cookie(response, session_token)
+    return response
+
+
+@router.get("/logout")
+def borrower_logout(request: Request):
+    response = RedirectResponse(url="/borrower/login", status_code=303)
+    admin_clear_session(request, response)
+    return response
+
+
+# =============================================================================
+# Admin routes (all gated by the auth middleware in src/web/app.py)
+# =============================================================================
+
 @router.get("/", response_class=HTMLResponse)
 def borrower_landing(request: Request):
-    return templates.TemplateResponse("borrower.html", {"request": request})
+    return templates.TemplateResponse("borrower.html", {
+        "request": request,
+        "current_principal": current_principal(request),
+    })
 
 
 @router.get("/loans", response_class=HTMLResponse)
@@ -351,6 +422,21 @@ def borrower_exports(request: Request):
         "request": request,
         "items": items,
     })
+
+
+@router.post("/exports/statements/{year}/{quarter}")
+def borrower_generate_statements(request: Request, year: int, quarter: int):
+    """Manually trigger statement PDF generation for a quarter."""
+    from src.borrower.statements import generate_quarter_for_all_lenders
+    try:
+        result = generate_quarter_for_all_lenders(year, quarter)
+        log.info(f"statements_generated_manual year={year} quarter={quarter} result={result}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        log.error(f"statements_generate_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed: {e}")
+    return RedirectResponse(url="/borrower/exports", status_code=303)
 
 
 @router.get("/exports/merit-{year}-Q{quarter}.csv")

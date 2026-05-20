@@ -32,5 +32,23 @@
         </p>
     </div>
 
+    <div class="bg-gray-900 border border-gray-800 rounded p-5 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Lender statement PDFs</div>
+        <p class="text-sm text-gray-400 mb-4">
+            Per-lender quarterly PDF statements, served to lenders at <code>/lenders/statements</code>.
+            Generated automatically on the 2nd of each quarter (Apr 2 / Jul 2 / Oct 2 / Jan 2).
+            Use the buttons below to (re-)generate manually for any quarter — overwrites existing files.
+        </p>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {% for item in items %}
+            <form method="post" action="/borrower/exports/statements/{{ item.year }}/{{ item.quarter }}" class="inline">
+                <button type="submit" class="w-full bg-gray-950 border border-gray-700 hover:border-amber-300/40 rounded px-3 py-2 text-sm text-center">
+                    {{ item.label }} <span class="text-xs text-gray-500">Generate</span>
+                </button>
+            </form>
+            {% endfor %}
+        </div>
+    </div>
+
 </div>
 {% endblock %}

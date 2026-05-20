@@ -290,12 +290,57 @@ def lender_statements(request: Request):
         user = _require_user(request)
     except _NeedsLogin:
         return RedirectResponse(url="/lenders/login", status_code=303)
-    # Statement PDF generation is Phase 2.5/3 work. Placeholder for now.
-    return templates.TemplateResponse("lender_statements.html", {
-        "request": request,
-        "user": user,
-        "statements": [],
-    })
+    from src.borrower.statements import list_statements
+    from src.borrower.models import Counterparty
+    session = _BrunoSession()
+    try:
+        statements = []
+        cp_names = {
+            c.id: c.name for c in session.query(Counterparty)
+            .filter(Counterparty.id.in_(user.counterparty_ids)).all()
+        }
+        for cp_id in user.counterparty_ids:
+            for s in list_statements(cp_id):
+                statements.append({
+                    "period": f"{s['year']} Q{s['quarter']}",
+                    "issued_at": s["mtime"],
+                    "size_kb": s["size_bytes"] // 1024,
+                    "download_url": f"/lenders/statements/{cp_id}/{s['filename']}",
+                    "counterparty_name": cp_names.get(cp_id, ""),
+                })
+        # Sort newest issue first
+        statements.sort(key=lambda x: x["issued_at"], reverse=True)
+        return templates.TemplateResponse("lender_statements.html", {
+            "request": request,
+            "user": user,
+            "statements": statements,
+            "multi_entity": len(user.counterparty_ids) > 1,
+        })
+    finally:
+        session.close()
+
+
+@router.get("/statements/{cp_id}/{filename}")
+def lender_statement_download(request: Request, cp_id: int, filename: str):
+    """Download a statement PDF. Ownership check: cp_id must be in the user's
+    access set, AND filename must match the expected pattern (no traversal)."""
+    try:
+        user = _require_user(request)
+    except _NeedsLogin:
+        return RedirectResponse(url="/lenders/login", status_code=303)
+    if cp_id not in user.counterparty_ids:
+        raise HTTPException(status_code=404, detail="Not found")
+    # Defense in depth: only allow YYYY-Q[1-4].pdf filenames; reject path
+    # traversal and any other shape.
+    import re
+    if not re.fullmatch(r"\d{4}-Q[1-4]\.pdf", filename):
+        raise HTTPException(status_code=404, detail="Not found")
+    from src.borrower.statements import STATEMENTS_DIR
+    path = STATEMENTS_DIR / str(cp_id) / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    from fastapi.responses import FileResponse
+    return FileResponse(str(path), media_type="application/pdf", filename=filename)
 
 
 @router.get("/contact", response_class=HTMLResponse)

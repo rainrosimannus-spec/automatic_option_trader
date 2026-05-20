@@ -5,7 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.web.routes import dashboard, positions, trades, controls, api, screener, suggestions
@@ -14,6 +15,15 @@ from src.web.routes import consigliere as consigliere_route
 from src.web.routes import ipo as ipo_route
 from src.web.routes import borrower as borrower_route
 from src.lender_portal import router as lender_portal_route
+from src.borrower.admin_auth import current_principal as _current_admin_principal
+
+
+# Paths within /borrower that don't require admin auth (login flow itself + assets)
+_ADMIN_AUTH_EXEMPT_PREFIXES = (
+    "/borrower/login",
+    "/borrower/magic/",
+    "/borrower/logout",
+)
 
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -29,6 +39,18 @@ def create_app() -> FastAPI:
     # Static files
     _STATIC_DIR.mkdir(exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+    # Admin auth gate on /borrower/* (governance.md §5.7 / Tier G).
+    # Lender portal at /lenders/* has its own auth and is unaffected.
+    @app.middleware("http")
+    async def _admin_auth_gate(request: Request, call_next):
+        path = request.url.path
+        # Match /borrower exactly OR /borrower/anything — but not /borrowerXYZ.
+        if path == "/borrower" or path.startswith("/borrower/"):
+            exempt = any(path.startswith(p) for p in _ADMIN_AUTH_EXEMPT_PREFIXES)
+            if not exempt and _current_admin_principal(request) is None:
+                return RedirectResponse(url="/borrower/login", status_code=303)
+        return await call_next(request)
 
     # Routes
     app.include_router(dashboard.router)
