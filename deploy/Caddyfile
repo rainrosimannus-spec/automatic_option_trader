@@ -1,77 +1,63 @@
-# Caddy v2 reverse-proxy config for Bruno production.
+# Caddy v2 reverse-proxy config for Bruno production on octoserver (37.0.30.34).
 #
-# Drop this at /etc/caddy/Caddyfile on the host that runs Bruno's uvicorn
-# process. Caddy auto-provisions Let's Encrypt TLS — no manual cert step.
+# Architecture: two independent FastAPI processes share the same bruno.db.
+#   Process A — existing trading dashboard (Maggy/Winston + Bruno admin at /borrower/*).
+#               Stays unchanged. Caddy doesn't need to know about it unless you
+#               want to expose it on a public hostname (today: not).
+#   Process B — dedicated lender portal (new). Runs on 127.0.0.1:8001 via
+#               `deploy/bruno-lender.service`. Caddy serves it at
+#               `lender.mesicap.com`.
 #
-# Prereqs:
-#   1. caddy installed (apt install caddy on Debian/Ubuntu)
-#   2. DNS A records:
-#        mesicap.com         → host IP   (admin / dashboard)
-#        lender.mesicap.com  → host IP   (lender portal)
-#      Both must resolve before caddy starts so it can issue certs.
-#   3. Bruno running locally as a systemd service on port 8000
-#      (see deploy/bruno.service)
-#   4. Outbound port 80 + 443 open (caddy uses 80 for ACME challenges)
+# DNS A-records (confirmed 2026-05-20):
+#   lender.mesicap.com  → 37.0.30.34
+#   mesicap.com         → 37.0.30.34   (308-redirects to lender.mesicap.com)
+#   mesicap.ee          → 37.0.30.34   (308-redirects to lender.mesicap.com)
 #
-# After dropping this file:
+# Install:
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
 #   sudo systemctl reload caddy
 #   curl -sI https://lender.mesicap.com/lenders/login   # → 200
 #
-# To reload without downtime after Bruno deploys:
-#   sudo systemctl reload bruno    # uvicorn re-execs gracefully
-#   # caddy unaffected; it just keeps proxying
+# Caddy auto-issues Let's Encrypt certs for all three hostnames on first
+# request. First-time cert issuance takes 10–30 seconds.
 
-# === Admin: Maggy/Winston + Bruno admin ===
-mesicap.com {
-    encode gzip
-    reverse_proxy 127.0.0.1:8000 {
-        # Forward client IP / scheme so Bruno's audit_log records the right values
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
-    }
-
-    # Security headers — applied to admin AND lender alike via the snippet below
-    import secure_headers
+# === Apex + .ee redirects to lender portal ===
+# Both mesicap.com and mesicap.ee 308-redirect to lender.mesicap.com (for now).
+# Catches both root and any subpath: /foo → https://lender.mesicap.com/foo
+mesicap.com, mesicap.ee {
+    redir https://lender.mesicap.com{uri} permanent
 }
 
-# === Lender portal — same backend, different vhost ===
+# === Lender portal — dedicated process on port 8001 ===
 lender.mesicap.com {
     encode gzip
-    reverse_proxy 127.0.0.1:8000 {
+    reverse_proxy 127.0.0.1:8001 {
+        # Forward client metadata so the lender portal's audit_log records
+        # the right values (not 127.0.0.1)
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
     }
 
-    # The lender portal serves only paths under /lenders/*. Any other path on
-    # this vhost would just hit the admin pages with auth redirects, which is
-    # ugly. Force the host root to land on the lender login.
-    @root path /
-    redir @root /lenders/ 308
+    # Liveness probe — bypass logging
+    @healthz path /healthz
+    log_skip @healthz
 
     import secure_headers
 }
 
 # === Shared security-headers snippet ===
-# Caddy 2 supports named snippets; ensure this is in the main Caddyfile or
-# imported. governance.md §5.7 calls for CSP + sane headers on the lender side;
-# we apply the same set to admin for hygiene.
+# governance.md §5.7 calls for CSP + HSTS + sane headers on lender-facing
+# surface. Tailwind + Google Fonts CDNs are whitelisted; everything else is
+# self-only.
 (secure_headers) {
     header {
-        # Force HTTPS on subsequent visits
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        # Don't let the page be framed by other sites
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         X-Frame-Options "DENY"
-        # Don't leak referrer to external sites
         Referrer-Policy "strict-origin-when-cross-origin"
-        # Bruno serves no inline JS; allow Tailwind CDN + Google Fonts only
-        Content-Security-Policy "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
-        # Don't sniff content types
+        Content-Security-Policy "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
         X-Content-Type-Options "nosniff"
-        # Disable browser FLoC / topics inference
-        Permissions-Policy "interest-cohort=()"
-        # Strip the Server header
+        Permissions-Policy "interest-cohort=(), browsing-topics=()"
         -Server
     }
 }

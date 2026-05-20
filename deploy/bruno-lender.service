@@ -1,0 +1,65 @@
+# systemd unit for the standalone lender portal process.
+#
+# This is the SECOND process — independent of the existing Maggy/Winston +
+# Bruno admin trading-dashboard process. They share the same data/bruno.db
+# (SQLite WAL handles concurrent access from two processes on the same host).
+#
+# Install:
+#   sudo cp deploy/bruno-lender.service /etc/systemd/system/bruno-lender.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now bruno-lender
+#
+# View logs (incl. magic-link console fallback if dev mode is on):
+#   journalctl -u bruno-lender -f
+#
+# Restart after a code deploy:
+#   sudo systemctl restart bruno-lender
+#
+# Caddy proxies lender.mesicap.com → 127.0.0.1:8001 (see deploy/Caddyfile).
+
+[Unit]
+Description=MesiCap lender portal (lender.mesicap.com)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+User=bruno
+Group=bruno
+
+# Repo location on octoserver — adjust if different
+WorkingDirectory=/var/lib/bruno/automatic_option_trader
+
+# Production env file lives outside the repo. Same file the
+# trading-dashboard process reads (BRUNO_ADMIN_PROD / LENDER_PORTAL_PROD /
+# SMTP_* / DEADMAN_* / MERIT_API_* are all shared).
+EnvironmentFile=/etc/bruno.env
+
+# Lender portal binds 127.0.0.1:8001 only. Caddy proxies from the public side.
+ExecStart=/var/lib/bruno/automatic_option_trader/.venv/bin/uvicorn \
+    src.lender_portal.standalone_app:create_lender_app --factory \
+    --host 127.0.0.1 --port 8001 \
+    --workers 2 \
+    --no-access-log \
+    --proxy-headers \
+    --forwarded-allow-ips=127.0.0.1
+
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+# Only data/ + logs/ are writable — the lender process writes to
+# portal_sessions, portal_users.last_login_at, contact_update_requests
+ReadWritePaths=/var/lib/bruno/automatic_option_trader/data /var/lib/bruno/automatic_option_trader/logs
+
+KillSignal=SIGINT
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=multi-user.target
