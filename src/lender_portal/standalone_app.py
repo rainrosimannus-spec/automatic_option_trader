@@ -20,8 +20,21 @@ Run locally:
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
+
+# Load config/.env if present — same pattern as the trader (src/core/config.py).
+# This lets the standalone lender process pick up BRUNO_ADMIN_AUTH_DISABLE,
+# LENDER_PORTAL_PROD, SMTP_*, LENDER_BASE_URL, etc. from one shared file.
+_ENV_FILE = Path(__file__).resolve().parent.parent.parent / "config" / ".env"
+if _ENV_FILE.exists():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(_ENV_FILE)
+    except ImportError:
+        pass
 
 from src.lender_portal import router as lender_router
 
