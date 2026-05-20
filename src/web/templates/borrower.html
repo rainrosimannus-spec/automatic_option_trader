@@ -9,6 +9,40 @@
         <p class="text-gray-400 text-sm mt-1">Bruno — MesiCap loan portfolio management</p>
     </div>
 
+    {% if deadman and deadman.enabled and deadman.state != 'normal' %}
+    <div class="rounded p-4 mb-6 border
+        {% if deadman.state == 'frozen' %}bg-red-950/40 border-red-800{% else %}bg-amber-950/40 border-amber-800{% endif %}">
+        <div class="flex items-baseline justify-between gap-2 flex-wrap">
+            <div>
+                {% if deadman.state == 'frozen' %}
+                <span class="text-red-300 font-medium text-sm">Dead-man freeze in effect.</span>
+                {% else %}
+                <span class="text-amber-300 font-medium text-sm">Dead-man warning.</span>
+                {% endif %}
+                <span class="text-xs text-amber-100 ml-1">
+                    {% if deadman.days_since_last_login is not none %}
+                    No principal logged in for {{ deadman.days_since_last_login }} days
+                    (last: {{ deadman.last_login_email or 'unknown' }}).
+                    {% else %}
+                    No principal has logged in at all.
+                    {% endif %}
+                </span>
+            </div>
+            <div class="text-xs text-amber-100/80">
+                Warning at {{ deadman.warning_threshold_days }}d · freeze at {{ deadman.freeze_threshold_days }}d
+            </div>
+        </div>
+        {% if deadman.state == 'frozen' %}
+        <p class="text-xs text-red-100/80 mt-2">
+            All write operations on /borrower/* are blocked. Read paths still work. Logging in rearms the timer.
+            {% if deadman_executor.email %}
+            <br>Designated executor: <strong>{{ deadman_executor.name }}</strong> ({{ deadman_executor.email }}).
+            {% endif %}
+        </p>
+        {% endif %}
+    </div>
+    {% endif %}
+
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <a href="/borrower/loans" class="block bg-gray-900 border border-gray-800 hover:border-amber-300/40 rounded p-5 transition">
             <h2 class="text-xl font-semibold text-amber-300/90">Loans</h2>

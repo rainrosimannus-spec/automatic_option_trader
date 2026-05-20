@@ -16,6 +16,7 @@ from src.web.routes import ipo as ipo_route
 from src.web.routes import borrower as borrower_route
 from src.lender_portal import router as lender_portal_route
 from src.borrower.admin_auth import current_principal as _current_admin_principal
+from src.borrower.deadman import compute_state as _compute_deadman_state
 
 
 # Paths within /borrower that don't require admin auth (login flow itself + assets)
@@ -41,6 +42,9 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     # Admin auth gate on /borrower/* (governance.md §5.7 / Tier G).
+    # Also enforces the dead-man freeze (governance.md §3.2 / Tier L): when
+    # the dead-man state is frozen, write methods return 423 Locked and
+    # the principal is told to log in (which auto-rearms the timer).
     # Lender portal at /lenders/* has its own auth and is unaffected.
     @app.middleware("http")
     async def _admin_auth_gate(request: Request, call_next):
@@ -50,6 +54,24 @@ def create_app() -> FastAPI:
             exempt = any(path.startswith(p) for p in _ADMIN_AUTH_EXEMPT_PREFIXES)
             if not exempt and _current_admin_principal(request) is None:
                 return RedirectResponse(url="/borrower/login", status_code=303)
+            # Dead-man freeze: block writes when frozen. Read paths still serve
+            # (so the principal can see what's happening) — only POST/PUT/
+            # PATCH/DELETE are blocked.
+            if not exempt and request.method in ("POST", "PUT", "PATCH", "DELETE"):
+                state = _compute_deadman_state()
+                if state.is_frozen:
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(
+                        status_code=423,
+                        content={
+                            "detail": (
+                                "Dead-man freeze in effect — no principal has logged in "
+                                f"for {state.days_since_last_login} days "
+                                f"(freeze threshold {state.freeze_threshold_days}). "
+                                "Logging in via /borrower/login rearms the timer."
+                            ),
+                        },
+                    )
         return await call_next(request)
 
     # Routes

@@ -1016,6 +1016,36 @@ def job_write_backup_ledger():
         log.error("bruno_backup_ledger_error", error=str(e))
 
 
+def job_deadman_check():
+    """Daily dead-man state check (docs/governance.md §3.2). No-op when the
+    switch is disabled (default on dev codebase). When warning or frozen,
+    logs at the appropriate level so external monitoring can pick it up."""
+    try:
+        from src.borrower.deadman import compute_state, executor_contact
+        s = compute_state()
+        if not s.enabled:
+            return
+        if s.state == "frozen":
+            log.error(
+                "bruno_deadman_frozen",
+                days_since_last_login=s.days_since_last_login,
+                last_login_email=s.last_login_email,
+                executor=executor_contact(),
+            )
+        elif s.state == "warning":
+            log.warning(
+                "bruno_deadman_warning",
+                days_since_last_login=s.days_since_last_login,
+                last_login_email=s.last_login_email,
+                warning_threshold=s.warning_threshold_days,
+                freeze_threshold=s.freeze_threshold_days,
+            )
+        else:
+            log.info("bruno_deadman_ok", days_since_last_login=s.days_since_last_login)
+    except Exception as e:
+        log.error("bruno_deadman_error", error=str(e))
+
+
 def job_generate_quarterly_statements():
     """Generate quarterly lender statement PDFs for the just-ended quarter.
     Idempotent: re-generating the same period overwrites existing PDFs."""
@@ -1750,6 +1780,16 @@ def create_scheduler() -> BackgroundScheduler:
         CronTrigger(month="1,4,7,10", day=2, hour=6, minute=0, timezone=utc_tz),
         id="bruno_generate_statements",
         name="Bruno: Quarterly Lender Statements",
+        max_instances=1,
+    )
+
+    # Bruno: dead-man check — daily 06:15 UTC (governance.md §3.2). No-op when
+    # DEADMAN_ENABLED is not set; logs state otherwise.
+    scheduler.add_job(
+        job_deadman_check,
+        CronTrigger(hour=6, minute=15, timezone=utc_tz),
+        id="bruno_deadman_check",
+        name="Bruno: Dead-man State Check",
         max_instances=1,
     )
 

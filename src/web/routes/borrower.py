@@ -96,9 +96,12 @@ def borrower_logout(request: Request):
 
 @router.get("/", response_class=HTMLResponse)
 def borrower_landing(request: Request):
+    from src.borrower.deadman import compute_state, executor_contact
     return templates.TemplateResponse("borrower.html", {
         "request": request,
         "current_principal": current_principal(request),
+        "deadman": compute_state(),
+        "deadman_executor": executor_contact(),
     })
 
 

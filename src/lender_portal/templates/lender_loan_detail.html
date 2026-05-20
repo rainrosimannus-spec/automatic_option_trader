@@ -49,6 +49,40 @@
     </table>
 </div>
 
+{% if documents %}
+<div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+    <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Signed documents ({{ documents | length }})</div>
+    <table class="w-full text-sm">
+        <thead class="text-[10px] uppercase tracking-widest text-gray-500">
+            <tr>
+                <th class="text-left py-2">Uploaded</th>
+                <th class="text-left py-2">Type</th>
+                <th class="text-left py-2">Filename</th>
+                <th class="text-right py-2"></th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800">
+            {% for d in documents %}
+            <tr>
+                <td class="py-2 tabular-nums text-xs whitespace-nowrap">{{ d.uploaded_at.strftime('%d.%m.%Y') }}</td>
+                <td class="py-2 text-xs whitespace-nowrap">
+                    {% if d.document_type.value == 'agreement' %}<span class="text-green-400">{{ d.document_type.value }}</span>
+                    {% else %}<span class="text-blue-400">{{ d.document_type.value }}</span>{% endif %}
+                </td>
+                <td class="py-2 text-xs break-all">{{ d.filename }}</td>
+                <td class="py-2 text-right whitespace-nowrap">
+                    <a href="/lenders/loans/{{ loan.id }}/documents/{{ d.id }}" class="text-xs text-amber-300/80 hover:text-amber-300">Download</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p class="text-xs text-gray-600 mt-3">
+        Your signed loan agreement and any signed amendments. For binding terms refer to these documents.
+    </p>
+</div>
+{% endif %}
+
 {% if has_collateral_view %}
 <a href="/lenders/loans/{{ loan.id }}/collateral" class="block bg-gray-900 border border-amber-700/40 hover:border-amber-300/60 rounded p-4 mb-6 transition">
     <div class="flex items-center justify-between">

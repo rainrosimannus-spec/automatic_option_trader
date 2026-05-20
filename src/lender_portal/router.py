@@ -34,8 +34,8 @@ from fastapi.templating import Jinja2Templates
 from src.borrower.accrual import compute_accrual
 from src.borrower.collateral import collateral_view, is_collateral_viewable
 from src.borrower.models import (
-    Loan, LoanMovement, LoanStatus, MovementType, Payment, PaymentStatus,
-    get_session_factory,
+    DocumentType, Loan, LoanDocument, LoanMovement, LoanStatus, MovementType,
+    Payment, PaymentStatus, get_session_factory,
 )
 from src.lender_portal.auth import (
     AuthedUser, SESSION_COOKIE, clear_session, consume_magic_link, current_user,
@@ -243,6 +243,16 @@ def lender_loan_detail(request: Request, loan_id: int):
         movements_sorted = sorted(loan.movements, key=lambda m: m.movement_date)
         payments_sorted = sorted(loan.payments, key=lambda p: p.scheduled_date)
         amendments_sorted = sorted(loan.amendments, key=lambda a: a.amendment_date)
+        # Lender-visible documents: signed agreement + signed amendments only.
+        # Side letters and "other" docs are internal — never surface to lenders.
+        documents_visible = sorted(
+            session.query(LoanDocument).filter(
+                LoanDocument.loan_id == loan.id,
+                LoanDocument.document_type.in_([DocumentType.AGREEMENT, DocumentType.AMENDMENT]),
+            ).all(),
+            key=lambda d: d.uploaded_at,
+            reverse=True,
+        )
         return templates.TemplateResponse("lender_loan_detail.html", {
             "request": request,
             "user": user,
@@ -254,7 +264,39 @@ def lender_loan_detail(request: Request, loan_id: int):
             "amendments": amendments_sorted,
             "rate_pct": loan.interest_rate_annual * 100,
             "has_collateral_view": is_collateral_viewable(loan),
+            "documents": documents_visible,
         })
+    finally:
+        session.close()
+
+
+@router.get("/loans/{loan_id}/documents/{doc_id}")
+def lender_document_download(request: Request, loan_id: int, doc_id: int):
+    """Lender-side download of a signed agreement or amendment on their own
+    loan. Side letters and 'other' document types are NEVER served on this
+    route — they're internal to MesiCap.
+    """
+    try:
+        user = _require_user(request)
+    except _NeedsLogin:
+        return RedirectResponse(url="/lenders/login", status_code=303)
+
+    session = _BrunoSession()
+    try:
+        # First confirm loan ownership — this is the same gate as everywhere else.
+        _require_loan_owned_by_user(loan_id, user, session)
+        doc = session.query(LoanDocument).filter_by(id=doc_id, loan_id=loan_id).first()
+        if doc is None:
+            raise HTTPException(status_code=404, detail="Document not found")
+        # Whitelist: only signed legal documents are lender-visible.
+        if doc.document_type not in (DocumentType.AGREEMENT, DocumentType.AMENDMENT):
+            raise HTTPException(status_code=404, detail="Document not found")
+        from src.borrower.documents import read_for_download
+        path = read_for_download(doc.storage_path)
+        if path is None:
+            raise HTTPException(status_code=404, detail="File missing")
+        from fastapi.responses import FileResponse
+        return FileResponse(str(path), media_type=doc.mime_type, filename=doc.filename)
     finally:
         session.close()
 
