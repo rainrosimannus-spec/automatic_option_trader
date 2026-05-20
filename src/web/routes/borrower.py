@@ -82,6 +82,7 @@ def borrower_loans(request: Request, status: str = "active"):
 
             loan_rows.append({
                 "id": loan.id,
+                "lender_id": loan.lender_id,
                 "lender_name": loan.lender.name,
                 "purpose": loan.purpose.value,
                 "loan_type": loan.loan_type.value,
@@ -227,6 +228,62 @@ def borrower_lender_admin(request: Request):
     return templates.TemplateResponse("borrower_lender_admin.html", {"request": request})
 
 
+@router.get("/counterparties/{cp_id}", response_class=HTMLResponse)
+def borrower_counterparty_detail(request: Request, cp_id: int):
+    """Counterparty detail — header, exposure rollup, loans, contact, notes."""
+    session = BrunoSession()
+    try:
+        cp = session.query(Counterparty).filter_by(id=cp_id).first()
+        if not cp:
+            raise HTTPException(status_code=404, detail=f"Counterparty {cp_id} not found")
+
+        loans_as_lender = sorted(cp.loans_as_lender, key=lambda l: l.origination_date)
+        loan_rows = []
+        active_exposure_by_ccy = defaultdict(float)
+        facility_by_ccy = defaultdict(float)
+        for loan in loans_as_lender:
+            disbursed_cash = sum(
+                m.amount for m in loan.movements if m.movement_type == MovementType.DISBURSEMENT
+            )
+            restructure_adj = sum(
+                m.amount for m in loan.movements if m.movement_type == MovementType.PRINCIPAL_RESTRUCTURE
+            )
+            repaid = sum(
+                m.amount for m in loan.movements if m.movement_type == MovementType.PRINCIPAL_REPAYMENT
+            )
+            outstanding = disbursed_cash + restructure_adj - repaid
+            loan_rows.append({
+                "id": loan.id,
+                "description": loan.description,
+                "purpose": loan.purpose.value,
+                "loan_type": loan.loan_type.value,
+                "outstanding": outstanding,
+                "currency": loan.currency,
+                "principal_max": loan.principal_max,
+                "rate": loan.interest_rate_annual * 100,
+                "origination_date": loan.origination_date,
+                "maturity_date": loan.maturity_date,
+                "status": loan.status.value,
+            })
+            if loan.status == LoanStatus.ACTIVE:
+                active_exposure_by_ccy[loan.currency] += outstanding
+                facility_by_ccy[loan.currency] += loan.principal_max
+
+        active_exposure_by_ccy = dict(active_exposure_by_ccy)
+        facility_by_ccy = dict(facility_by_ccy)
+
+        return templates.TemplateResponse("borrower_counterparty_detail.html", {
+            "request": request,
+            "cp": cp,
+            "loans": loan_rows,
+            "active_loans_count": sum(1 for l in loan_rows if l["status"] == "active"),
+            "active_exposure_by_ccy": active_exposure_by_ccy,
+            "facility_by_ccy": facility_by_ccy,
+        })
+    finally:
+        session.close()
+
+
 @router.get("/loans-new", response_class=HTMLResponse)
 def borrower_loan_new_form(request: Request):
     """Show the New Loan form."""
@@ -350,7 +407,7 @@ def borrower_counterparty_new_submit(
     secondary_iban: str = Form(""),
     related_principal: str = Form(""),
     contact_email: str = Form(""),
-    phone: str = Form(""),
+    contact_phone: str = Form(""),
     notes: str = Form(""),
 ):
     """Process the New Counterparty form submission."""
@@ -369,7 +426,7 @@ def borrower_counterparty_new_submit(
             secondary_iban=secondary_iban.strip() or None,
             related_principal=related_principal.strip() or None,
             contact_email=contact_email.strip() or None,
-            phone=phone.strip() or None,
+            contact_phone=contact_phone.strip() or None,
             notes=notes.strip() or None,
         )
         session.add(cp)
@@ -380,6 +437,75 @@ def borrower_counterparty_new_submit(
         session.rollback()
         log.error(f"counterparty_create_error: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to create counterparty: {e}")
+    finally:
+        session.close()
+
+
+@router.get("/counterparties/{cp_id}/edit", response_class=HTMLResponse)
+def borrower_counterparty_edit_form(request: Request, cp_id: int):
+    """Show the Edit Counterparty form prefilled with current values."""
+    from src.borrower.models import CounterpartyType, CounterpartyTier
+    session = BrunoSession()
+    try:
+        cp = session.query(Counterparty).filter_by(id=cp_id).first()
+        if not cp:
+            raise HTTPException(status_code=404, detail=f"Counterparty {cp_id} not found")
+        return templates.TemplateResponse("borrower_counterparty_new.html", {
+            "request": request,
+            "cp": cp,
+            "counterparty_types": [t.value for t in CounterpartyType],
+            "counterparty_tiers": [t.value for t in CounterpartyTier],
+        })
+    finally:
+        session.close()
+
+
+@router.post("/counterparties/{cp_id}/edit")
+def borrower_counterparty_edit_submit(
+    request: Request,
+    cp_id: int,
+    name: str = Form(...),
+    type: str = Form(...),
+    tier: str = Form(""),
+    legal_form: str = Form(""),
+    registration_number: str = Form(""),
+    country: str = Form("EE"),
+    address: str = Form(""),
+    iban: str = Form(""),
+    secondary_iban: str = Form(""),
+    related_principal: str = Form(""),
+    contact_email: str = Form(""),
+    contact_phone: str = Form(""),
+    notes: str = Form(""),
+):
+    """Process Counterparty edit submission."""
+    from src.borrower.models import CounterpartyType, CounterpartyTier
+    session = BrunoSession()
+    try:
+        cp = session.query(Counterparty).filter_by(id=cp_id).first()
+        if not cp:
+            raise HTTPException(status_code=404, detail=f"Counterparty {cp_id} not found")
+        cp.name = name.strip()
+        cp.type = CounterpartyType(type)
+        cp.tier = CounterpartyTier(tier) if tier else None
+        cp.legal_form = legal_form.strip() or None
+        cp.registration_number = registration_number.strip() or None
+        cp.country = country.strip() or None
+        cp.address = address.strip() or None
+        cp.iban = iban.strip() or None
+        cp.secondary_iban = secondary_iban.strip() or None
+        cp.related_principal = related_principal.strip() or None
+        cp.contact_email = contact_email.strip() or None
+        cp.contact_phone = contact_phone.strip() or None
+        cp.notes = notes.strip() or None
+        session.commit()
+        return RedirectResponse(url=f"/borrower/counterparties/{cp_id}", status_code=303)
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"counterparty_edit_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to update counterparty: {e}")
     finally:
         session.close()
 
@@ -449,6 +575,151 @@ def borrower_movement_new_submit(
         session.rollback()
         log.error(f"movement_create_error: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to create movement: {e}")
+    finally:
+        session.close()
+
+
+@router.get("/movements/{movement_id}/edit", response_class=HTMLResponse)
+def borrower_movement_edit_form(request: Request, movement_id: int):
+    """Show the Edit Movement form prefilled with current values."""
+    session = BrunoSession()
+    try:
+        movement = session.query(LoanMovement).filter_by(id=movement_id).first()
+        if not movement:
+            raise HTTPException(status_code=404, detail=f"Movement {movement_id} not found")
+        return templates.TemplateResponse("borrower_movement_new.html", {
+            "request": request,
+            "loan": movement.loan,
+            "movement": movement,
+            "movement_types": [t.value for t in MovementType],
+        })
+    finally:
+        session.close()
+
+
+@router.post("/movements/{movement_id}/edit")
+def borrower_movement_edit_submit(
+    request: Request,
+    movement_id: int,
+    movement_type: str = Form(...),
+    movement_date: str = Form(...),
+    amount: float = Form(...),
+    currency: str = Form(...),
+    bank_reference: str = Form(""),
+    bank_account_iban: str = Form(""),
+    description: str = Form(""),
+):
+    """Update an existing movement."""
+    from datetime import datetime
+    session = BrunoSession()
+    try:
+        movement = session.query(LoanMovement).filter_by(id=movement_id).first()
+        if not movement:
+            raise HTTPException(status_code=404, detail=f"Movement {movement_id} not found")
+
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be positive")
+        if currency != movement.loan.currency:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Currency mismatch: loan is {movement.loan.currency}, movement was {currency}",
+            )
+
+        movement.movement_date = datetime.strptime(movement_date, "%Y-%m-%d").date()
+        movement.movement_type = MovementType(movement_type)
+        movement.amount = amount
+        movement.currency = currency
+        movement.bank_reference = bank_reference.strip() or None
+        movement.bank_account_iban = bank_account_iban.strip() or None
+        movement.description = description.strip() or None
+
+        loan_id = movement.loan_id
+        session.commit()
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"movement_edit_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to edit movement: {e}")
+    finally:
+        session.close()
+
+
+@router.post("/movements/{movement_id}/delete")
+def borrower_movement_delete(request: Request, movement_id: int):
+    """Delete a movement."""
+    session = BrunoSession()
+    try:
+        movement = session.query(LoanMovement).filter_by(id=movement_id).first()
+        if not movement:
+            raise HTTPException(status_code=404, detail=f"Movement {movement_id} not found")
+        loan_id = movement.loan_id
+        session.delete(movement)
+        session.commit()
+        log.info(f"movement_deleted movement_id={movement_id} loan_id={loan_id}")
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"movement_delete_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to delete movement: {e}")
+    finally:
+        session.close()
+
+
+@router.get("/loans/{loan_id}/amendments-new", response_class=HTMLResponse)
+def borrower_amendment_new_form(request: Request, loan_id: int):
+    """Show the New Amendment form for a specific loan."""
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+        return templates.TemplateResponse("borrower_amendment_new.html", {
+            "request": request,
+            "loan": loan,
+        })
+    finally:
+        session.close()
+
+
+@router.post("/loans/{loan_id}/amendments-new")
+def borrower_amendment_new_submit(
+    request: Request,
+    loan_id: int,
+    amendment_date: str = Form(...),
+    field_changed: str = Form(...),
+    old_value: str = Form(""),
+    new_value: str = Form(...),
+    description: str = Form(""),
+):
+    """Process the New Amendment form submission."""
+    from datetime import datetime
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+
+        am = LoanAmendment(
+            loan_id=loan_id,
+            amendment_date=datetime.strptime(amendment_date, "%Y-%m-%d").date(),
+            field_changed=field_changed.strip(),
+            old_value=old_value.strip() or None,
+            new_value=new_value.strip() or None,
+            description=description.strip() or None,
+        )
+        session.add(am)
+        session.commit()
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"amendment_create_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to create amendment: {e}")
     finally:
         session.close()
 

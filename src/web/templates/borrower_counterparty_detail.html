@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Counterparty {{ cp.id }}: {{ cp.name }}{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500">
+            <a href="/borrower" class="hover:text-gray-300">Borrower</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <a href="/borrower/loans" class="hover:text-gray-300">Loans</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <span class="text-gray-400">Counterparty {{ cp.id }}</span>
+        </p>
+        <div class="flex items-start justify-between gap-3 mt-2 flex-wrap">
+            <div class="min-w-0">
+                <h1 class="text-2xl md:text-3xl font-semibold break-words">{{ cp.name }}</h1>
+                <p class="text-gray-400 text-sm mt-1">
+                    {{ cp.type.value | replace('_', ' ') }}{% if cp.tier %} · {{ cp.tier.value | replace('_', ' ') }}{% endif %}{% if cp.legal_form %} · {{ cp.legal_form }}{% endif %}{% if cp.country %} · {{ cp.country }}{% endif %}
+                </p>
+            </div>
+            <a href="/borrower/counterparties/{{ cp.id }}/edit"
+               class="text-xs border border-gray-700 hover:border-amber-300/50 hover:text-amber-300/90 px-3 py-1.5 rounded shrink-0">Edit</a>
+        </div>
+    </div>
+
+    {% if active_exposure_by_ccy %}
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6">
+        {% for ccy, amt in active_exposure_by_ccy.items() %}
+        <div class="bg-gray-900 border border-gray-800 rounded p-3 md:p-4">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Active exposure {{ ccy }}</div>
+            <div class="text-lg md:text-2xl font-semibold mt-1 tabular-nums break-words">{{ "{:,.2f}".format(amt) }} {{ ccy }}</div>
+            <div class="text-xs text-gray-500 mt-1">of {{ "{:,.2f}".format(facility_by_ccy[ccy]) }} facility</div>
+        </div>
+        {% endfor %}
+        <div class="bg-gray-900 border border-gray-800 rounded p-3 md:p-4">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Loans</div>
+            <div class="text-lg md:text-2xl font-semibold mt-1 tabular-nums">{{ active_loans_count }}<span class="text-gray-500 text-sm"> / {{ loans | length }}</span></div>
+            <div class="text-xs text-gray-500 mt-1">active / total</div>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Identification</div>
+            <table class="w-full text-sm">
+                <tbody class="divide-y divide-gray-800">
+                    {% if cp.registration_number %}
+                    <tr><td class="py-2 text-gray-400 w-1/3">Registration nr</td><td class="py-2 tabular-nums break-all">{{ cp.registration_number }}</td></tr>
+                    {% endif %}
+                    {% if cp.related_principal %}
+                    <tr><td class="py-2 text-gray-400">Related principal</td><td class="py-2">{{ cp.related_principal }}</td></tr>
+                    {% endif %}
+                    {% if cp.kyc_status %}
+                    <tr><td class="py-2 text-gray-400">KYC</td><td class="py-2">{{ cp.kyc_status }}{% if cp.kyc_completed_at %} ({{ cp.kyc_completed_at.strftime('%d.%m.%Y') }}){% endif %}</td></tr>
+                    {% endif %}
+                    {% if cp.address %}
+                    <tr><td class="py-2 text-gray-400">Address</td><td class="py-2 whitespace-pre-line">{{ cp.address }}</td></tr>
+                    {% endif %}
+                    {% if not (cp.registration_number or cp.related_principal or cp.address) %}
+                    <tr><td class="py-2 text-gray-500 italic" colspan="2">No identification details on file.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Contact & banking</div>
+            <table class="w-full text-sm">
+                <tbody class="divide-y divide-gray-800">
+                    {% if cp.contact_email %}
+                    <tr><td class="py-2 text-gray-400 w-1/3">Email</td><td class="py-2 break-all"><a href="mailto:{{ cp.contact_email }}" class="hover:text-amber-300/90">{{ cp.contact_email }}</a></td></tr>
+                    {% endif %}
+                    {% if cp.contact_phone %}
+                    <tr><td class="py-2 text-gray-400">Phone</td><td class="py-2 tabular-nums">{{ cp.contact_phone }}</td></tr>
+                    {% endif %}
+                    {% if cp.iban %}
+                    <tr><td class="py-2 text-gray-400">IBAN</td><td class="py-2 font-mono text-xs break-all">{{ cp.iban }}</td></tr>
+                    {% endif %}
+                    {% if cp.secondary_iban %}
+                    <tr><td class="py-2 text-gray-400">IBAN (2nd)</td><td class="py-2 font-mono text-xs break-all">{{ cp.secondary_iban }}</td></tr>
+                    {% endif %}
+                    {% if not (cp.contact_email or cp.contact_phone or cp.iban or cp.secondary_iban) %}
+                    <tr><td class="py-2 text-gray-500 italic" colspan="2">No contact or banking details on file.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Loans ({{ loans | length }})</div>
+        {% if loans %}
+        <div class="overflow-x-auto -mx-4 px-4">
+        <table class="w-full text-sm min-w-[640px]">
+            <thead class="text-[10px] uppercase tracking-widest text-gray-500">
+                <tr>
+                    <th class="text-left py-2 whitespace-nowrap">#</th>
+                    <th class="text-left py-2 whitespace-nowrap">Description</th>
+                    <th class="text-left py-2 whitespace-nowrap">Status</th>
+                    <th class="text-right py-2 whitespace-nowrap">Outstanding</th>
+                    <th class="text-right py-2 whitespace-nowrap">Rate</th>
+                    <th class="text-left py-2 pl-3 whitespace-nowrap">Maturity</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for loan in loans %}
+                <tr>
+                    <td class="py-2 tabular-nums">
+                        <a href="/borrower/loans/{{ loan.id }}" class="text-amber-300/80 hover:text-amber-300">{{ loan.id }}</a>
+                    </td>
+                    <td class="py-2">{{ loan.description or '—' }}<div class="text-xs text-gray-500">{{ loan.loan_type | replace('_', ' ') }} · {{ loan.purpose | replace('_', ' ') }}</div></td>
+                    <td class="py-2 text-xs">
+                        {% if loan.status == 'active' %}<span class="text-green-400">active</span>
+                        {% elif loan.status == 'matured' %}<span class="text-blue-400">matured</span>
+                        {% elif loan.status == 'repaid' %}<span class="text-gray-500">repaid</span>
+                        {% elif loan.status == 'defaulted' %}<span class="text-red-400">defaulted</span>
+                        {% else %}<span class="text-gray-400">{{ loan.status }}</span>{% endif %}
+                    </td>
+                    <td class="py-2 text-right tabular-nums whitespace-nowrap">{{ "{:,.2f}".format(loan.outstanding) }} {{ loan.currency }}</td>
+                    <td class="py-2 text-right tabular-nums whitespace-nowrap">{{ "%.2f"|format(loan.rate) }}%</td>
+                    <td class="py-2 pl-3 text-xs text-gray-400 whitespace-nowrap">{{ loan.maturity_date.strftime('%d.%m.%Y') }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <p class="text-sm text-gray-500 italic">No loans recorded with this counterparty as lender.</p>
+        {% endif %}
+    </div>
+
+    {% if cp.notes %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Notes</div>
+        <pre class="text-sm text-gray-300 whitespace-pre-wrap font-sans">{{ cp.notes }}</pre>
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}

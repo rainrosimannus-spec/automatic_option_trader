@@ -66,7 +66,7 @@
                 <tr class="hover:bg-gray-850">
                     <td class="px-3 py-2">
                         <div class="font-medium"><a href="/borrower/loans/{{ loan.id }}" class="hover:text-amber-300/90">{{ loan.lender_name }}</a></div>
-                        <div class="text-xs text-gray-500">{{ loan.description }}</div>
+                        <div class="text-xs text-gray-500">{{ loan.description }} · <a href="/borrower/counterparties/{{ loan.lender_id }}" class="hover:text-amber-300/90">profile</a></div>
                     </td>
                     <td class="px-3 py-2">
                         <span class="inline-block px-2 py-0.5 text-xs rounded

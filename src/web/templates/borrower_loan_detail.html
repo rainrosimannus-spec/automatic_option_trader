@@ -14,7 +14,7 @@
             <span class="text-gray-400">Loan {{ loan.id }}</span>
         </p>
         <div class="flex items-start justify-between gap-3 mt-2">
-            <h1 class="text-2xl md:text-3xl font-semibold break-words min-w-0">{{ loan.lender.name }}</h1>
+            <h1 class="text-2xl md:text-3xl font-semibold break-words min-w-0"><a href="/borrower/counterparties/{{ loan.lender_id }}" class="hover:text-amber-300/90">{{ loan.lender.name }}</a></h1>
             <details class="shrink-0 relative group">
                 <summary class="cursor-pointer list-none inline-block px-2 py-1 text-xs rounded uppercase tracking-widest
                     {% if loan.status.value == 'active' %}bg-green-900 text-green-200
@@ -205,6 +205,7 @@
                     <th class="text-right py-2 whitespace-nowrap">Amount</th>
                     <th class="text-left py-2 pl-3 whitespace-nowrap">Reference</th>
                     <th class="text-left py-2 pl-3">Description</th>
+                    <th class="text-right py-2 pl-3"></th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-800">
@@ -215,6 +216,9 @@
                     <td class="py-2 text-right tabular-nums whitespace-nowrap">{{ "{:,.2f}".format(mv.amount) }} {{ mv.currency }}</td>
                     <td class="py-2 pl-3 text-xs text-gray-500 tabular-nums whitespace-nowrap">{{ mv.bank_reference or '—' }}</td>
                     <td class="py-2 pl-3 text-xs text-gray-400">{{ mv.description or '' }}</td>
+                    <td class="py-2 pl-3 text-xs text-right whitespace-nowrap">
+                        <a href="/borrower/movements/{{ mv.id }}/edit" class="text-amber-300/80 hover:text-amber-300">edit</a>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -225,9 +229,12 @@
         {% endif %}
     </div>
 
-    {% if amendments %}
     <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
-        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Amendments ({{ amendments | length }})</div>
+        <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Amendments ({{ amendments | length }})</div>
+            <a href="/borrower/loans/{{ loan.id }}/amendments-new" class="text-xs bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-3 py-1 rounded">+ Add Amendment</a>
+        </div>
+        {% if amendments %}
         <div class="overflow-x-auto -mx-4 px-4">
         <table class="w-full text-sm min-w-[640px]">
             <thead class="text-[10px] uppercase tracking-widest text-gray-500">
@@ -252,8 +259,10 @@
             </tbody>
         </table>
         </div>
+        {% else %}
+        <p class="text-sm text-gray-500 italic">No amendments recorded.</p>
+        {% endif %}
     </div>
-    {% endif %}
 
     {% if payments %}
     <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
