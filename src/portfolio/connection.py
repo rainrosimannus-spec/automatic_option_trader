@@ -347,9 +347,7 @@ def refresh_portfolio_account_cache_from(ib: IB):
             loans = 0.0
             for v in values:
                 if v.tag == "TotalCashBalance" and v.currency == "BASE":
-                    val = float(v.value)
-                    if val < 0:
-                        loans = val
+                    loans = float(v.value)
                     break
             data["loans"] = loans
 
@@ -544,20 +542,32 @@ def refresh_portfolio_pending_orders_cache() -> None:
             ib.reqAllOpenOrders()
             ib.sleep(2)
             trades = ib.openTrades()
+        # Trades placed by other clients (e.g. TWS) don't always emit status
+        # updates we observe, so a filled order can linger in openTrades().
+        # Guard with explicit status + remaining checks.
+        DONE_STATES = {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
         new_cache = []
         for oo in trades:
             try:
+                status = oo.orderStatus.status
+                filled = float(oo.orderStatus.filled or 0)
+                remaining = float(oo.orderStatus.remaining or 0)
+                total_qty = float(oo.order.totalQuantity or 0)
+                if status in DONE_STATES:
+                    continue
+                if remaining <= 0 and filled >= total_qty > 0:
+                    continue
                 c = oo.contract
                 new_cache.append({
                     "symbol": getattr(c, "symbol", "?"),
                     "sec_type": getattr(c, "secType", ""),
                     "action": oo.order.action,
                     "qty": int(oo.order.totalQuantity),
-                    "filled": float(oo.orderStatus.filled or 0),
-                    "remaining": float(oo.orderStatus.remaining or 0),
+                    "filled": filled,
+                    "remaining": remaining,
                     "limit_price": oo.order.lmtPrice if hasattr(oo.order, "lmtPrice") else None,
                     "order_type": oo.order.orderType,
-                    "status": oo.orderStatus.status,
+                    "status": status,
                     "strike": getattr(c, "strike", None),
                     "expiry": getattr(c, "lastTradeDateOrContractMonth", None),
                     "right": getattr(c, "right", None),
