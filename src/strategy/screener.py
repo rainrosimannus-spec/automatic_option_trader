@@ -63,6 +63,22 @@ class ScoredContract:
     score: float
 
 
+def _weekend_theta_bonus(today, exp_date, dte: int) -> float:
+    """#4 Weekend theta: fraction of the days-to-expiry that are non-trading
+    (weekend) days. Rewards capturing decay over days with no market exposure
+    (e.g. selling Friday into the weekend). Holidays not yet modelled."""
+    if dte <= 0:
+        return 0.0
+    from datetime import timedelta
+    non_trading = 0
+    d = today
+    for _ in range(dte):
+        d = d + timedelta(days=1)
+        if d.weekday() >= 5:  # Sat=5, Sun=6
+            non_trading += 1
+    return non_trading / dte
+
+
 def screen_puts(
     symbol: str,
     exchange: str = "SMART",
@@ -185,6 +201,8 @@ def screen_puts(
             # 35% OTM distance + 35% return-on-margin + 25% premium + 5% base
             dte_score = (3 - dte) / 3  # 0DTE=1.0, 1DTE=0.67, 2DTE=0.33, 3DTE=0.0
             score = (otm_score * 0.30) + (rom_score * 0.30) + (premium_score * 0.25) + (dte_score * 0.10) + 0.05
+            if cfg.weekend_theta_enabled and cfg.weekend_theta_weight:
+                score += cfg.weekend_theta_weight * _weekend_theta_bonus(today, exp_date, dte)
 
             candidates.append(ScoredContract(
                 contract=contract,
@@ -236,6 +254,8 @@ def screen_puts(
 
         # Final score: DTE proximity + delta quality + capital efficiency + premium
         score = (dte_score * 0.25) + (delta_score * 0.30) + (rom_score * 0.30) + (premium_score * 0.15)
+        if cfg.weekend_theta_enabled and cfg.weekend_theta_weight:
+            score += cfg.weekend_theta_weight * _weekend_theta_bonus(today, exp_date, dte)
 
         candidates.append(ScoredContract(
             contract=contract,

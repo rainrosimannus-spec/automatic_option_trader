@@ -319,6 +319,7 @@ def job_check_profit():
     taker = ProfitTaker()
     taker.check_positions()
     taker.check_covered_calls()
+    taker.check_tested_puts()  # #2 — no-op unless strategy.roll_tested_puts_enabled
 
 
 def job_execute_queued():

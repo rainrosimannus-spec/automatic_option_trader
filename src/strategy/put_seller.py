@@ -196,7 +196,12 @@ class PutSeller:
 
         from datetime import datetime as _dt
         premium = round(candidate.bid, 2)
-        collateral = candidate.strike * contract_size
+
+        # #3 IV-rank-scaled sizing: more contracts when premium is rich.
+        iv_rank = self.risk.get_iv_rank_value(symbol)
+        size_mult = self.risk.iv_rank_size_multiplier(iv_rank)
+        quantity = self.cfg.contracts_per_stock * size_mult
+        collateral = candidate.strike * contract_size * quantity
 
         try:
             exp_date = _dt.strptime(candidate.expiry, "%Y%m%d").date()
@@ -215,6 +220,9 @@ class PutSeller:
             "candidate": candidate,
             "premium": premium,
             "collateral": collateral,
+            "quantity": quantity,
+            "size_mult": size_mult,
+            "iv_rank": iv_rank,
             "dte": dte,
             "price": price,
             "score": candidate.score,
@@ -231,16 +239,17 @@ class PutSeller:
         create_suggestion(
             symbol=symbol,
             action="sell_put",
-            quantity=self.cfg.contracts_per_stock,
+            quantity=cand["quantity"],
             limit_price=premium,
             strike=candidate.strike,
             expiry=candidate.expiry,
             source="options",
-            signal=f"delta={round(candidate.delta, 3)} DTE={dte}",
+            signal=f"delta={round(candidate.delta, 3)} DTE={dte} ivr={round(cand['iv_rank']) if cand.get('iv_rank') is not None else 'na'} x{cand['quantity']}",
             rationale=(
                 f"Rank #{rank} (score {cand['score']:.1f}). "
-                f"Sell {candidate.expiry} ${candidate.strike}P @ ${premium} "
-                f"(delta {round(candidate.delta, 3)}, IV {round(candidate.iv * 100, 1)}%)"
+                f"Sell {candidate.expiry} ${candidate.strike}P @ ${premium} x{cand['quantity']} "
+                f"(delta {round(candidate.delta, 3)}, IV {round(candidate.iv * 100, 1)}%, "
+                f"IVrank {round(cand['iv_rank']) if cand.get('iv_rank') is not None else 'na'})"
             ),
             current_price=cand["price"],
             est_cost=cand["collateral"],
@@ -286,6 +295,13 @@ class PutSeller:
         if not candidate:
             return False
 
+        # #3 IV-rank-scaled sizing: more contracts when premium is rich. The
+        # whatif-margin check below runs on this scaled quantity, so an oversized
+        # multiple is blocked by the per-position cap rather than placed.
+        iv_rank = self.risk.get_iv_rank_value(symbol)
+        size_mult = self.risk.iv_rank_size_multiplier(iv_rank)
+        quantity = self.cfg.contracts_per_stock * size_mult
+
         # Whatif margin check: ask IBKR exactly how much buying power this contract consumes
         try:
             from src.broker.orders import get_whatif_margin
@@ -320,7 +336,7 @@ class PutSeller:
                     expiry=candidate.expiry,
                     strike=candidate.strike,
                     right="P",
-                    quantity=self.cfg.contracts_per_stock,
+                    quantity=quantity,
                     limit_price=round(candidate.bid, 2),
                     exchange=opt_exchange,
                     currency=currency,
@@ -375,7 +391,7 @@ class PutSeller:
             suggestion = create_suggestion(
                 symbol=symbol,
                 action="sell_put",
-                quantity=self.cfg.contracts_per_stock,
+                quantity=quantity,
                 limit_price=premium,
                 strike=candidate.strike,
                 expiry=candidate.expiry,
@@ -401,7 +417,7 @@ class PutSeller:
             symbol=symbol,
             expiry=candidate.expiry,
             strike=candidate.strike,
-            quantity=self.cfg.contracts_per_stock,
+            quantity=quantity,
             limit_price=round(candidate.bid, 2),
             exchange=opt_exchange,
             currency=currency,
@@ -419,6 +435,7 @@ class PutSeller:
             current_vix=current_vix,
             contract_size=contract_size,
             currency=currency,
+            quantity=quantity,
         )
 
         log.info(
@@ -434,10 +451,11 @@ class PutSeller:
         )
         return True
 
-    def _record_trade(self, symbol, candidate, order_id, current_vix, contract_size=100, currency="USD"):
+    def _record_trade(self, symbol, candidate, order_id, current_vix, contract_size=100, currency="USD", quantity=None):
         """Save the trade and position to the database."""
         # UK options prices are in pence — convert to pounds for storage
         premium = candidate.bid / 100.0 if currency == "GBP" else candidate.bid
+        qty = quantity if quantity is not None else self.cfg.contracts_per_stock
         with get_db() as db:
             position = Position(
                 symbol=symbol,
@@ -446,8 +464,8 @@ class PutSeller:
                 strike=candidate.strike,
                 expiry=candidate.expiry,
                 entry_premium=premium,
-                quantity=self.cfg.contracts_per_stock,
-                total_premium_collected=premium * contract_size * self.cfg.contracts_per_stock,
+                quantity=qty,
+                total_premium_collected=premium * contract_size * qty,
             )
             db.add(position)
             db.flush()  # get position.id
@@ -459,7 +477,7 @@ class PutSeller:
                 strike=candidate.strike,
                 expiry=candidate.expiry,
                 premium=premium,
-                quantity=self.cfg.contracts_per_stock,
+                quantity=qty,
                 fill_price=premium,
                 order_id=order_id,
                 order_status=OrderStatus.SUBMITTED,

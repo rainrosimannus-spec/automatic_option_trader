@@ -359,6 +359,161 @@ class ProfitTaker:
             except Exception as e:
                 log.error("roll_failed", symbol=symbol, error=str(e))
 
+    # ── #2 Roll tested ~0DTE puts down-and-out (DEFAULT OFF) ──────────
+    def _get_roll_count(self, db, key: str) -> int:
+        from src.core.models import SystemState
+        row = db.query(SystemState).filter(SystemState.key == key).first()
+        try:
+            return int(row.value) if row and row.value else 0
+        except Exception:
+            return 0
+
+    def _set_roll_count(self, db, key: str, value: int) -> None:
+        from src.core.models import SystemState
+        row = db.query(SystemState).filter(SystemState.key == key).first()
+        if row:
+            row.value = str(value)
+        else:
+            db.add(SystemState(key=key, value=str(value)))
+
+    def check_tested_puts(self) -> list[str]:
+        """#2 Roll tested ~0DTE short puts down-and-out instead of taking
+        assignment. DEFAULT OFF (strategy.roll_tested_puts_enabled) — it
+        deliberately overrides the "let DTE<=3 expire/assign" behaviour, so it
+        only acts when explicitly enabled.
+
+        For each short put within roll_tested_dte_max of expiry that is ITM
+        (underlying < strike - itm_buffer), under the per-symbol daily roll cap,
+        and where a down-and-out replacement would yield net credit >=
+        roll_tested_min_credit: buy the tested put to close (avoid assignment,
+        back to cash) and route a fresh entry through the normal scan (which
+        respects suggestion mode). Returns symbols acted on.
+        """
+        if not self.cfg.roll_tested_puts_enabled:
+            return []
+
+        from datetime import datetime as _dt
+        from src.broker.market_data import get_option_live_price
+        from src.strategy.screener import screen_puts
+
+        log.info("tested_put_roll_check_started")
+        acted: list[str] = []
+
+        with get_db() as db:
+            open_puts = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "short_put",
+                )
+                .all()
+            )
+
+            for pos in open_puts:
+                try:
+                    if not pos.strike or not pos.expiry:
+                        continue
+                    stock = self.universe.get_stock(pos.symbol)
+                    currency = stock.currency if stock else "USD"
+                    exchange = stock.exchange if stock else "SMART"
+                    opt_exchange = stock.opt_exchange if stock else "SMART"
+
+                    # Only act while the market is open
+                    if _minutes_to_market_open(currency) > 0:
+                        continue
+
+                    # DTE gate — only the near-expiry tail
+                    try:
+                        exp_date = _dt.strptime(pos.expiry, "%Y%m%d").date()
+                        dte = (exp_date - _dt.now().date()).days
+                    except Exception:
+                        continue
+                    if dte < 0 or dte > self.cfg.roll_tested_dte_max:
+                        continue
+
+                    # Tested (ITM) gate
+                    price = get_stock_price(pos.symbol, exchange, currency)
+                    if not price or price >= (pos.strike - self.cfg.roll_tested_itm_buffer):
+                        continue
+
+                    # Per-symbol daily roll cap
+                    today_str = _dt.now().strftime("%Y-%m-%d")
+                    state_key = f"roll_count:{pos.symbol}:{today_str}"
+                    rolls_today = self._get_roll_count(db, state_key)
+                    if rolls_today >= self.cfg.roll_tested_max_per_day:
+                        log.info("tested_put_roll_cap_reached", symbol=pos.symbol,
+                                 rolls_today=rolls_today)
+                        continue
+
+                    # Buyback cost (live ask of the tested put)
+                    _, buyback_ask = get_option_live_price(
+                        pos.symbol, pos.expiry, pos.strike, "P", opt_exchange, currency
+                    )
+                    if not buyback_ask or buyback_ask <= 0:
+                        log.info("tested_put_roll_no_buyback_quote", symbol=pos.symbol)
+                        continue
+
+                    # Down-and-out replacement: screen a put a bit further out.
+                    # Net-credit gate uses its bid vs the buyback ask.
+                    replacement = screen_puts(
+                        pos.symbol, exchange=opt_exchange, currency=currency,
+                        stock_exchange=exchange,
+                        dte_min=dte + 1, dte_max=dte + 8,
+                    )
+                    if not replacement:
+                        log.info("tested_put_roll_no_replacement", symbol=pos.symbol)
+                        continue
+
+                    net_credit = replacement.bid - buyback_ask
+                    if net_credit < self.cfg.roll_tested_min_credit:
+                        log.info("tested_put_roll_below_min_credit", symbol=pos.symbol,
+                                 net_credit=round(net_credit, 3),
+                                 min_credit=self.cfg.roll_tested_min_credit)
+                        continue
+
+                    # Buy to close the tested put → avoid assignment, return to cash
+                    trade = buy_to_close_put(
+                        symbol=pos.symbol,
+                        expiry=pos.expiry,
+                        strike=pos.strike,
+                        quantity=pos.quantity,
+                        limit_price=round(buyback_ask, 2),
+                        exchange=opt_exchange,
+                        currency=currency,
+                    )
+                    if not trade:
+                        continue
+
+                    db.add(Trade(
+                        position_id=pos.id,
+                        symbol=pos.symbol,
+                        trade_type=TradeType.BUY_PUT,
+                        strike=pos.strike,
+                        expiry=pos.expiry,
+                        premium=buyback_ask,
+                        quantity=pos.quantity,
+                        fill_price=buyback_ask,
+                        order_id=trade.order.orderId,
+                        order_status=OrderStatus.SUBMITTED,
+                        notes=(f"#2 roll: BTC tested put to avoid assignment "
+                               f"(net credit est {net_credit:.2f} vs new ${replacement.strike}P)"),
+                    ))
+                    self._set_roll_count(db, state_key, rolls_today + 1)
+                    db.commit()
+                    log.info("tested_put_rolled_btc", symbol=pos.symbol,
+                             strike=pos.strike, buyback=round(buyback_ask, 2),
+                             new_strike=replacement.strike,
+                             net_credit=round(net_credit, 3))
+                    acted.append(pos.symbol)
+                except Exception as e:
+                    log.error("tested_put_roll_error", symbol=pos.symbol, error=str(e))
+
+        # Re-enter down-and-out via the normal scan (respects suggestion mode)
+        if acted:
+            self._roll_positions(acted)
+
+        log.info("tested_put_roll_check_done", acted=acted)
+        return acted
 
     def check_covered_calls(self) -> list[str]:
         """

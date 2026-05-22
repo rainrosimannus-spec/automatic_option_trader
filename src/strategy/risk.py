@@ -965,6 +965,37 @@ class RiskManager:
                    threshold=effective_min, vix=vix)
         return RiskCheck(True)
 
+    def get_iv_rank_value(self, symbol: str) -> float | None:
+        """Raw IV-rank (0-100) for sizing decisions, or None if unavailable."""
+        strat_cfg = get_settings().strategy
+        if not strat_cfg.iv_rank_enabled:
+            return None
+        stock = self.universe.get_stock(symbol)
+        exchange = stock.exchange if stock else "SMART"
+        currency = stock.currency if stock else "USD"
+        try:
+            return get_iv_rank(symbol, exchange=exchange, currency=currency,
+                               lookback_days=strat_cfg.iv_lookback_days)
+        except Exception as e:
+            log.debug("iv_rank_value_failed", symbol=symbol, error=str(e))
+            return None
+
+    def iv_rank_size_multiplier(self, iv_rank: float | None) -> int:
+        """#3 Scale contracts up when premium is rich: 1x / 2x / 3x by IV-rank
+        band, hard-capped by iv_rank_size_max_multiplier. 1x when disabled or
+        IV-rank unknown. The per-position $ cap + whatif margin (live) and human
+        review (suggestion mode) remain the backstops on the resulting size."""
+        strat_cfg = get_settings().strategy
+        if not strat_cfg.iv_rank_sizing_enabled or iv_rank is None:
+            return 1
+        if iv_rank >= strat_cfg.iv_rank_size_high:
+            mult = 3
+        elif iv_rank >= strat_cfg.iv_rank_size_mid:
+            mult = 2
+        else:
+            mult = 1
+        return max(1, min(mult, strat_cfg.iv_rank_size_max_multiplier))
+
     def check_earnings(self, symbol: str) -> RiskCheck:
         """Block puts on stocks with imminent earnings."""
         strat_cfg = get_settings().strategy

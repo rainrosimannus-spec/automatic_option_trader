@@ -527,15 +527,39 @@ class WheelManager:
                  min_strike=round(min_strike, 2) if min_strike else None,
                  current_price=round(current_price, 2) if current_price else None,
                  delta_range=(cc_delta_min, cc_delta_max))
-        # Screen for the best call with adjusted parameters
-        candidate = screen_calls(
-            symbol,
-            exchange=exchange,
-            currency=currency,
-            min_strike=min_strike,
-            delta_min_override=cc_delta_min,
-            delta_max_override=cc_delta_max,
-        )
+        # #1 Exit-velocity: in exit mode, first try a deep-ITM call that is
+        # near-certain to be called away next expiry → fastest return to cash.
+        # The min_strike floor (>= breakeven) means this only finds a candidate
+        # when the stock has recovered enough that a deep-ITM strike still sits
+        # at/above breakeven; otherwise it returns None and we fall through to
+        # the normal exit-mode band. Skipped in rescue mode (stock < breakeven).
+        in_rescue = bool(current_price and cost_basis and current_price < cost_basis * 0.95)
+        candidate = None
+        if (stock_pos.wheel_exit_mode and self.cfg.wheel_exit_velocity_enabled
+                and not in_rescue):
+            candidate = screen_calls(
+                symbol,
+                exchange=exchange,
+                currency=currency,
+                min_strike=min_strike,
+                delta_min_override=self.cfg.wheel_exit_velocity_delta_min,
+                delta_max_override=self.cfg.wheel_exit_velocity_delta_max,
+            )
+            if candidate:
+                log.info("cc_exit_velocity_deep_itm", symbol=symbol,
+                         strike=candidate.strike, delta=round(candidate.delta, 2),
+                         note="deep-ITM CC for fast call-away")
+
+        # Screen for the best call with adjusted parameters (normal/exit-mode band)
+        if not candidate:
+            candidate = screen_calls(
+                symbol,
+                exchange=exchange,
+                currency=currency,
+                min_strike=min_strike,
+                delta_min_override=cc_delta_min,
+                delta_max_override=cc_delta_max,
+            )
 
         if not candidate:
             log.debug("no_call_candidate", symbol=symbol)

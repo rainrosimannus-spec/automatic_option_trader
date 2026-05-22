@@ -93,6 +93,37 @@ class StrategyConfig(BaseModel):
     hedge_budget_pct: float = 0.04
     hedge_contracts: int = 1
 
+    # ── Cash-machine upgrades (changes #1–#4) ──────────────────
+    # #1 Exit-velocity: on assigned stock, prefer a deep-ITM covered call that is
+    # near-certain to be called away next expiry → fastest return to cash. Falls
+    # back to the normal exit-mode delta band when no deep-ITM strike exists at or
+    # above breakeven. Revert: wheel_exit_velocity_enabled = false.
+    wheel_exit_velocity_enabled: bool = True
+    wheel_exit_velocity_delta_min: float = 0.80
+    wheel_exit_velocity_delta_max: float = 0.95
+    # #3 IV-rank-scaled sizing: sell more contracts when premium is rich.
+    # multiplier = 1x (<mid), 2x (>=mid), 3x (>=high), hard-capped by max_multiplier.
+    # Existing per-position $ cap + whatif-margin (live) and human review
+    # (suggestion mode) remain the backstops. Revert: iv_rank_sizing_enabled = false.
+    iv_rank_sizing_enabled: bool = True
+    iv_rank_size_mid: int = 50
+    iv_rank_size_high: int = 70
+    iv_rank_size_max_multiplier: int = 2   # conservative cap (raise to 3 to allow 3x)
+    # #4 Weekend/holiday theta capture: small additive score bonus for contracts
+    # that span non-trading (weekend) days — rewards capturing decay without
+    # market exposure. weight 0 disables. Revert: weekend_theta_enabled = false.
+    weekend_theta_enabled: bool = True
+    weekend_theta_weight: float = 0.10
+    # #2 Roll tested ~0DTE puts down-and-out instead of taking assignment.
+    # DEFAULT OFF — this conflicts with the current explicit design where
+    # profit_taker lets DTE<=3 puts expire/assign (profit_taker.py:114). Enable
+    # only deliberately. Requires net credit; capped rolls/symbol/day.
+    roll_tested_puts_enabled: bool = False
+    roll_tested_dte_max: int = 1           # only roll when DTE <= this
+    roll_tested_itm_buffer: float = 0.0    # roll when underlying < strike - buffer
+    roll_tested_max_per_day: int = 1       # max rolls per symbol per day
+    roll_tested_min_credit: float = 0.0    # require net credit >= this (per share)
+
 
 class RiskConfig(BaseModel):
     vix_pause_threshold: float = 30.0
