@@ -808,6 +808,17 @@ class PortfolioBuyer:
             pe = db.query(PortfolioPutEntry).filter(
                 PortfolioPutEntry.id == entry.id
             ).first()
+            # Idempotency guard (mirrors wheel d9550e6): if this put-entry was
+            # already processed as an assignment — a concurrent _check_put_entries
+            # run or a retry — skip. Re-running double-adds holding shares (self-
+            # heals via the IBKR holdings sync) AND appends a duplicate
+            # put_assigned transaction (append-only, does NOT self-heal). This is
+            # a reporting guard only; no order logic lives in this method.
+            if pe and pe.status == "assigned":
+                log.info("portfolio_put_assignment_already_processed",
+                         symbol=entry.symbol, entry_id=entry.id,
+                         note="skipping duplicate holding + transaction")
+                return
             if pe:
                 pe.status = "assigned"
                 pe.assigned_shares = shares
@@ -848,19 +859,34 @@ class PortfolioBuyer:
             if wl:
                 wl.has_open_put = False
 
-        self._record_transaction(
-            symbol=entry.symbol,
-            action="put_assigned",
-            shares=shares,
-            price=effective_cost,
-            amount=round(effective_cost * shares, 2),
-            currency=entry.currency,
-            strike=entry.strike,
-            expiry=entry.expiry,
-            premium_collected=entry.total_premium,
-            tier=entry.tier,
-            notes=f"Put assigned at ${entry.strike}, effective cost ${effective_cost:.2f}",
-        )
+        # Dedup the assignment transaction on its natural key — an assignment for
+        # a given contract is a one-time event. Together with the status guard
+        # above this covers re-entry, retries, and sequential double-calls (the
+        # IBM/IONQ duplicate-row class). Reporting guard only.
+        with get_db() as db:
+            dup_tx = db.query(PortfolioTransaction).filter(
+                PortfolioTransaction.symbol == entry.symbol,
+                PortfolioTransaction.action == "put_assigned",
+                PortfolioTransaction.strike == entry.strike,
+                PortfolioTransaction.expiry == entry.expiry,
+            ).first()
+        if dup_tx:
+            log.info("portfolio_put_assigned_tx_deduped",
+                     symbol=entry.symbol, strike=entry.strike, expiry=entry.expiry)
+        else:
+            self._record_transaction(
+                symbol=entry.symbol,
+                action="put_assigned",
+                shares=shares,
+                price=effective_cost,
+                amount=round(effective_cost * shares, 2),
+                currency=entry.currency,
+                strike=entry.strike,
+                expiry=entry.expiry,
+                premium_collected=entry.total_premium,
+                tier=entry.tier,
+                notes=f"Put assigned at ${entry.strike}, effective cost ${effective_cost:.2f}",
+            )
 
         log.info("portfolio_put_assigned",
                  symbol=entry.symbol,
