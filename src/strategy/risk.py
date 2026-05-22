@@ -73,6 +73,7 @@ class RiskManager:
         self._regime: MarketRegime | None = None
         self._daily_count: int | None = None
         self._daily_count_date: date | None = None
+        self._iv_rank_cache: dict[str, tuple[datetime, float | None]] = {}
 
     # ── Market regime ───────────────────────────────────────
     def get_regime(self, force_refresh: bool = False) -> MarketRegime:
@@ -927,16 +928,7 @@ class RiskManager:
         if not strat_cfg.iv_rank_enabled:
             return RiskCheck(True)
 
-        stock = self.universe.get_stock(symbol)
-        exchange = stock.exchange if stock else "SMART"
-        currency = stock.currency if stock else "USD"
-
-        iv_rank = get_iv_rank(
-            symbol,
-            exchange=exchange,
-            currency=currency,
-            lookback_days=strat_cfg.iv_lookback_days,
-        )
+        iv_rank = self._iv_rank_cached(symbol)
 
         if iv_rank is None:
             # Can't determine IV rank — allow trading (fail open)
@@ -965,20 +957,33 @@ class RiskManager:
                    threshold=effective_min, vix=vix)
         return RiskCheck(True)
 
-    def get_iv_rank_value(self, symbol: str) -> float | None:
-        """Raw IV-rank (0-100) for sizing decisions, or None if unavailable."""
+    def _iv_rank_cached(self, symbol: str, ttl_seconds: int = 900) -> float | None:
+        """Fetch IV-rank once and cache per symbol (TTL ~15 min) so the risk
+        gauntlet (check_iv_rank) and IV-rank sizing share a single fetch per
+        scan instead of calling get_iv_rank twice for the same symbol."""
+        now = datetime.utcnow()
+        cached = self._iv_rank_cache.get(symbol)
+        if cached and (now - cached[0]).total_seconds() < ttl_seconds:
+            return cached[1]
         strat_cfg = get_settings().strategy
-        if not strat_cfg.iv_rank_enabled:
-            return None
         stock = self.universe.get_stock(symbol)
         exchange = stock.exchange if stock else "SMART"
         currency = stock.currency if stock else "USD"
         try:
-            return get_iv_rank(symbol, exchange=exchange, currency=currency,
-                               lookback_days=strat_cfg.iv_lookback_days)
+            value = get_iv_rank(symbol, exchange=exchange, currency=currency,
+                                lookback_days=strat_cfg.iv_lookback_days)
         except Exception as e:
-            log.debug("iv_rank_value_failed", symbol=symbol, error=str(e))
+            log.debug("iv_rank_fetch_failed", symbol=symbol, error=str(e))
+            value = None
+        self._iv_rank_cache[symbol] = (now, value)
+        return value
+
+    def get_iv_rank_value(self, symbol: str) -> float | None:
+        """Raw IV-rank (0-100) for sizing decisions, or None if unavailable.
+        Shares the per-symbol cache with check_iv_rank (one fetch per scan)."""
+        if not get_settings().strategy.iv_rank_enabled:
             return None
+        return self._iv_rank_cached(symbol)
 
     def iv_rank_size_multiplier(self, iv_rank: float | None) -> int:
         """#3 Scale contracts up when premium is rich: 1x / 2x / 3x by IV-rank
