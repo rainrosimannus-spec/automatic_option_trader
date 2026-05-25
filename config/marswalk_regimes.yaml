@@ -1,0 +1,102 @@
+# MarsWalk — historical extreme-regime definitions for resilience backtesting.
+#
+# Ranked by importance for testing the OPTION TRADER's resilience (1 = most critical).
+# Windows are inclusive daily date ranges. Edit freely — the engine reads this file.
+# Every regime runs under the live trading logic; DTE/delta (and later more params)
+# are set in the MarsWalk UI and applied across all regimes.
+
+# Stable, liquid, optionable names with long history. Used across ALL regimes so the
+# older windows (2020-2021) still have valid data. Deliberately excludes recent IPOs
+# (CRWV, IONQ, etc.) that would create existence gaps in early windows.
+universe:
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - GOOGL
+  - META   # was FB before Jun 2022 — data layer skips windows with no data
+  - TSLA
+  - JPM
+  - JNJ
+  - XOM
+
+regimes:
+  - id: bear_2022
+    rank: 1
+    name: "2022 rate-hike bear market"
+    category: crash
+    start: "2022-01-03"
+    end: "2022-10-14"
+    why: "Sustained ~-25% grind. Worst case for the wheel: repeated assignments into a falling market, capital stuck in depreciating stock."
+
+  - id: tariff_2025
+    rank: 2
+    name: "April 2025 tariff shock"
+    category: crash
+    start: "2025-04-02"
+    end: "2025-04-30"
+    why: "Sharp policy-driven selloff with a vol spike. Recent, severe gap-risk test."
+
+  - id: carry_2024
+    rank: 3
+    name: "Aug 2024 yen carry-trade unwind"
+    category: crash
+    start: "2024-07-29"
+    end: "2024-08-16"
+    why: "VIX spike to ~65 over two sessions then snap-back. Tests a sudden vol shock + whipsaw."
+
+  - id: svb_2023
+    rank: 4
+    name: "Mar 2023 SVB / regional-bank crisis"
+    category: crash
+    start: "2023-03-06"
+    end: "2023-03-31"
+    why: "Fast sector-contagion shock with a V-shaped recovery."
+
+  - id: covid_2020
+    rank: 5
+    name: "COVID crash & recovery"
+    category: crash
+    start: "2020-02-14"
+    end: "2020-06-30"
+    why: "Fastest -34% in history, VIX 82. Ultimate tail/gap-risk test (just outside 5y; kept for resilience)."
+
+  - id: chop_2023h2
+    rank: 6
+    name: "2023 H2 range-bound chop"
+    category: sideways
+    start: "2023-08-01"
+    end: "2023-10-27"
+    why: "Choppy sideways-to-down grind — premium-selling's home turf. Tests that the strategy actually capitalizes."
+
+  - id: bear_rally_2022
+    rank: 7
+    name: "2022 summer bear-market rally"
+    category: whipsaw
+    start: "2022-06-16"
+    end: "2022-08-16"
+    why: "Sharp +17% bounce inside a bear market. Tests premature call-away / capped upside in a fakeout."
+
+  - id: ai_2023
+    rank: 8
+    name: "2023 AI breakout rally"
+    category: breakthrough
+    start: "2023-01-03"
+    end: "2023-07-31"
+    why: "Concentrated AI-led uptrend. Tests capped upside when winners get called away."
+
+  - id: bull_2021
+    rank: 9
+    name: "2021 reflation bull"
+    category: breakthrough
+    start: "2021-01-04"
+    end: "2021-12-31"
+    why: "Broad steady bull year. Baseline: does the strategy still hit the 24% target in easy conditions?"
+
+  - id: grind_2024h1
+    rank: 10
+    name: "2024 H1 steady grind-up"
+    category: breakthrough
+    start: "2024-01-02"
+    end: "2024-07-15"
+    why: "Low-vol steady uptrend. Tests performance when premiums are compressed."

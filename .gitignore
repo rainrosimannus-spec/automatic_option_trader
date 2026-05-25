@@ -45,6 +45,10 @@ data/fmp_cache.json
 # Bruno (loan portfolio system)
 data/bruno.db
 data/bruno.db-journal
+
+# MarsWalk (resilience backtester) — isolated DB
+data/marswalk.db
+data/marswalk.db-journal
 data/statements/
 data/backups/
 data/contracts/

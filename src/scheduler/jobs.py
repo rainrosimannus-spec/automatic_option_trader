@@ -1581,6 +1581,16 @@ def create_scheduler() -> BackgroundScheduler:
     )
     log.info("consigliere_scheduled", time="17:30 ET daily")
 
+    # ── MarsWalk weekly resilience sweep (deep off-hours) ─────
+    scheduler.add_job(
+        _job_marswalk_sweep,
+        CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=us_tz),  # Sun 3AM ET
+        id="marswalk_sweep",
+        name="MarsWalk Weekly Resilience Sweep",
+        max_instances=1,
+    )
+    log.info("marswalk_scheduled", time="Sun 03:00 ET weekly")
+
     # ── Daily Account Snapshot ────────────────────────────────
     def _job_account_snapshot():
         """Save daily NLV snapshot for performance charts."""
@@ -1890,6 +1900,27 @@ def _get_state_value(key: str) -> str | None:
     with get_db() as db:
         state = db.query(SystemState).filter(SystemState.key == key).first()
         return state.value if state else None
+
+
+def _job_marswalk_sweep():
+    """Off-hours MarsWalk resilience sweep: fetch historical data (IBKR, read-only,
+    dedicated clientId) + replay all regimes through the shared selection cores.
+    Writes only to the isolated marswalk.db — never trades.db."""
+    _ensure_event_loop()
+    try:
+        from src.marswalk.service import run_all_regimes
+        from src.marswalk.engine import Params
+        cfg = get_settings().strategy
+        params = Params(
+            dte_min=getattr(cfg, "dte_min", 5),
+            dte_max=getattr(cfg, "dte_max", 14),
+            delta_min=getattr(cfg, "delta_min", 0.15),
+            delta_max=getattr(cfg, "delta_max", 0.30),
+        )
+        run_all_regimes(params, fetch=True)
+        log.info("marswalk_sweep_complete")
+    except Exception as e:
+        log.warning("marswalk_sweep_error", error=str(e))
 
 
 def _job_consigliere_review():
