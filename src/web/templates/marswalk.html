@@ -28,6 +28,27 @@
   <button type="button" onclick="mwStep('{{ name }}',1)" class="px-2 bg-gray-800 border border-gray-700 rounded-r text-gray-300 hover:bg-gray-700 active:bg-gray-600 select-none">+</button>
 </span>
 {%- endmacro %}
+    <div class="border border-gray-800 rounded-lg p-3 mb-3">
+      <div class="text-xs font-semibold text-amber-300 mb-2">🧪 Test configuration</div>
+      <div class="flex flex-wrap gap-x-4 gap-y-3 items-end">
+        <div>
+          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Start NLV $</div>
+          {{ num('start_nlv', defaults.start_nlv, 50000, 1000, 100000000, 'w-28') }}
+        </div>
+        <div>
+          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Collateral cap %</div>
+          {{ num('collateral_cap_pct', defaults.collateral_cap_pct, 5, 1, 95) }}
+        </div>
+        <div>
+          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">IV uplift k</div>
+          {{ num('uplift_k', defaults.uplift_k, 0.1, 0, 3) }}
+        </div>
+        <div>
+          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Gap stress %</div>
+          {{ num('gap_stress_pct', defaults.gap_stress_pct, 1, 0, 50) }}
+        </div>
+      </div>
+    </div>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
       <!-- Put selling -->
       <div class="border border-gray-800 rounded-lg p-3">

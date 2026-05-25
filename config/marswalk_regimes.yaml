@@ -9,16 +9,83 @@
 # older windows (2020-2021) still have valid data. Deliberately excludes recent IPOs
 # (CRWV, IONQ, etc.) that would create existence gaps in early windows.
 universe:
+  # ~73 liquid, long-history large-caps across sectors. Sized so the 30% collateral
+  # cap can actually bind at large NLV (10 names couldn't). The data layer skips any
+  # name with no data for a given window (e.g. META was FB pre-Jun-2022). Sectors are
+  # mapped in engine._SECTORS for the sector-cap gate.
   - AAPL
   - MSFT
   - NVDA
-  - AMZN
+  - AVGO
+  - ORCL
+  - CRM
+  - ADBE
+  - AMD
+  - INTC
+  - CSCO
+  - QCOM
+  - TXN
+  - IBM
+  - NOW
+  - INTU
   - GOOGL
-  - META   # was FB before Jun 2022 — data layer skips windows with no data
+  - META
+  - NFLX
+  - DIS
+  - CMCSA
+  - T
+  - VZ
+  - TMUS
+  - AMZN
   - TSLA
+  - HD
+  - MCD
+  - NKE
+  - LOW
+  - SBUX
+  - BKNG
+  - TJX
+  - PG
+  - KO
+  - PEP
+  - COST
+  - WMT
+  - PM
+  - MDLZ
   - JPM
+  - BAC
+  - WFC
+  - GS
+  - MS
+  - BLK
+  - SCHW
+  - AXP
+  - C
   - JNJ
+  - UNH
+  - LLY
+  - PFE
+  - MRK
+  - ABBV
+  - TMO
+  - ABT
+  - DHR
+  - BMY
   - XOM
+  - CVX
+  - COP
+  - SLB
+  - CAT
+  - BA
+  - HON
+  - GE
+  - UPS
+  - RTX
+  - DE
+  - LIN
+  - SHW
+  - NEE
+  - DUK
 
 regimes:
   - id: bear_2022

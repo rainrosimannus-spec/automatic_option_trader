@@ -30,10 +30,38 @@ TARGET_ANNUAL = 0.24
 
 # Sector map for the backtest universe (sector cap gate). Unknown -> "Other".
 _SECTORS = {
-    "AAPL": "Technology", "MSFT": "Technology", "NVDA": "Technology",
-    "GOOGL": "Technology", "META": "Technology",
-    "AMZN": "Consumer", "TSLA": "Consumer",
-    "JPM": "Financials", "JNJ": "Healthcare", "XOM": "Energy",
+    # Technology
+    "AAPL": "Technology", "MSFT": "Technology", "NVDA": "Technology", "AVGO": "Technology",
+    "ORCL": "Technology", "CRM": "Technology", "ADBE": "Technology", "AMD": "Technology",
+    "INTC": "Technology", "CSCO": "Technology", "QCOM": "Technology", "TXN": "Technology",
+    "IBM": "Technology", "NOW": "Technology", "INTU": "Technology",
+    # Communication
+    "GOOGL": "Communication", "META": "Communication", "NFLX": "Communication",
+    "DIS": "Communication", "CMCSA": "Communication", "T": "Communication",
+    "VZ": "Communication", "TMUS": "Communication",
+    # Consumer Discretionary
+    "AMZN": "ConsumerDisc", "TSLA": "ConsumerDisc", "HD": "ConsumerDisc", "MCD": "ConsumerDisc",
+    "NKE": "ConsumerDisc", "LOW": "ConsumerDisc", "SBUX": "ConsumerDisc",
+    "BKNG": "ConsumerDisc", "TJX": "ConsumerDisc",
+    # Consumer Staples
+    "PG": "ConsumerStaples", "KO": "ConsumerStaples", "PEP": "ConsumerStaples",
+    "COST": "ConsumerStaples", "WMT": "ConsumerStaples", "PM": "ConsumerStaples",
+    "MDLZ": "ConsumerStaples",
+    # Financials
+    "JPM": "Financials", "BAC": "Financials", "WFC": "Financials", "GS": "Financials",
+    "MS": "Financials", "BLK": "Financials", "SCHW": "Financials", "AXP": "Financials",
+    "C": "Financials",
+    # Healthcare
+    "JNJ": "Healthcare", "UNH": "Healthcare", "LLY": "Healthcare", "PFE": "Healthcare",
+    "MRK": "Healthcare", "ABBV": "Healthcare", "TMO": "Healthcare", "ABT": "Healthcare",
+    "DHR": "Healthcare", "BMY": "Healthcare",
+    # Energy
+    "XOM": "Energy", "CVX": "Energy", "COP": "Energy", "SLB": "Energy",
+    # Industrials
+    "CAT": "Industrials", "BA": "Industrials", "HON": "Industrials", "GE": "Industrials",
+    "UPS": "Industrials", "RTX": "Industrials", "DE": "Industrials",
+    # Materials / Utilities
+    "LIN": "Materials", "SHW": "Materials", "NEE": "Utilities", "DUK": "Utilities",
 }
 
 
@@ -74,6 +102,9 @@ class Params:
     iv_rank_min: float = 20.0         # require symbol IV-rank >= this to sell (0 = off)
     # ── Pricing model ──
     short_dte_uplift_k: float = 1.0   # near-expiry vol-premium uplift (0 = pure BSM)
+    gap_stress: float = 0.0           # what-if: extra adverse mark on big down days
+                                      # (>=5% drop) — models close understating an
+                                      # intraday/overnight gap. 0 = off (historical).
 
 
 class _CfgShim:
@@ -363,20 +394,29 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 slots -= 1
                 n_trades += 1
 
-        # ── 5. Mark-to-market NLV ──
+        # ── 5. Mark-to-market NLV (with optional gap stress on big down days) ──
+        gs = params.gap_stress
+
+        def _mpx(sym, px):
+            if gs > 0 and ret_lut.get(sym, {}).get(d, 0.0) < -0.05:
+                return px * (1 - gs)
+            return px
+
         nlv = cash
         for sym, st in stocks.items():
             q = pv(sym, d)
-            nlv += st["shares"] * (q[0] if q else st["cost_basis"])
+            nlv += st["shares"] * (_mpx(sym, q[0]) if q else st["cost_basis"])
         k = params.short_dte_uplift_k
         for p in short_puts:
             q = pv(p["sym"], d)
             if q:
-                nlv -= pricing.value_put(q[0], p["strike"], p["expiry"].strftime("%Y%m%d"), d, q[1], k) * 100 * p["qty"]
+                px = _mpx(p["sym"], q[0])
+                nlv -= pricing.value_put(px, p["strike"], p["expiry"].strftime("%Y%m%d"), d, q[1], k) * 100 * p["qty"]
         for c in short_calls:
             q = pv(c["sym"], d)
             if q:
-                nlv -= pricing.value_call(q[0], c["strike"], c["expiry"].strftime("%Y%m%d"), d, q[1], k) * 100 * c["qty"]
+                px = _mpx(c["sym"], q[0])
+                nlv -= pricing.value_call(px, c["strike"], c["expiry"].strftime("%Y%m%d"), d, q[1], k) * 100 * c["qty"]
 
         ret = (nlv / start_cap - 1) * 100
         days = (d - start_date).days

@@ -55,6 +55,11 @@ def marswalk_page(request: Request):
         "cc_delta_min": getattr(s, "cc_delta_min", 0.15),
         "cc_delta_max": getattr(s, "cc_delta_max", 0.35),
         "cc_min_premium": getattr(s, "min_premium", 0.10),
+        # Test configuration (sandbox knobs, not live config)
+        "start_nlv": 100000,
+        "collateral_cap_pct": 20,
+        "uplift_k": 1.0,
+        "gap_stress_pct": 0,
     }
     return templates.TemplateResponse("marswalk.html", {
         "request": request,
@@ -74,6 +79,9 @@ def marswalk_run(
     cc_dte_min: int = Form(...), cc_dte_max: int = Form(...),
     cc_delta_min: float = Form(...), cc_delta_max: float = Form(...),
     cc_min_premium: float = Form(0.0),
+    # Test configuration
+    start_nlv: float = Form(100000), collateral_cap_pct: float = Form(20),
+    uplift_k: float = Form(1.0), gap_stress_pct: float = Form(0),
 ):
     params = Params(
         dte_min=max(0, dte_min), dte_max=max(dte_min, dte_max),
@@ -82,6 +90,10 @@ def marswalk_run(
         cc_dte_min=max(0, cc_dte_min), cc_dte_max=max(cc_dte_min, cc_dte_max),
         cc_delta_min=max(0.01, cc_delta_min), cc_delta_max=max(cc_delta_min, cc_delta_max),
         cc_min_premium=max(0.0, cc_min_premium),
+        start_capital=max(1000.0, start_nlv),
+        total_exposure_pct=max(0.01, collateral_cap_pct / 100.0),
+        short_dte_uplift_k=max(0.0, uplift_k),
+        gap_stress=min(0.9, max(0.0, gap_stress_pct / 100.0)),
     )
     service.run_all_async(params, fetch=True)
     return RedirectResponse(url="/marswalk", status_code=303)
