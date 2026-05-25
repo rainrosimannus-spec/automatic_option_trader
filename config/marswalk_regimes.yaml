@@ -101,10 +101,10 @@ regimes:
     end: "2024-07-15"
     why: "Low-vol steady uptrend. Tests performance when premiums are compressed."
 
-  - id: iran_war_2025
+  - id: iran_war_2026
     rank: 11
-    name: "Israel–Iran war & aftermath (Jun 2025 →)"
+    name: "2026 Iran war"
     category: geopolitical
-    start: "2025-06-12"
+    start: "2026-01-01"
     end: "2026-05-22"
-    why: "Prolonged geopolitical overhang + oil shock from the Jun 2025 strikes through today. Tests a long vol-elevated era with repeated event gaps, not a single crash. (rank editable — appended.)"
+    why: "Current (2026) Iran war through today — vol-elevated geopolitical regime with event gaps. CONFIRM START DATE: placeholder 2026-01-01 (event is past my knowledge cutoff)."

@@ -72,21 +72,39 @@ def _dte(expiry: str, today: date) -> int:
     return (datetime.strptime(expiry, "%Y%m%d").date() - today).days
 
 
-def value_put(spot: float, strike: float, expiry: str, today: date, iv: float) -> float:
+# Short-dated vol-premium uplift. Flat-IV BSM prices near-expiry OTM options at
+# pure-theoretical pennies, but real markets price them richer (vol term
+# structure + bid floor / min tick), which is why the 0-3 DTE cash machine
+# backtests near-zero otherwise. Below T0 days, scale IV up toward realistic
+# short-dated levels. TUNABLE — these are the knobs.
+SHORT_DTE_T0 = 7        # apply the uplift below this DTE
+SHORT_DTE_K = 1.0       # max multiplicative uplift at 0 DTE (iv *= 1 + K)
+
+
+def effective_iv(iv: float, dte: int, k: float = SHORT_DTE_K) -> float:
+    """IV with the short-dated vol-premium uplift applied (dte in days)."""
+    if dte < 0 or dte >= SHORT_DTE_T0 or iv <= 0:
+        return iv
+    return iv * (1 + k * (SHORT_DTE_T0 - dte) / SHORT_DTE_T0)
+
+
+def value_put(spot: float, strike: float, expiry: str, today: date, iv: float,
+              k: float = SHORT_DTE_K) -> float:
     """BSM mid value of a put (the daily mark). 0 if expired/unpriceable."""
     dte = _dte(expiry, today)
     if dte < 0:
         return max(0.0, strike - spot)  # intrinsic at/after expiry
     T = max(dte, 0.25) / 365.0
-    g = compute_put_greeks(spot, strike, T, iv)
+    g = compute_put_greeks(spot, strike, T, effective_iv(iv, dte, k))
     return float(g.mid) if g else 0.0
 
 
-def value_call(spot: float, strike: float, expiry: str, today: date, iv: float) -> float:
+def value_call(spot: float, strike: float, expiry: str, today: date, iv: float,
+               k: float = SHORT_DTE_K) -> float:
     """BSM mid value of a call (the daily mark). 0 if expired/unpriceable."""
     dte = _dte(expiry, today)
     if dte < 0:
         return max(0.0, spot - strike)  # intrinsic at/after expiry
     T = max(dte, 0.25) / 365.0
-    g = compute_call_greeks(spot, strike, T, iv)
+    g = compute_call_greeks(spot, strike, T, effective_iv(iv, dte, k))
     return float(g.mid) if g else 0.0

@@ -72,6 +72,8 @@ class Params:
     total_exposure_pct: float = 0.0   # 0 = NLV ramp (20/25/30%); >0 = fixed cap %
     vix_halt: float = 30.0            # halt NEW puts when VIX > this (live high-VIX halt)
     iv_rank_min: float = 20.0         # require symbol IV-rank >= this to sell (0 = off)
+    # ── Pricing model ──
+    short_dte_uplift_k: float = 1.0   # near-expiry vol-premium uplift (0 = pure BSM)
 
 
 class _CfgShim:
@@ -272,7 +274,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             chain = [sc for sc in pricing.build_contracts(spot, d, cc_dte_max + 7)
                      if cc_dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= cc_dte_max
                      and (min_strike is None or sc.strike >= min_strike)]
-            cands = score_call_candidates(spot, iv, chain, cc_cfg, cdmin, cdmax, d)
+            cc_iv = pricing.effective_iv(iv, (cc_dte_min + cc_dte_max) // 2, params.short_dte_uplift_k)
+            cands = score_call_candidates(spot, cc_iv, chain, cc_cfg, cdmin, cdmax, d)
             if not cands:
                 continue
             top = max(cands, key=lambda c: c.score)
@@ -326,7 +329,9 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                         continue
                 chain = [sc for sc in pricing.build_contracts(spot, d, params.dte_max + 7)
                          if params.dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= params.dte_max]
-                cands = score_put_candidates(spot, iv, chain, put_cfg,
+                score_iv = pricing.effective_iv(iv, (params.dte_min + params.dte_max) // 2,
+                                                params.short_dte_uplift_k)
+                cands = score_put_candidates(spot, score_iv, chain, put_cfg,
                                              params.delta_min, params.delta_max,
                                              params.dte_min, params.dte_max, d)
                 if cands:
@@ -363,14 +368,15 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         for sym, st in stocks.items():
             q = pv(sym, d)
             nlv += st["shares"] * (q[0] if q else st["cost_basis"])
+        k = params.short_dte_uplift_k
         for p in short_puts:
             q = pv(p["sym"], d)
             if q:
-                nlv -= pricing.value_put(q[0], p["strike"], p["expiry"].strftime("%Y%m%d"), d, q[1]) * 100 * p["qty"]
+                nlv -= pricing.value_put(q[0], p["strike"], p["expiry"].strftime("%Y%m%d"), d, q[1], k) * 100 * p["qty"]
         for c in short_calls:
             q = pv(c["sym"], d)
             if q:
-                nlv -= pricing.value_call(q[0], c["strike"], c["expiry"].strftime("%Y%m%d"), d, q[1]) * 100 * c["qty"]
+                nlv -= pricing.value_call(q[0], c["strike"], c["expiry"].strftime("%Y%m%d"), d, q[1], k) * 100 * c["qty"]
 
         ret = (nlv / start_cap - 1) * 100
         days = (d - start_date).days
