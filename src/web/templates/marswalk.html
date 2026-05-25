@@ -20,56 +20,64 @@
 <!-- ═══ Config panel ═══ -->
 <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
   <form method="post" action="/marswalk/run">
+{% macro num(name, value, step, mn, mx, w='w-12') -%}
+<span class="inline-flex items-stretch">
+  <button type="button" onclick="mwStep('{{ name }}',-1)" class="px-2 bg-gray-800 border border-gray-700 rounded-l text-gray-300 hover:bg-gray-700 active:bg-gray-600 select-none">−</button>
+  <input id="{{ name }}" name="{{ name }}" type="number" value="{{ value }}" step="{{ step }}" min="{{ mn }}" max="{{ mx }}" inputmode="decimal"
+         class="{{ w }} bg-gray-800 border-y border-gray-700 px-1 py-1 text-sm text-gray-100 text-center">
+  <button type="button" onclick="mwStep('{{ name }}',1)" class="px-2 bg-gray-800 border border-gray-700 rounded-r text-gray-300 hover:bg-gray-700 active:bg-gray-600 select-none">+</button>
+</span>
+{%- endmacro %}
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
       <!-- Put selling -->
       <div class="border border-gray-800 rounded-lg p-3">
         <div class="text-xs font-semibold text-emerald-300 mb-2">📉 Put selling</div>
-        <div class="flex flex-wrap gap-4 items-end">
+        <div class="flex flex-wrap gap-x-4 gap-y-3 items-end">
           <div>
             <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">DTE</div>
             <div class="flex items-center gap-1.5">
-              <input type="number" name="dte_min" value="{{ defaults.dte_min }}" min="0" max="60" class="w-14 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100">
+              {{ num('dte_min', defaults.dte_min, 1, 0, 60) }}
               <span class="text-gray-600 text-xs">–</span>
-              <input type="number" name="dte_max" value="{{ defaults.dte_max }}" min="0" max="60" class="w-14 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100">
+              {{ num('dte_max', defaults.dte_max, 1, 0, 60) }}
             </div>
           </div>
           <div>
             <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Delta</div>
             <div class="flex items-center gap-1.5">
-              <input type="number" name="delta_min" value="{{ defaults.delta_min }}" step="0.01" min="0.01" max="0.9" class="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100">
+              {{ num('delta_min', defaults.delta_min, 0.01, 0.01, 0.9, 'w-14') }}
               <span class="text-gray-600 text-xs">–</span>
-              <input type="number" name="delta_max" value="{{ defaults.delta_max }}" step="0.01" min="0.01" max="0.9" class="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100">
+              {{ num('delta_max', defaults.delta_max, 0.01, 0.01, 0.9, 'w-14') }}
             </div>
           </div>
           <div>
             <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Min prem $</div>
-            <input type="number" name="put_min_premium" value="{{ defaults.put_min_premium }}" step="0.01" min="0" class="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100">
+            {{ num('put_min_premium', defaults.put_min_premium, 0.05, 0, 50, 'w-14') }}
           </div>
         </div>
       </div>
       <!-- Covered calls -->
       <div class="border border-gray-800 rounded-lg p-3">
         <div class="text-xs font-semibold text-sky-300 mb-2">📈 Covered calls</div>
-        <div class="flex flex-wrap gap-4 items-end">
+        <div class="flex flex-wrap gap-x-4 gap-y-3 items-end">
           <div>
             <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">DTE</div>
             <div class="flex items-center gap-1.5">
-              <input type="number" name="cc_dte_min" value="{{ defaults.cc_dte_min }}" min="0" max="60" class="w-14 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100">
+              {{ num('cc_dte_min', defaults.cc_dte_min, 1, 0, 60) }}
               <span class="text-gray-600 text-xs">–</span>
-              <input type="number" name="cc_dte_max" value="{{ defaults.cc_dte_max }}" min="0" max="60" class="w-14 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100">
+              {{ num('cc_dte_max', defaults.cc_dte_max, 1, 0, 60) }}
             </div>
           </div>
           <div>
             <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Delta</div>
             <div class="flex items-center gap-1.5">
-              <input type="number" name="cc_delta_min" value="{{ defaults.cc_delta_min }}" step="0.01" min="0.01" max="0.9" class="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100">
+              {{ num('cc_delta_min', defaults.cc_delta_min, 0.01, 0.01, 0.9, 'w-14') }}
               <span class="text-gray-600 text-xs">–</span>
-              <input type="number" name="cc_delta_max" value="{{ defaults.cc_delta_max }}" step="0.01" min="0.01" max="0.9" class="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100">
+              {{ num('cc_delta_max', defaults.cc_delta_max, 0.01, 0.01, 0.9, 'w-14') }}
             </div>
           </div>
           <div>
             <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Min prem $</div>
-            <input type="number" name="cc_min_premium" value="{{ defaults.cc_min_premium }}" step="0.01" min="0" class="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100">
+            {{ num('cc_min_premium', defaults.cc_min_premium, 0.05, 0, 50, 'w-14') }}
           </div>
         </div>
       </div>
@@ -136,6 +144,19 @@
 </div>
 
 <script>
+// Stepper for the config inputs — iOS Safari shows no native number arrows.
+function mwStep(id, dir) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const step = parseFloat(el.step) || 1;
+  const mn = el.min !== '' ? parseFloat(el.min) : -Infinity;
+  const mx = el.max !== '' ? parseFloat(el.max) : Infinity;
+  let v = parseFloat(el.value);
+  if (isNaN(v)) v = 0;
+  v = Math.min(mx, Math.max(mn, v + dir * step));
+  el.value = (step % 1 === 0) ? String(Math.round(v)) : v.toFixed(2);
+}
+
 const MW_CHARTS = {
 {% for c in cards %}{% if c.chart %}  "{{ c.regime.id }}": {labels: {{ c.chart.labels|tojson }}, actual: {{ c.chart.actual|tojson }}, target: {{ c.chart.target|tojson }}},
 {% endif %}{% endfor %}};

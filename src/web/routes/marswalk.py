@@ -6,12 +6,11 @@ launches a background sweep across all regimes (engine + shared selection cores)
 """
 from __future__ import annotations
 
-import json
-
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src.web.template_engine import templates
+from src.core.config import get_settings
 from src.marswalk.regimes import load_config
 from src.marswalk.engine import Params
 from src.marswalk.models import get_mw_db, Run, Point
@@ -24,7 +23,6 @@ router = APIRouter()
 def marswalk_page(request: Request):
     universe, regimes = load_config()
     cards = []
-    last = None
     with get_mw_db() as db:
         for reg in regimes:
             run = (db.query(Run).filter_by(regime_id=reg.id)
@@ -40,20 +38,24 @@ def marswalk_page(request: Request):
                         "target": [p.target_pct for p in pts],
                     }
             cards.append({"regime": reg, "run": run, "chart": chart})
-        last = db.query(Run).order_by(Run.created_at.desc()).first()
 
+    # Pre-fill with the LIVE system logic (settings.yaml strategy), so a backtest
+    # starts from "what the trader does today". Put DTE is VIX-tiered (no single
+    # value); the US low/mid-VIX tier is 0-3 (high-VIX halts), which matches the
+    # US large-cap backtest universe.
+    s = get_settings().strategy
     defaults = {
-        "dte_min": 5, "dte_max": 14, "delta_min": 0.15, "delta_max": 0.30,
-        "put_min_premium": 0.0,
-        "cc_dte_min": 5, "cc_dte_max": 21, "cc_delta_min": 0.20, "cc_delta_max": 0.40,
-        "cc_min_premium": 0.0,
+        "dte_min": 0,
+        "dte_max": 3,
+        "delta_min": getattr(s, "delta_min", 0.15),
+        "delta_max": getattr(s, "delta_max", 0.30),
+        "put_min_premium": getattr(s, "min_premium_put", 0.50),
+        "cc_dte_min": getattr(s, "cc_dte_min", 5),
+        "cc_dte_max": getattr(s, "cc_dte_max", 30),
+        "cc_delta_min": getattr(s, "cc_delta_min", 0.15),
+        "cc_delta_max": getattr(s, "cc_delta_max", 0.35),
+        "cc_min_premium": getattr(s, "min_premium", 0.10),
     }
-    if last and last.params_json:
-        try:
-            saved = json.loads(last.params_json)
-            defaults.update({k: v for k, v in saved.items() if k in defaults})
-        except Exception:
-            pass
     return templates.TemplateResponse("marswalk.html", {
         "request": request,
         "cards": cards,
