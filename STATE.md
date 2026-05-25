@@ -1,6 +1,6 @@
 # Maggy & Winston — State Document
 
-Last updated: 2026-05-17 (later same day) — L1/L2/L3 structure. Content current through end of May 17 session (Bruno initial build + refactor audit + dashboard rebrand + iOS PWA saga + idempotency guards).
+Last updated: 2026-05-25 — logging diagnostic blocker resolved (durable `logs/console.log` capture + `docs/LOGGING.md` map). L1/L2/L3 structure; earlier content current through end of May 17 session (Bruno initial build + refactor audit + dashboard rebrand + iOS PWA saga + idempotency guards).
 
 **How to read this document:**
 - **L1 Fundamentals** — read first on every new session. Rarely changes.
@@ -57,7 +57,7 @@ This server runs **both Maggy and Winston code against a single account, U175627
 3. **Maggy and Winston are separate strategies with separate tables.** Maggy: `positions`. Winston: `portfolio_holdings`, `portfolio_put_entries`. They share an IBKR connection in merged mode but write to different tables.
 4. **Options universe ⊂ portfolio universe.** Stocks dropping out mid-cycle do NOT abandon covered calls — Maggy reads `positions` table directly.
 5. **Running process must be restarted for code changes to take effect.** Pushed ≠ live.
-6. **Logging:** structlog routes through stdlib → `trader.log` (intended) but file may not exist on disk; logs land in `tmux capture-pane -t trader`. **Logging diagnostic blocker still queued in L2.**
+6. **Logging:** structlog routes through stdlib → `logs/trader.log` (scheduler/strategy). The process's **full stdout/stderr** — incl. uvicorn/web errors + crashes that never reach trader.log — is durably captured to `logs/console.log` via `tmux pipe-pane` (wired into `restart-all.sh` + `watchdog-trader.sh`). **Full map + incident cheat-sheet: `docs/LOGGING.md`.** (Resolved 2026-05-25 — was the long-standing logging diagnostic blocker.)
 7. **3-consecutive-failure exchange skip** in `update_watchlist_metrics` is still in code. Dormant. Leave alone unless it bites.
 8. **Breakthrough tier enforces $500M cap + no ETFs + no recent reverse splits** at code level (Apr 23, commit `3c744c6`).
 9. **Watchlist staleness visible** — yellow ⏱ icon on dashboard for `metrics_stale=True`.
@@ -251,7 +251,7 @@ When Claude generates a file:
 
 **2. Phase 3 of refactor — target architecture spec.** `REFACTOR_PHASE1.md` and `REFACTOR_PHASE2.md` are in the repo root. Both describe the problem (8 files containing Pattern A writes vs the single correct Pattern B writer on each side) and the proposed solution. Phase 3 is the per-file before/after spec — 11 refactor commits across Maggy + Winston + IPO Rider. Resolve the five remaining Q decisions (Q2 hedge close on roll, Q7 `/close-all` future, Q8 `/force-close` status, Q11 `position_type="ipo_flip"` survival, Q12 IPO lockup dedup). Reviewable as one document before any code change.
 
-**3. Logging diagnostic blocker (still queued).** Find where dashboard/screener process logs stdout. `tmux trader` pane is empty; `watchdog.log` doesn't have it. `trader.log` exists and captures scheduler/strategy logs but NOT web errors (we hit this during Bruno work — web 500s only surfaced via direct Python invocation). Check `tmux list-panes -a`, `systemctl`, `~/restart-all.sh` redirects, nohup logs.
+**3. Logging diagnostic blocker — ✅ RESOLVED 2026-05-25.** Root cause: the trader is one process (scheduler + web + screener); uvicorn installs its own loggers with `propagate=False`, so web errors only ever went to the process's stdout = the ephemeral `tmux trader` pane, wiped on every restart. trader.log (root file handler) never saw them. Fix: `tmux pipe-pane -t trader 'cat >> logs/console.log'` — a full stdout/stderr catch-all (web errors + crashes + dup of trader.log). Applied to the live session (no restart) and wired into `~/restart-all.sh` (1 site) + `~/watchdog-trader.sh` (2 sites). Rotation: user-mode logrotate via `deploy/console-logrotate.conf` (cron line documented; user installs). Full map + one-minute incident cheat-sheet: `docs/LOGGING.md`. **Optional follow-up (deferred, needs a restart):** pass `log_config=None` to `uvicorn.run(...)` in `src/main.py` so uvicorn loggers propagate into trader.log too.
 
 **4. Bruno next-build choices, in priority order:**
 - **Headroom calculator** with four-metric debt-burden gate (the "block loans that cross limits" feature Rain flagged as the main strategic goal). Depends on: accrual engine ✓ + IBKR NLV read (gated) + LHV cash read (gated). Needs both integrations enabled, which means MesiCap clone, not this server.
