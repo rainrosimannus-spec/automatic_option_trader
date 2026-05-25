@@ -103,8 +103,8 @@ regimes:
 
   - id: iran_war_2026
     rank: 11
-    name: "2026 Iran war"
+    name: "2026 Iran war (US/Israel vs Iran)"
     category: geopolitical
-    start: "2026-01-01"
+    start: "2026-02-28"
     end: "2026-05-22"
-    why: "Current (2026) Iran war through today — vol-elevated geopolitical regime with event gaps. CONFIRM START DATE: placeholder 2026-01-01 (event is past my knowledge cutoff)."
+    why: "US + Israel at war with Iran and its regional allies since 2026-02-28 — a live, vol-elevated geopolitical regime with event gaps. Overlaps the real options account's life (started ~Feb 22), which returned +22.5% — so this is the CALIBRATION ANCHOR: tune short_dte_uplift_k until the backtest here ~matches +22.5%."
