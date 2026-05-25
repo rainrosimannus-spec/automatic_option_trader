@@ -33,6 +33,29 @@ except RuntimeError:
 
 from ib_insync import IB, Stock, Option
 
+# Structured logger for screener_reject events (lands in trader.log + console.log
+# when run in-process). Degrades to a stdlib logger if src isn't importable
+# (standalone run from an unusual cwd).
+try:
+    from src.core.logger import get_logger
+    log = get_logger("screener")
+except Exception:  # pragma: no cover
+    import logging
+    log = logging.getLogger("screener")
+
+
+def _reject_category(reason: str) -> str:
+    """Map a free-form rejection reason to a stable category for the run summary."""
+    r = (reason or "").lower()
+    if "etf" in r:
+        return "etf"
+    if "market_cap" in r or "market cap" in r:
+        return "market_cap_floor"
+    if "reverse split" in r:
+        return "reverse_split"
+    return "breakthrough_other"
+
+
 # ── Dedicated dividend candidate pool ─────────────────────────────────────────
 # These are screened in addition to regional pools.
 # Focus: long dividend history, growing payouts, strong FCF, not value traps.
@@ -2787,6 +2810,16 @@ def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0) ->
 class UniverseScreener:
     def __init__(self, ib: IB):
         self.ib = ib
+        self._reject_counts: dict[str, int] = {}
+
+    def _reject(self, symbol: str, category: str, detail: str = "", **fields):
+        """Emit one structured screener_reject event + tally for the run summary.
+        category is a stable bucket (no_data, below_min_market_cap, no_price,
+        qualify_empty, etf, market_cap_floor, reverse_split, no_ibkr_data, …);
+        fields carry the deciding value(s) (market_cap, threshold, price, tier)."""
+        self._reject_counts[category] = self._reject_counts.get(category, 0) + 1
+        log.info("screener_reject", symbol=symbol, category=category,
+                 detail=detail or None, **fields)
 
     def screen_all(
         self,
@@ -2804,6 +2837,7 @@ class UniverseScreener:
             regions = list(growth_universe.keys())
 
         all_scores: list[StockScore] = []
+        self._reject_counts = {}  # reset per-run rejection tally
 
         print(f"\n{'='*60}")
         print(f"PHASE 1: Screening regular universe ({len(regions)} regions)")
@@ -2825,8 +2859,13 @@ class UniverseScreener:
                         all_scores.append(score)
                         status = "✅" if score.options_available else "⛔"
                         print(f"  {status} {score.symbol:8s} | Port: {score.portfolio_score:5.1f} | Opts: {score.options_score:5.1f} | MCap: ${score.market_cap/1e9:6.1f}B | Div: {score.dividend_yield:.1f}%")
+                    elif not score:
+                        self._reject(str(symbol), "no_data", tier="growth")
+                        print(f"  ⛔ {symbol:8s} | no data (score=None)")
                     else:
-                        print(f"  ⛔ {symbol:8s} | Below threshold or no data")
+                        self._reject(str(symbol), "below_min_market_cap", tier="growth",
+                                     market_cap=score.market_cap, threshold=min_market_cap)
+                        print(f"  ⛔ {symbol:8s} | MCap ${score.market_cap/1e9:.2f}B < ${min_market_cap/1e9:.1f}B floor")
                 except Exception as e:
                     print(f"  ❌ {symbol:8s} | Error: {e}")
                 time.sleep(0.3)
@@ -2852,8 +2891,13 @@ class UniverseScreener:
                         all_scores.append(score)
                         status = "\u2705 " if score.options_available else "\u26d4 "
                         print(f"  {status} {score.symbol:8s} | Port: {score.portfolio_score:5.1f} | Div: {score.dividend_yield:.1f}% | MCap: ${score.market_cap/1e9:6.1f}B")
+                    elif not score:
+                        self._reject(str(symbol), "no_data", tier="dividend")
+                        print(f"  \u26d4  {symbol:8s} | no data (score=None)")
                     else:
-                        print(f"  \u26d4  {symbol:8s} | Below threshold or no data")
+                        self._reject(str(symbol), "below_min_market_cap", tier="dividend",
+                                     market_cap=score.market_cap, threshold=min_market_cap)
+                        print(f"  \u26d4  {symbol:8s} | MCap ${score.market_cap/1e9:.2f}B < ${min_market_cap/1e9:.1f}B floor")
                 except Exception as e:
                     print(f"  \u274c  {symbol:8s} | Error: {e}")
                 time.sleep(0.3)
@@ -2880,6 +2924,8 @@ class UniverseScreener:
                     eligible, reject_reason = _check_breakthrough_eligibility(symbol, score.market_cap)
                     if not eligible:
                         print(f"  ⛔  {symbol:8s} | REJECTED: {reject_reason}")
+                        self._reject(symbol, _reject_category(reject_reason), detail=reject_reason,
+                                     tier="breakthrough", market_cap=score.market_cap)
                         continue
                     score.tier = "breakthrough"
                     score.megatrend = candidate.get("megatrend", "")
@@ -2902,6 +2948,7 @@ class UniverseScreener:
                     print(f"  {status} {score.symbol:8s} | MCap: ${score.market_cap/1e9:5.1f}B | {score.megatrend}")
                 else:
                     print(f"  ⛔ {symbol:8s} | No IBKR data")
+                    self._reject(symbol, "no_ibkr_data", tier="breakthrough")
             except Exception as e:
                 print(f"  ❌ {symbol:8s} | Error: {e}")
             time.sleep(0.3)
@@ -3157,6 +3204,12 @@ class UniverseScreener:
         print(f"  Options-eligible: {len(options_eligible)}")
         print(f"  Options universe: {len(options_universe)}")
 
+        # Per-run rejection summary — the at-a-glance line; per-symbol detail is
+        # in the screener_reject events (grep screener_reject in trader.log).
+        _by = dict(sorted(self._reject_counts.items(), key=lambda x: -x[1]))
+        log.info("screener_rejects_summary", total=sum(_by.values()), by_category=_by)
+        print(f"\n🔎 Rejections by category: {_by or '{}'} (total {sum(_by.values())})")
+
         return portfolio_universe, options_universe, all_scores
 
     def _score_stock(self, symbol: str, exchange: str, currency: str) -> Optional[StockScore]:
@@ -3164,6 +3217,7 @@ class UniverseScreener:
         qualified = self.ib.qualifyContracts(contract)
         if not qualified:
             print(f"  🔎 {symbol}: qualifyContracts returned empty -> None")
+            self._reject(symbol, "qualify_empty")
             return None
 
         score = StockScore(symbol=symbol, exchange=exchange, currency=currency)
@@ -3197,6 +3251,7 @@ class UniverseScreener:
                 print(f"  🔎 {symbol}: FMP price fallback exception: {type(_fmp_e).__name__}: {_fmp_e}")
         if not price or price <= 0:
             print(f"  🔎 {symbol}: no price from IBKR or FMP -> None (final price={price})")
+            self._reject(symbol, "no_price", price=price)
             return None
         # IBKR reports GBP stock prices in pence — convert to pounds
         # (same convention as src/broker/trade_sync.py:318-321)
