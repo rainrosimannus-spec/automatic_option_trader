@@ -1150,10 +1150,19 @@ class RiskManager:
         except Exception:
             return RiskCheck(True)
 
-        exposure_cap = min(
-            net_liq * self.cfg.total_exposure_pct,
-            self.cfg.max_total_exposure,
-        )
+        # NLV-gated ramp: the collateral cap % grows with account size so extra
+        # capital diversifies across more names rather than stacking (20% <$2M,
+        # 25% $2-4M, 30% >=$4M). The configured total_exposure_pct is the <$2M
+        # floor — inert on the current small account (which the <$100K skip below
+        # also no-ops). RULES: structural, not a manual flip.
+        base_pct = self.cfg.total_exposure_pct
+        if net_liq >= 4_000_000:
+            eff_pct = max(0.30, base_pct)
+        elif net_liq >= 2_000_000:
+            eff_pct = max(0.25, base_pct)
+        else:
+            eff_pct = base_pct
+        exposure_cap = min(net_liq * eff_pct, self.cfg.max_total_exposure)
         if exposure_cap < 100_000:
             return RiskCheck(True)  # small account — skip
 
@@ -1183,7 +1192,7 @@ class RiskManager:
             return RiskCheck(
                 False,
                 f"Total open exposure ${total_exposure:,.0f} >= cap ${exposure_cap:,.0f} "
-                f"(NLV ${net_liq:,.0f} × {self.cfg.total_exposure_pct:.0%}, "
+                f"(NLV ${net_liq:,.0f} × {eff_pct:.0%}, "
                 f"ceiling ${self.cfg.max_total_exposure:,.0f})",
             )
         return RiskCheck(True)

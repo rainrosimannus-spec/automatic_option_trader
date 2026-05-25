@@ -346,13 +346,22 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
             regions = [r.strip() for r in cfg.rescreen_regions.split(",") if r.strip()] or None
 
             screener = UniverseScreener(ib)
+            # NLV-gated options universe: widen as the account grows so a higher
+            # deployment cap diversifies across more names rather than stacking
+            # (50 <$2M, 60 $2-4M, 75 >=$4M). Breakthrough names stay eligible —
+            # the options universe ranks portfolio_universe by options_score, which
+            # already includes breakthrough. Inert at the current NLV (stays 50).
+            from src.portfolio.connection import get_cached_portfolio_account
+            _nlv = (get_cached_portfolio_account() or {}).get("nlv", 0) or 0
+            _opts_count = 75 if _nlv >= 4_000_000 else 60 if _nlv >= 2_000_000 else 50
+            log.info("options_universe_size_gated", nlv=round(_nlv), options_count=_opts_count)
             portfolio_universe, options_universe, all_scores = screener.screen_all(
                 regions=regions,
                 min_market_cap=cfg.rescreen_min_market_cap,
                 growth_count=cfg.tier_count_growth,
                 dividend_count=cfg.tier_count_dividend,
                 breakthrough_count=cfg.tier_count_breakthrough,
-                options_count=50,
+                options_count=_opts_count,
             )
 
             # Guard: if screener returned 0 stocks, abort — do not overwrite files
