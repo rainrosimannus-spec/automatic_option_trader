@@ -41,6 +41,13 @@ def load_market(regime, universe):
             bars = [(_pdate(r.date), r.close, r.iv) for r in rows if r.close and r.iv]
             if len(bars) >= 5:
                 out[sym] = bars
+        # VIX series (close only; iv stored 0) for the engine's halt gate.
+        vrows = (db.query(MarketBar)
+                 .filter_by(regime_id=regime.id, symbol="^VIX")
+                 .order_by(MarketBar.date).all())
+        vbars = [(_pdate(r.date), r.close, 0.0) for r in vrows if r.close]
+        if vbars:
+            out["^VIX"] = vbars
     return out
 
 
@@ -80,7 +87,10 @@ def fetch_and_cache(regime, universe, force: bool = False):
     ib = get_portfolio_ib()
 
     start, end = _pdate(regime.start), _pdate(regime.end)
-    duration = f"{(end - start).days + 10} D"
+    # IBKR rejects durationStr > 365 D for daily bars (this is why the full-year
+    # 2021 regime fetched nothing). Use years for long windows.
+    _dur_days = (end - start).days + 10
+    duration = f"{_dur_days // 365 + 1} Y" if _dur_days > 365 else f"{_dur_days} D"
     # datetime object (not pre-formatted string) — ib_insync formats it per API version.
     end_dt = datetime.combine(end, datetime.min.time()).replace(hour=23, minute=59, second=59)
 
@@ -123,10 +133,29 @@ def fetch_and_cache(regime, universe, force: bool = False):
         except Exception as e:
             log.warning("marswalk_fetch_failed", regime=regime.id, symbol=sym, error=str(e))
 
+    # VIX index for the regime (engine halt gate). Stored close-only (iv=0).
+    if force or not has_data(regime.id, "^VIX"):
+        try:
+            from ib_insync import Index
+            vix = Index("VIX", "CBOE")
+            with get_portfolio_lock():
+                ib.qualifyContracts(vix)
+                vbars = ib.reqHistoricalData(
+                    vix, endDateTime=end_dt, durationStr=duration,
+                    barSizeSetting="1 day", whatToShow="TRADES",
+                    useRTH=True, formatDate=1, timeout=40)
+                ib.sleep(0.3)
+            vrows = [(_pdate(b.date).strftime("%Y-%m-%d"), float(b.close), 0.0)
+                     for b in vbars if b.close and start <= _pdate(b.date) <= end]
+            _store(regime.id, "^VIX", vrows)
+            log.info("marswalk_vix_cached", regime=regime.id, bars=len(vrows))
+        except Exception as e:
+            log.warning("marswalk_vix_fetch_failed", regime=regime.id, error=str(e))
+
 
 def ensure_market_data(regime, universe):
-    """Fetch only the symbols not already cached for this regime."""
+    """Fetch symbols not already cached for this regime (plus the VIX series)."""
     missing = [s for s in universe if not has_data(regime.id, s)]
-    if missing:
+    if missing or not has_data(regime.id, "^VIX"):
         log.info("marswalk_fetching", regime=regime.id, symbols=len(missing))
-        fetch_and_cache(regime, missing)
+        fetch_and_cache(regime, missing)  # also fetches ^VIX if absent

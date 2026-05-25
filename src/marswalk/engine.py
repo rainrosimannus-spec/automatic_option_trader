@@ -47,6 +47,10 @@ class Params:
     start_capital: float = 100_000.0
     max_positions: int = 10
     contracts: int = 1
+    # ── Risk gates (model the live limits) ──
+    total_exposure_pct: float = 0.0   # 0 = NLV ramp (20/25/30%); >0 = fixed cap %
+    vix_halt: float = 30.0            # halt NEW puts when VIX > this (live high-VIX halt)
+    iv_rank_min: float = 20.0         # require symbol IV-rank >= this to sell (0 = off)
 
 
 class _CfgShim:
@@ -70,6 +74,15 @@ def _exp_date(expiry: str) -> date:
 
 def _dte(expiry: str, today: date) -> int:
     return (_exp_date(expiry) - today).days
+
+
+def _exposure_ramp(nlv: float) -> float:
+    """Live collateral-cap ramp (mirrors risk._effective_total_exposure_pct)."""
+    if nlv >= 4_000_000:
+        return 0.30
+    if nlv >= 2_000_000:
+        return 0.25
+    return 0.20
 
 
 def run_regime(regime_id, regime_name, category, rank, universe, market, params: Params):
@@ -111,6 +124,33 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     peak = start_cap
     max_dd = 0.0
     daily_target = (1 + TARGET_ANNUAL) ** (1 / 365) - 1
+    prev_nlv = start_cap  # cap base for next day's deployment (NLV is marked end-of-day)
+    n_halt_days = 0
+
+    # Per-symbol running IV min/max up to each date (for the IV-rank gate).
+    iv_rank_lut: dict[str, dict] = {}
+    for sym, bars in market.items():
+        if sym == "^VIX":
+            continue
+        rmin = rmax = None
+        per_date = {}
+        for (bd, _c, biv) in bars:
+            if biv and biv > 0:
+                rmin = biv if rmin is None else min(rmin, biv)
+                rmax = biv if rmax is None else max(rmax, biv)
+                per_date[bd] = (rmin, rmax)
+            else:
+                per_date[bd] = None
+        iv_rank_lut[sym] = per_date
+
+    def iv_rank(sym, d, iv):
+        mm = iv_rank_lut.get(sym, {}).get(d)
+        if not mm:
+            return None
+        rmin, rmax = mm
+        if rmax - rmin < 1e-9:
+            return 50.0  # flat IV history within the window — treat as neutral
+        return (iv - rmin) / (rmax - rmin) * 100.0
 
     for d in dates:
         # ── 1. Settle expiring short puts ──
@@ -183,10 +223,18 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                                 "premium": top.bid, "qty": lots})
             n_trades += 1
 
-        # ── 4. Sell new cash-secured puts up to max_positions ──
+        # ── 4. Sell new puts — gated like live: VIX halt, IV-rank, collateral cap ──
+        vix_q = pv("^VIX", d)
+        vix_now = vix_q[0] if vix_q else None
+        halted = vix_now is not None and vix_now > params.vix_halt
+        if halted:
+            n_halt_days += 1
+        # Collateral cap = (prev day's) NLV × effective pct (fixed param, else NLV ramp)
+        eff_pct = params.total_exposure_pct if params.total_exposure_pct > 0 else _exposure_ramp(prev_nlv)
+        exposure_cap = prev_nlv * eff_pct
         held = {p["sym"] for p in short_puts} | set(stocks.keys())
         slots = params.max_positions - len(short_puts)
-        if slots > 0:
+        if slots > 0 and not halted:
             ranked = []
             for sym in universe:
                 if sym in held:
@@ -195,6 +243,10 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 if not q:
                     continue
                 spot, iv = q
+                if params.iv_rank_min > 0:           # IV-rank gate (live: only sell elevated IV)
+                    ivr = iv_rank(sym, d, iv)
+                    if ivr is not None and ivr < params.iv_rank_min:
+                        continue
                 chain = [sc for sc in pricing.build_contracts(spot, d, params.dte_max + 7)
                          if params.dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= params.dte_max]
                 cands = score_put_candidates(spot, iv, chain, put_cfg,
@@ -209,7 +261,9 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     break
                 reserved = sum(p["strike"] * 100 * p["qty"] for p in short_puts)
                 need = top.strike * 100 * params.contracts
-                if cash - reserved < need:
+                if cash - reserved < need:           # cash-secured
+                    continue
+                if reserved + need > exposure_cap:    # collateral cap (% of NLV)
                     continue
                 cash += top.bid * 100 * params.contracts
                 short_puts.append({"sym": sym, "strike": top.strike,
@@ -240,6 +294,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         peak = max(peak, nlv)
         if peak > 0:
             max_dd = max(max_dd, (peak - nlv) / peak * 100)
+        prev_nlv = nlv  # cap base for tomorrow's deployment
 
     final = points[-1]
     return {
@@ -252,6 +307,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "target_return_pct": final[3],
         "max_drawdown_pct": round(max_dd, 2),
         "n_trades": n_trades, "n_assignments": n_assign,
+        "n_halt_days": n_halt_days,
         "points": points,
     }
 
