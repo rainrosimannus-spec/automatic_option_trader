@@ -65,6 +65,11 @@ class Trade(Base):
     delta_at_entry: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     iv_at_entry: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     vix_at_entry: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Decision-time option quote (same unit as premium/fill_price) — lets the
+    # Consigliere measure execution quality: fill vs mid + within-spread capture.
+    bid_at_entry: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ask_at_entry: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    mid_at_entry: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, default="system")
     # "system" = placed by M&W, "ibkr_sync" = imported from IBKR executions, "manual" = manual import

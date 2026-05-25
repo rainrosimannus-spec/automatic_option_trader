@@ -49,6 +49,10 @@ def _migrate_columns(engine):
     migrations = [
         ("trades", "source", "VARCHAR(20) DEFAULT 'system'"),
         ("trades", "ibkr_exec_id", "VARCHAR(50)"),
+        # Decision-time option quote for execution-quality analysis (Consigliere)
+        ("trades", "bid_at_entry", "REAL"),
+        ("trades", "ask_at_entry", "REAL"),
+        ("trades", "mid_at_entry", "REAL"),
         ("trade_suggestions", "rank", "INTEGER DEFAULT 0"),
         ("trade_suggestions", "rank_score", "REAL"),
         ("trade_suggestions", "funding_source", "VARCHAR(30)"),

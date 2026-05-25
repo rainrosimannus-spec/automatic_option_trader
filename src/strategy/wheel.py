@@ -595,6 +595,11 @@ class WheelManager:
             order_status=OrderStatus.SUBMITTED,
             delta_at_entry=candidate.delta,
             iv_at_entry=candidate.iv,
+            # Decision-time quote (same unit as premium/fill_price here) for
+            # Consigliere execution-quality. Guarded: never raises if missing.
+            bid_at_entry=getattr(candidate, "bid", None),
+            ask_at_entry=getattr(candidate, "ask", None),
+            mid_at_entry=getattr(candidate, "mid", None),
         )
         db.add(trade_record)
 

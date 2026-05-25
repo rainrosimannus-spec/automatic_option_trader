@@ -41,6 +41,7 @@ class Consigliere:
             ("risk_policy", self._review_risk_policy),
             ("leverage_health", self._review_leverage_health),
             ("parameter_calibration", self._review_parameter_calibration),
+            ("execution_quality", self._review_execution_quality),
         ]
 
         for name, fn in modules:
@@ -611,5 +612,84 @@ class Consigliere:
                     metric_value=avg_vix,
                     metric_benchmark=18.0,
                 ))
+
+        return memos
+
+    # ══════════════════════════════════════════════════════════
+    # MODULE 7: EXECUTION QUALITY
+    # How well do our fills capture the bid-ask spread?
+    # Compares each fill against the decision-time quote snapshot.
+    # ══════════════════════════════════════════════════════════
+
+    def _review_execution_quality(self) -> list[ConsigliereMemo]:
+        from src.core.models import Trade, TradeType, OrderStatus
+
+        memos = []
+
+        with get_db() as db:
+            recent = db.query(Trade).filter(
+                Trade.trade_type.in_([TradeType.SELL_PUT, TradeType.SELL_CALL]),
+                Trade.order_status == OrderStatus.FILLED,
+                Trade.mid_at_entry.isnot(None),
+                Trade.fill_price > 0,
+            ).order_by(Trade.created_at.desc()).limit(100).all()
+
+        # Keep only rows with a usable spread snapshot.
+        samples = []
+        for t in recent:
+            bid, ask, mid, fill = t.bid_at_entry, t.ask_at_entry, t.mid_at_entry, t.fill_price
+            if bid is None or ask is None or mid is None:
+                continue
+            spread = ask - bid
+            if spread <= 0 or mid <= 0:
+                continue
+            # We SELL premium, so filling toward the ask is good, toward the bid
+            # is bad. capture: 0.0 = filled at bid, 0.5 = at mid, 1.0 = at ask.
+            capture = (fill - bid) / spread
+            slip_vs_mid = mid - fill           # >0 = sold below fair (mid) value
+            slip_pct = slip_vs_mid / mid * 100
+            dollars = slip_vs_mid * 100 * (t.quantity or 1)  # per-share → per-contract
+            samples.append((capture, slip_pct, dollars))
+
+        n = len(samples)
+        if n < 10:
+            return memos
+
+        avg_capture = sum(s[0] for s in samples) / n
+        avg_slip_pct = sum(s[1] for s in samples) / n
+        total_dollars = sum(s[2] for s in samples)
+
+        # Always record the metric (visible in trader.log even when execution is fine).
+        log.info(
+            "consigliere_execution_quality",
+            n=n,
+            avg_spread_capture=round(avg_capture, 3),
+            avg_slip_pct_of_mid=round(avg_slip_pct, 2),
+            total_dollars_vs_mid=round(total_dollars, 2),
+        )
+
+        # Speak up only when execution is measurably poor — fills landing in the
+        # bottom of the spread (selling at the bid → capture ≈ 0). Matches the
+        # "only flag real issues" ethos of the other modules.
+        if avg_capture < 0.40:
+            memos.append(ConsigliereMemo(
+                category="improvement",
+                severity="suggestion",
+                title=f"Execution: capturing {avg_capture * 100:.0f}% of the bid-ask spread",
+                body=(
+                    f"Across the last {n} premium-sells with a quote snapshot, fills "
+                    f"landed on average {avg_capture * 100:.0f}% of the way from bid to "
+                    f"ask (0% = at the bid, 50% = at the mid). That gave up about "
+                    f"{avg_slip_pct:.1f}% of fair (mid) value per trade — roughly "
+                    f"${abs(total_dollars):,.0f} across the sample. "
+                    f"Orders are placed as limits at the bid to guarantee fills; on "
+                    f"liquid names a mid-or-slightly-better limit with a short reprice "
+                    f"window would recover much of this without materially hurting the "
+                    f"fill rate. Observation only — no order was changed."
+                ),
+                metric_name="spread_capture_pct",
+                metric_value=round(avg_capture * 100, 1),
+                metric_benchmark=50.0,
+            ))
 
         return memos

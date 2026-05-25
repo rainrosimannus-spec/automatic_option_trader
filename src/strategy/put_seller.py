@@ -455,6 +455,11 @@ class PutSeller:
         """Save the trade and position to the database."""
         # UK options prices are in pence — convert to pounds for storage
         premium = candidate.bid / 100.0 if currency == "GBP" else candidate.bid
+        # Decision-time quote in the same unit as premium/fill_price (Consigliere
+        # execution-quality). Guarded: never raises if a field is missing.
+        _unit = 100.0 if currency == "GBP" else 1.0
+        def _norm(v):
+            return None if v is None else v / _unit
         qty = quantity if quantity is not None else self.cfg.contracts_per_stock
         with get_db() as db:
             position = Position(
@@ -484,5 +489,8 @@ class PutSeller:
                 delta_at_entry=candidate.delta,
                 iv_at_entry=candidate.iv,
                 vix_at_entry=current_vix,
+                bid_at_entry=_norm(getattr(candidate, "bid", None)),
+                ask_at_entry=_norm(getattr(candidate, "ask", None)),
+                mid_at_entry=_norm(getattr(candidate, "mid", None)),
             )
             db.add(trade_record)
