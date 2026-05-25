@@ -153,9 +153,48 @@ def fetch_and_cache(regime, universe, force: bool = False):
             log.warning("marswalk_vix_fetch_failed", regime=regime.id, error=str(e))
 
 
+def fetch_earnings(universe, force: bool = False):
+    """Cache historical earnings dates per symbol (FMP, regime-agnostic — fetched
+    once and reused across all regimes). HTTP only, no IBKR. Stored under the
+    sentinel regime_id '_earnings' (close/iv unused)."""
+    try:
+        from tools.screen_universe import _fmp_get
+    except Exception as e:
+        log.warning("marswalk_earnings_no_fmp", error=str(e))
+        return
+    for sym in universe:
+        if not force and has_data("_earnings", sym):
+            continue
+        try:
+            data = _fmp_get("earnings", sym, {"limit": 60}) or []
+            rows = []
+            for e in data:
+                ds = str(e.get("date") or "")[:10]
+                if len(ds) == 10:
+                    rows.append((ds, 0.0, 0.0))
+            _store("_earnings", sym, rows)
+            log.info("marswalk_earnings_cached", symbol=sym, dates=len(rows))
+        except Exception as ex:
+            log.warning("marswalk_earnings_fetch_failed", symbol=sym, error=str(ex))
+
+
+def load_earnings(universe):
+    """{symbol: set(earnings_date)} from cache for the earnings gate."""
+    out = {}
+    with get_mw_db() as db:
+        for sym in universe:
+            rows = db.query(MarketBar).filter_by(regime_id="_earnings", symbol=sym).all()
+            dates = {_pdate(r.date) for r in rows}
+            if dates:
+                out[sym] = dates
+    return out
+
+
 def ensure_market_data(regime, universe):
-    """Fetch symbols not already cached for this regime (plus the VIX series)."""
+    """Fetch symbols not cached for this regime (+ the VIX series + earnings dates)."""
     missing = [s for s in universe if not has_data(regime.id, s)]
     if missing or not has_data(regime.id, "^VIX"):
         log.info("marswalk_fetching", regime=regime.id, symbols=len(missing))
         fetch_and_cache(regime, missing)  # also fetches ^VIX if absent
+    if any(not has_data("_earnings", s) for s in universe):
+        fetch_earnings(universe)  # global earnings dates (once)

@@ -59,8 +59,9 @@ def run_all_regimes(params: Params, fetch: bool = True):
                     log.warning("marswalk_no_data", regime=reg.id)
                     _state["done"] += 1
                     continue
+                earnings = mw_data.load_earnings(universe)
                 res = run_regime(reg.id, reg.name, reg.category, reg.rank,
-                                 universe, market, params)
+                                 universe, market, params, earnings=earnings)
                 if res:
                     _replace_prior(reg.id, params)
                     save_run(res)

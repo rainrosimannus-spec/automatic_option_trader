@@ -20,13 +20,34 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, asdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from src.core.config import get_settings
 from src.strategy.option_scoring import score_put_candidates, score_call_candidates
 from src.marswalk import pricing
 
 TARGET_ANNUAL = 0.24
+
+# Sector map for the backtest universe (sector cap gate). Unknown -> "Other".
+_SECTORS = {
+    "AAPL": "Technology", "MSFT": "Technology", "NVDA": "Technology",
+    "GOOGL": "Technology", "META": "Technology",
+    "AMZN": "Consumer", "TSLA": "Consumer",
+    "JPM": "Financials", "JNJ": "Healthcare", "XOM": "Energy",
+}
+
+
+def _pearson(a: list, b: list) -> float:
+    n = len(a)
+    if n < 5:
+        return 0.0
+    ma, mb = sum(a) / n, sum(b) / n
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((y - mb) ** 2 for y in b)
+    if va <= 0 or vb <= 0:
+        return 0.0
+    cov = sum((a[i] - ma) * (b[i] - mb) for i in range(n))
+    return cov / (va ** 0.5 * vb ** 0.5)
 
 
 @dataclass
@@ -85,12 +106,16 @@ def _exposure_ramp(nlv: float) -> float:
     return 0.20
 
 
-def run_regime(regime_id, regime_name, category, rank, universe, market, params: Params):
+def run_regime(regime_id, regime_name, category, rank, universe, market, params: Params,
+               earnings=None):
     """
     market: {symbol: [(date_obj, close, iv), ...]} (each symbol's bars).
+    earnings: optional {symbol: set(date)} of historical earnings dates (gate off if None).
     Returns a result dict (summary + points). Does NOT write to any DB.
     """
     cfg = get_settings().strategy
+    rcfg = get_settings().risk
+    earnings = earnings or {}
 
     cc_dte_min = params.cc_dte_min
     cc_dte_max = params.cc_dte_max
@@ -151,6 +176,41 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         if rmax - rmin < 1e-9:
             return 50.0  # flat IV history within the window — treat as neutral
         return (iv - rmin) / (rmax - rmin) * 100.0
+
+    # Per-symbol daily returns (for the correlation gate).
+    ret_lut: dict[str, dict] = {}
+    ret_dates: dict[str, list] = {}
+    for sym, bars in market.items():
+        if sym == "^VIX":
+            continue
+        series, order, prev_c = {}, [], None
+        for (bd, c, _iv) in bars:
+            if prev_c and prev_c > 0 and c:
+                series[bd] = c / prev_c - 1
+                order.append(bd)
+            prev_c = c
+        ret_lut[sym] = series
+        ret_dates[sym] = order
+
+    def avg_corr(cand, held_syms, d, lookback):
+        cd = [x for x in ret_dates.get(cand, []) if x <= d][-lookback:]
+        if len(cd) < 10:
+            return 0.0
+        cors = []
+        for h in held_syms:
+            if h == cand or h not in ret_lut:
+                continue
+            pa, pb = [], []
+            for x in cd:
+                if x in ret_lut[h]:
+                    pa.append(ret_lut[cand][x])
+                    pb.append(ret_lut[h][x])
+            if len(pa) >= 10:
+                cors.append(_pearson(pa, pb))
+        return sum(cors) / len(cors) if cors else 0.0
+
+    earnings_on = bool(earnings) and getattr(cfg, "earnings_avoid_enabled", True)
+    earn_days = getattr(cfg, "earnings_avoid_days", 3)
 
     for d in dates:
         # ── 1. Settle expiring short puts ──
@@ -223,17 +283,27 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                                 "premium": top.bid, "qty": lots})
             n_trades += 1
 
-        # ── 4. Sell new puts — gated like live: VIX halt, IV-rank, collateral cap ──
+        # ── 4. Sell new puts — gated like live: VIX/margin halt, IV-rank, earnings,
+        #      correlation, collateral cap, sector cap ──
         vix_q = pv("^VIX", d)
         vix_now = vix_q[0] if vix_q else None
         halted = vix_now is not None and vix_now > params.vix_halt
+        # Margin gate: committed capital (open put collateral + held stock value) vs NLV.
+        put_collateral = sum(p["strike"] * 100 * p["qty"] for p in short_puts)
+        stock_value = 0.0
+        for sym, st in stocks.items():
+            q = pv(sym, d)
+            stock_value += st["shares"] * (q[0] if q else st["cost_basis"])
+        if prev_nlv > 0 and (put_collateral + stock_value) / prev_nlv > rcfg.max_margin_usage:
+            halted = True
         if halted:
-            n_halt_days += 1
+            n_halt_days += 1  # counts VIX- and margin-halted deployment days
         # Collateral cap = (prev day's) NLV × effective pct (fixed param, else NLV ramp)
         eff_pct = params.total_exposure_pct if params.total_exposure_pct > 0 else _exposure_ramp(prev_nlv)
         exposure_cap = prev_nlv * eff_pct
         held = {p["sym"] for p in short_puts} | set(stocks.keys())
         slots = params.max_positions - len(short_puts)
+        corr_on = prev_nlv > rcfg.correlation_nlv_threshold
         if slots > 0 and not halted:
             ranked = []
             for sym in universe:
@@ -243,9 +313,16 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 if not q:
                     continue
                 spot, iv = q
-                if params.iv_rank_min > 0:           # IV-rank gate (live: only sell elevated IV)
+                if params.iv_rank_min > 0:           # IV-rank gate (only sell elevated IV)
                     ivr = iv_rank(sym, d, iv)
                     if ivr is not None and ivr < params.iv_rank_min:
+                        continue
+                if earnings_on:                       # earnings gate (skip near earnings)
+                    eset = earnings.get(sym)
+                    if eset and any(d <= ed <= d + timedelta(days=earn_days) for ed in eset):
+                        continue
+                if corr_on and held:                  # correlation gate (avoid stacking)
+                    if avg_corr(sym, held, d, rcfg.correlation_lookback_days) > rcfg.max_correlation:
                         continue
                 chain = [sc for sc in pricing.build_contracts(spot, d, params.dte_max + 7)
                          if params.dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= params.dte_max]
@@ -265,6 +342,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     continue
                 if reserved + need > exposure_cap:    # collateral cap (% of NLV)
                     continue
+                # Sector cap: once the book is large enough to diversify (>=3 names),
+                # no sector may exceed max_sector_pct of committed put collateral.
+                if len(short_puts) >= 3:
+                    sec = _SECTORS.get(sym, "Other")
+                    sec_committed = sum(p["strike"] * 100 * p["qty"] for p in short_puts
+                                        if _SECTORS.get(p["sym"], "Other") == sec)
+                    if (sec_committed + need) / (reserved + need) > rcfg.max_sector_pct:
+                        continue
                 cash += top.bid * 100 * params.contracts
                 short_puts.append({"sym": sym, "strike": top.strike,
                                    "expiry": _exp_date(top.expiry),
