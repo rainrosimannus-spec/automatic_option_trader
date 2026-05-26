@@ -63,8 +63,10 @@ def marswalk_page(request: Request):
         "cc_delta_min": s.cc_delta_min,
         "cc_delta_max": s.cc_delta_max,
         "cc_min_premium": s.min_premium,
-        # Account & deployment knobs — son's actual current NLV.
-        "start_nlv": 34224,
+        # Account & deployment knobs — large-account stress test ($4M = scaled
+        # NLV ramp tier where collateral cap lifts to 30% + max_positions=50).
+        # The small-account exemption kicks in if you drop NLV below $100k×cap.
+        "start_nlv": 4_000_000,
         "collateral_cap_pct": round(r.total_exposure_pct * 100, 1),
         "uplift_k": 1.0,
         "gap_stress_pct": 0,

@@ -580,22 +580,26 @@ document.addEventListener('DOMContentLoaded', function() {
         <!-- Risk gates — gray -->
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">VIX tier (spike-aware + MA50 clamp)</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">SPY trend filter (MA10/20 + MA50)</span>
-        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 10 trades/day (NLV + drawdown scaling)</span>
-        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Adaptive position size by NLV</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">SPY MA200 bear gate — halves size when SPY &lt; MA200</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Per-name MA200 gate — no new puts on stocks &lt; own MA200</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 10 trades/day (NLV ramp + 5d drawdown scaling)</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Per-position cap: 5% of NLV (son-mode), max $500k</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Max 30% per sector</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Market hours gate (±60 min)</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Correlation gate (avg &gt; 0.85 blocked)</span>
+        <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Margin cap 60% of NLV (son-mode ceiling)</span>
         <!-- Adaptive strategy — emerald -->
-        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">VIX-adaptive IV rank</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">IV rank ≥ 10 base (VIX-adaptive 15–30%)</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">IV-rank position sizing (up to 5× at IV rank ≥ 70)</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Dynamic delta by VIX regime</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">DTE-adaptive delta widening</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Skip earnings within 3 days</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Dynamic CC profit targets (50/65/75% by DTE)</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Wheel on assignment</span>
-        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">VIX-adaptive DTE selection</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">VIX-adaptive DTE (0–3 in low/mid VIX; halt &gt; 25)</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">0-3 DTE positions expire — no early close</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">40% below 52-week high — no new puts</span>
-        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Wheel exit-ASAP mode (new assignments)</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Hybrid wheel: patient OTM CCs (0.35–0.45Δ) by default; deep-ITM exit-velocity (0.80–0.95Δ) only when stock &lt; MA200</span>
         <!-- Structural — blue -->
         <span class="px-2.5 py-1 rounded bg-blue-900/40 text-blue-300">CC strikes ≥ net cost basis (realized)</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-500">SPY tail hedge — disabled</span>
