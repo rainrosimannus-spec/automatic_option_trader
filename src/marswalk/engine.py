@@ -139,11 +139,13 @@ def _dte(expiry: str, today: date) -> int:
 
 
 def _exposure_ramp(nlv: float) -> float:
-    """Live collateral-cap ramp (mirrors risk._effective_total_exposure_pct)."""
+    """Live collateral-cap ramp (mirrors risk._effective_total_exposure_pct).
+    Lifted 2026-05-26 from 20/25/30 to 20/30/40 so big accounts don't drag below
+    T-bills. <$2M unchanged (small accounts hit the <$100K cap exemption anyway)."""
     if nlv >= 4_000_000:
-        return 0.30
+        return 0.40
     if nlv >= 2_000_000:
-        return 0.25
+        return 0.30
     return 0.20
 
 

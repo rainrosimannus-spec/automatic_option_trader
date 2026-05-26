@@ -215,20 +215,24 @@ document.addEventListener('DOMContentLoaded', function () {
   if (nlv) nlv.addEventListener('change', mwApplyNlvRamp);
 });
 
-// NLV-driven live-system defaults — mirrors the two live NLV ramps:
-//   collateral cap   (risk._effective_total_exposure_pct): 20% <$2M, 25% $2-4M, 30% >=$4M
-//   options universe (scheduler.py options_count):         50  <$2M, 60  $2-4M, 75 >=$4M
-// max_positions is the backtest's concurrent-position cap; mapped here to the
-// universe-size ramp (the live trader's discoverable book grows with capital).
+// NLV-driven live-system defaults — mirrors the live ramps in risk.py:
+//   collateral cap   (risk._effective_total_exposure_pct): 20% <$2M, 30% $2-4M, 40% >=$4M
+//   position cap     (risk.check_position_limits):         8 tiers, 4→75 by NLV breakpoint
 // The operator can override any dependent field after this snaps it.
 function mwApplyNlvRamp() {
   const nlvEl = document.getElementById('start_nlv');
   if (!nlvEl) return;
   const nlv = parseFloat(nlvEl.value) || 0;
   let cap, maxpos;
-  if (nlv >= 4000000)      { cap = 30; maxpos = 75; }
-  else if (nlv >= 2000000) { cap = 25; maxpos = 60; }
-  else                      { cap = 20; maxpos = 50; }
+  if      (nlv >= 5000000) { cap = 40; maxpos = 75; }
+  else if (nlv >= 4000000) { cap = 40; maxpos = 50; }
+  else if (nlv >= 2000000) { cap = 30; maxpos = 50; }
+  else if (nlv >=  500000) { cap = 20; maxpos = 30; }
+  else if (nlv >=  200000) { cap = 20; maxpos = 15; }
+  else if (nlv >=  100000) { cap = 20; maxpos = 10; }
+  else if (nlv >=   50000) { cap = 20; maxpos =  8; }
+  else if (nlv >=   25000) { cap = 20; maxpos =  6; }
+  else                     { cap = 20; maxpos =  4; }
   const capEl = document.getElementById('collateral_cap_pct');
   const mpEl  = document.getElementById('max_positions');
   if (capEl) capEl.value = String(cap);

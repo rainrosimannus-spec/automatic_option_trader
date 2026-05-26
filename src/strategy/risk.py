@@ -424,9 +424,10 @@ class RiskManager:
           NLV < $100K  → 8 positions
           NLV < $200K  → 10 positions
           NLV < $500K  → 15 positions
-          NLV < $2M    → 20 positions
-          NLV < $5M    → 30 positions
-          NLV >= $5M   → 40 positions
+          NLV < $2M    → 30 positions   # was 20 — lift so big accounts can use the
+          NLV < $5M    → 50 positions   # margin allowance the collateral cap admits
+          NLV >= $5M   → 75 positions   # without leaving 2/3 of room idle.
+        Lower tiers unchanged — small accounts already saturate their cap.
         """
         try:
             summary = get_account_summary()
@@ -449,11 +450,11 @@ class RiskManager:
         elif net_liq < 500_000:
             max_pos = 15
         elif net_liq < 2_000_000:
-            max_pos = 20
-        elif net_liq < 5_000_000:
             max_pos = 30
+        elif net_liq < 5_000_000:
+            max_pos = 50
         else:
-            max_pos = 40
+            max_pos = 75
 
         # Count only "slot-consuming" positions: short_put (cash committed) and
         # stock (capital deployed). Covered calls don't consume an additional slot
@@ -1151,15 +1152,15 @@ class RiskManager:
             return RiskCheck(True)
 
         # NLV-gated ramp: the collateral cap % grows with account size so extra
-        # capital diversifies across more names rather than stacking (20% <$2M,
-        # 25% $2-4M, 30% >=$4M). The configured total_exposure_pct is the <$2M
-        # floor — inert on the current small account (which the <$100K skip below
-        # also no-ops). RULES: structural, not a manual flip.
+        # capital diversifies across more names rather than stacking. Lifted to
+        # 20% <$2M, 30% $2-4M, 40% >=$4M (was 25/30) so the big-account return
+        # isn't dragged below T-bills. <$2M tier unchanged — small accounts run
+        # on the <$100K exemption below regardless. RULES: structural, not a flip.
         base_pct = self.cfg.total_exposure_pct
         if net_liq >= 4_000_000:
-            eff_pct = max(0.30, base_pct)
+            eff_pct = max(0.40, base_pct)
         elif net_liq >= 2_000_000:
-            eff_pct = max(0.25, base_pct)
+            eff_pct = max(0.30, base_pct)
         else:
             eff_pct = base_pct
         exposure_cap = min(net_liq * eff_pct, self.cfg.max_total_exposure)
