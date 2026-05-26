@@ -48,6 +48,10 @@
           {{ num('gap_stress_pct', defaults.gap_stress_pct, 1, 0, 50) }}
         </div>
         <div>
+          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Max positions</div>
+          {{ num('max_positions', defaults.max_positions, 5, 1, 200) }}
+        </div>
+        <div>
           <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Margin</div>
           <label class="inline-flex items-center gap-2 cursor-pointer select-none">
             <input id="margin_on" name="margin_on" type="checkbox" value="1"

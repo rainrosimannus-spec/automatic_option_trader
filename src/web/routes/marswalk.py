@@ -62,6 +62,7 @@ def marswalk_page(request: Request):
         "gap_stress_pct": 0,
         "margin_on": False,
         "margin_multiple": 5.0,
+        "max_positions": 10,
     }
     return templates.TemplateResponse("marswalk.html", {
         "request": request,
@@ -85,6 +86,7 @@ def marswalk_run(
     start_nlv: float = Form(100000), collateral_cap_pct: float = Form(20),
     uplift_k: float = Form(1.0), gap_stress_pct: float = Form(0),
     margin_on: str = Form(""), margin_multiple: float = Form(5.0),
+    max_positions: int = Form(10),
 ):
     params = Params(
         dte_min=max(0, dte_min), dte_max=max(dte_min, dte_max),
@@ -99,6 +101,7 @@ def marswalk_run(
         gap_stress=min(0.9, max(0.0, gap_stress_pct / 100.0)),
         margin_on=bool(margin_on),
         margin_multiple=max(1.0, min(10.0, margin_multiple)),
+        max_positions=max(1, min(200, max_positions)),
     )
     service.run_all_async(params, fetch=True)
     return RedirectResponse(url="/marswalk", status_code=303)
