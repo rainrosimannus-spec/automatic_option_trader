@@ -117,7 +117,7 @@ class Params:
     max_margin_usage: float = 0.0     # 0 = use live settings.risk.max_margin_usage (60%
                                       # son-mode); >0 = override.
     # ── Pricing model ──
-    short_dte_uplift_k: float = 1.0   # near-expiry vol-premium uplift (0 = pure BSM)
+    short_dte_uplift_k: float = 4.95  # near-expiry vol-premium uplift, calibrated 2026-05-26 to son's live +22.5% on iran_war_2026 (see pricing.SHORT_DTE_K)
     gap_stress: float = 0.0           # what-if: extra adverse mark on big down days
                                       # (>=5% drop) — models close understating an
                                       # intraday/overnight gap. 0 = off (historical).

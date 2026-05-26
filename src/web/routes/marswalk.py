@@ -73,7 +73,8 @@ def marswalk_page(request: Request):
         # Account & deployment knobs — large-account stress test ($4M).
         "start_nlv": default_nlv,
         "collateral_cap_pct": ramp_cap_pct,
-        "uplift_k": 1.0,
+        # Calibrated 2026-05-26 against son's +22.5% live result on iran_war_2026.
+        "uplift_k": 4.95,
         "gap_stress_pct": 0,
         # Live trades with IBKR portfolio margin → on by default.
         "margin_on": True,
@@ -154,7 +155,7 @@ def marswalk_run(
     cc_min_premium: float = Form(0.0),
     # Test configuration
     start_nlv: float = Form(100000), collateral_cap_pct: float = Form(20),
-    uplift_k: float = Form(1.0), gap_stress_pct: float = Form(0),
+    uplift_k: float = Form(4.95), gap_stress_pct: float = Form(0),
     margin_on: str = Form(""), margin_multiple: float = Form(5.0),
     max_positions: int = Form(10),
     iv_rank_min: float = Form(20.0), vix_halt: float = Form(30.0),

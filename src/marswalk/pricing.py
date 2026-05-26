@@ -105,7 +105,13 @@ def _dte(expiry: str, today: date) -> int:
 # backtests near-zero otherwise. Below T0 days, scale IV up toward realistic
 # short-dated levels. TUNABLE — these are the knobs.
 SHORT_DTE_T0 = 7        # apply the uplift below this DTE
-SHORT_DTE_K = 1.0       # max multiplicative uplift at 0 DTE (iv *= 1 + K)
+# Calibrated 2026-05-26 against son's real options account (+22.5%, Feb-May
+# 2026) via the iran_war_2026 regime. Fine sweep showed:
+#   k=1.0 → +5.43%   k=4.0 → +16.42%   k=4.90 → +22.30%   k=4.95 → +22.54%   k=5.0 → +22.72%
+# k=4.95 lands closest to the +22.5% live anchor. With this k the other
+# regimes print magnitudes consistent with what a calibrated wheel actually
+# delivers (bears +3-11%, bulls +20-25%, crashes +2-8%).
+SHORT_DTE_K = 4.95      # max multiplicative uplift at 0 DTE (iv *= 1 + K)
 
 
 def effective_iv(iv: float, dte: int, k: float = SHORT_DTE_K) -> float:
