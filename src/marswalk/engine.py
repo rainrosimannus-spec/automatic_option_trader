@@ -163,8 +163,17 @@ class Params:
     # per symbol — loaded via _pre:<sym> keys from the data layer.
     bear_market_ma200_enabled: bool = True
     bear_market_size_multiplier: float = 0.5
-    bear_market_gate_mode: str = "per_name_ma200"   # off | halve_contracts | cap_multiplier | per_name_ma200
+    # off | halve_contracts | cap_multiplier | per_name_ma200 | breadth_gradual
+    # breadth_gradual (DEFAULT 2026-05-26): count universe symbols currently below
+    # their own MA200; <30% breadth → OFF (write everywhere), 30-50% → HALVE
+    # contracts on names below own MA200, ≥50% → SKIP those names. Mirrors live
+    # risk.py ma200_breadth_state() so backtest == live behavior.
+    bear_market_gate_mode: str = "breadth_gradual"
     bear_market_cap_multiplier_value: int = 2       # used when mode = cap_multiplier
+    # Breadth thresholds + halve multiplier (used by breadth_gradual mode).
+    ma200_breadth_off_threshold: float = 0.30
+    ma200_breadth_full_threshold: float = 0.50
+    ma200_breadth_halve_multiplier: float = 0.5
 
 
 class _CfgShim:
@@ -319,6 +328,9 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     # Test harnesses can inject a pre-built MA200 dict via module attribute
     # `_injected_per_name_ma200` (used by offline experiments).
     per_name_ma200: dict[str, dict] = {}
+    # Breadth cache: {date: fraction_of_universe_below_own_MA200}. Lazily filled
+    # inside the date loop, reused across the per-symbol iterations on that day.
+    _breadth_today_cache: dict = {}
     if getattr(params, "bear_market_gate_mode", "off") == "per_name_ma200":
         injected = globals().get("_injected_per_name_ma200")
         if injected:
@@ -666,6 +678,29 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     sym_ma = per_name_ma200.get(sym, {}).get(d)
                     if sym_ma is not None and spot < sym_ma:
                         continue
+                # Bear-market gate mode E: breadth_gradual — only SKIP when ≥
+                # breadth_full of the universe is below MA200 today. Below
+                # breadth_off, gate is OFF. In between is HALVE (handled at the
+                # sizing block below). Computed per-day via _breadth_today_cache.
+                if (params.bear_market_ma200_enabled
+                        and params.bear_market_gate_mode == "breadth_gradual"):
+                    breadth = _breadth_today_cache.get(d)
+                    if breadth is None:
+                        below = total = 0
+                        for _s in universe:
+                            _sma = per_name_ma200.get(_s, {}).get(d)
+                            _q = pv(_s, d)
+                            if _sma is None or _q is None:
+                                continue
+                            total += 1
+                            if _q[0] < _sma:
+                                below += 1
+                        breadth = (below / total) if total else 0.0
+                        _breadth_today_cache[d] = breadth
+                    sym_ma = per_name_ma200.get(sym, {}).get(d)
+                    name_below = sym_ma is not None and spot < sym_ma
+                    if (breadth >= params.ma200_breadth_full_threshold) and name_below:
+                        continue
                 chain = [sc for sc in pricing.build_contracts(spot, d, params.dte_max + 7, symbol=sym)
                          if params.dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= params.dte_max]
                 score_iv = pricing.effective_iv(iv, (params.dte_min + params.dte_max) // 2,
@@ -696,6 +731,17 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     elif ivr >= getattr(cfg, "iv_rank_size_mid", 50):
                         qty_mult = min(2, ivr_cap)
                 contracts = params.contracts * qty_mult
+                # Mode E (breadth_gradual): halve contracts when in HALVE regime
+                # (off_threshold <= breadth < full_threshold) AND name is below
+                # its own MA200. Off and skip branches were handled above.
+                if (params.bear_market_ma200_enabled
+                        and params.bear_market_gate_mode == "breadth_gradual"):
+                    breadth = _breadth_today_cache.get(d, 0.0)
+                    sym_ma = per_name_ma200.get(sym, {}).get(d)
+                    spot_q = pv(sym, d)
+                    name_below = (sym_ma is not None and spot_q is not None and spot_q[0] < sym_ma)
+                    if (params.ma200_breadth_off_threshold <= breadth < params.ma200_breadth_full_threshold) and name_below:
+                        contracts = max(1, int(round(contracts * params.ma200_breadth_halve_multiplier)))
                 # Mode C (halve_contracts): halve total contracts when SPY < MA200.
                 if (params.bear_market_ma200_enabled
                         and params.bear_market_gate_mode == "halve_contracts"
