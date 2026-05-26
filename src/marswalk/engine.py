@@ -114,6 +114,19 @@ class Params:
     total_exposure_pct: float = 0.0   # 0 = NLV ramp (20/25/30%); >0 = fixed cap %
     vix_halt: float = 35.0            # growth-mode 2026-05-26: only halt on panic spikes
     iv_rank_min: float = 0.0          # growth-mode 2026-05-26: accept all positive-EV setups
+    # Bull-regime adaptive overrides (2026-05-26). When SPY > MA200 AND
+    # VIX < bull_regime_vix_max: switch to a higher-delta / smaller-per-name /
+    # IV-rank-gated profile to fight bull-regime yield ceiling. See live
+    # config RiskConfig.bull_regime_* fields for the same logic in production.
+    bull_regime_enabled: bool = True
+    bull_regime_vix_max: float = 18.0
+    # See live config bull_regime_* docstring for empirical tuning rationale.
+    # Defaults: only iv_rank floor is active; delta + per-name overrides
+    # default to baseline values (inert until user explicitly tunes).
+    bull_regime_delta_min: float = 0.20
+    bull_regime_delta_max: float = 0.30
+    bull_regime_position_pct: float = 0.05
+    bull_regime_iv_rank_min: float = 50.0
     max_margin_usage: float = 0.0     # 0 = use live settings.risk.max_margin_usage (60%
                                       # son-mode); >0 = override.
     # ── Pricing model ──
@@ -606,6 +619,18 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             if unrealized <= -threshold:
                 halted = True
 
+        # (c-bull) Bull-regime detector: VIX < bull_regime_vix_max AND SPY >
+        # MA200. When True, three adaptive overrides flip (delta band, per-name
+        # cap, iv_rank floor) — mirrors live risk.in_bull_regime().
+        bull_today = False
+        if params.bull_regime_enabled and vix_now is not None:
+            spy_ma_today = spy_ma200.get(d)
+            spy_today_close = spy_closes.get(d)
+            if (spy_ma_today is not None and spy_today_close is not None
+                    and spy_today_close > spy_ma_today
+                    and vix_now < params.bull_regime_vix_max):
+                bull_today = True
+
         # (c) VIX-tier dynamic delta (risk.dynamic_delta_range + effective_vix_tier).
         #     Replaces fixed params.delta_min/max for the day's put-selling pass.
         #     SPY-MA50 clamp pushes tier-min up while SPY trades below its 50d SMA;
@@ -621,6 +646,10 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             day_delta_min, day_delta_max = _tier_delta_range(tier, cfg, spy_bearish)
         else:
             day_delta_min, day_delta_max = params.delta_min, params.delta_max
+        # Bull-regime override supersedes the VIX-tier band (live priority order).
+        if bull_today:
+            day_delta_min, day_delta_max = (params.bull_regime_delta_min,
+                                            params.bull_regime_delta_max)
 
         # (d) Drawdown daily-cap scaler (risk._drawdown_cap_multiplier) — 5d window.
         #     Plus a parallel 20d lookback that catches slow-grind bears (NEW vs live).
@@ -661,8 +690,12 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     continue
                 spot, iv = q
                 ivr = iv_rank(sym, d, iv)  # computed unconditionally for iv_rank_sizing
-                if params.iv_rank_min > 0:           # IV-rank gate (only sell elevated IV)
-                    if ivr is not None and ivr < params.iv_rank_min:
+                # IV-rank gate. Bull-regime override raises the floor to skip
+                # dead-IV consumer staples; baseline uses params.iv_rank_min.
+                effective_ivr_min = (params.bull_regime_iv_rank_min if bull_today
+                                     else params.iv_rank_min)
+                if effective_ivr_min > 0:
+                    if ivr is not None and ivr < effective_ivr_min:
                         continue
                 if earnings_on:                       # earnings gate (skip near earnings)
                     eset = earnings.get(sym)
@@ -755,6 +788,22 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     contracts = max(1, int(round(contracts * params.bear_market_size_multiplier)))
                 reserved = sum(p["strike"] * 100 * p["qty"] for p in short_puts)
                 need = top.strike * 100 * contracts
+                # Bull-regime per-name cap: in confirmed bulls, each name is
+                # capped at NLV * bull_regime_position_pct (default 2%). If the
+                # required notional/leverage exceeds the cap, scale contracts
+                # down. Floor at 1 to keep the trade alive when meaningful.
+                if bull_today:
+                    per_name_cap = prev_nlv * params.bull_regime_position_pct
+                    if params.margin_on and params.margin_multiple > 0:
+                        # In margin mode, per-name notional ceiling = cap × margin_multiple
+                        per_name_cap *= params.margin_multiple
+                    if need > per_name_cap and per_name_cap > 0:
+                        scaled = int(per_name_cap // (top.strike * 100))
+                        if scaled >= 1:
+                            contracts = scaled
+                            need = top.strike * 100 * contracts
+                        else:
+                            continue   # cap is below 1 contract — skip this name
                 if params.margin_on:
                     # Margin mode: the % NLV cap admits notional up to NLV*cap*multiple
                     # (per-put margin requirement = notional/multiple). No cash check —

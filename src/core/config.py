@@ -189,6 +189,22 @@ class RiskConfig(BaseModel):
     ma200_breadth_off_threshold: float = 0.30
     ma200_breadth_full_threshold: float = 0.50
     ma200_breadth_halve_multiplier: float = 0.5
+    # Bull-regime adaptive overrides (2026-05-26). When VIX < bull_regime_vix_max
+    # AND SPY > MA200 (confirmed bull), three settings flip to fight the
+    # bull-regime yield ceiling (premium per trade is structurally tiny in
+    # low-IV uptrends). Outside the bull window, baseline values apply.
+    bull_regime_enabled: bool = True
+    bull_regime_vix_max: float = 18.0
+    # Empirical 2026-05-26 marswalk sweep: of the three "obvious" bull
+    # adaptations, only the IV-rank floor improves bull-regime returns. Higher
+    # delta has no effect (low-VIX chains don't quote 0.30+ delta within 0-3
+    # DTE). Lower per-name cap actively hurts (narrow-leadership bulls want
+    # concentration, not dilution). Defaults below disable delta and per-name
+    # overrides so they're inert; IV-rank floor stays active at 50.
+    bull_regime_delta_min: float = 0.20       # default = baseline (no effective change)
+    bull_regime_delta_max: float = 0.30       # default = baseline (no effective change)
+    bull_regime_position_pct: float = 0.05    # default = baseline 5% (no effective change)
+    bull_regime_iv_rank_min: float = 50.0     # only write on names with IV rank >= 50 -> skip dead-IV consumer staples
     # Drawdown-based daily position sizing (scales max_daily_positions)
     drawdown_lookback_days: int = 5
     drawdown_threshold_light: float = 0.02   # drawdown > this -> 75% of base cap

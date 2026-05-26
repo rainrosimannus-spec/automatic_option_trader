@@ -543,8 +543,13 @@ class RiskManager:
             )
 
         # Layer 2 — hard dollar cap (scaling safeguard, only bites at large NLV)
+        # Bull-regime override: drop per-name cap to bull_regime_position_pct
+        # (default 2% vs 5% baseline) so the engine writes across more names
+        # instead of concentrating — fights narrow-leadership dilution.
+        per_name_pct = (self.cfg.bull_regime_position_pct
+                        if self.in_bull_regime() else self.cfg.position_dollar_pct)
         dollar_cap = min(
-            net_liq * self.cfg.position_dollar_pct,
+            net_liq * per_name_pct,
             self.cfg.max_position_dollars,
         )
         if dollar_cap >= self.cfg.min_position_dollars and estimated_margin > dollar_cap:
@@ -944,27 +949,34 @@ class RiskManager:
             # Can't determine IV rank — allow trading (fail open)
             return RiskCheck(True)
 
-        # VIX-adaptive threshold
-        regime = self.get_regime()
-        vix = regime.vix
-        base_min = strat_cfg.iv_rank_min  # default 30
-
-        if vix is not None and vix < 15:
-            effective_min = max(15, base_min - 15)  # 30 → 15
-        elif vix is not None and vix < 20:
-            effective_min = max(15, base_min - 10)  # 30 → 20
+        # Bull-regime override: in confirmed bulls, only write on names with
+        # IV rank >= bull_regime_iv_rank_min (default 50). Filters out the
+        # dead-IV consumer-staples that dilute bull-regime yield.
+        if self.in_bull_regime():
+            effective_min = self.cfg.bull_regime_iv_rank_min
         else:
-            effective_min = base_min  # 30
+            # VIX-adaptive threshold (baseline outside bull regime)
+            regime = self.get_regime()
+            vix = regime.vix
+            base_min = strat_cfg.iv_rank_min  # default 30
+
+            if vix is not None and vix < 15:
+                effective_min = max(15, base_min - 15)  # 30 → 15
+            elif vix is not None and vix < 20:
+                effective_min = max(15, base_min - 10)  # 30 → 20
+            else:
+                effective_min = base_min  # 30
 
         if iv_rank < effective_min:
+            in_bull = self.in_bull_regime()
+            ctx = "bull-regime override" if in_bull else f"VIX-adaptive, base={strat_cfg.iv_rank_min}%"
             return RiskCheck(
                 False,
-                f"{symbol} IV rank {iv_rank:.0f}% < {effective_min}% minimum "
-                f"(VIX={vix:.0f}, base={base_min}%, premium too cheap)",
+                f"{symbol} IV rank {iv_rank:.0f}% < {effective_min}% minimum ({ctx}, premium too cheap)",
             )
 
         log.debug("iv_rank_passed", symbol=symbol, iv_rank=round(iv_rank, 1),
-                   threshold=effective_min, vix=vix)
+                   threshold=effective_min, bull=self.in_bull_regime())
         return RiskCheck(True)
 
     def _iv_rank_cached(self, symbol: str, ttl_seconds: int = 900) -> float | None:
@@ -1158,9 +1170,39 @@ class RiskManager:
             return RiskCheck(False, f"{symbol} has earnings within {strat_cfg.earnings_avoid_days} days — skipping")
         return RiskCheck(True)
 
+    def in_bull_regime(self) -> bool:
+        """Confirmed bull: VIX < bull_regime_vix_max AND SPY > MA200.
+        Fail-closed on missing data (treat unknown as NOT bull — strategy
+        falls back to the broader VIX-tier baseline).
+
+        When True, the three bull-regime adaptive overrides apply (see
+        RiskConfig.bull_regime_*):
+          - delta range -> bull_regime_delta_min/max (higher)
+          - per-position cap -> bull_regime_position_pct (smaller)
+          - iv_rank_min -> bull_regime_iv_rank_min (only fat-IV names)
+        """
+        if not self.cfg.bull_regime_enabled:
+            return False
+        regime = self.get_regime()
+        if regime.vix is None or regime.spy_distance_below_ma200 is None:
+            return False
+        if regime.vix >= self.cfg.bull_regime_vix_max:
+            return False
+        # spy_distance_below_ma200 > 0 means SPY is BELOW MA200 (per the
+        # field's docstring at line 62 of this file).
+        if regime.spy_distance_below_ma200 > 0:
+            return False
+        return True
+
     def get_dynamic_delta_range(self) -> tuple[float, float]:
         """
         Get the current delta range based on VIX level and SPY trend regime.
+
+        BULL REGIME override (VIX<bull_regime_vix_max AND SPY>MA200):
+          Returns the bull-regime delta band (default 0.30-0.45) to fight the
+          bull-regime yield ceiling — premium per trade is structurally tiny
+          in low-IV uptrends so we trade some assignment risk for fatter
+          premium. Takes priority over the VIX-tier ladder below.
 
         VIX tiers (baseline):
           VIX < 20  → 0.20-0.30 (normal, standard wheel)
@@ -1170,14 +1212,14 @@ class RiskManager:
         TREND_BEARISH override (SPY MA10 < MA20):
           Forces minimum high-VIX range regardless of actual VIX.
           If also VIX > 25: forces tightest range (0.08-0.15).
-
-        Rationale: in a trending bear market, strikes that look safe at
-        neutral-market delta levels are not safe. Wider OTM distance
-        compensates for directional risk that VIX alone does not capture.
         """
         strat_cfg = get_settings().strategy
         if not strat_cfg.dynamic_delta_enabled:
             return (strat_cfg.delta_min, strat_cfg.delta_max)
+
+        # Bull-regime override comes first — supersedes the VIX-tier ladder.
+        if self.in_bull_regime():
+            return (self.cfg.bull_regime_delta_min, self.cfg.bull_regime_delta_max)
 
         regime = self.get_regime()
         vix = regime.vix
