@@ -153,6 +153,18 @@ class Params:
     intraday_loss_halt_floor: float = 50_000.0   # absolute $ floor on the halt threshold
     daily_cb_pct: float = 0.05               # daily NLV drop > 5% → full halt
     daily_cb_halt_days: int = 5              # halt persists for N trading days after trigger
+    # Bear-market gate. Four modes (compared in the engine's candidate / qty_mult
+    # paths): "off" = no gate, "halve_contracts" = halve total contracts when SPY
+    # < MA200, "cap_multiplier" = cap iv_rank_size multiplier at N when SPY <
+    # MA200, "per_name_ma200" (DEFAULT) = skip puts on any symbol whose OWN price
+    # is below its 200d SMA. Backtests show "per_name_ma200" beats all alternatives:
+    # bear_2022 -49% → -31% AND bulls improve slightly (skips individually-broken
+    # names that would otherwise assign). Requires 200d of pre-regime warmup bars
+    # per symbol — loaded via _pre:<sym> keys from the data layer.
+    bear_market_ma200_enabled: bool = True
+    bear_market_size_multiplier: float = 0.5
+    bear_market_gate_mode: str = "per_name_ma200"   # off | halve_contracts | cap_multiplier | per_name_ma200
+    bear_market_cap_multiplier_value: int = 2       # used when mode = cap_multiplier
 
 
 class _CfgShim:
@@ -268,10 +280,15 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     put_cfg = _CfgShim(cfg, params.put_min_premium) if params.put_min_premium > 0 else cfg
     cc_cfg = _CfgShim(cfg, params.cc_min_premium) if params.cc_min_premium > 0 else cfg
 
-    # Per-symbol lookup + unified trading-date axis
+    # Per-symbol lookup + unified trading-date axis. Skip _pre:<sym> warmup keys —
+    # those carry pre-regime bars consumed only by the per-name MA200 builder below
+    # and MUST NOT enter the date loop, lut, or iv_rank_lut (they would corrupt the
+    # regime axis and IV-rank baseline).
     lut: dict[str, dict] = {}
     all_dates: set[date] = set()
     for sym, bars in market.items():
+        if sym.startswith("_pre:"):
+            continue
         lut[sym] = {b[0]: (b[1], b[2]) for b in bars}
         all_dates.update(b[0] for b in bars)
     dates = sorted(all_dates)
@@ -296,10 +313,40 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     prev_nlv = start_cap  # cap base for next day's deployment (NLV is marked end-of-day)
     n_halt_days = 0
 
+    # Per-symbol MA200 (for the per_name_ma200 gate mode). Concatenates _pre:<sym>
+    # warmup bars (loaded separately by the data layer) with in-regime bars so MA200
+    # is hot from day 1 of the regime. Fails-open if a symbol still lacks 200 bars.
+    # Test harnesses can inject a pre-built MA200 dict via module attribute
+    # `_injected_per_name_ma200` (used by offline experiments).
+    per_name_ma200: dict[str, dict] = {}
+    if getattr(params, "bear_market_gate_mode", "off") == "per_name_ma200":
+        injected = globals().get("_injected_per_name_ma200")
+        if injected:
+            per_name_ma200 = injected
+        else:
+            for sym in universe:
+                pre_bars = market.get(f"_pre:{sym}", [])
+                in_bars = market.get(sym, [])
+                # Combine pre-regime + in-regime closes, dedupe by date, sort.
+                merged: dict = {}
+                for b in pre_bars:
+                    merged[b[0]] = b[1]
+                for b in in_bars:
+                    merged[b[0]] = b[1]
+                if len(merged) < 200:
+                    continue
+                bars_sorted = sorted(merged.items())
+                sym_dates = [d for d, _ in bars_sorted]
+                sym_closes = [c for _, c in bars_sorted]
+                sym_ma = {}
+                for i in range(200, len(sym_closes)):
+                    sym_ma[sym_dates[i]] = sum(sym_closes[i-200:i]) / 200
+                per_name_ma200[sym] = sym_ma
+
     # Per-symbol running IV min/max up to each date (for the IV-rank gate).
     iv_rank_lut: dict[str, dict] = {}
     for sym, bars in market.items():
-        if sym == "^VIX":
+        if sym == "^VIX" or sym.startswith("_pre:"):
             continue
         rmin = rmax = None
         per_date = {}
@@ -325,7 +372,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     ret_lut: dict[str, dict] = {}
     ret_dates: dict[str, list] = {}
     for sym, bars in market.items():
-        if sym == "^VIX":
+        if sym == "^VIX" or sym.startswith("_pre:"):
             continue
         series, order, prev_c = {}, [], None
         for (bd, c, _iv) in bars:
@@ -364,6 +411,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     spy_closes = {b[0]: b[1] for b in spy_bars}
     spy_dates = sorted(spy_closes.keys())
     spy_ma50: dict = {}
+    spy_ma200: dict = {}
     spy_ma_fast: dict = {}
     spy_ma_slow: dict = {}
     if spy_dates:
@@ -371,6 +419,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         for i, bd in enumerate(spy_dates):
             if i >= 50:
                 spy_ma50[bd] = sum(closes_in_order[i-50:i]) / 50
+            if i >= 200:
+                spy_ma200[bd] = sum(closes_in_order[i-200:i]) / 200
             if i >= params.spy_ma_fast:
                 spy_ma_fast[bd] = sum(closes_in_order[i-params.spy_ma_fast:i]) / params.spy_ma_fast
             if i >= params.spy_ma_slow:
@@ -386,6 +436,15 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         mf, ms = spy_ma_fast.get(d), spy_ma_slow.get(d)
         bearish = bool(mf is not None and ms is not None and mf < ms)
         return dist, bearish
+
+    def _below_ma200(d) -> bool:
+        """True iff SPY is trading below its 200d SMA on date d.
+        False (fail-open) when MA200 not yet available (early in a regime)."""
+        spot = spy_closes.get(d)
+        ma200 = spy_ma200.get(d)
+        if not spot or not ma200 or ma200 <= 0:
+            return False
+        return spot < ma200
 
     # Daily-circuit-breaker countdown: when triggered, halt new puts for N days.
     cb_halt_remaining = 0
@@ -585,6 +644,13 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 if corr_on and held:                  # correlation gate (avoid stacking)
                     if avg_corr(sym, held, d, rcfg.correlation_lookback_days) > rcfg.max_correlation:
                         continue
+                # Bear-market gate mode B: per_name_ma200 — skip if THIS name is below its
+                # own 200d SMA, regardless of SPY's trend. Targets single-name death spirals.
+                if (params.bear_market_ma200_enabled
+                        and params.bear_market_gate_mode == "per_name_ma200"):
+                    sym_ma = per_name_ma200.get(sym, {}).get(d)
+                    if sym_ma is not None and spot < sym_ma:
+                        continue
                 chain = [sc for sc in pricing.build_contracts(spot, d, params.dte_max + 7)
                          if params.dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= params.dte_max]
                 score_iv = pricing.effective_iv(iv, (params.dte_min + params.dte_max) // 2,
@@ -601,14 +667,25 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     break
                 # iv_rank_sizing (settings.strategy.iv_rank_sizing_enabled): scale
                 # contracts up when IV-rank is elevated. Cap with max_multiplier.
+                # Mode A (cap_multiplier): tighten the cap when SPY < MA200 so IV-rank
+                # over-sizing doesn't compound bear-regime assignment risk.
+                ivr_cap = max(1, getattr(cfg, "iv_rank_size_max_multiplier", 1))
+                if (params.bear_market_ma200_enabled
+                        and params.bear_market_gate_mode == "cap_multiplier"
+                        and _below_ma200(d)):
+                    ivr_cap = min(ivr_cap, params.bear_market_cap_multiplier_value)
                 qty_mult = 1
                 if getattr(cfg, "iv_rank_sizing_enabled", False) and ivr is not None:
-                    cap = max(1, getattr(cfg, "iv_rank_size_max_multiplier", 1))
                     if ivr >= getattr(cfg, "iv_rank_size_high", 70):
-                        qty_mult = min(3, cap)
+                        qty_mult = min(3, ivr_cap)
                     elif ivr >= getattr(cfg, "iv_rank_size_mid", 50):
-                        qty_mult = min(2, cap)
+                        qty_mult = min(2, ivr_cap)
                 contracts = params.contracts * qty_mult
+                # Mode C (halve_contracts): halve total contracts when SPY < MA200.
+                if (params.bear_market_ma200_enabled
+                        and params.bear_market_gate_mode == "halve_contracts"
+                        and _below_ma200(d)):
+                    contracts = max(1, int(round(contracts * params.bear_market_size_multiplier)))
                 reserved = sum(p["strike"] * 100 * p["qty"] for p in short_puts)
                 need = top.strike * 100 * contracts
                 if params.margin_on:

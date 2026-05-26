@@ -60,7 +60,7 @@ class StrategyConfig(BaseModel):
     }
     # IV Rank
     iv_rank_enabled: bool = True
-    iv_rank_min: int = 30
+    iv_rank_min: int = 10
     iv_lookback_days: int = 252
     # Dynamic delta
     dynamic_delta_enabled: bool = True
@@ -108,7 +108,7 @@ class StrategyConfig(BaseModel):
     iv_rank_sizing_enabled: bool = True
     iv_rank_size_mid: int = 50
     iv_rank_size_high: int = 70
-    iv_rank_size_max_multiplier: int = 2   # conservative cap (raise to 3 to allow 3x)
+    iv_rank_size_max_multiplier: int = 5   # aggressive cap (son-mode at scale)
     # #4 Weekend/holiday theta capture: small additive score bonus for contracts
     # that span non-trading (weekend) days — rewards capturing decay without
     # market exposure. weight 0 disables. Revert: weekend_theta_enabled = false.
@@ -134,14 +134,14 @@ class RiskConfig(BaseModel):
     max_sector_pct: float = 0.30
     max_single_stock_pct: float = 0.05
     max_buying_power_usage: float = 0.60
-    max_margin_usage: float = 0.80        # block new trades when margin > 80% of NLV
+    max_margin_usage: float = 0.60        # block new trades when margin > 60% of NLV (son-mode hard ceiling)
     min_cash_reserve: float = 10000.0
     # Scaling safeguards ($5M+)
-    position_dollar_pct: float = 0.01        # per-position cap as % of NLV
-    max_position_dollars: float = 150000.0   # hard ceiling per position
+    position_dollar_pct: float = 0.05        # per-position cap as % of NLV (son-mode)
+    max_position_dollars: float = 500000.0   # hard ceiling per position
     min_position_dollars: float = 25000.0    # floor — small accounts unaffected below this
     total_exposure_pct: float = 0.20         # total open collateral cap as % of NLV
-    max_total_exposure: float = 2000000.0    # hard ceiling total open collateral
+    max_total_exposure: float = 20000000.0   # hard ceiling — margin-cap is now the binding constraint
     daily_deployment_pct: float = 0.03       # max new collateral per day as % of NLV
     max_daily_deployment: float = 500000.0   # hard ceiling new collateral per day
     intraday_loss_halt_pct: float = 0.025    # halt if unrealized loss > 2.5% of NLV (Option C: max of pct or floor)
@@ -164,6 +164,18 @@ class RiskConfig(BaseModel):
     # SPY MA50 regime clamp (prevents de-escalation while trend is broken)
     spy_ma50_clamp_mid_pct: float = 0.0     # SPY below MA50 by this -> clamp tier >= mid
     spy_ma50_clamp_high_pct: float = 0.03   # SPY below MA50 by 3%+ -> clamp tier >= high
+    # SPY MA200 bear-market size gate — halves per-trade contracts when SPY trades
+    # below its 200d SMA. Targets slow-grind bears (e.g. 2022) that the MA10/MA20
+    # candidate-halver doesn't dampen enough on its own. Triggers very rarely in
+    # bull markets (SPY > MA200 ~99% of bull days) so calm regimes are untouched.
+    bear_market_ma200_enabled: bool = True
+    bear_market_size_multiplier: float = 0.5
+    # Per-name MA200 gate — skip writing puts on any symbol trading below its OWN
+    # 200d SMA, even if SPY is fine. MarsWalk backtests across 11 regimes show this
+    # beats SPY-MA200: bear_2022 -49% → -31%, bulls slightly improve too (skips
+    # individually-broken names that would have assigned). Daily-cached per
+    # symbol (1 IBKR call/sym/day). Fails open if data unavailable.
+    per_name_ma200_enabled: bool = True
     # Drawdown-based daily position sizing (scales max_daily_positions)
     drawdown_lookback_days: int = 5
     drawdown_threshold_light: float = 0.02   # drawdown > this -> 75% of base cap

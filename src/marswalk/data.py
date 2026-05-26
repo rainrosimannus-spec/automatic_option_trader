@@ -31,8 +31,14 @@ def has_data(regime_id: str, symbol: str) -> bool:
 
 
 def load_market(regime, universe):
-    """{symbol: [(date, close, iv), ...]} from cache, symbols with >=5 bars."""
+    """{symbol: [(date, close, iv), ...]} from cache, symbols with >=5 bars.
+
+    Also loads pre-regime warmup bars under key `_pre:<sym>` (regime_id = f"{reg}_pre")
+    so the engine's per-name MA200 builder has 200+ days of history on day 1.
+    Pre-bars carry close only (iv=0) and never enter the date loop / iv_rank_lut.
+    """
     out = {}
+    pre_regime_id = f"{regime.id}_pre"
     with get_mw_db() as db:
         for sym in universe:
             rows = (db.query(MarketBar)
@@ -41,6 +47,13 @@ def load_market(regime, universe):
             bars = [(_pdate(r.date), r.close, r.iv) for r in rows if r.close and r.iv]
             if len(bars) >= 5:
                 out[sym] = bars
+            # Pre-regime warmup bars (close only) — used by per-name MA200 builder.
+            prerows = (db.query(MarketBar)
+                       .filter_by(regime_id=pre_regime_id, symbol=sym)
+                       .order_by(MarketBar.date).all())
+            prebars = [(_pdate(r.date), r.close, 0.0) for r in prerows if r.close]
+            if prebars:
+                out[f"_pre:{sym}"] = prebars
         # VIX series (close only; iv stored 0) for the engine's halt gate.
         vrows = (db.query(MarketBar)
                  .filter_by(regime_id=regime.id, symbol="^VIX")
@@ -63,14 +76,15 @@ def fetch_spy_yahoo(regime, force: bool = False):
 
     Used to seed ^SPY for backtest regimes when the live IBKR fetch path isn't
     available (e.g. backtesting from a fresh checkout). Fetches a window
-    starting 80 calendar days before the regime so the 50d SMA is warm on day 1.
-    Idempotent: skips if SPY already cached for the regime (unless force).
+    starting 300 calendar days before the regime so MA200 (200 trading days)
+    is warm on day 1 — also covers the 50d SMA. Idempotent: skips if SPY is
+    already cached for the regime (unless force).
     """
     import urllib.request, json
     from datetime import timedelta
     if not force and has_data(regime.id, "^SPY"):
         return
-    start = _pdate(regime.start) - timedelta(days=80)
+    start = _pdate(regime.start) - timedelta(days=300)
     end = _pdate(regime.end) + timedelta(days=1)
     p1 = int(datetime.combine(start, datetime.min.time()).timestamp())
     p2 = int(datetime.combine(end, datetime.min.time()).timestamp())
@@ -102,16 +116,24 @@ def fetch_symbols_yahoo(regime, symbols: list[str], force: bool = False):
     Stores daily close + a realized-vol IV proxy (20-day trailing std of
     log-returns × sqrt(252)) so the engine's pricing model has reasonable
     vol input when IBKR data isn't available. Idempotent per (regime, symbol).
+
+    Also stores ~280 calendar days of PRE-REGIME warmup bars under
+    regime_id=f"{regime.id}_pre" so the engine's per-name MA200 gate is hot on
+    day 1 of the regime. Pre-bars carry close only (no IV); the engine reads
+    them via load_market under key `_pre:<sym>` for MA200 computation.
     """
     import urllib.request, json, math
     from datetime import timedelta
-    start = _pdate(regime.start) - timedelta(days=80)  # 80d warm-up for realized-vol
+    start = _pdate(regime.start) - timedelta(days=430)  # ~300 trading days warmup so MA200 is hot on day 1
     end = _pdate(regime.end) + timedelta(days=1)
     p1 = int(datetime.combine(start, datetime.min.time()).timestamp())
     p2 = int(datetime.combine(end, datetime.min.time()).timestamp())
+    pre_regime_id = f"{regime.id}_pre"
 
     for sym in symbols:
-        if not force and has_data(regime.id, sym):
+        # Skip only if BOTH in-regime AND pre-regime warmup are cached. Auto-heals
+        # older regimes that have in-regime bars but no pre-warmup (mode B needs it).
+        if not force and has_data(regime.id, sym) and has_data(pre_regime_id, sym):
             continue
         url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
                f"?period1={p1}&period2={p2}&interval=1d")
@@ -137,12 +159,19 @@ def fetch_symbols_yahoo(regime, symbols: list[str], force: bool = False):
                 continue
             # Trailing 20-day realized vol -> IV proxy (decimal, annualized).
             iv_window = 20
-            rows = []
+            rows = []          # in-regime bars (with IV)
+            pre_rows = []      # pre-regime bars (close only — for MA200 warmup)
             regime_start = _pdate(regime.start)
             regime_end = _pdate(regime.end)
-            for i in range(iv_window, len(day_closes)):
-                d, c = day_closes[i]
-                if d < regime_start or d > regime_end:
+            for i, (d, c) in enumerate(day_closes):
+                if d > regime_end:
+                    continue
+                if d < regime_start:
+                    # Pre-regime bars: close-only, no IV needed (used for MA200 warmup).
+                    pre_rows.append((d.strftime("%Y-%m-%d"), c, 0.0))
+                    continue
+                # In-regime: compute realized-vol IV proxy from trailing 20 bars.
+                if i < iv_window:
                     continue
                 rets = []
                 for j in range(i - iv_window, i):
@@ -160,6 +189,8 @@ def fetch_symbols_yahoo(regime, symbols: list[str], force: bool = False):
                 rows.append((d.strftime("%Y-%m-%d"), c, iv))
             if rows:
                 _store(regime.id, sym, rows)
+            if pre_rows:
+                _store(pre_regime_id, sym, pre_rows)
         except Exception as e:
             log.warning("marswalk_yahoo_failed", regime=regime.id, symbol=sym, error=str(e))
 
@@ -200,15 +231,21 @@ def fetch_and_cache(regime, universe, force: bool = False):
     ib = get_portfolio_ib()
 
     start, end = _pdate(regime.start), _pdate(regime.end)
+    # Extend the window 280 cal days before regime.start so per-name MA200 has
+    # warmup. Pre-regime bars are stored separately (regime_id=f"{reg.id}_pre").
+    from datetime import timedelta as _td
+    pre_start = start - _td(days=430)
+    pre_regime_id = f"{regime.id}_pre"
     # IBKR rejects durationStr > 365 D for daily bars (this is why the full-year
     # 2021 regime fetched nothing). Use years for long windows.
-    _dur_days = (end - start).days + 10
+    _dur_days = (end - pre_start).days + 10
     duration = f"{_dur_days // 365 + 1} Y" if _dur_days > 365 else f"{_dur_days} D"
     # datetime object (not pre-formatted string) — ib_insync formats it per API version.
     end_dt = datetime.combine(end, datetime.min.time()).replace(hour=23, minute=59, second=59)
 
     for sym in universe:
-        if not force and has_data(regime.id, sym):
+        # Skip only if BOTH in-regime AND pre-warmup are cached (auto-heals older regimes).
+        if not force and has_data(regime.id, sym) and has_data(pre_regime_id, sym):
             continue
         try:
             c = Stock(sym, "SMART", "USD")
@@ -231,18 +268,25 @@ def fetch_and_cache(regime, universe, force: bool = False):
             for b in iv_bars:
                 if b.close and b.close > 0:
                     iv_by[_pdate(b.date).strftime("%Y-%m-%d")] = float(b.close)
-            rows = []
+            rows = []       # in-regime bars (close + IV)
+            pre_rows = []   # pre-regime bars (close only, for per-name MA200 warmup)
             for b in price_bars:
                 d = _pdate(b.date)
-                if d < start or d > end or not b.close:
+                if not b.close or d > end:
                     continue
                 ds = d.strftime("%Y-%m-%d")
+                if d < start:
+                    pre_rows.append((ds, float(b.close), 0.0))
+                    continue
                 iv = iv_by.get(ds)
                 if not iv:
                     continue
                 rows.append((ds, float(b.close), iv))
             _store(regime.id, sym, rows)
-            log.info("marswalk_data_cached", regime=regime.id, symbol=sym, bars=len(rows))
+            if pre_rows:
+                _store(pre_regime_id, sym, pre_rows)
+            log.info("marswalk_data_cached", regime=regime.id, symbol=sym,
+                     bars=len(rows), pre_bars=len(pre_rows))
         except Exception as e:
             log.warning("marswalk_fetch_failed", regime=regime.id, symbol=sym, error=str(e))
 

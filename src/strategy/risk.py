@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, date
 
-from src.broker.market_data import get_vix, get_stock_price, get_spy_moving_averages, get_iv_rank, has_upcoming_earnings
+from src.broker.market_data import get_vix, get_stock_price, get_spy_moving_averages, get_iv_rank, has_upcoming_earnings, get_stock_ma200
 from src.broker.account import get_account_summary, get_portfolio_positions
 from src.core.config import get_settings
 from src.core.database import get_db
@@ -57,6 +57,8 @@ class MarketRegime:
     spy_slow_ma: float | None = None
     spy_ma50: float | None = None                  # 50-day SMA (slower trend filter)
     spy_distance_below_ma50: float | None = None   # + when below MA50, - when above
+    spy_ma200: float | None = None                  # 200-day SMA (bear-market gate)
+    spy_distance_below_ma200: float | None = None   # + when below MA200, - when above
     spy_price: float | None = None
     eu_bullish: bool | None = None   # FEZ (Euro Stoxx 50 ETF)
     eu_price: float | None = None
@@ -74,6 +76,8 @@ class RiskManager:
         self._daily_count: int | None = None
         self._daily_count_date: date | None = None
         self._iv_rank_cache: dict[str, tuple[datetime, float | None]] = {}
+        # Per-name MA200 cache: (date_iso, is_below). One IBKR call/sym/day.
+        self._ma200_cache: dict[str, tuple[str, bool | None]] = {}
 
     # ── Market regime ───────────────────────────────────────
     def get_regime(self, force_refresh: bool = False) -> MarketRegime:
@@ -119,6 +123,8 @@ class RiskManager:
                     regime.spy_slow_ma = spy_data["slow_ma"]
                     regime.spy_ma50 = spy_data.get("ma50")
                     regime.spy_distance_below_ma50 = spy_data.get("distance_below_ma50")
+                    regime.spy_ma200 = spy_data.get("ma200")
+                    regime.spy_distance_below_ma200 = spy_data.get("distance_below_ma200")
                     regime.spy_price = spy_data["spy_price"]
             except Exception as e:
                 log.warning("spy_ma_fetch_error", error=str(e))
@@ -237,6 +243,8 @@ class RiskManager:
                 "spy_slow_ma": str(regime.spy_slow_ma) if regime.spy_slow_ma else "",
                 "spy_ma50": str(regime.spy_ma50) if regime.spy_ma50 else "",
                 "spy_distance_below_ma50": str(round(regime.spy_distance_below_ma50, 4)) if regime.spy_distance_below_ma50 is not None else "",
+                "spy_ma200": str(regime.spy_ma200) if regime.spy_ma200 else "",
+                "spy_distance_below_ma200": str(round(regime.spy_distance_below_ma200, 4)) if regime.spy_distance_below_ma200 is not None else "",
                 "spy_price": str(regime.spy_price) if regime.spy_price else "",
                 "eu_bullish": str(regime.eu_bullish).lower() if regime.eu_bullish is not None else "",
                 "eu_price": str(regime.eu_price) if regime.eu_price else "",
@@ -990,17 +998,88 @@ class RiskManager:
         """#3 Scale contracts up when premium is rich: 1x / 2x / 3x by IV-rank
         band, hard-capped by iv_rank_size_max_multiplier. 1x when disabled or
         IV-rank unknown. The per-position $ cap + whatif margin (live) and human
-        review (suggestion mode) remain the backstops on the resulting size."""
+        review (suggestion mode) remain the backstops on the resulting size.
+
+        MA200 gate: when SPY trades below its 200d SMA the final multiplier is
+        halved (configurable). This is the slow-grind-bear brake; it has near-
+        zero effect in bull markets where SPY stays above MA200.
+        """
         strat_cfg = get_settings().strategy
         if not strat_cfg.iv_rank_sizing_enabled or iv_rank is None:
-            return 1
-        if iv_rank >= strat_cfg.iv_rank_size_high:
-            mult = 3
+            base = 1
+        elif iv_rank >= strat_cfg.iv_rank_size_high:
+            base = 3
         elif iv_rank >= strat_cfg.iv_rank_size_mid:
-            mult = 2
+            base = 2
         else:
-            mult = 1
-        return max(1, min(mult, strat_cfg.iv_rank_size_max_multiplier))
+            base = 1
+        capped = max(1, min(base, strat_cfg.iv_rank_size_max_multiplier))
+        gated = int(round(capped * self._ma200_size_multiplier()))
+        return max(1, gated)
+
+    def _ma200_size_multiplier(self) -> float:
+        """Return 0.5 (or configured value) when SPY < MA200, else 1.0.
+        Fail-open if MA200 unavailable (e.g. outside US hours, no history yet)."""
+        if not self.cfg.bear_market_ma200_enabled:
+            return 1.0
+        try:
+            regime = self.get_regime()
+        except Exception:
+            return 1.0
+        dist = regime.spy_distance_below_ma200
+        if dist is None or dist <= 0:
+            return 1.0
+        log.info("ma200_size_gate_active",
+                 distance_below_ma200=round(dist, 4),
+                 multiplier=self.cfg.bear_market_size_multiplier)
+        return self.cfg.bear_market_size_multiplier
+
+    def is_below_ma200(self, symbol: str) -> bool | None:
+        """True iff the symbol is trading below its 200d SMA today.
+        Returns None on fail-open (data unavailable / not enough history).
+
+        Daily-cached: first call/sym/day pays the IBKR roundtrip, subsequent
+        calls reuse. Cache keyed by date string. Mirrors the MarsWalk per-name
+        MA200 gate (engine mode B), which backtests show beats SPY-MA200 across
+        all 11 regimes — bear_2022 -49% → -31%, bulls slightly improve.
+        """
+        if not self.cfg.per_name_ma200_enabled:
+            return None
+        today_iso = date.today().isoformat()
+        cached = self._ma200_cache.get(symbol)
+        if cached and cached[0] == today_iso:
+            return cached[1]
+        stock = self.universe.get_stock(symbol)
+        exchange = stock.exchange if stock else "SMART"
+        currency = stock.currency if stock else "USD"
+        try:
+            ma_data = get_stock_ma200(symbol, exchange=exchange, currency=currency)
+        except Exception as e:
+            log.warning("per_name_ma200_error", symbol=symbol, error=str(e))
+            self._ma200_cache[symbol] = (today_iso, None)
+            return None
+        if not ma_data:
+            self._ma200_cache[symbol] = (today_iso, None)
+            return None
+        is_below = bool(ma_data.get("is_below"))
+        self._ma200_cache[symbol] = (today_iso, is_below)
+        if is_below:
+            log.info("per_name_ma200_below",
+                     symbol=symbol,
+                     price=ma_data.get("price"),
+                     ma200=ma_data.get("ma200"),
+                     distance_below=ma_data.get("distance_below_ma200"))
+        return is_below
+
+    def check_per_name_ma200(self, symbol: str) -> RiskCheck:
+        """Block writing a put on `symbol` if it trades below its own 200d SMA.
+        Fail-open on data unavailability. Mirrors MarsWalk engine mode B."""
+        if not self.cfg.per_name_ma200_enabled:
+            return RiskCheck(True)
+        below = self.is_below_ma200(symbol)
+        if below is True:
+            return RiskCheck(False, f"{symbol} below its 200d SMA — bear-name gate")
+        return RiskCheck(True)
 
     def check_earnings(self, symbol: str) -> RiskCheck:
         """Block puts on stocks with imminent earnings."""
@@ -1140,22 +1219,20 @@ class RiskManager:
     # ── Scaling safeguards ─────────────────────────────────
     def check_total_exposure(self) -> RiskCheck:
         """
-        Block if total open collateral across all positions exceeds cap.
-        Cap = min(NLV × total_exposure_pct, max_total_exposure).
-        Skipped on small accounts where cap would be below $100K.
-        Estimated margin = stock price × 100 per open put position.
+        Collateral cap is disabled (son-mode). The margin-usage gate
+        (max_margin_usage) is now the binding aggregate constraint; this
+        method remains as a no-op so legacy callers keep working.
         """
+        return RiskCheck(True)
+
+    def _check_total_exposure_legacy(self) -> RiskCheck:
+        """Original % NLV cap — retained for reference only (not called)."""
         try:
             summary = get_account_summary()
             net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
         except Exception:
             return RiskCheck(True)
 
-        # NLV-gated ramp: the collateral cap % grows with account size so extra
-        # capital diversifies across more names rather than stacking. Lifted to
-        # 20% <$2M, 30% $2-4M, 40% >=$4M (was 25/30) so the big-account return
-        # isn't dragged below T-bills. <$2M tier unchanged — small accounts run
-        # on the <$100K exemption below regardless. RULES: structural, not a flip.
         base_pct = self.cfg.total_exposure_pct
         if net_liq >= 4_000_000:
             eff_pct = max(0.40, base_pct)
@@ -1165,7 +1242,7 @@ class RiskManager:
             eff_pct = base_pct
         exposure_cap = min(net_liq * eff_pct, self.cfg.max_total_exposure)
         if exposure_cap < 100_000:
-            return RiskCheck(True)  # small account — skip
+            return RiskCheck(True)
 
         with get_db() as db:
             open_puts = (
@@ -1317,6 +1394,7 @@ class RiskManager:
             self.check_buying_power(),
             self.check_earnings(symbol),
             self.check_iv_rank(symbol),
+            self.check_per_name_ma200(symbol),
         ]
         for check in checks:
             if not check.allowed:
