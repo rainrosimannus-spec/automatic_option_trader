@@ -41,8 +41,25 @@ def marswalk_page(request: Request):
                     }
             is_forward = str(reg.start) > today
             has_analog = is_forward and reg.historical_analog is not None
-            cards.append({"regime": reg, "run": run, "chart": chart,
-                          "is_forward": is_forward, "has_analog": has_analog})
+            # Annualize the realized return. Use the EFFECTIVE window (analog
+            # dates when applicable), since the run was simulated against that
+            # data. Target is always TARGET_ANNUAL=24%/yr in the engine.
+            eff_start, eff_end, _ = reg.effective_window(today)
+            try:
+                from datetime import date as _date
+                days = max(1, (_date.fromisoformat(eff_end) - _date.fromisoformat(eff_start)).days)
+            except Exception:
+                days = 365
+            final_annual_pct = None
+            if run and run.final_return_pct is not None and days > 0:
+                final_annual_pct = ((1 + run.final_return_pct / 100.0) ** (365.0 / days) - 1) * 100.0
+            cards.append({
+                "regime": reg, "run": run, "chart": chart,
+                "is_forward": is_forward, "has_analog": has_analog,
+                "days": days,
+                "final_annual_pct": final_annual_pct,
+                "target_annual_pct": 24.0,   # TARGET_ANNUAL in engine.py
+            })
 
     # "Run now as it is" — defaults mirror the LIVE aggressive son-mode config
     # we committed in c522a8e + hybrid wheel 63d8ed8. Read from the Pydantic

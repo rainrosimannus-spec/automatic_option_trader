@@ -195,10 +195,14 @@
       </div>
       {% if c.run %}
       <div class="text-right">
-        <div class="text-base font-semibold {% if c.run.final_return_pct >= c.run.target_return_pct %}text-emerald-400{% elif c.run.final_return_pct >= 0 %}text-amber-300{% else %}text-red-400{% endif %}">
-          {{ '%+.1f'|format(c.run.final_return_pct) }}%
+        <div class="text-base font-semibold {% if c.final_annual_pct is not none and c.final_annual_pct >= c.target_annual_pct %}text-emerald-400{% elif c.final_annual_pct is not none and c.final_annual_pct >= 0 %}text-amber-300{% else %}text-red-400{% endif %}"
+             title="Raw return over window: {{ '%+.1f'|format(c.run.final_return_pct) }}% in {{ c.days }}d">
+          {% if c.final_annual_pct is not none %}{{ '%+.1f'|format(c.final_annual_pct) }}%/yr{% else %}—{% endif %}
         </div>
-        <div class="text-[10px] text-gray-500">vs {{ '%+.1f'|format(c.run.target_return_pct) }}% target</div>
+        <div class="text-[10px] text-gray-500">
+          vs {{ '%+.0f'|format(c.target_annual_pct) }}%/yr target
+          <span class="text-gray-600">· raw {{ '%+.1f'|format(c.run.final_return_pct) }}% / {{ c.days }}d</span>
+        </div>
       </div>
       {% endif %}
     </div>
