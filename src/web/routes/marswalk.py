@@ -34,10 +34,18 @@ def marswalk_page(request: Request):
                 pts = (db.query(Point).filter_by(run_id=run.id)
                        .order_by(Point.date).all())
                 if pts:
+                    # Stored points include ~280d of pre-regime warmup (MA200
+                    # + IV-rank baseline) during which the engine doesn't
+                    # trade — that's why the chart had a long flat lead-in.
+                    # Filter to the effective regime window (analog for forward
+                    # scenarios, native otherwise).
+                    eff_s, eff_e, _ = reg.effective_window(today)
+                    in_window = [p for p in pts if eff_s <= p.date <= eff_e]
+                    pts_to_show = in_window if in_window else pts
                     chart = {
-                        "labels": [p.date for p in pts],
-                        "actual": [p.return_pct for p in pts],
-                        "target": [p.target_pct for p in pts],
+                        "labels": [p.date for p in pts_to_show],
+                        "actual": [p.return_pct for p in pts_to_show],
+                        "target": [p.target_pct for p in pts_to_show],
                     }
             is_forward = str(reg.start) > today
             has_analog = is_forward and reg.historical_analog is not None
@@ -92,8 +100,8 @@ def marswalk_page(request: Request):
         # Account & deployment knobs — large-account stress test ($4M).
         "start_nlv": default_nlv,
         "collateral_cap_pct": ramp_cap_pct,
-        # Calibrated 2026-05-26 against son's +22.5% live result on iran_war_2026.
-        "uplift_k": 4.95,
+        # Lowered 2026-05-26 from 4.95 -> 1.0 (see pricing.SHORT_DTE_K docstring).
+        "uplift_k": 1.0,
         "gap_stress_pct": 0,
         # Live trades with IBKR portfolio margin → on by default.
         "margin_on": True,
@@ -177,7 +185,7 @@ def marswalk_run(
     cc_min_premium: float = Form(0.0),
     # Test configuration
     start_nlv: float = Form(100000), collateral_cap_pct: float = Form(20),
-    uplift_k: float = Form(4.95), gap_stress_pct: float = Form(0),
+    uplift_k: float = Form(1.0), gap_stress_pct: float = Form(0),
     margin_on: str = Form(""), margin_multiple: float = Form(5.0),
     max_positions: int = Form(10),
     iv_rank_min: float = Form(20.0), vix_halt: float = Form(30.0),

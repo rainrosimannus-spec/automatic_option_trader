@@ -105,13 +105,18 @@ def _dte(expiry: str, today: date) -> int:
 # backtests near-zero otherwise. Below T0 days, scale IV up toward realistic
 # short-dated levels. TUNABLE — these are the knobs.
 SHORT_DTE_T0 = 7        # apply the uplift below this DTE
-# Calibrated 2026-05-26 against son's real options account (+22.5%, Feb-May
-# 2026) via the iran_war_2026 regime. Fine sweep showed:
-#   k=1.0 → +5.43%   k=4.0 → +16.42%   k=4.90 → +22.30%   k=4.95 → +22.54%   k=5.0 → +22.72%
-# k=4.95 lands closest to the +22.5% live anchor. With this k the other
-# regimes print magnitudes consistent with what a calibrated wheel actually
-# delivers (bears +3-11%, bulls +20-25%, crashes +2-8%).
-SHORT_DTE_K = 4.95      # max multiplicative uplift at 0 DTE (iv *= 1 + K)
+# Lowered 2026-05-26 from 4.95 -> 1.0 after the BSM-vs-market measurement
+# (commit 12341e0 / pricing_calibration_20260526.jsonl): the k=4.95 fit was
+# anchored to a single regime's outcome (iran_war +22.5% son's live) while
+# the gate stack was choked, so the value compensated for under-deployment
+# as well as pricing. With growth-mode (2e944cf) removing the deployment
+# choke, the empirical measurement showed BSM is within ~13% of real-market
+# mid for 0-7 DTE OTM puts on average — k=4.95 was multiplying that gap by
+# ~6x. k=1.0 means 2x IV at DTE=0, 1.57x at DTE=3, 1x at DTE=7: a moderate
+# acknowledgement of vol-smile + bid-floor amplification without the fudge.
+# MarsWalk magnitudes are now relative not absolute; anchor live P&L against
+# actual fills, not against backtested numbers.
+SHORT_DTE_K = 1.0       # max multiplicative uplift at 0 DTE (iv *= 1 + K)
 
 
 def effective_iv(iv: float, dte: int, k: float = SHORT_DTE_K) -> float:
