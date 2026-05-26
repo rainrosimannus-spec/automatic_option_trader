@@ -16,12 +16,19 @@ router = APIRouter()
 
 
 @router.get("/consigliere", response_class=HTMLResponse)
-def consigliere_page(request: Request):
+def consigliere_page(request: Request, category: str | None = None):
+    """List active memos. ?category=<cat> filters the active list (chips
+    in the header are click-to-filter); category counts always reflect the
+    whole active set so the chips stay informative regardless of filter."""
+    cat = (category or "").strip().lower() or None
     with get_db() as db:
-        # Active memos (new + read)
-        active = db.query(ConsigliereMemo).filter(
+        # Active memos (new + read), optionally filtered by category
+        q = db.query(ConsigliereMemo).filter(
             ConsigliereMemo.status.in_(["new", "read"])
-        ).order_by(
+        )
+        if cat:
+            q = q.filter(ConsigliereMemo.category == cat)
+        active = q.order_by(
             # critical/warning first, then by date
             ConsigliereMemo.severity.desc(),
             ConsigliereMemo.created_at.desc(),
@@ -38,7 +45,8 @@ def consigliere_page(request: Request):
             ConsigliereMemo.status == "new"
         ).count()
 
-        # Category breakdown
+        # Category breakdown — always over the full active set so chips
+        # don't collapse to a single category when filtered.
         from sqlalchemy import func
         category_counts = dict(
             db.query(ConsigliereMemo.category, func.count(ConsigliereMemo.id))
@@ -54,6 +62,7 @@ def consigliere_page(request: Request):
         "total_memos": total_memos,
         "new_count": new_count,
         "category_counts": category_counts,
+        "active_category": cat,
     })
 
 
@@ -67,6 +76,25 @@ def dismiss_memo(memo_id: int):
             memo.status = "dismissed"
             memo.dismissed_reason = "manually dismissed"
     return RedirectResponse(url="/consigliere", status_code=303)
+
+
+@router.post("/consigliere/read-all")
+def read_all_memos(category: str | None = None):
+    """Mark every NEW memo as read in one shot. If ?category=<cat> is set,
+    scope to that category — matching the active filter on the page so the
+    button does what the user just saw."""
+    cat = (category or "").strip().lower() or None
+    now = datetime.utcnow()
+    with get_db() as db:
+        q = db.query(ConsigliereMemo).filter(ConsigliereMemo.status == "new")
+        if cat:
+            q = q.filter(ConsigliereMemo.category == cat)
+        for memo in q.all():
+            memo.status = "read"
+            memo.read_at = now
+    # Preserve the active filter on the redirect target.
+    target = "/consigliere" + (f"?category={cat}" if cat else "")
+    return RedirectResponse(url=target, status_code=303)
 
 
 @router.post("/consigliere/acknowledge/{memo_id}")

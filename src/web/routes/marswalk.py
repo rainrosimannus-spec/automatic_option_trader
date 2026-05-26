@@ -88,7 +88,25 @@ def marswalk_page(request: Request):
         "universe": universe,
         "running": service.is_running(),
         "status": service.status(),
+        "is_rth": _is_us_rth_now(),
     })
+
+
+def _is_us_rth_now() -> bool:
+    """NYSE regular trading hours check (Mon–Fri 09:30–16:00 ET, naive — no
+    holiday/early-close detection). During RTH the live trader is hammering
+    IBKR; the marswalk fetch contends for the portfolio lock and stalls. We
+    flip to cached-only mode in that window."""
+    from datetime import time
+    try:
+        from zoneinfo import ZoneInfo
+    except Exception:
+        return False  # fail open — keep prior fetch=True behavior
+    from datetime import datetime as _dt
+    now_et = _dt.now(ZoneInfo("America/New_York"))
+    if now_et.weekday() >= 5:  # Sat=5, Sun=6
+        return False
+    return time(9, 30) <= now_et.time() <= time(16, 0)
 
 
 @router.post("/marswalk/run")
@@ -125,5 +143,9 @@ def marswalk_run(
         vix_halt=max(10.0, min(100.0, vix_halt)),
         max_margin_usage=max(0.05, min(2.0, max_margin_usage_pct / 100.0)),
     )
-    service.run_all_async(params, fetch=True)
+    # Auto-skip IBKR fetch during US RTH — the live trader saturates the
+    # portfolio lock and the marswalk fetch otherwise stalls (45s per call ×
+    # missing symbols). Off-hours, do the fresh fetch.
+    fetch = not _is_us_rth_now()
+    service.run_all_async(params, fetch=fetch)
     return RedirectResponse(url="/marswalk", status_code=303)

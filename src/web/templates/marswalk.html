@@ -153,6 +153,16 @@
       </button>
       {% if running %}
       <span class="text-xs text-amber-300">{{ status.msg }} — {{ status.done }}/{{ status.total }} regimes (auto-refresh)</span>
+      {% else %}
+        {% if is_rth %}
+        <span class="text-xs text-red-300/80" title="US regular trading hours: fetch=False to avoid IBKR contention; sweep uses cached bars only">
+          🔴 RTH — cached-only mode
+        </span>
+        {% else %}
+        <span class="text-xs text-emerald-400/70" title="Outside US RTH: sweep fetches any missing symbols from IBKR">
+          🟢 Off-hours — fresh fetch
+        </span>
+        {% endif %}
       {% endif %}
     </div>
   </form>

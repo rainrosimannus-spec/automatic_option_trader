@@ -28,27 +28,51 @@
     </div>
 </div>
 
-<!-- ═══ Category Summary ═══ -->
+<!-- ═══ Category Summary — click any chip to filter ═══ -->
 {% if category_counts %}
-<div class="flex flex-wrap gap-2 mb-6">
+<div class="flex flex-wrap items-center gap-2 mb-6">
+    <a href="/consigliere"
+       class="px-3 py-1.5 rounded-lg text-xs font-medium transition
+       {% if not active_category %}bg-gray-700 text-gray-100 border border-gray-500 ring-1 ring-gray-400/40
+       {% else %}bg-gray-900 text-gray-400 border border-gray-800 hover:bg-gray-800 hover:text-gray-200{% endif %}">
+        ALL · {{ category_counts.values() | sum }}
+    </a>
     {% for cat, count in category_counts.items() %}
-    <span class="px-3 py-1.5 rounded-lg text-xs font-medium
-        {% if cat == 'risk' %}bg-red-900/30 text-red-300 border border-red-800/50
-        {% elif cat == 'performance' %}bg-blue-900/30 text-blue-300 border border-blue-800/50
-        {% elif cat == 'strategy' %}bg-purple-900/30 text-purple-300 border border-purple-800/50
-        {% elif cat == 'portfolio' %}bg-emerald-900/30 text-emerald-300 border border-emerald-800/50
-        {% elif cat == 'missed' %}bg-amber-900/30 text-amber-300 border border-amber-800/50
-        {% elif cat == 'improvement' %}bg-cyan-900/30 text-cyan-300 border border-cyan-800/50
-        {% elif cat == 'market' %}bg-indigo-900/30 text-indigo-300 border border-indigo-800/50
-        {% else %}bg-gray-800 text-gray-400 border border-gray-700{% endif %}">
+    <a href="/consigliere?category={{ cat }}"
+       class="px-3 py-1.5 rounded-lg text-xs font-medium transition
+        {% if cat == 'risk' %}bg-red-900/30 text-red-300 border border-red-800/50 hover:bg-red-900/50
+        {% elif cat == 'performance' %}bg-blue-900/30 text-blue-300 border border-blue-800/50 hover:bg-blue-900/50
+        {% elif cat == 'strategy' %}bg-purple-900/30 text-purple-300 border border-purple-800/50 hover:bg-purple-900/50
+        {% elif cat == 'portfolio' %}bg-emerald-900/30 text-emerald-300 border border-emerald-800/50 hover:bg-emerald-900/50
+        {% elif cat == 'missed' %}bg-amber-900/30 text-amber-300 border border-amber-800/50 hover:bg-amber-900/50
+        {% elif cat == 'improvement' %}bg-cyan-900/30 text-cyan-300 border border-cyan-800/50 hover:bg-cyan-900/50
+        {% elif cat == 'market' %}bg-indigo-900/30 text-indigo-300 border border-indigo-800/50 hover:bg-indigo-900/50
+        {% else %}bg-gray-800 text-gray-400 border border-gray-700 hover:bg-gray-700{% endif %}
+        {% if active_category == cat %}ring-2 ring-offset-1 ring-offset-gray-950 ring-current{% endif %}">
         {{ cat | upper }} · {{ count }}
-    </span>
+    </a>
     {% endfor %}
 </div>
 {% endif %}
 
 <!-- ═══ Active Memos ═══ -->
 {% if active %}
+{# Read-All toolbar — counts the NEW memos in the current active list. #}
+{% set _new_in_active = active | selectattr('status', 'equalto', 'new') | list | length %}
+<div class="flex items-center justify-between mb-3">
+    <p class="text-xs text-gray-500">
+        {{ active | length }} active
+        {% if active_category %}<span class="text-gray-400">({{ active_category | upper }})</span>{% endif %}
+        {% if _new_in_active %}· <span class="text-amber-400">{{ _new_in_active }} unread</span>{% endif %}
+    </p>
+    {% if _new_in_active %}
+    <form method="post" action="/consigliere/read-all{% if active_category %}?category={{ active_category }}{% endif %}">
+        <button class="px-3 py-1 rounded-lg text-xs font-medium bg-gray-800 hover:bg-gray-700 text-gray-300 transition border border-gray-700">
+            👁 Read all{% if active_category %} {{ active_category | upper }}{% endif %}
+        </button>
+    </form>
+    {% endif %}
+</div>
 {% for memo in active %}
 <div class="bg-gray-900 border rounded-xl p-5 mb-4
     {% if memo.severity == 'critical' %}border-red-600/70
