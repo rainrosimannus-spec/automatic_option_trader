@@ -105,6 +105,12 @@ class Params:
     gap_stress: float = 0.0           # what-if: extra adverse mark on big down days
                                       # (>=5% drop) — models close understating an
                                       # intraday/overnight gap. 0 = off (historical).
+    # ── Margin model ──
+    margin_on: bool = False           # OFF (default) = cash-secured (notional<=NLV*cap).
+                                      # ON = portfolio-margin proxy: per-put margin
+                                      # requirement is notional/margin_multiple, so the
+                                      # cap admits notional up to NLV*cap*margin_multiple.
+    margin_multiple: float = 5.0      # IBKR portfolio-margin proxy (~5x typical OTM put)
 
 
 class _CfgShim:
@@ -328,7 +334,10 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         for sym, st in stocks.items():
             q = pv(sym, d)
             stock_value += st["shares"] * (q[0] if q else st["cost_basis"])
-        if prev_nlv > 0 and (put_collateral + stock_value) / prev_nlv > rcfg.max_margin_usage:
+        # When margin is ON, scale the live max_margin_usage cap by the margin multiple
+        # (the live cap presumes ~1x notional; portfolio margin allows ~5x).
+        margin_cap_factor = params.margin_multiple if params.margin_on else 1.0
+        if prev_nlv > 0 and (put_collateral + stock_value) / prev_nlv > rcfg.max_margin_usage * margin_cap_factor:
             halted = True
         if halted:
             n_halt_days += 1  # counts VIX- and margin-halted deployment days
@@ -374,10 +383,17 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     break
                 reserved = sum(p["strike"] * 100 * p["qty"] for p in short_puts)
                 need = top.strike * 100 * params.contracts
-                if cash - reserved < need:           # cash-secured
-                    continue
-                if reserved + need > exposure_cap:    # collateral cap (% of NLV)
-                    continue
+                if params.margin_on:
+                    # Margin mode: the % NLV cap admits notional up to NLV*cap*multiple
+                    # (per-put margin requirement = notional/multiple). No cash check —
+                    # debits are allowed against the margin line.
+                    if reserved + need > exposure_cap * params.margin_multiple:
+                        continue
+                else:
+                    if cash - reserved < need:           # cash-secured
+                        continue
+                    if reserved + need > exposure_cap:    # collateral cap (% of NLV)
+                        continue
                 # Sector cap: once the book is large enough to diversify (>=3 names),
                 # no sector may exceed max_sector_pct of committed put collateral.
                 if len(short_puts) >= 3:

@@ -47,7 +47,27 @@
           <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Gap stress %</div>
           {{ num('gap_stress_pct', defaults.gap_stress_pct, 1, 0, 50) }}
         </div>
+        <div>
+          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Margin</div>
+          <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+            <input id="margin_on" name="margin_on" type="checkbox" value="1"
+                   {% if defaults.margin_on %}checked{% endif %}
+                   onchange="document.getElementById('margin_multiple').disabled=!this.checked"
+                   class="sr-only peer">
+            <span class="w-9 h-5 bg-gray-700 peer-checked:bg-emerald-600 rounded-full relative transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-gray-200 after:rounded-full after:h-4 after:w-4 after:transition-transform peer-checked:after:translate-x-4"></span>
+            <span class="text-xs text-gray-300 peer-checked:text-emerald-300">ON</span>
+          </label>
+        </div>
+        <div>
+          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Margin ×</div>
+          {{ num('margin_multiple', defaults.margin_multiple, 0.5, 1, 10, 'w-14') }}
+        </div>
       </div>
+      <p class="text-[10px] text-gray-500 mt-2 leading-snug">
+        Margin OFF = cash-secured (notional ≤ NLV × cap, ≤1×). Margin ON = portfolio-margin
+        proxy: per-put requirement = notional ÷ multiple, so cap admits notional up to
+        NLV × cap × multiple (≈5× typical IBKR PM for OTM puts).
+      </p>
     </div>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
       <!-- Put selling -->
@@ -165,6 +185,12 @@
 </div>
 
 <script>
+// Init: disable margin_multiple input when margin is OFF.
+document.addEventListener('DOMContentLoaded', function () {
+  const t = document.getElementById('margin_on');
+  const m = document.getElementById('margin_multiple');
+  if (t && m) m.disabled = !t.checked;
+});
 // Stepper for the config inputs — iOS Safari shows no native number arrows.
 function mwStep(id, dir) {
   const el = document.getElementById(id);
