@@ -357,11 +357,62 @@ def load_earnings(universe):
     return out
 
 
+def fetch_vix_yahoo(regime, force: bool = False):
+    """Fetch ^VIX history for the effective regime window via Yahoo. Stored
+    under `regime.id` keyed `^VIX`, close-only (iv=0). Used by the engine's
+    halt gate. Pre-1993 VIX has no data — silent skip (fail-open at the gate)."""
+    import urllib.request, json
+    from datetime import timedelta
+    if not force and has_data(regime.id, "^VIX"):
+        return
+    eff_start, eff_end, _ = regime.effective_window()
+    if eff_start < "1993-01-01":
+        log.info("marswalk_vix_pre_1993", regime=regime.id, window=eff_start)
+        return
+    start = _pdate(eff_start) - timedelta(days=30)
+    end = _pdate(eff_end) + timedelta(days=1)
+    p1 = int(datetime.combine(start, datetime.min.time()).timestamp())
+    p2 = int(datetime.combine(end, datetime.min.time()).timestamp())
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX"
+           f"?period1={p1}&period2={p2}&interval=1d")
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        body = urllib.request.urlopen(req, timeout=20).read()
+        payload = json.loads(body)
+        result = payload["chart"]["result"][0]
+        ts = result["timestamp"]
+        closes = result["indicators"]["quote"][0]["close"]
+        rows = []
+        for t, c in zip(ts, closes):
+            if c is None:
+                continue
+            d = datetime.utcfromtimestamp(t).date()
+            rows.append((d.strftime("%Y-%m-%d"), float(c), 0.0))
+        if rows:
+            _store(regime.id, "^VIX", rows)
+            log.info("marswalk_vix_yahoo_cached", regime=regime.id, bars=len(rows))
+    except Exception as e:
+        log.warning("marswalk_vix_yahoo_failed", regime=regime.id, error=str(e))
+
+
 def ensure_market_data(regime, universe):
-    """Fetch symbols not cached for this regime (+ the VIX series + earnings dates)."""
+    """Fetch symbols not cached for this regime (+ VIX + earnings).
+
+    Forward-scenario regimes (those with `historical_analog`) fall through to
+    their analog window and use Yahoo for the historical data — this is
+    cheaper, RTH-safe (doesn't contend with the IBKR portfolio lock), and
+    reaches back further than IBKR's historical option chains."""
+    _, _, is_analog = regime.effective_window()
     missing = [s for s in universe if not has_data(regime.id, s)]
     if missing or not has_data(regime.id, "^VIX"):
-        log.info("marswalk_fetching", regime=regime.id, symbols=len(missing))
-        fetch_and_cache(regime, missing)  # also fetches ^VIX if absent
+        log.info("marswalk_fetching", regime=regime.id, symbols=len(missing),
+                 source=("yahoo" if is_analog else "ibkr"))
+        if is_analog:
+            # Yahoo path — no IBKR contention, RTH-safe.
+            if missing:
+                fetch_symbols_yahoo(regime, missing)
+            fetch_vix_yahoo(regime)
+        else:
+            fetch_and_cache(regime, missing)  # IBKR path — also fetches ^VIX
     if any(not has_data("_earnings", s) for s in universe):
-        fetch_earnings(universe)  # global earnings dates (once)
+        fetch_earnings(universe)  # FMP, regime-agnostic

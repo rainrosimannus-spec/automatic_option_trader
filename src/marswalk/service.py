@@ -52,7 +52,12 @@ def run_all_regimes(params: Params, fetch: bool = True):
         for reg in regimes:
             _state["msg"] = f"running {reg.id}"
             try:
-                if fetch:
+                # Forward-scenario regimes use Yahoo for their historical analog
+                # window — RTH-safe and free of IBKR contention. Always fetch
+                # them regardless of the global `fetch` flag (which controls
+                # the IBKR path).
+                _, _, is_analog = reg.effective_window()
+                if fetch or is_analog:
                     mw_data.ensure_market_data(reg, universe)
                 market = mw_data.load_market(reg, universe)
                 if not market:
