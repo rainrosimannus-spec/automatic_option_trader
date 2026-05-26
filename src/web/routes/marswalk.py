@@ -21,8 +21,10 @@ router = APIRouter()
 
 @router.get("/marswalk", response_class=HTMLResponse)
 def marswalk_page(request: Request):
+    import json
     universe, regimes = load_config()
     cards = []
+    last_params = None  # most recent Run's params_json (across all regimes)
     with get_mw_db() as db:
         for reg in regimes:
             run = (db.query(Run).filter_by(regime_id=reg.id)
@@ -38,11 +40,20 @@ def marswalk_page(request: Request):
                         "target": [p.target_pct for p in pts],
                     }
             cards.append({"regime": reg, "run": run, "chart": chart})
+        # Pull the single most-recent run across the whole table to recover the
+        # last submitted parameters, so the form persists what was just run
+        # instead of snapping back to settings.yaml defaults.
+        latest_run = db.query(Run).order_by(Run.created_at.desc()).first()
+        if latest_run and latest_run.params_json:
+            try:
+                last_params = json.loads(latest_run.params_json)
+            except Exception:
+                last_params = None
 
-    # Pre-fill with the LIVE system logic (settings.yaml strategy), so a backtest
-    # starts from "what the trader does today". Put DTE is VIX-tiered (no single
-    # value); the US low/mid-VIX tier is 0-3 (high-VIX halts), which matches the
-    # US large-cap backtest universe.
+    # Start from settings.yaml ("what the trader does today"), then overlay the
+    # most-recent run's params so the user can iterate. Put DTE is VIX-tiered
+    # in live; the US low/mid-VIX tier is 0-3 (high-VIX halts), which matches
+    # the US large-cap backtest universe.
     s = get_settings().strategy
     defaults = {
         "dte_min": 0,
@@ -63,7 +74,26 @@ def marswalk_page(request: Request):
         "margin_on": False,
         "margin_multiple": 5.0,
         "max_positions": 10,
+        # Risk gates exposed for testing — defaults match the live system so
+        # the backtest mirrors production unless the operator chooses to
+        # disable them for a stress run.
+        "iv_rank_min": 20,
+        "vix_halt": 30,
     }
+    if last_params:
+        for k, v in last_params.items():
+            if k in defaults and v is not None:
+                defaults[k] = v
+        # Re-derive the UI fields that aren't 1:1 with engine Params.
+        if "total_exposure_pct" in last_params and last_params["total_exposure_pct"]:
+            defaults["collateral_cap_pct"] = round(last_params["total_exposure_pct"] * 100, 2)
+        if "short_dte_uplift_k" in last_params:
+            defaults["uplift_k"] = last_params["short_dte_uplift_k"]
+        if "gap_stress" in last_params:
+            defaults["gap_stress_pct"] = round(last_params["gap_stress"] * 100, 2)
+        if "start_capital" in last_params:
+            defaults["start_nlv"] = last_params["start_capital"]
+
     return templates.TemplateResponse("marswalk.html", {
         "request": request,
         "cards": cards,
@@ -87,6 +117,7 @@ def marswalk_run(
     uplift_k: float = Form(1.0), gap_stress_pct: float = Form(0),
     margin_on: str = Form(""), margin_multiple: float = Form(5.0),
     max_positions: int = Form(10),
+    iv_rank_min: float = Form(20.0), vix_halt: float = Form(30.0),
 ):
     params = Params(
         dte_min=max(0, dte_min), dte_max=max(dte_min, dte_max),
@@ -102,6 +133,8 @@ def marswalk_run(
         margin_on=bool(margin_on),
         margin_multiple=max(1.0, min(10.0, margin_multiple)),
         max_positions=max(1, min(200, max_positions)),
+        iv_rank_min=max(0.0, min(100.0, iv_rank_min)),
+        vix_halt=max(10.0, min(100.0, vix_halt)),
     )
     service.run_all_async(params, fetch=True)
     return RedirectResponse(url="/marswalk", status_code=303)
