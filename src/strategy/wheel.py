@@ -490,7 +490,20 @@ class WheelManager:
         from src.core.config import get_settings as _gs
         risk_cfg = _gs().risk
         interest_surcharge = 0.0
-        if current_price and cost_basis and current_price < cost_basis * 0.95:
+        # Hybrid wheel: assigned stock above its own MA200 → patient OTM CCs
+        # (Strategy B). Below its own MA200 → exit-velocity band + interest
+        # surcharge (Strategy A). MarsWalk 13-regime backtest: B wins 11/13
+        # (bulls, V-shapes, chop, reflation) by ~$25.9k combined; A wins the
+        # 2 sustained bears (bear_2022, ai_crash) by ~$8.5k combined. Gating
+        # A on per-name MA200 captures both edges. is_below_ma200 fails open
+        # to None → treated as healthy (patient) — the per-name MA200 entry
+        # gate already pre-screens distressed names, so this default is safe.
+        below_ma200 = (
+            bool(self.risk.is_below_ma200(symbol))
+            if stock_pos.wheel_exit_mode else False
+        )
+        in_rescue = bool(current_price and cost_basis and current_price < cost_basis * 0.95)
+        if in_rescue:
             # Rescue mode: stock 5%+ below cost basis. Overrides BOTH normal and
             # exit-mode branches because assignments default to exit_mode=True,
             # which would otherwise gate this branch out. Strike floor
@@ -499,8 +512,10 @@ class WheelManager:
             # definition (e.g. $25.50 strike on $20.49 stock has delta ~0.15),
             # so widen the floor to find any candidate above cost basis.
             cc_delta_min, cc_delta_max = 0.05, 0.35
-        elif stock_pos.wheel_exit_mode:
-            # Days held since assignment (opened_at is assignment time for wheel positions)
+        elif stock_pos.wheel_exit_mode and below_ma200:
+            # Distressed-exit branch (Strategy A): wider delta band + interest
+            # surcharge to force fast turnover when the name is structurally
+            # broken (below its own 200d SMA).
             try:
                 from datetime import datetime as _dt
                 days_held = (_dt.utcnow() - stock_pos.opened_at).days
@@ -510,17 +525,31 @@ class WheelManager:
             cc_delta_min = risk_cfg.wheel_exit_delta_min
             cc_delta_max = risk_cfg.wheel_exit_delta_max
         else:
-            # Wheel covered calls: goal is to get called away and return to cash
-            # Use fixed delta range regardless of market regime — sell close to money
-            # above cost basis, maximize fill probability and premium collection
-            cc_delta_min, cc_delta_max = 0.30, 0.45
+            # Patient-wheel branch (Strategy B): assigned stock above its own
+            # MA200 (or non-assignment-acquired stock). OTM CCs collect premium,
+            # reduce effective cost basis, wait for recovery. No surcharge —
+            # we're choosing to hold, not stuck.
+            cc_delta_min = self.cfg.cc_delta_min
+            cc_delta_max = self.cfg.cc_delta_max
 
         # min_strike = net basis plus interest surcharge (exit mode) or net basis alone (normal)
         min_strike_value = net_cost_basis + interest_surcharge
         min_strike = min_strike_value if self.cfg.cc_above_cost_basis and min_strike_value > 0 else None
 
+        # Surface the hybrid branch in logs: "patient" (above MA200, OTM band)
+        # vs "distressed" (below MA200, exit-velocity band) vs "rescue" / "cash"
+        if in_rescue:
+            wheel_branch = "rescue"
+        elif stock_pos.wheel_exit_mode and below_ma200:
+            wheel_branch = "distressed_exit"
+        elif stock_pos.wheel_exit_mode:
+            wheel_branch = "patient_wheel"
+        else:
+            wheel_branch = "cash_cc"
         log.info("covered_call_params", symbol=symbol,
                  exit_mode=stock_pos.wheel_exit_mode,
+                 wheel_branch=wheel_branch,
+                 below_ma200=below_ma200,
                  cost_basis=round(cost_basis, 2) if cost_basis else None,
                  net_cost_basis=round(net_cost_basis, 2),
                  interest_surcharge=round(interest_surcharge, 4),
@@ -533,10 +562,13 @@ class WheelManager:
         # when the stock has recovered enough that a deep-ITM strike still sits
         # at/above breakeven; otherwise it returns None and we fall through to
         # the normal exit-mode band. Skipped in rescue mode (stock < breakeven).
-        in_rescue = bool(current_price and cost_basis and current_price < cost_basis * 0.95)
         candidate = None
+        # Hybrid wheel: deep-ITM exit-velocity only fires when the name is
+        # below its own 200d SMA (distressed). Above-MA200 assigned stock
+        # uses patient OTM CCs (Strategy B) to maximize premium + cost-basis
+        # reduction during recovery.
         if (stock_pos.wheel_exit_mode and self.cfg.wheel_exit_velocity_enabled
-                and not in_rescue):
+                and not in_rescue and below_ma200):
             candidate = screen_calls(
                 symbol,
                 exchange=exchange,
@@ -548,7 +580,7 @@ class WheelManager:
             if candidate:
                 log.info("cc_exit_velocity_deep_itm", symbol=symbol,
                          strike=candidate.strike, delta=round(candidate.delta, 2),
-                         note="deep-ITM CC for fast call-away")
+                         note="deep-ITM CC for fast call-away (below MA200)")
 
         # Screen for the best call with adjusted parameters (normal/exit-mode band)
         if not candidate:
