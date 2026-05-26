@@ -113,6 +113,19 @@ class Params:
                                       # requirement is notional/margin_multiple, so the
                                       # cap admits notional up to NLV*cap*margin_multiple.
     margin_multiple: float = 5.0      # IBKR portfolio-margin proxy (~5x typical OTM put)
+    # ── Live-system defenses (ports from src.strategy.risk) ──
+    # 0 = use the live config default (so the backtest mirrors production); >0 overrides.
+    dynamic_delta_enabled: bool = True   # VIX-tiered delta range (mirrors risk.dynamic_delta_range)
+    vix_spike_bump_1: float = 4.0        # VIX day-over-day spike that escalates tier +1
+    vix_spike_bump_2: float = 6.0        # spike that escalates tier +2 (cap = high)
+    drawdown_lookback_days: int = 5      # 5-day NLV-drawdown window
+    drawdown_threshold_light: float = 0.02   # >2% DD: × 0.75 slots
+    drawdown_threshold_mid: float = 0.05     # >5% DD: × 0.50 slots
+    drawdown_threshold_severe: float = 0.10  # >10% DD: × 0.25 slots
+    intraday_loss_halt_pct: float = 0.025    # halt new puts if MtM loss > 2.5% NLV
+    intraday_loss_halt_floor: float = 50_000.0   # absolute $ floor on the halt threshold
+    daily_cb_pct: float = 0.05               # daily NLV drop > 5% → full halt
+    daily_cb_halt_days: int = 5              # halt persists for N trading days after trigger
 
 
 class _CfgShim:
@@ -136,6 +149,45 @@ def _exp_date(expiry: str) -> date:
 
 def _dte(expiry: str, today: date) -> int:
     return (_exp_date(expiry) - today).days
+
+
+def _vix_tier(vix: float, vix_prev: float | None, spike_bump_1: float, spike_bump_2: float) -> int:
+    """Mirror risk.effective_vix_tier (no SPY/MA50 yet — phase 2).
+    Returns 0=low (<20), 1=mid (20-25), 2=high (>=25). VIX>halt handled upstream."""
+    if vix < 20:
+        base = 0
+    elif vix < 25:
+        base = 1
+    else:
+        base = 2
+    bump = 0
+    if vix_prev is not None:
+        spike = vix - vix_prev
+        if spike > spike_bump_2:
+            bump = 2
+        elif spike > spike_bump_1:
+            bump = 1
+    return min(base + bump, 2)
+
+
+def _tier_delta_range(tier: int, cfg) -> tuple[float, float]:
+    """Mirror live VIX-tiered delta range from settings.strategy."""
+    if tier == 0:
+        return (cfg.delta_vix_low, cfg.delta_vix_low_max)
+    if tier == 1:
+        return (cfg.delta_vix_mid, cfg.delta_vix_mid_max)
+    return (cfg.delta_vix_high, cfg.delta_vix_high_max)
+
+
+def _drawdown_multiplier(dd: float, light: float, mid: float, severe: float) -> float:
+    """Mirror risk._drawdown_cap_multiplier."""
+    if dd > severe:
+        return 0.25
+    if dd > mid:
+        return 0.50
+    if dd > light:
+        return 0.75
+    return 1.0
 
 
 def _exposure_ramp(nlv: float) -> float:
@@ -255,6 +307,13 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     earnings_on = bool(earnings) and getattr(cfg, "earnings_avoid_enabled", True)
     earn_days = getattr(cfg, "earnings_avoid_days", 3)
 
+    # Per-day VIX series for spike calc (engine already has vix close on ^VIX).
+    vix_series = {b[0]: b[1] for b in market.get("^VIX", [])}
+    # Daily-circuit-breaker countdown: when triggered, halt new puts for N days.
+    cb_halt_remaining = 0
+    # NLV history for the drawdown window (most-recent-last); seeded with start NLV.
+    nlv_window: list[float] = [start_cap]
+
     for d in dates:
         # ── 1. Settle expiring short puts ──
         keep = []
@@ -353,8 +412,61 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         eff_pct = params.total_exposure_pct if params.total_exposure_pct > 0 else _exposure_ramp(prev_nlv)
         exposure_cap = prev_nlv * eff_pct
         small_account = exposure_cap < 100_000
+
+        # ── Live-system defenses (ports from src.strategy.risk) ──
+
+        # (a) Daily circuit-breaker (scheduler/jobs.py:640-665): if yesterday's NLV
+        #     dropped > daily_cb_pct vs the day before, halt all new puts for N days.
+        if len(nlv_window) >= 2 and nlv_window[-2] > 0:
+            day_change = (nlv_window[-1] - nlv_window[-2]) / nlv_window[-2]
+            if day_change < -params.daily_cb_pct and cb_halt_remaining == 0:
+                cb_halt_remaining = params.daily_cb_halt_days
+        if cb_halt_remaining > 0:
+            halted = True
+            cb_halt_remaining -= 1
+
+        # (b) Intraday loss halt (risk.check_intraday_loss): sum mark-to-market loss
+        #     on open short puts; if > max(2.5% NLV, $50k floor), halt new puts today.
+        if not halted:
+            unrealized = 0.0
+            for pp in short_puts:
+                q = pv(pp["sym"], d)
+                if q:
+                    mark = pricing.value_put(q[0], pp["strike"],
+                                             pp["expiry"].strftime("%Y%m%d"), d, q[1],
+                                             params.short_dte_uplift_k)
+                    # Loss when current mark > entry premium (we're short).
+                    unrealized += (pp["premium"] - mark) * 100 * pp["qty"]
+            threshold = max(prev_nlv * params.intraday_loss_halt_pct,
+                            params.intraday_loss_halt_floor)
+            if unrealized <= -threshold:
+                halted = True
+
+        # (c) VIX-tier dynamic delta (risk.dynamic_delta_range + effective_vix_tier).
+        #     Replaces fixed params.delta_min/max for the day's put-selling pass.
+        if params.dynamic_delta_enabled and vix_now is not None:
+            vix_prev = vix_series.get(dates[max(0, dates.index(d) - 1)])
+            tier = _vix_tier(vix_now, vix_prev,
+                             params.vix_spike_bump_1, params.vix_spike_bump_2)
+            day_delta_min, day_delta_max = _tier_delta_range(tier, cfg)
+        else:
+            day_delta_min, day_delta_max = params.delta_min, params.delta_max
+
+        # (d) Drawdown daily-cap scaler (risk._drawdown_cap_multiplier).
+        #     Computes drawdown over last `drawdown_lookback_days` and scales slots.
+        dd_window = nlv_window[-(params.drawdown_lookback_days + 1):-1]
+        dd = 0.0
+        if dd_window:
+            peak = max(dd_window)
+            if peak > 0 and prev_nlv > 0:
+                dd = max(0.0, (peak - prev_nlv) / peak)
+        dd_mult = _drawdown_multiplier(dd,
+                                       params.drawdown_threshold_light,
+                                       params.drawdown_threshold_mid,
+                                       params.drawdown_threshold_severe)
+
         held = {p["sym"] for p in short_puts} | set(stocks.keys())
-        slots = params.max_positions - len(short_puts)
+        slots = int((params.max_positions - len(short_puts)) * dd_mult)
         corr_on = prev_nlv > rcfg.correlation_nlv_threshold
         if slots > 0 and not halted:
             ranked = []
@@ -381,7 +493,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 score_iv = pricing.effective_iv(iv, (params.dte_min + params.dte_max) // 2,
                                                 params.short_dte_uplift_k)
                 cands = score_put_candidates(spot, score_iv, chain, put_cfg,
-                                             params.delta_min, params.delta_max,
+                                             day_delta_min, day_delta_max,
                                              params.dte_min, params.dte_max, d)
                 if cands:
                     top = max(cands, key=lambda c: c.score)
@@ -453,6 +565,10 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         if peak > 0:
             max_dd = max(max_dd, (peak - nlv) / peak * 100)
         prev_nlv = nlv  # cap base for tomorrow's deployment
+        nlv_window.append(nlv)
+        # Keep the window bounded — only the last (lookback+2) entries matter.
+        if len(nlv_window) > params.drawdown_lookback_days + 2:
+            nlv_window = nlv_window[-(params.drawdown_lookback_days + 2):]
 
     final = points[-1]
     return {
