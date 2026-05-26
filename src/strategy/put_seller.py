@@ -201,6 +201,12 @@ class PutSeller:
         iv_rank = self.risk.get_iv_rank_value(symbol)
         size_mult = self.risk.iv_rank_size_multiplier(iv_rank)
         quantity = self.cfg.contracts_per_stock * size_mult
+        # Breadth-gated MA200 halve: when risk has flagged halve regime + name
+        # below own MA200, scale contracts down. Order: IV-rank first, then halve.
+        if risk_check.size_multiplier < 1.0:
+            quantity = max(1, int(round(quantity * risk_check.size_multiplier)))
+            log.info("ma200_breadth_halve_applied", symbol=symbol,
+                     mult=risk_check.size_multiplier, final_quantity=quantity)
         collateral = candidate.strike * contract_size * quantity
 
         try:
@@ -301,6 +307,12 @@ class PutSeller:
         iv_rank = self.risk.get_iv_rank_value(symbol)
         size_mult = self.risk.iv_rank_size_multiplier(iv_rank)
         quantity = self.cfg.contracts_per_stock * size_mult
+        # Breadth-gated MA200 halve (see can_open_put). Apply AFTER IV-rank
+        # so the halve scales down what the rich-premium sizing already chose.
+        if risk_check.size_multiplier < 1.0:
+            quantity = max(1, int(round(quantity * risk_check.size_multiplier)))
+            log.info("ma200_breadth_halve_applied", symbol=symbol,
+                     mult=risk_check.size_multiplier, final_quantity=quantity)
 
         # Whatif margin check: ask IBKR exactly how much buying power this contract consumes
         try:

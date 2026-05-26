@@ -176,6 +176,17 @@ class RiskConfig(BaseModel):
     # individually-broken names that would have assigned). Daily-cached per
     # symbol (1 IBKR call/sym/day). Fails open if data unavailable.
     per_name_ma200_enabled: bool = True
+    # Breadth-gradual MA200 gate — count universe symbols below their own MA200,
+    # then switch the per-name gate by regime breadth: <off% → OFF (write
+    # everywhere, ignore individual MA200), [off%, full%) → HALVE contracts on
+    # names below their own MA200, ≥full% → SKIP entirely. Lets fat premium in
+    # corrections through (cost-basis averaging works) while still stepping
+    # aside in real bear regimes. Set ma200_breadth_gate_enabled=False to fall
+    # back to the strict per_name_ma200 skip-everywhere behavior.
+    ma200_breadth_gate_enabled: bool = True
+    ma200_breadth_off_threshold: float = 0.30    # < this fraction below MA200 → gate OFF
+    ma200_breadth_full_threshold: float = 0.50   # ≥ this fraction → SKIP below-MA200 names
+    ma200_breadth_halve_multiplier: float = 0.5  # contracts × this when in halve state
     # Drawdown-based daily position sizing (scales max_daily_positions)
     drawdown_lookback_days: int = 5
     drawdown_threshold_light: float = 0.02   # drawdown > this -> 75% of base cap

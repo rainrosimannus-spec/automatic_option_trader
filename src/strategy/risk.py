@@ -43,7 +43,8 @@ def _convert_to_usd(price: float, currency: str) -> float:
 class RiskCheck:
     allowed: bool
     reason: str = ""
-    reduce_pct: float = 1.0  # 1.0 = no reduction, 0.5 = skip 50% of candidates
+    reduce_pct: float = 1.0       # universe-filter pre-scan (1.0 = scan all, 0.5 = scan 50%)
+    size_multiplier: float = 1.0  # per-trade contract multiplier (1.0 = full size, 0.5 = halve)
 
 
 @dataclass
@@ -1071,15 +1072,70 @@ class RiskManager:
                      distance_below=ma_data.get("distance_below_ma200"))
         return is_below
 
+    def _universe_ma200_breadth(self) -> float | None:
+        """Fraction of universe currently below MA200. Cached by ISO date so we
+        compute once per trading day across all callers. Returns None if not
+        enough names report a determinate is_below (fail open at the gate)."""
+        today_iso = date.today().isoformat()
+        cached = getattr(self, "_ma200_breadth_cache", None)
+        if cached and cached[0] == today_iso:
+            return cached[1]
+        below = 0
+        total = 0
+        for sym in self.universe.all_symbols:
+            v = self.is_below_ma200(sym)
+            if v is None:
+                continue
+            total += 1
+            if v:
+                below += 1
+        if total == 0:
+            self._ma200_breadth_cache = (today_iso, None)
+            return None
+        breadth = below / total
+        self._ma200_breadth_cache = (today_iso, breadth)
+        log.info("ma200_breadth_computed", below=below, total=total, breadth=round(breadth, 3))
+        return breadth
+
+    def ma200_breadth_state(self) -> str:
+        """Return 'off' | 'halve' | 'skip' based on universe-wide MA200 breadth.
+        See RiskConfig.ma200_breadth_off_threshold / _full_threshold."""
+        if not self.cfg.ma200_breadth_gate_enabled:
+            return "skip"  # fall back to strict per-name skip behavior
+        breadth = self._universe_ma200_breadth()
+        if breadth is None:
+            return "off"  # fail open
+        if breadth >= self.cfg.ma200_breadth_full_threshold:
+            return "skip"
+        if breadth >= self.cfg.ma200_breadth_off_threshold:
+            return "halve"
+        return "off"
+
     def check_per_name_ma200(self, symbol: str) -> RiskCheck:
-        """Block writing a put on `symbol` if it trades below its own 200d SMA.
-        Fail-open on data unavailability. Mirrors MarsWalk engine mode B."""
-        if not self.cfg.per_name_ma200_enabled:
+        """Per-name MA200 gate. Two modes:
+
+        - `ma200_breadth_gate_enabled=True` (default): three-state regime gate
+          keyed off universe breadth (% of names below their own MA200).
+            * OFF (<30% breadth): write everywhere, ignore individual MA200.
+            * HALVE (30-50%): halve contracts on names below their own MA200.
+            * SKIP (>=50%): skip entry on names below their own MA200.
+        - `ma200_breadth_gate_enabled=False`: legacy strict per-name skip.
+
+        Fail-open on data unavailability."""
+        if not self.cfg.per_name_ma200_enabled and not self.cfg.ma200_breadth_gate_enabled:
+            return RiskCheck(True)
+        state = self.ma200_breadth_state()
+        if state == "off":
             return RiskCheck(True)
         below = self.is_below_ma200(symbol)
-        if below is True:
-            return RiskCheck(False, f"{symbol} below its 200d SMA — bear-name gate")
-        return RiskCheck(True)
+        if below is not True:
+            return RiskCheck(True)
+        if state == "halve":
+            return RiskCheck(True,
+                             f"{symbol} < own MA200 in halve regime — contracts × {self.cfg.ma200_breadth_halve_multiplier}",
+                             size_multiplier=self.cfg.ma200_breadth_halve_multiplier)
+        # state == "skip"
+        return RiskCheck(False, f"{symbol} below its 200d SMA — bear-name gate (skip regime)")
 
     def check_earnings(self, symbol: str) -> RiskCheck:
         """Block puts on stocks with imminent earnings."""
@@ -1378,6 +1434,7 @@ class RiskManager:
         # scanner's "elapsed > 10s" heuristic correctly classifies risk-blocks
         # as fast (not connection failures). Slow checks (IBKR account state,
         # FMP earnings/IV) run only after the cheap ones pass.
+        ma200_check = self.check_per_name_ma200(symbol)
         checks = [
             self.check_position_limit(),       # DB read — instant
             self.check_duplicate_position(symbol),  # DB read — instant
@@ -1394,17 +1451,28 @@ class RiskManager:
             self.check_buying_power(),
             self.check_earnings(symbol),
             self.check_iv_rank(symbol),
-            self.check_per_name_ma200(symbol),
+            ma200_check,
         ]
         for check in checks:
             if not check.allowed:
                 log.info("risk_blocked", symbol=symbol, reason=check.reason)
                 return check
 
-        # SPY MA gate — doesn't block, but signals reduction
+        # SPY MA gate — doesn't block, but signals universe-filter reduction.
+        # Compose with the per-name MA200 halve (per-trade contract multiplier
+        # from the halve-regime breadth state) — these are independent levers
+        # carried on separate fields and applied by the put_seller separately.
         spy_check = self.check_spy_ma_gate(market=market)
-        if spy_check.reduce_pct < 1.0:
-            return RiskCheck(True, reason=spy_check.reason, reduce_pct=spy_check.reduce_pct)
+        if spy_check.reduce_pct < 1.0 or ma200_check.size_multiplier < 1.0:
+            reasons = []
+            if spy_check.reduce_pct < 1.0:
+                reasons.append(spy_check.reason)
+            if ma200_check.size_multiplier < 1.0:
+                reasons.append(ma200_check.reason)
+            return RiskCheck(True,
+                             reason=" + ".join(reasons),
+                             reduce_pct=spy_check.reduce_pct,
+                             size_multiplier=ma200_check.size_multiplier)
 
         return RiskCheck(True)
 
