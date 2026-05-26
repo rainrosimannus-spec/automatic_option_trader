@@ -109,18 +109,21 @@ def _nlv_ramp(nlv: float) -> tuple[float, int]:
     at $4M × 20% × 5x margin = $4M instead of the $4M × 40% × 5x = $8M the
     live system would actually grant a $4M account. This made backtests look
     flat — the cap was the binding constraint, not the strategy."""
+    # Growth-mode 2026-05-26: cap converges with max_margin_usage (80%) at the
+    # top tier — collateral and margin governors bind together. Smaller accounts
+    # ramp up faster than before so the engine actually uses available capacity.
     if nlv >= 5_000_000:
-        return 40.0, 75
+        return 80.0, 75
     if nlv >= 4_000_000:
-        return 40.0, 50
+        return 80.0, 50
     if nlv >= 2_000_000:
-        return 30.0, 50
+        return 60.0, 50
     if nlv >=   500_000:
-        return 20.0, 30
+        return 40.0, 30
     if nlv >=   200_000:
-        return 20.0, 15
+        return 30.0, 15
     if nlv >=   100_000:
-        return 20.0, 10
+        return 25.0, 10
     if nlv >=    50_000:
         return 20.0,  8
     if nlv >=    25_000:

@@ -109,11 +109,11 @@ class Params:
     # ── Portfolio ──
     start_capital: float = 34_224.0   # son's current NLV
     max_positions: int = 50           # live risk.max_portfolio_positions
-    contracts: int = 1
+    contracts: int = 2                # growth-mode 2026-05-26: double base size
     # ── Risk gates (model the live limits) ──
     total_exposure_pct: float = 0.0   # 0 = NLV ramp (20/25/30%); >0 = fixed cap %
-    vix_halt: float = 30.0            # halt NEW puts when VIX > this (live high-VIX halt)
-    iv_rank_min: float = 10.0         # live aggressive son-mode iv_rank_min
+    vix_halt: float = 35.0            # growth-mode 2026-05-26: only halt on panic spikes
+    iv_rank_min: float = 0.0          # growth-mode 2026-05-26: accept all positive-EV setups
     max_margin_usage: float = 0.0     # 0 = use live settings.risk.max_margin_usage (60%
                                       # son-mode); >0 = override.
     # ── Pricing model ──
@@ -161,14 +161,13 @@ class Params:
     # bear_2022 -49% → -31% AND bulls improve slightly (skips individually-broken
     # names that would otherwise assign). Requires 200d of pre-regime warmup bars
     # per symbol — loaded via _pre:<sym> keys from the data layer.
-    bear_market_ma200_enabled: bool = True
+    bear_market_ma200_enabled: bool = False    # growth-mode 2026-05-26: cost-basis averaging + margin cap handle bears
     bear_market_size_multiplier: float = 0.5
     # off | halve_contracts | cap_multiplier | per_name_ma200 | breadth_gradual
-    # breadth_gradual (DEFAULT 2026-05-26): count universe symbols currently below
-    # their own MA200; <30% breadth → OFF (write everywhere), 30-50% → HALVE
-    # contracts on names below own MA200, ≥50% → SKIP those names. Mirrors live
-    # risk.py ma200_breadth_state() so backtest == live behavior.
-    bear_market_gate_mode: str = "breadth_gradual"
+    # Growth-mode 2026-05-26: default "off" — no MA200 gate. The margin cap
+    # (80% × 5× = 400% NLV notional ceiling) is the real protection; assignments
+    # at lower strikes lower average cost basis, which the wheel then earns back.
+    bear_market_gate_mode: str = "off"
     bear_market_cap_multiplier_value: int = 2       # used when mode = cap_multiplier
     # Breadth thresholds + halve multiplier (used by breadth_gradual mode).
     ma200_breadth_off_threshold: float = 0.30
@@ -261,14 +260,15 @@ def _drawdown_multiplier(dd: float, light: float, mid: float, severe: float) -> 
 
 
 def _exposure_ramp(nlv: float) -> float:
-    """Live collateral-cap ramp (mirrors risk._effective_total_exposure_pct).
-    Lifted 2026-05-26 from 20/25/30 to 20/30/40 so big accounts don't drag below
-    T-bills. <$2M unchanged (small accounts hit the <$100K cap exemption anyway)."""
+    """Collateral-cap ramp. Growth-mode 2026-05-26: lifted to 40/60/80 so the
+    cap converges with max_margin_usage (80%) — both governors bind on the
+    same notional ceiling instead of the collateral cap binding well below
+    the margin cap (which was the prior stagnation cause)."""
     if nlv >= 4_000_000:
-        return 0.40
+        return 0.80
     if nlv >= 2_000_000:
-        return 0.30
-    return 0.20
+        return 0.60
+    return 0.40
 
 
 def run_regime(regime_id, regime_name, category, rank, universe, market, params: Params,
@@ -724,10 +724,16 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                         and params.bear_market_gate_mode == "cap_multiplier"
                         and _below_ma200(d)):
                     ivr_cap = min(ivr_cap, params.bear_market_cap_multiplier_value)
+                # Growth-mode 2026-05-26: extended ladder 1/2/4/7/10 (mirrors
+                # the new live risk.iv_rank_size_multiplier). Hard cap at ivr_cap.
                 qty_mult = 1
                 if getattr(cfg, "iv_rank_sizing_enabled", False) and ivr is not None:
-                    if ivr >= getattr(cfg, "iv_rank_size_high", 70):
-                        qty_mult = min(3, ivr_cap)
+                    if ivr >= 95:
+                        qty_mult = min(10, ivr_cap)
+                    elif ivr >= 85:
+                        qty_mult = min(7, ivr_cap)
+                    elif ivr >= 75:
+                        qty_mult = min(4, ivr_cap)
                     elif ivr >= getattr(cfg, "iv_rank_size_mid", 50):
                         qty_mult = min(2, ivr_cap)
                 contracts = params.contracts * qty_mult

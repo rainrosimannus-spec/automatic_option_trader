@@ -1005,12 +1005,19 @@ class RiskManager:
         halved (configurable). This is the slow-grind-bear brake; it has near-
         zero effect in bull markets where SPY stays above MA200.
         """
+        # Growth-mode 2026-05-26: extended ladder — 1/2/4/7/10 bands so the
+        # raised iv_rank_size_max_multiplier (10) is reachable. Old 1/2/3 ladder
+        # capped at 3 regardless of how rich IV got.
         strat_cfg = get_settings().strategy
         if not strat_cfg.iv_rank_sizing_enabled or iv_rank is None:
             base = 1
-        elif iv_rank >= strat_cfg.iv_rank_size_high:
-            base = 3
-        elif iv_rank >= strat_cfg.iv_rank_size_mid:
+        elif iv_rank >= 95:
+            base = 10
+        elif iv_rank >= 85:
+            base = 7
+        elif iv_rank >= 75:
+            base = 4
+        elif iv_rank >= strat_cfg.iv_rank_size_mid:   # 50 default
             base = 2
         else:
             base = 1

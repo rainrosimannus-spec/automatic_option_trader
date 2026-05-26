@@ -48,7 +48,7 @@ class StrategyConfig(BaseModel):
     dte_tiers: DteTiers = DteTiers()
     delta_min: float = 0.20
     delta_max: float = 0.30
-    contracts_per_stock: int = 1
+    contracts_per_stock: int = 2     # growth-mode 2026-05-26: double base size
     min_premium: float = 0.20          # call minimum ($0.20 for covered calls)
     min_premium_put: float = 0.50       # put minimum ($0.50 for puts)
     min_open_interest: int = 10
@@ -60,7 +60,7 @@ class StrategyConfig(BaseModel):
     }
     # IV Rank
     iv_rank_enabled: bool = True
-    iv_rank_min: int = 10
+    iv_rank_min: int = 0                # growth-mode 2026-05-26: accept all positive-EV IV ranks
     iv_lookback_days: int = 252
     # Dynamic delta
     dynamic_delta_enabled: bool = True
@@ -108,7 +108,9 @@ class StrategyConfig(BaseModel):
     iv_rank_sizing_enabled: bool = True
     iv_rank_size_mid: int = 50
     iv_rank_size_high: int = 70
-    iv_rank_size_max_multiplier: int = 5   # aggressive cap (son-mode at scale)
+    # Growth-mode 2026-05-26: cap raised 5 → 10 to let the IV-rank ladder
+    # (1/2/4/7/10 bands in risk.iv_rank_size_multiplier) scale through.
+    iv_rank_size_max_multiplier: int = 10
     # #4 Weekend/holiday theta capture: small additive score bonus for contracts
     # that span non-trading (weekend) days — rewards capturing decay without
     # market exposure. weight 0 disables. Revert: weekend_theta_enabled = false.
@@ -126,15 +128,15 @@ class StrategyConfig(BaseModel):
 
 
 class RiskConfig(BaseModel):
-    vix_pause_threshold: float = 30.0
+    vix_pause_threshold: float = 35.0    # growth-mode 2026-05-26: keep capacity through fat-IV days, halt only on panic spikes
     max_portfolio_positions: int = 50
     max_daily_positions: int = 10          # base daily limit (for first 100K)
     max_daily_positions_cap: int = 25      # hard cap regardless of portfolio size
     daily_position_step: float = 100000.0  # +1 trade per this amount above 100K
     max_sector_pct: float = 0.30
     max_single_stock_pct: float = 0.05
-    max_buying_power_usage: float = 0.60
-    max_margin_usage: float = 0.60        # block new trades when margin > 60% of NLV (son-mode hard ceiling)
+    max_buying_power_usage: float = 0.80     # growth-mode 2026-05-26
+    max_margin_usage: float = 0.80           # growth-mode 2026-05-26: top 33% of margin capacity reclaimed (was 60%)
     min_cash_reserve: float = 10000.0
     # Scaling safeguards ($5M+)
     position_dollar_pct: float = 0.05        # per-position cap as % of NLV (son-mode)
@@ -175,7 +177,7 @@ class RiskConfig(BaseModel):
     # beats SPY-MA200: bear_2022 -49% → -31%, bulls slightly improve too (skips
     # individually-broken names that would have assigned). Daily-cached per
     # symbol (1 IBKR call/sym/day). Fails open if data unavailable.
-    per_name_ma200_enabled: bool = True
+    per_name_ma200_enabled: bool = False   # growth-mode 2026-05-26: rely on cost-basis averaging + margin cap, not skip-on-MA200
     # Breadth-gradual MA200 gate — count universe symbols below their own MA200,
     # then switch the per-name gate by regime breadth: <off% → OFF (write
     # everywhere, ignore individual MA200), [off%, full%) → HALVE contracts on
@@ -183,10 +185,10 @@ class RiskConfig(BaseModel):
     # corrections through (cost-basis averaging works) while still stepping
     # aside in real bear regimes. Set ma200_breadth_gate_enabled=False to fall
     # back to the strict per_name_ma200 skip-everywhere behavior.
-    ma200_breadth_gate_enabled: bool = True
-    ma200_breadth_off_threshold: float = 0.30    # < this fraction below MA200 → gate OFF
-    ma200_breadth_full_threshold: float = 0.50   # ≥ this fraction → SKIP below-MA200 names
-    ma200_breadth_halve_multiplier: float = 0.5  # contracts × this when in halve state
+    ma200_breadth_gate_enabled: bool = False    # growth-mode 2026-05-26: off — accept full deployment in bears too
+    ma200_breadth_off_threshold: float = 0.30
+    ma200_breadth_full_threshold: float = 0.50
+    ma200_breadth_halve_multiplier: float = 0.5
     # Drawdown-based daily position sizing (scales max_daily_positions)
     drawdown_lookback_days: int = 5
     drawdown_threshold_light: float = 0.02   # drawdown > this -> 75% of base cap
