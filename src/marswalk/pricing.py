@@ -49,22 +49,49 @@ def strike_grid(spot: float, lo_pct: float = 0.70, hi_pct: float = 1.30) -> list
     return strikes
 
 
-def friday_expiries(today: date, max_days: int = 55) -> list[str]:
-    """Weekly Friday expiries (YYYYMMDD) from `today` out to max_days ahead."""
+# Mega-cap tech with at least Mon+Wed+Fri weekly expiries since ~2022. Daily
+# 0DTE listings (full M/T/W/Th/F) on individual equities only became common
+# mid-2023; using MWF across the backtest era is the closest single
+# approximation. Names outside this set are Friday-only — that matches real
+# market structure where most weeklies anchor on Friday and is why "dead days"
+# (Mon for most of the universe, Fri for everyone) remain part of the
+# simulation. ASX names would expire Thursday but the marswalk universe is
+# US-only (regimes.yaml drops 3690/ABF/XRO), so we don't emit Thursdays.
+MWF_EXPIRY_SYMBOLS = frozenset({
+    "AAPL", "MSFT", "GOOGL", "META", "AMZN", "NVDA", "TSLA", "AMD", "AVGO",
+})
+
+
+def expiries_for(today: date, max_days: int, symbol: str | None = None) -> list[str]:
+    """Synthetic listed-style expiries (YYYYMMDD) from `today` out to
+    `max_days` ahead. Friday-only for most symbols; Mon+Wed+Fri for the
+    mega-cap tech set (see `MWF_EXPIRY_SYMBOLS`). `symbol=None` keeps the
+    legacy Friday-only behavior for any callers we haven't updated."""
+    allowed = {4}  # Friday default
+    if symbol and symbol.upper() in MWF_EXPIRY_SYMBOLS:
+        allowed = {0, 2, 4}  # Mon, Wed, Fri
     out = []
     d = today + timedelta(days=1)
     end = today + timedelta(days=max_days)
     while d <= end:
-        if d.weekday() == 4:  # Friday
+        if d.weekday() in allowed:
             out.append(d.strftime("%Y%m%d"))
         d += timedelta(days=1)
     return out
 
 
-def build_contracts(spot: float, today: date, max_days: int = 55) -> list[SynthContract]:
-    """Full synthetic chain: every strike × every Friday expiry in range."""
+# Back-compat alias — some external callers/tests may still import the old name.
+def friday_expiries(today: date, max_days: int = 55) -> list[str]:
+    return expiries_for(today, max_days, symbol=None)
+
+
+def build_contracts(spot: float, today: date, max_days: int = 55,
+                    symbol: str | None = None) -> list[SynthContract]:
+    """Full synthetic chain: every strike × every available expiry in range.
+    Pass `symbol` so the expiry set respects per-name market structure
+    (Friday-only vs Mon+Wed+Fri for mega-cap tech)."""
     strikes = strike_grid(spot)
-    expiries = friday_expiries(today, max_days)
+    expiries = expiries_for(today, max_days, symbol=symbol)
     return [SynthContract(k, e) for e in expiries for k in strikes]
 
 

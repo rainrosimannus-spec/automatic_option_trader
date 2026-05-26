@@ -519,7 +519,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 cdmin, cdmax = params.cc_delta_min, params.cc_delta_max
                 cc_branch = "patient_wheel"
             min_strike = net_cb if cc_above_cb else None
-            chain = [sc for sc in pricing.build_contracts(spot, d, cc_dte_max + 7)
+            chain = [sc for sc in pricing.build_contracts(spot, d, cc_dte_max + 7, symbol=sym)
                      if cc_dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= cc_dte_max
                      and (min_strike is None or sc.strike >= min_strike)]
             cc_iv = pricing.effective_iv(iv, (cc_dte_min + cc_dte_max) // 2, params.short_dte_uplift_k)
@@ -666,7 +666,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     sym_ma = per_name_ma200.get(sym, {}).get(d)
                     if sym_ma is not None and spot < sym_ma:
                         continue
-                chain = [sc for sc in pricing.build_contracts(spot, d, params.dte_max + 7)
+                chain = [sc for sc in pricing.build_contracts(spot, d, params.dte_max + 7, symbol=sym)
                          if params.dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= params.dte_max]
                 score_iv = pricing.effective_iv(iv, (params.dte_min + params.dte_max) // 2,
                                                 params.short_dte_uplift_k)
