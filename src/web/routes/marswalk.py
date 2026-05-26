@@ -21,10 +21,10 @@ router = APIRouter()
 
 @router.get("/marswalk", response_class=HTMLResponse)
 def marswalk_page(request: Request):
-    import json
+    from datetime import date
+    today = date.today().isoformat()
     universe, regimes = load_config()
     cards = []
-    last_params = None  # most recent Run's params_json (across all regimes)
     with get_mw_db() as db:
         for reg in regimes:
             run = (db.query(Run).filter_by(regime_id=reg.id)
@@ -39,24 +39,17 @@ def marswalk_page(request: Request):
                         "actual": [p.return_pct for p in pts],
                         "target": [p.target_pct for p in pts],
                     }
-            cards.append({"regime": reg, "run": run, "chart": chart})
-        # Pull the single most-recent run across the whole table to recover the
-        # last submitted parameters, so the form persists what was just run
-        # instead of snapping back to settings.yaml defaults.
-        latest_run = db.query(Run).order_by(Run.created_at.desc()).first()
-        if latest_run and latest_run.params_json:
-            try:
-                last_params = json.loads(latest_run.params_json)
-            except Exception:
-                last_params = None
+            is_forward = str(reg.start) > today
+            cards.append({"regime": reg, "run": run, "chart": chart, "is_forward": is_forward})
 
     # "Run now as it is" — defaults mirror the LIVE aggressive son-mode config
     # we committed in c522a8e + hybrid wheel 63d8ed8. Read from the Pydantic
     # class defaults (committed Python intent) instead of get_settings(), so
     # the UI shows the canonical aggressive setup even on hosts where
     # settings.yaml still carries stale pre-aggressive overrides (octoserver
-    # YAML migration is task #48). Put DTE is VIX-tiered in live; the US
-    # low/mid-VIX tier is 0-3 (high-VIX halts).
+    # YAML migration is task #48). No DB-driven last_params override — the
+    # form always starts at the canonical live config, never at stale prior
+    # runs. Put DTE is VIX-tiered in live; the US low/mid-VIX tier is 0-3.
     s = StrategyConfig()
     r = RiskConfig()
     defaults = {
@@ -85,21 +78,6 @@ def marswalk_page(request: Request):
         # Son-mode 60% margin ceiling.
         "max_margin_usage_pct": round(r.max_margin_usage * 100, 1),
     }
-    if last_params:
-        for k, v in last_params.items():
-            if k in defaults and v is not None:
-                defaults[k] = v
-        # Re-derive the UI fields that aren't 1:1 with engine Params.
-        if "total_exposure_pct" in last_params and last_params["total_exposure_pct"]:
-            defaults["collateral_cap_pct"] = round(last_params["total_exposure_pct"] * 100, 2)
-        if "short_dte_uplift_k" in last_params:
-            defaults["uplift_k"] = last_params["short_dte_uplift_k"]
-        if "gap_stress" in last_params:
-            defaults["gap_stress_pct"] = round(last_params["gap_stress"] * 100, 2)
-        if "start_capital" in last_params:
-            defaults["start_nlv"] = last_params["start_capital"]
-        if "max_margin_usage" in last_params and last_params["max_margin_usage"]:
-            defaults["max_margin_usage_pct"] = round(last_params["max_margin_usage"] * 100, 2)
 
     return templates.TemplateResponse("marswalk.html", {
         "request": request,
