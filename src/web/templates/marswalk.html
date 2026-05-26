@@ -36,7 +36,7 @@
           {{ num('start_nlv', defaults.start_nlv, 50000, 0, 100000000, 'w-28') }}
         </div>
         <div>
-          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Collateral cap %</div>
+          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Collateral cap % <span class="text-[8px] text-emerald-500 normal-case">↳ NLV</span></div>
           {{ num('collateral_cap_pct', defaults.collateral_cap_pct, 5, 0, 95) }}
         </div>
         <div>
@@ -48,7 +48,7 @@
           {{ num('gap_stress_pct', defaults.gap_stress_pct, 1, 0, 50) }}
         </div>
         <div>
-          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Max positions</div>
+          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Max positions <span class="text-[8px] text-emerald-500 normal-case">↳ NLV</span></div>
           {{ num('max_positions', defaults.max_positions, 1, 1, 200) }}
         </div>
         <div>
@@ -199,12 +199,35 @@
 </div>
 
 <script>
-// Init: disable margin_multiple input when margin is OFF.
+// Init: disable margin_multiple input when margin is OFF; wire NLV-ramp.
 document.addEventListener('DOMContentLoaded', function () {
   const t = document.getElementById('margin_on');
   const m = document.getElementById('margin_multiple');
   if (t && m) m.disabled = !t.checked;
+  const nlv = document.getElementById('start_nlv');
+  if (nlv) nlv.addEventListener('change', mwApplyNlvRamp);
 });
+
+// NLV-driven live-system defaults — mirrors the two live NLV ramps:
+//   collateral cap   (risk._effective_total_exposure_pct): 20% <$2M, 25% $2-4M, 30% >=$4M
+//   options universe (scheduler.py options_count):         50  <$2M, 60  $2-4M, 75 >=$4M
+// max_positions is the backtest's concurrent-position cap; mapped here to the
+// universe-size ramp (the live trader's discoverable book grows with capital).
+// The operator can override any dependent field after this snaps it.
+function mwApplyNlvRamp() {
+  const nlvEl = document.getElementById('start_nlv');
+  if (!nlvEl) return;
+  const nlv = parseFloat(nlvEl.value) || 0;
+  let cap, maxpos;
+  if (nlv >= 4000000)      { cap = 30; maxpos = 75; }
+  else if (nlv >= 2000000) { cap = 25; maxpos = 60; }
+  else                      { cap = 20; maxpos = 50; }
+  const capEl = document.getElementById('collateral_cap_pct');
+  const mpEl  = document.getElementById('max_positions');
+  if (capEl) capEl.value = String(cap);
+  if (mpEl)  mpEl.value  = String(maxpos);
+}
+
 // Stepper for the config inputs — iOS Safari shows no native number arrows.
 function mwStep(id, dir) {
   const el = document.getElementById(id);
@@ -216,6 +239,8 @@ function mwStep(id, dir) {
   if (isNaN(v)) v = 0;
   v = Math.min(mx, Math.max(mn, v + dir * step));
   el.value = (step % 1 === 0) ? String(Math.round(v)) : v.toFixed(2);
+  // Stepping NLV also recomputes its live-system dependents.
+  if (id === 'start_nlv') mwApplyNlvRamp();
 }
 
 const MW_CHARTS = {
