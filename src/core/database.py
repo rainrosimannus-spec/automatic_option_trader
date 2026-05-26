@@ -78,6 +78,10 @@ def _migrate_columns(engine):
         ("positions", "unrealized_pnl", "REAL DEFAULT 0.0"),
         # Per-account capital injections (May 2026)
         ("portfolio_capital_injections", "account_id", "VARCHAR(20)"),
+        # Consigliere dollarize / n-confidence framework (May 2026)
+        ("consigliere_memos", "impact_eur_month", "REAL"),
+        ("consigliere_memos", "sample_n", "INTEGER"),
+        ("consigliere_memos", "confidence", "VARCHAR(10)"),
     ]
     from sqlalchemy import text
     with engine.connect() as conn:

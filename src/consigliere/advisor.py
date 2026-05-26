@@ -42,6 +42,14 @@ class Consigliere:
             ("leverage_health", self._review_leverage_health),
             ("parameter_calibration", self._review_parameter_calibration),
             ("execution_quality", self._review_execution_quality),
+            # New $-impact-ranked modules (May 2026)
+            ("deployment_utilization", self._review_deployment_utilization),
+            ("stuck_wheel", self._review_stuck_wheel),
+            ("execution_quality_trend", self._review_execution_quality_trend),
+            ("regime_aware_config", self._review_regime_aware_config),
+            ("per_name_attribution", self._review_per_name_attribution),
+            ("live_vs_backtest", self._review_live_vs_backtest),
+            ("forward_event_risk", self._review_forward_event_risk),
         ]
 
         for name, fn in modules:
@@ -692,4 +700,587 @@ class Consigliere:
                 metric_benchmark=50.0,
             ))
 
+        return memos
+
+    # ══════════════════════════════════════════════════════════
+    # META-FRAMEWORK — dollarize / speak-on-change / n-confidence
+    # All new modules go through these helpers so memos triage by money,
+    # don't repeat the same finding every day, and disclose sample size.
+    # ══════════════════════════════════════════════════════════
+
+    def _confidence_label(self, n: int) -> str:
+        """Sample-size honesty: thin samples are explicitly down-ranked."""
+        if n < 10:
+            return "low"
+        if n < 30:
+            return "medium"
+        return "high"
+
+    def _recent_memo(self, metric_name: str, days: int = 7):
+        """Most recent memo with this metric_name in the last `days` (or None)."""
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        with get_db() as db:
+            from sqlalchemy import desc
+            return (db.query(ConsigliereMemo)
+                    .filter(ConsigliereMemo.metric_name == metric_name)
+                    .filter(ConsigliereMemo.created_at >= cutoff)
+                    .order_by(desc(ConsigliereMemo.created_at))
+                    .first())
+
+    def _should_speak(self, metric_name: str, value: float,
+                      worse_when: str = "higher", days: int = 7,
+                      worsen_pct: float = 0.10) -> bool:
+        """
+        Speak-on-change gate: emit only when this is new, the metric has
+        materially worsened vs the last memo, or the previous one is old.
+
+        worse_when='higher' → metric is worse when bigger (e.g. % deployed gap,
+                              concentration). 'lower' → smaller is worse
+                              (e.g. spread capture %).
+        """
+        last = self._recent_memo(metric_name, days=days)
+        if not last or last.metric_value is None:
+            return True  # first observation in the window
+        if worse_when == "higher":
+            return value > last.metric_value * (1.0 + worsen_pct)
+        return value < last.metric_value * (1.0 - worsen_pct)
+
+    def _live_nlv(self) -> float | None:
+        """Live NLV from the IBKR account cache, or None if unavailable."""
+        try:
+            from src.broker.account import get_account_summary
+            acct = get_account_summary()
+            return acct.net_liquidation if acct and acct.net_liquidation > 0 else None
+        except Exception:
+            return None
+
+    def _live_cap_pct(self, nlv: float) -> float:
+        """Mirror risk._effective_total_exposure_pct: NLV-ramp 20/25/30%."""
+        try:
+            from src.core.config import get_settings
+            base = get_settings().risk.total_exposure_pct
+        except Exception:
+            base = 0.20
+        if nlv >= 4_000_000:
+            return max(0.30, base)
+        if nlv >= 2_000_000:
+            return max(0.25, base)
+        return base
+
+    # ══════════════════════════════════════════════════════════
+    # MODULE 8: CAPITAL-DEPLOYMENT UTILIZATION
+    # The biggest direct-cash lever — deployed vs allowed cap, dollarized.
+    # ══════════════════════════════════════════════════════════
+
+    def _review_deployment_utilization(self) -> list[ConsigliereMemo]:
+        from src.core.models import Position, PositionStatus
+
+        memos = []
+        nlv = self._live_nlv()
+        if not nlv:
+            return memos
+
+        cap_pct = self._live_cap_pct(nlv)
+        cap_dollars = nlv * cap_pct
+
+        with get_db() as db:
+            puts = db.query(Position).filter(
+                Position.status == PositionStatus.OPEN,
+                Position.position_type == "short_put",
+            ).all()
+
+        deployed = sum((p.strike or 0) * (p.quantity or 1) * 100 for p in puts)
+        if cap_dollars <= 0:
+            return memos
+        utilization = deployed / cap_dollars   # 0..1 of the cap
+        deployed_pct = deployed / nlv * 100
+
+        # Headline: ran at U% of an C% cap → premium left on the table.
+        gap_dollars = max(0.0, cap_dollars - deployed)
+        # Assume ~1.5% / month average put-premium yield on collateral (conservative;
+        # the wheel's historical premium-yield-on-collateral runs ~1-2% monthly).
+        premium_left = gap_dollars * 0.015
+
+        # Speak only when utilization is meaningfully low.
+        if utilization < 0.75 and self._should_speak(
+            "deployment_utilization_pct", utilization * 100,
+            worse_when="lower", worsen_pct=0.10,
+        ):
+            # Attribution candidates — these are causes the live system can produce,
+            # not measured root-cause analysis; surfaced so the operator can correlate.
+            causes = []
+            if len(puts) == 0:
+                causes.append("no open short-put positions — scanner not finding signals")
+            else:
+                causes.append(f"{len(puts)} open short-put positions filling ~{deployed_pct:.0f}% of NLV")
+            try:
+                from src.core.config import get_settings
+                opt_count = getattr(get_settings().strategy, "options_count", 50)
+                causes.append(f"universe scope ≈ top {opt_count} names by score")
+            except Exception:
+                pass
+            causes.append("check screener_reject log for stale-data / no-IBKR-data days")
+            cause_text = "; ".join(causes)
+
+            memos.append(ConsigliereMemo(
+                category="improvement",
+                severity="suggestion" if utilization < 0.5 else "info",
+                title=f"Deployed {deployed_pct:.0f}% of NLV against a {cap_pct*100:.0f}% cap",
+                body=(
+                    f"Put collateral is ${deployed:,.0f} against a cap of ${cap_dollars:,.0f} "
+                    f"({utilization*100:.0f}% utilization). At the conservative ~1.5%/mo "
+                    f"premium-yield-on-collateral, the ${gap_dollars:,.0f} unused cap is "
+                    f"roughly ${premium_left:,.0f}/mo of premium left on the table. "
+                    f"Candidate causes: {cause_text}. "
+                    f"Diagnostic — no parameter is changed automatically."
+                ),
+                metric_name="deployment_utilization_pct",
+                metric_value=round(utilization * 100, 1),
+                metric_benchmark=85.0,
+                impact_eur_month=round(premium_left, 0),
+                sample_n=len(puts),
+                confidence="low" if len(puts) < 5 else "medium",
+            ))
+
+        return memos
+
+    # ══════════════════════════════════════════════════════════
+    # MODULE 9: STUCK-WHEEL / CAPITAL-TRAP DETECTOR
+    # The biggest hidden loss — assigned stock you're trapped in, bleeding
+    # while CCs can't clear cost basis.
+    # ══════════════════════════════════════════════════════════
+
+    def _review_stuck_wheel(self) -> list[ConsigliereMemo]:
+        from src.core.models import Position, PositionStatus
+        from src.broker.market_data import get_stock_price
+
+        memos = []
+        with get_db() as db:
+            stocks = db.query(Position).filter(
+                Position.status == PositionStatus.OPEN,
+                Position.position_type == "stock",
+            ).all()
+
+        if not stocks:
+            return memos
+
+        cutoff = datetime.utcnow() - timedelta(days=60)
+        stuck = []  # (symbol, shares, cost_basis, current_px, days_held, tied_dollars, gap_pct)
+        for s in stocks:
+            if not s.opened_at or s.opened_at > cutoff:
+                continue
+            if not s.cost_basis or not s.quantity or s.quantity <= 0:
+                continue
+            try:
+                px = get_stock_price(s.symbol)
+            except Exception:
+                px = None
+            if not px or px <= 0:
+                continue
+            net_cb = s.cost_basis - (s.total_premium_collected or 0) / max(1, s.quantity)
+            gap_pct = (px - net_cb) / net_cb if net_cb > 0 else 0
+            if gap_pct < -0.05:   # >=5% underwater after CC premium credit
+                days_held = (datetime.utcnow() - s.opened_at).days
+                tied = px * s.quantity            # current dead-money market value
+                stuck.append((s.symbol, s.quantity, net_cb, px, days_held, tied, gap_pct))
+
+        if not stuck:
+            return memos
+
+        # Aggregate dead-capital opportunity cost: monthly premium yield those
+        # dollars could have earned if redeployed as fresh put collateral.
+        total_tied = sum(r[5] for r in stuck)
+        # ~1.5% / mo premium-yield-on-collateral (matches Module 8 assumption).
+        opportunity_cost = total_tied * 0.015
+
+        # Headline + per-symbol detail (top 5 by tied capital).
+        stuck.sort(key=lambda r: -r[5])
+        lines = []
+        for sym, qty, cb, px, days, tied, gap in stuck[:5]:
+            lines.append(
+                f"  {sym}: {qty}sh @ ${cb:.2f} cb, now ${px:.2f} ({gap*100:+.1f}%), "
+                f"held {days}d → ${tied:,.0f} tied"
+            )
+
+        if self._should_speak("stuck_wheel_count", float(len(stuck)),
+                              worse_when="higher", worsen_pct=0.0):
+            memos.append(ConsigliereMemo(
+                category="risk",
+                severity="warning",
+                title=f"Stuck wheel: {len(stuck)} names trapped, ~${opportunity_cost:,.0f}/mo dead-capital cost",
+                body=(
+                    f"{len(stuck)} assigned positions held >60d with current price ≥5% "
+                    f"below net cost basis (after CC premium credit). Top names:\n"
+                    + "\n".join(lines)
+                    + f"\nTotal tied capital ${total_tied:,.0f}. At ~1.5%/mo redeployed "
+                    f"premium yield that's ~${opportunity_cost:,.0f}/mo of opportunity cost "
+                    f"while waiting for these to recover. "
+                    f"Advisory: review the wheel-exit policy on the longest-held / "
+                    f"deepest-underwater names — letting them go at a small loss may "
+                    f"compound faster than waiting for CC premium to close the gap."
+                ),
+                metric_name="stuck_wheel_count",
+                metric_value=float(len(stuck)),
+                metric_benchmark=0.0,
+                impact_eur_month=round(opportunity_cost, 0),
+                sample_n=len(stuck),
+                confidence=self._confidence_label(len(stuck)),
+            ))
+
+        return memos
+
+    # ══════════════════════════════════════════════════════════
+    # MODULE 10: EXECUTION-QUALITY TREND + $/MONTH
+    # Trends spread capture month-over-month; dollarizes monthly leak that
+    # scales with deployment so the cost stays visible as the account grows.
+    # ══════════════════════════════════════════════════════════
+
+    def _review_execution_quality_trend(self) -> list[ConsigliereMemo]:
+        from src.core.models import Trade, TradeType, OrderStatus
+
+        memos = []
+        now = datetime.utcnow()
+        cur_start = now - timedelta(days=30)
+        prv_start = now - timedelta(days=60)
+
+        with get_db() as db:
+            recent = db.query(Trade).filter(
+                Trade.trade_type.in_([TradeType.SELL_PUT, TradeType.SELL_CALL]),
+                Trade.order_status == OrderStatus.FILLED,
+                Trade.mid_at_entry.isnot(None),
+                Trade.fill_price > 0,
+                Trade.created_at >= prv_start,
+            ).all()
+
+        def _samples(trades, start, end):
+            out = []
+            for t in trades:
+                if not (start <= t.created_at < end):
+                    continue
+                bid, ask, mid, fill = t.bid_at_entry, t.ask_at_entry, t.mid_at_entry, t.fill_price
+                if bid is None or ask is None or mid is None:
+                    continue
+                spread = ask - bid
+                if spread <= 0 or mid <= 0:
+                    continue
+                capture = (fill - bid) / spread
+                slip = (mid - fill) * 100 * (t.quantity or 1)  # $ given up vs mid (per contract)
+                out.append((capture, slip))
+            return out
+
+        cur = _samples(recent, cur_start, now)
+        prv = _samples(recent, prv_start, cur_start)
+        if len(cur) < 5:
+            return memos  # not enough to trend
+
+        cur_cap = sum(s[0] for s in cur) / len(cur)
+        cur_leak = sum(s[1] for s in cur)
+        # Annualize by trade-rate: extrapolate this month's leak to a monthly figure.
+        leak_per_month = cur_leak * (30 / 30)  # already a 30-day window
+
+        prv_cap = sum(s[0] for s in prv) / len(prv) if prv else None
+        trend_txt = ""
+        worsened = False
+        if prv_cap is not None and len(prv) >= 5:
+            delta = (cur_cap - prv_cap) * 100
+            arrow = "↑" if delta > 0 else "↓"
+            trend_txt = f" vs {prv_cap*100:.0f}% prior month ({arrow}{abs(delta):.0f}pp)"
+            worsened = delta < -3.0
+
+        # Speak when: worsening OR persistently bad. Skip when fine and stable.
+        speak = worsened or cur_cap < 0.40
+        if speak and self._should_speak(
+            "execution_capture_monthly", cur_cap * 100,
+            worse_when="lower", worsen_pct=0.05,
+        ):
+            memos.append(ConsigliereMemo(
+                category="improvement",
+                severity="warning" if worsened else "suggestion",
+                title=(
+                    f"Execution trend: {cur_cap*100:.0f}% spread capture this month"
+                    f"{trend_txt}, ~${abs(leak_per_month):,.0f}/mo leak"
+                ),
+                body=(
+                    f"Across {len(cur)} premium-sells the last 30d, fills landed "
+                    f"{cur_cap*100:.0f}% of the way bid→ask{trend_txt}. "
+                    f"That gave up ~${abs(leak_per_month):,.0f}/mo vs filling at mid. "
+                    f"This $-leak scales linearly with deployment, so the cost will "
+                    f"grow as the NLV ramps — fix the limit-pricing policy before "
+                    f"scaling. Mid-or-slightly-better limit with a short reprice "
+                    f"window typically recovers most of the leak on liquid names. "
+                    f"Observation only — orders are unchanged."
+                ),
+                metric_name="execution_capture_monthly",
+                metric_value=round(cur_cap * 100, 1),
+                metric_benchmark=50.0,
+                impact_eur_month=round(abs(leak_per_month), 0),
+                sample_n=len(cur),
+                confidence=self._confidence_label(len(cur)),
+            ))
+        return memos
+
+    # ══════════════════════════════════════════════════════════
+    # MODULE 11: REGIME-AWARE CONFIG (bridge to MarsWalk)
+    # Classify the live regime and surface MarsWalk's best-config-for-category.
+    # ══════════════════════════════════════════════════════════
+
+    def _review_regime_aware_config(self) -> list[ConsigliereMemo]:
+        memos = []
+        # Read current VIX from system_state (set by the live state writer).
+        try:
+            from src.core.models import SystemState
+            with get_db() as db:
+                row = db.query(SystemState).filter_by(key="vix").first()
+            vix = float(row.value) if row and row.value else None
+        except Exception:
+            vix = None
+        if vix is None:
+            return memos
+
+        # Simple live-regime classifier (matches the MarsWalk regime categories).
+        if vix > 28:
+            live_category, label = "crash", "vol spike / crash"
+        elif vix < 14:
+            live_category, label = "breakthrough", "low-vol grind"
+        elif vix < 20:
+            live_category, label = "sideways", "choppy / sideways"
+        else:
+            live_category, label = "whipsaw", "elevated / whipsaw"
+
+        # Best MarsWalk run for the matching category.
+        try:
+            from src.marswalk.models import get_mw_db, Run
+            with get_mw_db() as db:
+                runs = db.query(Run).filter(Run.category == live_category).all()
+        except Exception:
+            return memos
+        if not runs:
+            return memos
+
+        best = max(runs, key=lambda r: r.final_return_pct)
+        best_avg = sum(r.final_return_pct for r in runs) / len(runs)
+
+        # Speak once per week per regime category — skip if already advised
+        # about this same regime in the last 7 days.
+        metric_key = f"regime_aware_{live_category}"
+        if not self._recent_memo(metric_key, days=7):
+            memos.append(ConsigliereMemo(
+                category="strategy",
+                severity="info",
+                title=f"Regime ≈ {label} (VIX {vix:.1f}); best MarsWalk config: dte {best.dte_min}–{best.dte_max}, Δ {best.delta_min:.2f}–{best.delta_max:.2f}",
+                body=(
+                    f"Live regime classified as '{label}' (VIX {vix:.1f}). MarsWalk has "
+                    f"{len(runs)} run(s) in the matching '{live_category}' category; "
+                    f"best returned {best.final_return_pct:+.1f}% on {best.regime_name} "
+                    f"using DTE {best.dte_min}-{best.dte_max}, delta "
+                    f"{best.delta_min:.2f}-{best.delta_max:.2f}. "
+                    f"Average across category: {best_avg:+.1f}%. "
+                    f"Advisory — confidence depends on backtest count; rerun MarsWalk "
+                    f"to widen the sample before changing live parameters."
+                ),
+                metric_name="regime_best_return_pct",
+                metric_value=round(best.final_return_pct, 1),
+                metric_benchmark=24.0,
+                sample_n=len(runs),
+                confidence=self._confidence_label(len(runs)),
+            ))
+        return memos
+
+    # ══════════════════════════════════════════════════════════
+    # MODULE 12: PER-NAME P&L ATTRIBUTION → EVICTION CANDIDATES
+    # Which names create vs trap capital? Feed eviction with evidence.
+    # ══════════════════════════════════════════════════════════
+
+    def _review_per_name_attribution(self) -> list[ConsigliereMemo]:
+        from src.core.models import Position, PositionStatus
+
+        memos = []
+        cutoff = datetime.utcnow() - timedelta(days=180)
+        with get_db() as db:
+            closed = db.query(Position).filter(
+                Position.status.in_([PositionStatus.CLOSED, PositionStatus.EXPIRED]),
+                Position.opened_at >= cutoff,
+            ).all()
+
+        if len(closed) < 10:
+            return memos
+
+        agg: dict[str, dict] = {}
+        for p in closed:
+            a = agg.setdefault(p.symbol, {"pnl": 0.0, "n": 0})
+            a["pnl"] += p.realized_pnl or 0
+            a["n"] += 1
+
+        losers = sorted(
+            [(sym, d["pnl"], d["n"]) for sym, d in agg.items() if d["pnl"] < -500 and d["n"] >= 2],
+            key=lambda r: r[1],
+        )
+        if not losers:
+            return memos
+
+        worst_sum = sum(r[1] for r in losers[:5])
+        lines = [f"  {sym}: ${pnl:,.0f} over {n} cycles" for sym, pnl, n in losers[:5]]
+        n_sample = sum(d["n"] for d in agg.values())
+
+        if self._should_speak("per_name_loser_count", float(len(losers)),
+                              worse_when="higher", worsen_pct=0.20):
+            memos.append(ConsigliereMemo(
+                category="improvement",
+                severity="suggestion",
+                title=f"{len(losers)} symbols net-losers over 180d (top 5: ${worst_sum:,.0f})",
+                body=(
+                    f"Per-name P&L attribution across {n_sample} closed cycles "
+                    f"surfaces {len(losers)} symbols with >$500 net loss and ≥2 "
+                    f"completed cycles. Worst:\n" + "\n".join(lines) +
+                    f"\nAdvisory: these are eviction candidates for the discovered "
+                    f"pool — recurring losers should require explicit justification "
+                    f"to stay in the universe."
+                ),
+                metric_name="per_name_loser_count",
+                metric_value=float(len(losers)),
+                metric_benchmark=0.0,
+                impact_eur_month=round(abs(worst_sum) / 6.0, 0),  # 180d sample → ~/month
+                sample_n=n_sample,
+                confidence=self._confidence_label(n_sample),
+            ))
+        return memos
+
+    # ══════════════════════════════════════════════════════════
+    # MODULE 13: LIVE-VS-BACKTEST DIVERGENCE WATCHDOG
+    # Watch the live YTD curve against the backtest expectation for the
+    # current regime — flag unexplained drift.
+    # ══════════════════════════════════════════════════════════
+
+    def _review_live_vs_backtest(self) -> list[ConsigliereMemo]:
+        memos = []
+        nlv = self._live_nlv()
+        if not nlv:
+            return memos
+
+        # Live YTD return — use realized P&L since Jan 1 as a proxy (no daily snapshot).
+        from src.core.models import Position, PositionStatus
+        ytd_start = datetime(datetime.utcnow().year, 1, 1)
+        with get_db() as db:
+            closed = db.query(Position).filter(
+                Position.status.in_([PositionStatus.CLOSED, PositionStatus.EXPIRED]),
+                Position.closed_at >= ytd_start,
+            ).all()
+        if not closed:
+            return memos
+        live_pnl = sum(p.realized_pnl or 0 for p in closed)
+        live_pct = live_pnl / nlv * 100
+
+        # Backtest expectation: average final_return_pct from MarsWalk runs
+        # in any "neutral/sideways/breakthrough" category as a baseline.
+        try:
+            from src.marswalk.models import get_mw_db, Run
+            with get_mw_db() as db:
+                runs = db.query(Run).filter(
+                    Run.category.in_(["sideways", "breakthrough"])
+                ).all()
+        except Exception:
+            return memos
+        if not runs:
+            return memos
+        # MarsWalk runs are full-window returns, not annualized. Scale to YTD fraction.
+        ytd_frac = (datetime.utcnow() - ytd_start).days / 365.0
+        backtest_expected = (sum(r.final_return_pct for r in runs) / len(runs)) * ytd_frac
+        drift = live_pct - backtest_expected
+
+        if abs(drift) > 5.0 and self._should_speak(
+            "live_vs_backtest_drift_pct", abs(drift),
+            worse_when="higher", worsen_pct=0.20,
+        ):
+            direction = "above" if drift > 0 else "below"
+            memos.append(ConsigliereMemo(
+                category="performance",
+                severity="info" if drift > 0 else "suggestion",
+                title=f"Live YTD {live_pct:+.1f}% is {abs(drift):.1f}pp {direction} backtest baseline",
+                body=(
+                    f"Live YTD realized P&L is {live_pct:+.1f}% of NLV (proxy: closed "
+                    f"positions since {ytd_start.date()}). MarsWalk's non-crash regime "
+                    f"baseline scaled to YTD is {backtest_expected:+.1f}%. "
+                    f"Drift {drift:+.1f}pp. "
+                    f"Possible causes: selection drift, execution leak, leverage delta "
+                    f"(live uses margin, backtest is cash-secured), or a regime MarsWalk "
+                    f"didn't cover. Self-diagnostic — no action."
+                ),
+                metric_name="live_vs_backtest_drift_pct",
+                metric_value=round(abs(drift), 1),
+                metric_benchmark=0.0,
+                sample_n=len(runs),
+                confidence=self._confidence_label(len(runs)),
+            ))
+        return memos
+
+    # ══════════════════════════════════════════════════════════
+    # MODULE 14: FORWARD EVENT-RISK AGGREGATION
+    # The earnings gate is reactive (per-entry). This looks ahead and
+    # aggregates exposure — concentrated gap risk you can act on.
+    # ══════════════════════════════════════════════════════════
+
+    def _review_forward_event_risk(self) -> list[ConsigliereMemo]:
+        memos = []
+        from src.core.models import Position, PositionStatus
+
+        try:
+            from src.broker.market_data import has_upcoming_earnings
+        except Exception:
+            return memos
+
+        with get_db() as db:
+            puts = db.query(Position).filter(
+                Position.status == PositionStatus.OPEN,
+                Position.position_type == "short_put",
+            ).all()
+
+        if not puts:
+            return memos
+
+        exposed = []  # (symbol, strike, qty, days_to_expiry)
+        for p in puts:
+            if not p.expiry or not p.strike:
+                continue
+            try:
+                exp_d = datetime.strptime(p.expiry, "%Y%m%d").date()
+                dte = (exp_d - datetime.utcnow().date()).days
+                if dte <= 0:
+                    continue
+                if has_upcoming_earnings(p.symbol, within_days=dte):
+                    exposed.append((p.symbol, p.strike, p.quantity or 1, dte))
+            except Exception:
+                continue
+
+        if not exposed:
+            return memos
+
+        # Dollarize concentrated gap risk: estimate ~5% adverse gap on each
+        # earnings name × notional (industry rule of thumb for earnings move).
+        gap_dollar_risk = sum(s * q * 100 * 0.05 for _, s, q, _ in exposed)
+        names = ", ".join(sorted({e[0] for e in exposed})[:8])
+
+        if self._should_speak("forward_earnings_exposure_count", float(len(exposed)),
+                              worse_when="higher", worsen_pct=0.0):
+            memos.append(ConsigliereMemo(
+                category="risk",
+                severity="warning" if len(exposed) >= 5 else "suggestion",
+                title=(
+                    f"{len(exposed)} open puts cross earnings before expiry "
+                    f"(~${gap_dollar_risk:,.0f} concentrated gap risk)"
+                ),
+                body=(
+                    f"Names: {names}. Each has earnings before expiry — concentrated "
+                    f"adverse-gap risk in a single window. Estimate assumes ~5% adverse "
+                    f"move per exposed name × notional. The live earnings gate prevents "
+                    f"NEW entries, but already-open puts are still exposed. Advisory: "
+                    f"consider rolling the largest-notional names out past earnings "
+                    f"or closing for a small credit."
+                ),
+                metric_name="forward_earnings_exposure_count",
+                metric_value=float(len(exposed)),
+                metric_benchmark=0.0,
+                impact_eur_month=round(gap_dollar_risk, 0),  # gap-risk magnitude, not monthly
+                sample_n=len(exposed),
+                confidence=self._confidence_label(len(exposed)),
+            ))
         return memos

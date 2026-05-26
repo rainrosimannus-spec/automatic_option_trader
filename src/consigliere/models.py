@@ -44,6 +44,15 @@ class ConsigliereMemo(Base):
     metric_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     metric_benchmark: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
+    # Meta-fields powering the dollarize / speak-on-change / n-confidence framework.
+    # Triage by money, not memo count: every memo states its estimated $/month
+    # impact where possible and its sample size + confidence band.
+    impact_eur_month: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sample_n: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    confidence: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    # "low" (n<10) | "medium" (10-29) | "high" (>=30) — thin-sample memos
+    # are explicitly down-ranked vs MarsWalk's larger N.
+
     # Status
     status: Mapped[str] = mapped_column(String(15), default="new")
     # "new", "read", "acted_on", "dismissed"
