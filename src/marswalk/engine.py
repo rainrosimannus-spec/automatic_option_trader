@@ -130,6 +130,14 @@ class Params:
     drawdown_threshold_light: float = 0.02   # >2% DD: × 0.75 slots
     drawdown_threshold_mid: float = 0.05     # >5% DD: × 0.50 slots
     drawdown_threshold_severe: float = 0.10  # >10% DD: × 0.25 slots
+    # Parallel 20-day lookback (NEW vs live — catches slow-grind bears like bear_2022
+    # that never trigger the 5d window). Engine takes min(mult_5d, mult_20d).
+    # 0 disables. Mild thresholds: a 20d window of -3/-6/-12% is roughly equivalent
+    # in severity to the 5d -2/-5/-10% under a steady decline.
+    drawdown_long_lookback_days: int = 20
+    drawdown_long_threshold_light: float = 0.03
+    drawdown_long_threshold_mid: float = 0.06
+    drawdown_long_threshold_severe: float = 0.12
     intraday_loss_halt_pct: float = 0.025    # halt new puts if MtM loss > 2.5% NLV
     intraday_loss_halt_floor: float = 50_000.0   # absolute $ floor on the halt threshold
     daily_cb_pct: float = 0.05               # daily NLV drop > 5% → full halt
@@ -517,18 +525,31 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         else:
             day_delta_min, day_delta_max = params.delta_min, params.delta_max
 
-        # (d) Drawdown daily-cap scaler (risk._drawdown_cap_multiplier).
-        #     Computes drawdown over last `drawdown_lookback_days` and scales slots.
-        dd_window = nlv_window[-(params.drawdown_lookback_days + 1):-1]
-        dd = 0.0
-        if dd_window:
-            peak = max(dd_window)
-            if peak > 0 and prev_nlv > 0:
-                dd = max(0.0, (peak - prev_nlv) / peak)
-        dd_mult = _drawdown_multiplier(dd,
-                                       params.drawdown_threshold_light,
-                                       params.drawdown_threshold_mid,
-                                       params.drawdown_threshold_severe)
+        # (d) Drawdown daily-cap scaler (risk._drawdown_cap_multiplier) — 5d window.
+        #     Plus a parallel 20d lookback that catches slow-grind bears (NEW vs live).
+        #     Engine takes min(5d_mult, 20d_mult) so whichever sees the deeper trouble wins.
+        def _dd_pct(lb: int) -> float:
+            w = nlv_window[-(lb + 1):-1]
+            if not w:
+                return 0.0
+            peak = max(w)
+            if peak <= 0 or prev_nlv <= 0:
+                return 0.0
+            return max(0.0, (peak - prev_nlv) / peak)
+
+        dd_mult = _drawdown_multiplier(
+            _dd_pct(params.drawdown_lookback_days),
+            params.drawdown_threshold_light,
+            params.drawdown_threshold_mid,
+            params.drawdown_threshold_severe,
+        )
+        if params.drawdown_long_lookback_days > 0:
+            dd_mult = min(dd_mult, _drawdown_multiplier(
+                _dd_pct(params.drawdown_long_lookback_days),
+                params.drawdown_long_threshold_light,
+                params.drawdown_long_threshold_mid,
+                params.drawdown_long_threshold_severe,
+            ))
 
         held = {p["sym"] for p in short_puts} | set(stocks.keys())
         slots = int((params.max_positions - len(short_puts)) * dd_mult)
@@ -542,8 +563,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 if not q:
                     continue
                 spot, iv = q
+                ivr = iv_rank(sym, d, iv)  # computed unconditionally for iv_rank_sizing
                 if params.iv_rank_min > 0:           # IV-rank gate (only sell elevated IV)
-                    ivr = iv_rank(sym, d, iv)
                     if ivr is not None and ivr < params.iv_rank_min:
                         continue
                 if earnings_on:                       # earnings gate (skip near earnings)
@@ -562,13 +583,23 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                                              params.dte_min, params.dte_max, d)
                 if cands:
                     top = max(cands, key=lambda c: c.score)
-                    ranked.append((top.score, sym, top))
+                    ranked.append((top.score, sym, top, ivr))
             ranked.sort(key=lambda x: x[0], reverse=True)
-            for _, sym, top in ranked:
+            for _, sym, top, ivr in ranked:
                 if slots <= 0:
                     break
+                # iv_rank_sizing (settings.strategy.iv_rank_sizing_enabled): scale
+                # contracts up when IV-rank is elevated. Cap with max_multiplier.
+                qty_mult = 1
+                if getattr(cfg, "iv_rank_sizing_enabled", False) and ivr is not None:
+                    cap = max(1, getattr(cfg, "iv_rank_size_max_multiplier", 1))
+                    if ivr >= getattr(cfg, "iv_rank_size_high", 70):
+                        qty_mult = min(3, cap)
+                    elif ivr >= getattr(cfg, "iv_rank_size_mid", 50):
+                        qty_mult = min(2, cap)
+                contracts = params.contracts * qty_mult
                 reserved = sum(p["strike"] * 100 * p["qty"] for p in short_puts)
-                need = top.strike * 100 * params.contracts
+                need = top.strike * 100 * contracts
                 if params.margin_on:
                     # Margin mode: the % NLV cap admits notional up to NLV*cap*multiple
                     # (per-put margin requirement = notional/multiple). No cash check —
@@ -590,10 +621,10 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                                         if _SECTORS.get(p["sym"], "Other") == sec)
                     if (sec_committed + need) / (reserved + need) > rcfg.max_sector_pct:
                         continue
-                cash += top.bid * 100 * params.contracts
+                cash += top.bid * 100 * contracts
                 short_puts.append({"sym": sym, "strike": top.strike,
                                    "expiry": _exp_date(top.expiry),
-                                   "premium": top.bid, "qty": params.contracts})
+                                   "premium": top.bid, "qty": contracts})
                 held.add(sym)
                 slots -= 1
                 n_trades += 1
@@ -631,9 +662,10 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             max_dd = max(max_dd, (peak - nlv) / peak * 100)
         prev_nlv = nlv  # cap base for tomorrow's deployment
         nlv_window.append(nlv)
-        # Keep the window bounded — only the last (lookback+2) entries matter.
-        if len(nlv_window) > params.drawdown_lookback_days + 2:
-            nlv_window = nlv_window[-(params.drawdown_lookback_days + 2):]
+        # Keep the window bounded — only the last max(short, long)+2 entries matter.
+        max_lb = max(params.drawdown_lookback_days, params.drawdown_long_lookback_days)
+        if len(nlv_window) > max_lb + 2:
+            nlv_window = nlv_window[-(max_lb + 2):]
 
     final = points[-1]
     return {
