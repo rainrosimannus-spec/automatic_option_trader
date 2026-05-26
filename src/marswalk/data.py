@@ -96,6 +96,74 @@ def fetch_spy_yahoo(regime, force: bool = False):
         log.warning("marswalk_spy_yahoo_failed", regime=regime.id, error=str(e))
 
 
+def fetch_symbols_yahoo(regime, symbols: list[str], force: bool = False):
+    """Offline backfill of any equity universe via Yahoo v8 chart endpoint.
+
+    Stores daily close + a realized-vol IV proxy (20-day trailing std of
+    log-returns × sqrt(252)) so the engine's pricing model has reasonable
+    vol input when IBKR data isn't available. Idempotent per (regime, symbol).
+    """
+    import urllib.request, json, math
+    from datetime import timedelta
+    start = _pdate(regime.start) - timedelta(days=80)  # 80d warm-up for realized-vol
+    end = _pdate(regime.end) + timedelta(days=1)
+    p1 = int(datetime.combine(start, datetime.min.time()).timestamp())
+    p2 = int(datetime.combine(end, datetime.min.time()).timestamp())
+
+    for sym in symbols:
+        if not force and has_data(regime.id, sym):
+            continue
+        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+               f"?period1={p1}&period2={p2}&interval=1d")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            body = urllib.request.urlopen(req, timeout=20).read()
+            payload = json.loads(body)
+            result = payload.get("chart", {}).get("result")
+            if not result:
+                log.warning("marswalk_yahoo_no_result", regime=regime.id, symbol=sym)
+                continue
+            result = result[0]
+            ts = result.get("timestamp") or []
+            closes = result.get("indicators", {}).get("quote", [{}])[0].get("close") or []
+            # Build a date-ordered close list, dropping None bars.
+            day_closes = []
+            for t, c in zip(ts, closes):
+                if c is None:
+                    continue
+                d = datetime.utcfromtimestamp(t).date()
+                day_closes.append((d, float(c)))
+            if len(day_closes) < 22:
+                continue
+            # Trailing 20-day realized vol -> IV proxy (decimal, annualized).
+            iv_window = 20
+            rows = []
+            regime_start = _pdate(regime.start)
+            regime_end = _pdate(regime.end)
+            for i in range(iv_window, len(day_closes)):
+                d, c = day_closes[i]
+                if d < regime_start or d > regime_end:
+                    continue
+                rets = []
+                for j in range(i - iv_window, i):
+                    prev_c = day_closes[j][1]
+                    cur_c = day_closes[j+1][1] if j+1 < len(day_closes) else c
+                    if prev_c > 0:
+                        rets.append(math.log(cur_c / prev_c))
+                if len(rets) < 5:
+                    continue
+                mean = sum(rets) / len(rets)
+                var = sum((r - mean) ** 2 for r in rets) / max(1, len(rets) - 1)
+                iv = math.sqrt(var) * math.sqrt(252)
+                if iv <= 0:
+                    continue
+                rows.append((d.strftime("%Y-%m-%d"), c, iv))
+            if rows:
+                _store(regime.id, sym, rows)
+        except Exception as e:
+            log.warning("marswalk_yahoo_failed", regime=regime.id, symbol=sym, error=str(e))
+
+
 def _store(regime_id, symbol, rows):
     if not rows:
         return

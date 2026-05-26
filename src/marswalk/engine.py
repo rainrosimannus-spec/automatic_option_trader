@@ -29,12 +29,18 @@ from src.marswalk import pricing
 TARGET_ANNUAL = 0.24
 
 # Sector map for the backtest universe (sector cap gate). Unknown -> "Other".
+# Aligned 2026-05-26 to the live options_universe.yaml. Names retained from the
+# prior universe (INTC/CSCO/etc.) are kept here so any leftover cached data still
+# maps correctly without breaking the gate.
 _SECTORS = {
     # Technology
     "AAPL": "Technology", "MSFT": "Technology", "NVDA": "Technology", "AVGO": "Technology",
     "ORCL": "Technology", "CRM": "Technology", "ADBE": "Technology", "AMD": "Technology",
     "INTC": "Technology", "CSCO": "Technology", "QCOM": "Technology", "TXN": "Technology",
     "IBM": "Technology", "NOW": "Technology", "INTU": "Technology",
+    "ADSK": "Technology", "ANET": "Technology", "ARM": "Technology", "ASML": "Technology",
+    "CDNS": "Technology", "FSLR": "Technology", "KLAC": "Technology", "LRCX": "Technology",
+    "MPWR": "Technology", "PLTR": "Technology", "VEEV": "Technology",
     # Communication
     "GOOGL": "Communication", "META": "Communication", "NFLX": "Communication",
     "DIS": "Communication", "CMCSA": "Communication", "T": "Communication",
@@ -43,6 +49,8 @@ _SECTORS = {
     "AMZN": "ConsumerDisc", "TSLA": "ConsumerDisc", "HD": "ConsumerDisc", "MCD": "ConsumerDisc",
     "NKE": "ConsumerDisc", "LOW": "ConsumerDisc", "SBUX": "ConsumerDisc",
     "BKNG": "ConsumerDisc", "TJX": "ConsumerDisc",
+    "ABNB": "ConsumerDisc", "CMG": "ConsumerDisc", "DECK": "ConsumerDisc",
+    "LULU": "ConsumerDisc", "RACE": "ConsumerDisc",
     # Consumer Staples
     "PG": "ConsumerStaples", "KO": "ConsumerStaples", "PEP": "ConsumerStaples",
     "COST": "ConsumerStaples", "WMT": "ConsumerStaples", "PM": "ConsumerStaples",
@@ -50,16 +58,19 @@ _SECTORS = {
     # Financials
     "JPM": "Financials", "BAC": "Financials", "WFC": "Financials", "GS": "Financials",
     "MS": "Financials", "BLK": "Financials", "SCHW": "Financials", "AXP": "Financials",
-    "C": "Financials",
+    "C": "Financials", "MA": "Financials", "V": "Financials", "SPGI": "Financials",
     # Healthcare
     "JNJ": "Healthcare", "UNH": "Healthcare", "LLY": "Healthcare", "PFE": "Healthcare",
     "MRK": "Healthcare", "ABBV": "Healthcare", "TMO": "Healthcare", "ABT": "Healthcare",
     "DHR": "Healthcare", "BMY": "Healthcare",
+    "AZN": "Healthcare", "DXCM": "Healthcare", "IDXX": "Healthcare", "ISRG": "Healthcare",
+    "MTD": "Healthcare", "SYK": "Healthcare", "VRTX": "Healthcare", "ZTS": "Healthcare",
     # Energy
     "XOM": "Energy", "CVX": "Energy", "COP": "Energy", "SLB": "Energy",
     # Industrials
     "CAT": "Industrials", "BA": "Industrials", "HON": "Industrials", "GE": "Industrials",
     "UPS": "Industrials", "RTX": "Industrials", "DE": "Industrials",
+    "CPRT": "Industrials", "HWM": "Industrials", "ROL": "Industrials",
     # Materials / Utilities
     "LIN": "Materials", "SHW": "Materials", "NEE": "Utilities", "DUK": "Utilities",
 }
