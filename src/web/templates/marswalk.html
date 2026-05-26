@@ -184,7 +184,14 @@
           <h2 class="text-sm font-semibold text-gray-100">{{ c.regime.name }}</h2>
           <span class="text-[10px] px-1.5 py-0.5 rounded {{ cat_color.get(c.regime.category, 'bg-gray-800 text-gray-400') }}">{{ c.regime.category }}</span>
         </div>
-        <div class="text-[11px] text-gray-600 mt-0.5">{{ c.regime.start }} → {{ c.regime.end }}</div>
+        <div class="text-[11px] text-gray-600 mt-0.5">
+          {{ c.regime.start }} → {{ c.regime.end }}
+          {% if c.has_analog %}
+            <span class="ml-1 px-1 py-0.5 rounded bg-cyan-900/40 text-cyan-300 text-[9px] font-mono">
+              ANALOG: {{ c.regime.historical_analog.label or (c.regime.historical_analog.start ~ '..' ~ c.regime.historical_analog.end) }}
+            </span>
+          {% endif %}
+        </div>
       </div>
       {% if c.run %}
       <div class="text-right">
@@ -209,7 +216,13 @@
     </div>
     {% else %}
     <div class="h-[180px] flex items-center justify-center text-xs text-gray-600 border border-dashed border-gray-800 rounded text-center px-4">
-      {% if c.is_forward %}
+      {% if c.is_forward and c.has_analog %}
+        <div>
+          <div class="text-cyan-400 mb-1">📜 Pending — backtests on historical analog</div>
+          <div>Forward window starts <span class="font-mono">{{ c.regime.start }}</span>.</div>
+          <div class="mt-1 text-[10px]">Engine uses <span class="font-mono">{{ c.regime.historical_analog.start }}..{{ c.regime.historical_analog.end }}</span> ({{ c.regime.historical_analog.label }}) until then.</div>
+        </div>
+      {% elif c.is_forward %}
         <div>
           <div class="text-amber-400 mb-1">⏳ Forward scenario</div>
           <div>Data window starts <span class="font-mono">{{ c.regime.start }}</span> — engine no-ops until bars exist.</div>

@@ -40,7 +40,9 @@ def marswalk_page(request: Request):
                         "target": [p.target_pct for p in pts],
                     }
             is_forward = str(reg.start) > today
-            cards.append({"regime": reg, "run": run, "chart": chart, "is_forward": is_forward})
+            has_analog = is_forward and reg.historical_analog is not None
+            cards.append({"regime": reg, "run": run, "chart": chart,
+                          "is_forward": is_forward, "has_analog": has_analog})
 
     # "Run now as it is" — defaults mirror the LIVE aggressive son-mode config
     # we committed in c522a8e + hybrid wheel 63d8ed8. Read from the Pydantic

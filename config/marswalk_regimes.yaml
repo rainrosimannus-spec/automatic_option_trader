@@ -158,7 +158,11 @@ regimes:
     category: scenario
     start: "2026-09-01"
     end: "2027-06-30"
-    why: "Forward scenario: AI capex/valuation bubble unwind. NVDA/AVGO/AMD/PLTR/ANET/CDNS/KLAC/LRCX/MPWR price for endless hyperscaler capex; if Big Tech cuts AI infra spend 30%+, multiple compression spreads across the tech-heavy universe. Engine no-ops until window data exists. Closest historical analog: dot-com bust 2000-03-10 → 2002-10-09 (Nasdaq -83%; MSFT -65%, ORCL -84%, AAPL -75% from peak). Tests whether per-name MA200 (which would fire across most of the universe within 4-8 weeks) and VIX halt protect a portfolio concentrated in correlated AI exposure. Expected: per-name MA200 gate captures most of the savings, similar to bear_2022 mode B."
+    why: "Forward scenario: AI capex/valuation bubble unwind. NVDA/AVGO/AMD/PLTR/ANET/CDNS/KLAC/LRCX/MPWR price for endless hyperscaler capex; if Big Tech cuts AI infra spend 30%+, multiple compression spreads across the tech-heavy universe. Closest historical analog: dot-com bust 2000-03-10 → 2002-10-09 (Nasdaq -83%; MSFT -65%, ORCL -84%, AAPL -75% from peak). Tests whether per-name MA200 (which would fire across most of the universe within 4-8 weeks) and VIX halt protect a portfolio concentrated in correlated AI exposure. Expected: per-name MA200 gate captures most of the savings, similar to bear_2022 mode B."
+    historical_analog:
+      start: "2000-03-10"
+      end: "2002-10-09"
+      label: "dot-com bust (Nasdaq -83%)"
 
   - id: energy_bounce_truce
     rank: 13
@@ -166,4 +170,8 @@ regimes:
     category: scenario
     start: "2026-12-01"
     end: "2027-06-30"
-    why: "Forward scenario: simultaneous resolution of the Iran war (active since 2026-02-28) and Ukraine war. Oil -25 to -30%, defense stocks down, broad growth + travel (BKNG, ABNB) + consumer (LULU, DECK, RACE, CMG) + EM reflation. VIX collapses as the geopolitical premium unwinds. No data yet (engine no-ops until window arrives). Closest analog: post-Gulf-War-1991 — S&P +20% in 3 months, oil halved. Tests whether the strategy CAPTURES a positive vol-crush: rich IV at entry (from elevated war premium) compressing into a calm reflation rally. Under son-mode aggressive sizing this regime should be massively positive — counter to the protective tilt of MA200."
+    why: "Forward scenario: simultaneous resolution of the Iran war (active since 2026-02-28) and Ukraine war. Oil -25 to -30%, defense stocks down, broad growth + travel (BKNG, ABNB) + consumer (LULU, DECK, RACE, CMG) + EM reflation. VIX collapses as the geopolitical premium unwinds. Closest analog: post-Gulf-War-1991 — S&P +20% in 3 months, oil halved. Tests whether the strategy CAPTURES a positive vol-crush: rich IV at entry (from elevated war premium) compressing into a calm reflation rally. NOTE: 1991 universe coverage is thin — most names you trade now didn't exist then. Engine output will be sparse but directionally informative."
+    historical_analog:
+      start: "1991-01-17"
+      end: "1991-04-30"
+      label: "post-Gulf-War 1991 (S&P +20%, oil halved)"

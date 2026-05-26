@@ -84,8 +84,10 @@ def fetch_spy_yahoo(regime, force: bool = False):
     from datetime import timedelta
     if not force and has_data(regime.id, "^SPY"):
         return
-    start = _pdate(regime.start) - timedelta(days=300)
-    end = _pdate(regime.end) + timedelta(days=1)
+    # Forward-scenario regimes fall through to their historical_analog window.
+    eff_start, eff_end, _is_analog = regime.effective_window()
+    start = _pdate(eff_start) - timedelta(days=300)
+    end = _pdate(eff_end) + timedelta(days=1)
     p1 = int(datetime.combine(start, datetime.min.time()).timestamp())
     p2 = int(datetime.combine(end, datetime.min.time()).timestamp())
     url = (f"https://query1.finance.yahoo.com/v8/finance/chart/SPY"
@@ -124,8 +126,10 @@ def fetch_symbols_yahoo(regime, symbols: list[str], force: bool = False):
     """
     import urllib.request, json, math
     from datetime import timedelta
-    start = _pdate(regime.start) - timedelta(days=430)  # ~300 trading days warmup so MA200 is hot on day 1
-    end = _pdate(regime.end) + timedelta(days=1)
+    # Forward-scenario regimes fall through to their historical_analog window.
+    eff_start, eff_end, _is_analog = regime.effective_window()
+    start = _pdate(eff_start) - timedelta(days=430)  # ~300 trading days warmup so MA200 is hot on day 1
+    end = _pdate(eff_end) + timedelta(days=1)
     p1 = int(datetime.combine(start, datetime.min.time()).timestamp())
     p2 = int(datetime.combine(end, datetime.min.time()).timestamp())
     pre_regime_id = f"{regime.id}_pre"
@@ -161,8 +165,8 @@ def fetch_symbols_yahoo(regime, symbols: list[str], force: bool = False):
             iv_window = 20
             rows = []          # in-regime bars (with IV)
             pre_rows = []      # pre-regime bars (close only — for MA200 warmup)
-            regime_start = _pdate(regime.start)
-            regime_end = _pdate(regime.end)
+            regime_start = _pdate(eff_start)
+            regime_end = _pdate(eff_end)
             for i, (d, c) in enumerate(day_closes):
                 if d > regime_end:
                     continue
@@ -230,7 +234,13 @@ def fetch_and_cache(regime, universe, force: bool = False):
         return
     ib = get_portfolio_ib()
 
-    start, end = _pdate(regime.start), _pdate(regime.end)
+    # Forward-scenario regimes fall through to their historical_analog window.
+    eff_start, eff_end, is_analog = regime.effective_window()
+    if is_analog:
+        log.info("marswalk_using_analog", regime=regime.id,
+                 window=f"{eff_start}..{eff_end}",
+                 label=getattr(regime.historical_analog, "label", ""))
+    start, end = _pdate(eff_start), _pdate(eff_end)
     # Extend the window 280 cal days before regime.start so per-name MA200 has
     # warmup. Pre-regime bars are stored separately (regime_id=f"{reg.id}_pre").
     from datetime import timedelta as _td
