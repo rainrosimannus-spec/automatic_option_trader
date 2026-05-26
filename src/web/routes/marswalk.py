@@ -188,3 +188,43 @@ def marswalk_run(
     fetch = not _is_us_rth_now()
     service.run_all_async(params, fetch=fetch)
     return RedirectResponse(url="/marswalk", status_code=303)
+
+
+# ── Short-DTE pricing calibration ────────────────────────────────────────
+# Run via curl: curl -X POST http://localhost:<port>/marswalk/calibrate-pricing
+# Snapshots live chain mids vs BSM theoretical for 0-7 DTE OTM puts across
+# the universe, writes data/pricing_calibration_<YYYYMMDD>.jsonl. Must run
+# in-process (uses portfolio IB singleton per ibkr-access-in-process-locked).
+import threading as _threading
+_calibration_state = {"active": False, "msg": "idle", "result": None}
+
+
+def _run_calibration_thread():
+    from tools.calibrate_short_dte_pricing import run_calibration
+    _calibration_state["active"] = True
+    _calibration_state["msg"] = "running"
+    try:
+        result = run_calibration()
+        _calibration_state["result"] = result
+        _calibration_state["msg"] = "done"
+    except Exception as e:
+        _calibration_state["result"] = {"status": "error", "msg": str(e)}
+        _calibration_state["msg"] = "error"
+    finally:
+        _calibration_state["active"] = False
+
+
+@router.post("/marswalk/calibrate-pricing")
+def calibrate_pricing():
+    """Trigger the short-DTE pricing calibration snapshot in a background thread.
+    Returns immediately; check /marswalk/calibrate-pricing/status for progress."""
+    if _calibration_state["active"]:
+        return {"status": "already_running", "msg": _calibration_state["msg"]}
+    _threading.Thread(target=_run_calibration_thread, daemon=True).start()
+    return {"status": "started"}
+
+
+@router.get("/marswalk/calibrate-pricing/status")
+def calibrate_pricing_status():
+    """Snapshot of the last calibration run."""
+    return dict(_calibration_state)
