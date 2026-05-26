@@ -49,9 +49,12 @@ def marswalk_page(request: Request):
                     }
             is_forward = str(reg.start) > today
             has_analog = is_forward and reg.historical_analog is not None
-            # Annualize the realized return. Use the EFFECTIVE window (analog
-            # dates when applicable), since the run was simulated against that
-            # data. Target is always TARGET_ANNUAL=24%/yr in the engine.
+            # Annualize ONLY when window is long enough for the extrapolation
+            # to be honest. Below this threshold, compounding the daily yield
+            # to a year produces absurd numbers (e.g. carry_2024 18-day +9.9%
+            # compounds to +573%/yr — mathematically valid but practically
+            # meaningless). Short windows show raw % over Nd instead.
+            ANNUAL_MIN_DAYS = 90
             eff_start, eff_end, _ = reg.effective_window(today)
             try:
                 from datetime import date as _date
@@ -59,7 +62,8 @@ def marswalk_page(request: Request):
             except Exception:
                 days = 365
             final_annual_pct = None
-            if run and run.final_return_pct is not None and days > 0:
+            if (run and run.final_return_pct is not None
+                    and days >= ANNUAL_MIN_DAYS):
                 final_annual_pct = ((1 + run.final_return_pct / 100.0) ** (365.0 / days) - 1) * 100.0
             cards.append({
                 "regime": reg, "run": run, "chart": chart,
@@ -67,6 +71,7 @@ def marswalk_page(request: Request):
                 "days": days,
                 "final_annual_pct": final_annual_pct,
                 "target_annual_pct": 24.0,   # TARGET_ANNUAL in engine.py
+                "short_window": days < ANNUAL_MIN_DAYS,
             })
 
     # "Run now as it is" — defaults mirror the LIVE aggressive son-mode config
