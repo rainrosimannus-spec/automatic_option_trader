@@ -200,8 +200,18 @@ class RiskConfig(BaseModel):
     # concentration on the few movers, not dilution across 47 names). Both
     # rejected; only the IV-rank floor remains.
     bull_regime_enabled: bool = True
-    bull_regime_vix_max: float = 18.0
+    # Lowered 2026-05-26 from 18 -> 16 after empirical sweep showed vix_max=18
+    # caused the detector to fire on some iran_war days (VIX briefly dipped
+    # below 18 mid-regime), regressing iran_war from +64 -> +57 %/yr. At
+    # vix_max=16 the detector cleanly distinguishes bulls from war/bear regimes.
+    bull_regime_vix_max: float = 16.0
     bull_regime_iv_rank_min: float = 50.0     # write only on names with IV rank >= 50 -> skip dead-IV consumer staples
+    # DTE extension in bulls — 0-7 instead of the cash-machine 0-3. Phase 2
+    # sweep (2026-05-26): adds +3 pp/yr on bull_2021, +24 pp/yr on grind_2024h1,
+    # +3.8 pp/yr on ai_2023, zero impact on non-bull regimes. The 4-7 DTE band
+    # captures meaningful theta in low-IV bulls where 0-3 DTE quotes pennies.
+    bull_regime_dte_min: int = 0
+    bull_regime_dte_max: int = 7
     # Drawdown-based daily position sizing (scales max_daily_positions)
     drawdown_lookback_days: int = 5
     drawdown_threshold_light: float = 0.02   # drawdown > this -> 75% of base cap

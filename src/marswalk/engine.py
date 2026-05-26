@@ -122,8 +122,11 @@ class Params:
     # empirical findings — only IV-rank floor improved bull returns; higher
     # delta and smaller per-name cap were tested and rejected).
     bull_regime_enabled: bool = True
-    bull_regime_vix_max: float = 18.0
+    bull_regime_vix_max: float = 16.0    # lowered from 18 — see live config docstring
     bull_regime_iv_rank_min: float = 50.0
+    # DTE extension in bulls — see live config bull_regime_dte_* docstring.
+    bull_regime_dte_min: int = 0
+    bull_regime_dte_max: int = 7
     max_margin_usage: float = 0.0     # 0 = use live settings.risk.max_margin_usage (60%
                                       # son-mode); >0 = override.
     # ── Pricing model ──
@@ -727,13 +730,19 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     name_below = sym_ma is not None and spot < sym_ma
                     if (breadth >= params.ma200_breadth_full_threshold) and name_below:
                         continue
-                chain = [sc for sc in pricing.build_contracts(spot, d, params.dte_max + 7, symbol=sym)
-                         if params.dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= params.dte_max]
-                score_iv = pricing.effective_iv(iv, (params.dte_min + params.dte_max) // 2,
+                # Bull-regime DTE override: in confirmed bulls extend DTE from
+                # the cash-machine 0-3 to 0-7. Mirrors live put_seller._resolve_dte.
+                day_dte_min, day_dte_max = (
+                    (params.bull_regime_dte_min, params.bull_regime_dte_max)
+                    if bull_today else (params.dte_min, params.dte_max)
+                )
+                chain = [sc for sc in pricing.build_contracts(spot, d, day_dte_max + 7, symbol=sym)
+                         if day_dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= day_dte_max]
+                score_iv = pricing.effective_iv(iv, (day_dte_min + day_dte_max) // 2,
                                                 params.short_dte_uplift_k)
                 cands = score_put_candidates(spot, score_iv, chain, put_cfg,
                                              day_delta_min, day_delta_max,
-                                             params.dte_min, params.dte_max, d)
+                                             day_dte_min, day_dte_max, d)
                 if cands:
                     top = max(cands, key=lambda c: c.score)
                     ranked.append((top.score, sym, top, ivr))

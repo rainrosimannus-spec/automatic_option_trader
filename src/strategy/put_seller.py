@@ -153,6 +153,16 @@ class PutSeller:
         regime = self.risk.get_regime()
         if regime.vix is None:
             return (7, 14)  # fail-open: no VIX data, use mid tier
+        # Bull-regime DTE override (USD only): in confirmed low-VIX bulls,
+        # extend DTE from 0-3 to 0-7. The 4-7 DTE band captures meaningful
+        # theta in low-IV bulls where 0-3 DTE quotes pennies. Marswalk Phase 2
+        # sweep showed +3 to +24 pp/yr across the three bull regimes with zero
+        # impact on bears/crashes/wars (because the bull detector doesn't fire
+        # there). See RiskConfig.bull_regime_dte_min/max.
+        rcfg = self.risk.cfg
+        if (currency == "USD" and rcfg.bull_regime_enabled
+                and self.risk.in_bull_regime()):
+            return (rcfg.bull_regime_dte_min, rcfg.bull_regime_dte_max)
         # Use effective tier from risk manager (accounts for VIX rate-of-change spike)
         tier = self.risk.effective_vix_tier(regime)
         if tier == "halt":
