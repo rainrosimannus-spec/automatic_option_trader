@@ -52,6 +52,13 @@ def marswalk_page(request: Request):
     # runs. Put DTE is VIX-tiered in live; the US low/mid-VIX tier is 0-3.
     s = StrategyConfig()
     r = RiskConfig()
+    default_nlv = 4_000_000
+    # Derive collateral_cap_pct + max_positions from the live NLV ramp (mirrors
+    # risk._effective_total_exposure_pct + scheduler options-count ladder), not
+    # the pre-ramp base. At $4M this lifts cap from 20% → 40%, which is what
+    # the live trader would actually grant a $4M account. Otherwise the engine
+    # would silently bind notional at $4M × 20% × 5x = $4M and flatline.
+    ramp_cap_pct, ramp_max_pos = _nlv_ramp(default_nlv)
     defaults = {
         "dte_min": 0,
         "dte_max": 3,
@@ -63,17 +70,15 @@ def marswalk_page(request: Request):
         "cc_delta_min": s.cc_delta_min,
         "cc_delta_max": s.cc_delta_max,
         "cc_min_premium": s.min_premium,
-        # Account & deployment knobs — large-account stress test ($4M = scaled
-        # NLV ramp tier where collateral cap lifts to 30% + max_positions=50).
-        # The small-account exemption kicks in if you drop NLV below $100k×cap.
-        "start_nlv": 4_000_000,
-        "collateral_cap_pct": round(r.total_exposure_pct * 100, 1),
+        # Account & deployment knobs — large-account stress test ($4M).
+        "start_nlv": default_nlv,
+        "collateral_cap_pct": ramp_cap_pct,
         "uplift_k": 1.0,
         "gap_stress_pct": 0,
         # Live trades with IBKR portfolio margin → on by default.
         "margin_on": True,
         "margin_multiple": 5.0,
-        "max_positions": r.max_portfolio_positions,
+        "max_positions": ramp_max_pos,
         # Risk gates — aggressive son-mode values.
         "iv_rank_min": s.iv_rank_min,
         "vix_halt": r.vix_pause_threshold,
@@ -90,6 +95,36 @@ def marswalk_page(request: Request):
         "status": service.status(),
         "is_rth": _is_us_rth_now(),
     })
+
+
+def _nlv_ramp(nlv: float) -> tuple[float, int]:
+    """Return (collateral_cap_pct, max_positions) for a given NLV. Mirrors the
+    JS mwApplyNlvRamp() ladder in templates/marswalk.html so server-rendered
+    initial defaults match what the client would compute on user change.
+
+    Why this matters: the engine treats params.total_exposure_pct > 0 as a
+    fixed override and skips its own _exposure_ramp(prev_nlv) fallback. So if
+    the form rendered the base 20% at $4M NLV, the engine would cap notional
+    at $4M × 20% × 5x margin = $4M instead of the $4M × 40% × 5x = $8M the
+    live system would actually grant a $4M account. This made backtests look
+    flat — the cap was the binding constraint, not the strategy."""
+    if nlv >= 5_000_000:
+        return 40.0, 75
+    if nlv >= 4_000_000:
+        return 40.0, 50
+    if nlv >= 2_000_000:
+        return 30.0, 50
+    if nlv >=   500_000:
+        return 20.0, 30
+    if nlv >=   200_000:
+        return 20.0, 15
+    if nlv >=   100_000:
+        return 20.0, 10
+    if nlv >=    50_000:
+        return 20.0,  8
+    if nlv >=    25_000:
+        return 20.0,  6
+    return 20.0, 4
 
 
 def _is_us_rth_now() -> bool:
