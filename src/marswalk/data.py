@@ -48,7 +48,52 @@ def load_market(regime, universe):
         vbars = [(_pdate(r.date), r.close, 0.0) for r in vrows if r.close]
         if vbars:
             out["^VIX"] = vbars
+        # SPY series (close only) for the engine's MA50 clamp + trend filter.
+        srows = (db.query(MarketBar)
+                 .filter_by(regime_id=regime.id, symbol="^SPY")
+                 .order_by(MarketBar.date).all())
+        sbars = [(_pdate(r.date), r.close, 0.0) for r in srows if r.close]
+        if sbars:
+            out["^SPY"] = sbars
     return out
+
+
+def fetch_spy_yahoo(regime, force: bool = False):
+    """One-shot offline SPY backfill (uses Yahoo v8 chart endpoint, no API key).
+
+    Used to seed ^SPY for backtest regimes when the live IBKR fetch path isn't
+    available (e.g. backtesting from a fresh checkout). Fetches a window
+    starting 80 calendar days before the regime so the 50d SMA is warm on day 1.
+    Idempotent: skips if SPY already cached for the regime (unless force).
+    """
+    import urllib.request, json
+    from datetime import timedelta
+    if not force and has_data(regime.id, "^SPY"):
+        return
+    start = _pdate(regime.start) - timedelta(days=80)
+    end = _pdate(regime.end) + timedelta(days=1)
+    p1 = int(datetime.combine(start, datetime.min.time()).timestamp())
+    p2 = int(datetime.combine(end, datetime.min.time()).timestamp())
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/SPY"
+           f"?period1={p1}&period2={p2}&interval=1d")
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        body = urllib.request.urlopen(req, timeout=20).read()
+        payload = json.loads(body)
+        result = payload["chart"]["result"][0]
+        ts = result["timestamp"]
+        closes = result["indicators"]["quote"][0]["close"]
+        rows = []
+        for t, c in zip(ts, closes):
+            if c is None:
+                continue
+            d = datetime.utcfromtimestamp(t).date()
+            rows.append((d.strftime("%Y-%m-%d"), float(c), 0.0))
+        if rows:
+            _store(regime.id, "^SPY", rows)
+            log.info("marswalk_spy_cached", regime=regime.id, bars=len(rows))
+    except Exception as e:
+        log.warning("marswalk_spy_yahoo_failed", regime=regime.id, error=str(e))
 
 
 def _store(regime_id, symbol, rows):

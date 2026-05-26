@@ -118,6 +118,14 @@ class Params:
     dynamic_delta_enabled: bool = True   # VIX-tiered delta range (mirrors risk.dynamic_delta_range)
     vix_spike_bump_1: float = 4.0        # VIX day-over-day spike that escalates tier +1
     vix_spike_bump_2: float = 6.0        # spike that escalates tier +2 (cap = high)
+    # SPY MA50 clamp (risk.effective_vix_tier): when SPY is below MA50, lift the
+    # tier-min so the engine sells further OTM regardless of raw VIX.
+    spy_ma50_clamp_mid_pct: float = 0.0      # SPY below MA50 by this -> min tier mid
+    spy_ma50_clamp_high_pct: float = 0.03    # SPY below MA50 by 3%+ -> min tier high
+    # SPY trend filter (risk.dynamic_delta_range): when 10d MA < 20d MA → "bearish".
+    # Bearish ALONE forces high tier; bearish + already-high tier tightens to (0.08,0.15).
+    spy_ma_fast: int = 10
+    spy_ma_slow: int = 20
     drawdown_lookback_days: int = 5      # 5-day NLV-drawdown window
     drawdown_threshold_light: float = 0.02   # >2% DD: × 0.75 slots
     drawdown_threshold_mid: float = 0.05     # >5% DD: × 0.50 slots
@@ -151,9 +159,14 @@ def _dte(expiry: str, today: date) -> int:
     return (_exp_date(expiry) - today).days
 
 
-def _vix_tier(vix: float, vix_prev: float | None, spike_bump_1: float, spike_bump_2: float) -> int:
-    """Mirror risk.effective_vix_tier (no SPY/MA50 yet — phase 2).
-    Returns 0=low (<20), 1=mid (20-25), 2=high (>=25). VIX>halt handled upstream."""
+def _vix_tier(vix: float, vix_prev: float | None,
+              spike_bump_1: float, spike_bump_2: float,
+              spy_dist_below_ma50: float | None,
+              clamp_mid_pct: float, clamp_high_pct: float) -> int:
+    """Mirror risk.effective_vix_tier:
+       base tier from VIX (<20 low / 20-25 mid / >=25 high),
+       +spike escalation,
+       +SPY-MA50 clamp (force tier-min up when SPY trades below MA50)."""
     if vix < 20:
         base = 0
     elif vix < 25:
@@ -167,11 +180,28 @@ def _vix_tier(vix: float, vix_prev: float | None, spike_bump_1: float, spike_bum
             bump = 2
         elif spike > spike_bump_1:
             bump = 1
-    return min(base + bump, 2)
+    tier = min(base + bump, 2)
+    # MA50 clamp: when SPY is below MA50, never let the tier sit below this floor.
+    if spy_dist_below_ma50 is not None and spy_dist_below_ma50 > 0:
+        if spy_dist_below_ma50 > clamp_high_pct:
+            tier = max(tier, 2)
+        elif spy_dist_below_ma50 > clamp_mid_pct:
+            tier = max(tier, 1)
+    return tier
 
 
-def _tier_delta_range(tier: int, cfg) -> tuple[float, float]:
-    """Mirror live VIX-tiered delta range from settings.strategy."""
+def _tier_delta_range(tier: int, cfg, spy_bearish: bool) -> tuple[float, float]:
+    """Mirror live VIX-tiered delta range with spy_bearish escalation.
+
+    Live rules (risk.dynamic_delta_range):
+      bearish + high tier   -> (0.08, 0.15)  tightest, deepest OTM
+      bearish (any tier)    -> high range    (force tier to high)
+      otherwise             -> tier's normal range
+    """
+    if spy_bearish and tier >= 2:
+        return (0.08, 0.15)
+    if spy_bearish:
+        return (cfg.delta_vix_high, cfg.delta_vix_high_max)
     if tier == 0:
         return (cfg.delta_vix_low, cfg.delta_vix_low_max)
     if tier == 1:
@@ -309,6 +339,35 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
 
     # Per-day VIX series for spike calc (engine already has vix close on ^VIX).
     vix_series = {b[0]: b[1] for b in market.get("^VIX", [])}
+    # SPY series + pre-computed MAs (50d for clamp, fast/slow for trend filter).
+    # Bars before regime start carry the 50d window — fetch_spy_yahoo seeds them.
+    spy_bars = market.get("^SPY", [])
+    spy_closes = {b[0]: b[1] for b in spy_bars}
+    spy_dates = sorted(spy_closes.keys())
+    spy_ma50: dict = {}
+    spy_ma_fast: dict = {}
+    spy_ma_slow: dict = {}
+    if spy_dates:
+        closes_in_order = [spy_closes[bd] for bd in spy_dates]
+        for i, bd in enumerate(spy_dates):
+            if i >= 50:
+                spy_ma50[bd] = sum(closes_in_order[i-50:i]) / 50
+            if i >= params.spy_ma_fast:
+                spy_ma_fast[bd] = sum(closes_in_order[i-params.spy_ma_fast:i]) / params.spy_ma_fast
+            if i >= params.spy_ma_slow:
+                spy_ma_slow[bd] = sum(closes_in_order[i-params.spy_ma_slow:i]) / params.spy_ma_slow
+
+    def _spy_signals(d):
+        """Return (dist_below_ma50_or_None, spy_bearish_bool) for date d."""
+        spot = spy_closes.get(d)
+        ma50 = spy_ma50.get(d)
+        dist = None
+        if spot and ma50 and ma50 > 0:
+            dist = (ma50 - spot) / ma50  # positive when below MA50
+        mf, ms = spy_ma_fast.get(d), spy_ma_slow.get(d)
+        bearish = bool(mf is not None and ms is not None and mf < ms)
+        return dist, bearish
+
     # Daily-circuit-breaker countdown: when triggered, halt new puts for N days.
     cb_halt_remaining = 0
     # NLV history for the drawdown window (most-recent-last); seeded with start NLV.
@@ -444,11 +503,17 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
 
         # (c) VIX-tier dynamic delta (risk.dynamic_delta_range + effective_vix_tier).
         #     Replaces fixed params.delta_min/max for the day's put-selling pass.
+        #     SPY-MA50 clamp pushes tier-min up while SPY trades below its 50d SMA;
+        #     SPY 10d<20d "bearish" forces high tier AND (if already high) tightens.
         if params.dynamic_delta_enabled and vix_now is not None:
             vix_prev = vix_series.get(dates[max(0, dates.index(d) - 1)])
+            spy_dist, spy_bearish = _spy_signals(d)
             tier = _vix_tier(vix_now, vix_prev,
-                             params.vix_spike_bump_1, params.vix_spike_bump_2)
-            day_delta_min, day_delta_max = _tier_delta_range(tier, cfg)
+                             params.vix_spike_bump_1, params.vix_spike_bump_2,
+                             spy_dist,
+                             params.spy_ma50_clamp_mid_pct,
+                             params.spy_ma50_clamp_high_pct)
+            day_delta_min, day_delta_max = _tier_delta_range(tier, cfg, spy_bearish)
         else:
             day_delta_min, day_delta_max = params.delta_min, params.delta_max
 
