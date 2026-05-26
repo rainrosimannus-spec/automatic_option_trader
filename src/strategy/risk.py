@@ -543,13 +543,8 @@ class RiskManager:
             )
 
         # Layer 2 — hard dollar cap (scaling safeguard, only bites at large NLV)
-        # Bull-regime override: drop per-name cap to bull_regime_position_pct
-        # (default 2% vs 5% baseline) so the engine writes across more names
-        # instead of concentrating — fights narrow-leadership dilution.
-        per_name_pct = (self.cfg.bull_regime_position_pct
-                        if self.in_bull_regime() else self.cfg.position_dollar_pct)
         dollar_cap = min(
-            net_liq * per_name_pct,
+            net_liq * self.cfg.position_dollar_pct,
             self.cfg.max_position_dollars,
         )
         if dollar_cap >= self.cfg.min_position_dollars and estimated_margin > dollar_cap:
@@ -1175,11 +1170,13 @@ class RiskManager:
         Fail-closed on missing data (treat unknown as NOT bull — strategy
         falls back to the broader VIX-tier baseline).
 
-        When True, the three bull-regime adaptive overrides apply (see
-        RiskConfig.bull_regime_*):
-          - delta range -> bull_regime_delta_min/max (higher)
-          - per-position cap -> bull_regime_position_pct (smaller)
-          - iv_rank_min -> bull_regime_iv_rank_min (only fat-IV names)
+        When True, only one override fires:
+          - iv_rank_min -> bull_regime_iv_rank_min (default 50, skip dead-IV)
+
+        Higher-delta and smaller-per-name-cap overrides were tested and
+        removed: delta had zero effect (low-VIX chains don't quote 0.30+
+        delta at 0-3 DTE), smaller per-name cap actively hurt by diluting
+        concentration on the few high-IV movers in narrow-leadership bulls.
         """
         if not self.cfg.bull_regime_enabled:
             return False
@@ -1198,12 +1195,6 @@ class RiskManager:
         """
         Get the current delta range based on VIX level and SPY trend regime.
 
-        BULL REGIME override (VIX<bull_regime_vix_max AND SPY>MA200):
-          Returns the bull-regime delta band (default 0.30-0.45) to fight the
-          bull-regime yield ceiling — premium per trade is structurally tiny
-          in low-IV uptrends so we trade some assignment risk for fatter
-          premium. Takes priority over the VIX-tier ladder below.
-
         VIX tiers (baseline):
           VIX < 20  → 0.20-0.30 (normal, standard wheel)
           VIX 20-25 → 0.15-0.25 (elevated, step back)
@@ -1216,10 +1207,6 @@ class RiskManager:
         strat_cfg = get_settings().strategy
         if not strat_cfg.dynamic_delta_enabled:
             return (strat_cfg.delta_min, strat_cfg.delta_max)
-
-        # Bull-regime override comes first — supersedes the VIX-tier ladder.
-        if self.in_bull_regime():
-            return (self.cfg.bull_regime_delta_min, self.cfg.bull_regime_delta_max)
 
         regime = self.get_regime()
         vix = regime.vix
