@@ -42,10 +42,23 @@ def marswalk_page(request: Request):
                     eff_s, eff_e, _ = reg.effective_window(today)
                     in_window = [p for p in pts if eff_s <= p.date <= eff_e]
                     pts_to_show = in_window if in_window else pts
+                    # Rebase the target curve so it starts at 0 at the first
+                    # visible day. Engine computes target_pct as 24% compounded
+                    # over days-since-engine-start, but the engine's start is
+                    # ~280d BEFORE the regime window — so by the time the
+                    # visible chart begins, target is already at ~19% absolute
+                    # while actual is at 0%. The visual delta lied. Now both
+                    # curves start at 0; what's plotted is the GAIN over the
+                    # visible window vs the GAIN required at 24%/yr.
+                    if pts_to_show:
+                        actual_base = pts_to_show[0].return_pct
+                        target_base = pts_to_show[0].target_pct
+                    else:
+                        actual_base = target_base = 0
                     chart = {
                         "labels": [p.date for p in pts_to_show],
-                        "actual": [p.return_pct for p in pts_to_show],
-                        "target": [p.target_pct for p in pts_to_show],
+                        "actual": [p.return_pct - actual_base for p in pts_to_show],
+                        "target": [p.target_pct - target_base for p in pts_to_show],
                     }
             is_forward = str(reg.start) > today
             has_analog = is_forward and reg.historical_analog is not None
