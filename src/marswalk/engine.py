@@ -100,6 +100,8 @@ class Params:
     total_exposure_pct: float = 0.0   # 0 = NLV ramp (20/25/30%); >0 = fixed cap %
     vix_halt: float = 30.0            # halt NEW puts when VIX > this (live high-VIX halt)
     iv_rank_min: float = 20.0         # require symbol IV-rank >= this to sell (0 = off)
+    max_margin_usage: float = 0.0     # 0 = use live settings.risk.max_margin_usage (80%);
+                                      # >0 = override (e.g. 0.60 for son's 60% cap).
     # ── Pricing model ──
     short_dte_uplift_k: float = 1.0   # near-expiry vol-premium uplift (0 = pure BSM)
     gap_stress: float = 0.0           # what-if: extra adverse mark on big down days
@@ -337,13 +339,18 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         # When margin is ON, scale the live max_margin_usage cap by the margin multiple
         # (the live cap presumes ~1x notional; portfolio margin allows ~5x).
         margin_cap_factor = params.margin_multiple if params.margin_on else 1.0
-        if prev_nlv > 0 and (put_collateral + stock_value) / prev_nlv > rcfg.max_margin_usage * margin_cap_factor:
+        max_margin_pct = params.max_margin_usage if params.max_margin_usage > 0 else rcfg.max_margin_usage
+        if prev_nlv > 0 and (put_collateral + stock_value) / prev_nlv > max_margin_pct * margin_cap_factor:
             halted = True
         if halted:
             n_halt_days += 1  # counts VIX- and margin-halted deployment days
-        # Collateral cap = (prev day's) NLV × effective pct (fixed param, else NLV ramp)
+        # Collateral cap = (prev day's) NLV × effective pct (fixed param, else NLV ramp).
+        # Live behavior: risk.check_total_exposure() skips the cap entirely when the
+        # absolute cap < $100k (small accounts), leaving only the margin gate. The
+        # backtest must mirror this or it will under-deploy by 10-30× on small NLVs.
         eff_pct = params.total_exposure_pct if params.total_exposure_pct > 0 else _exposure_ramp(prev_nlv)
         exposure_cap = prev_nlv * eff_pct
+        small_account = exposure_cap < 100_000
         held = {p["sym"] for p in short_puts} | set(stocks.keys())
         slots = params.max_positions - len(short_puts)
         corr_on = prev_nlv > rcfg.correlation_nlv_threshold
@@ -386,14 +393,16 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 if params.margin_on:
                     # Margin mode: the % NLV cap admits notional up to NLV*cap*multiple
                     # (per-put margin requirement = notional/multiple). No cash check —
-                    # debits are allowed against the margin line.
-                    if reserved + need > exposure_cap * params.margin_multiple:
+                    # debits are allowed against the margin line. Small accounts skip
+                    # the collateral cap entirely (mirrors live) — only the margin gate
+                    # (checked upfront via the `halted` flag) constrains them.
+                    if not small_account and reserved + need > exposure_cap * params.margin_multiple:
                         continue
                 else:
                     if cash - reserved < need:           # cash-secured
                         continue
-                    if reserved + need > exposure_cap:    # collateral cap (% of NLV)
-                        continue
+                    if not small_account and reserved + need > exposure_cap:
+                        continue                          # collateral cap (% of NLV)
                 # Sector cap: once the book is large enough to diversify (>=3 names),
                 # no sector may exceed max_sector_pct of committed put collateral.
                 if len(short_puts) >= 3:

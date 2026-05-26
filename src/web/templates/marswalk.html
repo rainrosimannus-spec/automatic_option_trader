@@ -74,6 +74,10 @@
           <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">VIX halt</div>
           {{ num('vix_halt', defaults.vix_halt, 5, 10, 100, 'w-14') }}
         </div>
+        <div>
+          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Margin cap %</div>
+          {{ num('max_margin_usage_pct', defaults.max_margin_usage_pct, 5, 5, 200, 'w-14') }}
+        </div>
       </div>
       <p class="text-[10px] text-gray-500 mt-2 leading-snug">
         Margin OFF = cash-secured (notional ≤ NLV × cap, ≤1×). Margin ON = portfolio-margin
@@ -81,6 +85,9 @@
         NLV × cap × multiple (≈5× typical IBKR PM for OTM puts).
         Defaults <strong>iv_rank_min=20</strong> and <strong>vix_halt=30</strong> mirror live;
         set IV-rank=0 and VIX-halt=100 to disable both gates for a deployment stress test.
+        <strong>Small-account exemption</strong>: when NLV × collateral-cap is below $100k
+        the engine skips the collateral cap entirely (mirrors live <code>risk.py</code>);
+        only the <strong>margin cap</strong> (default 80%, son uses 60%) constrains.
       </p>
     </div>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">

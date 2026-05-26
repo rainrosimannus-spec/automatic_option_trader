@@ -79,6 +79,9 @@ def marswalk_page(request: Request):
         # disable them for a stress run.
         "iv_rank_min": 20,
         "vix_halt": 30,
+        # Live default is 80% (see core.config.RiskConfig.max_margin_usage).
+        # Son's small account runs a tighter 60% cap.
+        "max_margin_usage_pct": 80,
     }
     if last_params:
         for k, v in last_params.items():
@@ -93,6 +96,8 @@ def marswalk_page(request: Request):
             defaults["gap_stress_pct"] = round(last_params["gap_stress"] * 100, 2)
         if "start_capital" in last_params:
             defaults["start_nlv"] = last_params["start_capital"]
+        if "max_margin_usage" in last_params and last_params["max_margin_usage"]:
+            defaults["max_margin_usage_pct"] = round(last_params["max_margin_usage"] * 100, 2)
 
     return templates.TemplateResponse("marswalk.html", {
         "request": request,
@@ -118,6 +123,7 @@ def marswalk_run(
     margin_on: str = Form(""), margin_multiple: float = Form(5.0),
     max_positions: int = Form(10),
     iv_rank_min: float = Form(20.0), vix_halt: float = Form(30.0),
+    max_margin_usage_pct: float = Form(80.0),
 ):
     params = Params(
         dte_min=max(0, dte_min), dte_max=max(dte_min, dte_max),
@@ -135,6 +141,7 @@ def marswalk_run(
         max_positions=max(1, min(200, max_positions)),
         iv_rank_min=max(0.0, min(100.0, iv_rank_min)),
         vix_halt=max(10.0, min(100.0, vix_halt)),
+        max_margin_usage=max(0.05, min(2.0, max_margin_usage_pct / 100.0)),
     )
     service.run_all_async(params, fetch=True)
     return RedirectResponse(url="/marswalk", status_code=303)
