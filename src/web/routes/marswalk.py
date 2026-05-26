@@ -10,7 +10,7 @@ from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src.web.template_engine import templates
-from src.core.config import get_settings
+from src.core.config import get_settings, StrategyConfig, RiskConfig
 from src.marswalk.regimes import load_config
 from src.marswalk.engine import Params
 from src.marswalk.models import get_mw_db, Run, Point
@@ -50,38 +50,40 @@ def marswalk_page(request: Request):
             except Exception:
                 last_params = None
 
-    # Start from settings.yaml ("what the trader does today"), then overlay the
-    # most-recent run's params so the user can iterate. Put DTE is VIX-tiered
-    # in live; the US low/mid-VIX tier is 0-3 (high-VIX halts), which matches
-    # the US large-cap backtest universe.
-    s = get_settings().strategy
+    # "Run now as it is" — defaults mirror the LIVE aggressive son-mode config
+    # we committed in c522a8e + hybrid wheel 63d8ed8. Read from the Pydantic
+    # class defaults (committed Python intent) instead of get_settings(), so
+    # the UI shows the canonical aggressive setup even on hosts where
+    # settings.yaml still carries stale pre-aggressive overrides (octoserver
+    # YAML migration is task #48). Put DTE is VIX-tiered in live; the US
+    # low/mid-VIX tier is 0-3 (high-VIX halts).
+    s = StrategyConfig()
+    r = RiskConfig()
     defaults = {
         "dte_min": 0,
         "dte_max": 3,
-        "delta_min": getattr(s, "delta_min", 0.15),
-        "delta_max": getattr(s, "delta_max", 0.30),
-        "put_min_premium": getattr(s, "min_premium_put", 0.50),
-        "cc_dte_min": getattr(s, "cc_dte_min", 5),
-        "cc_dte_max": getattr(s, "cc_dte_max", 30),
-        "cc_delta_min": getattr(s, "cc_delta_min", 0.15),
-        "cc_delta_max": getattr(s, "cc_delta_max", 0.35),
-        "cc_min_premium": getattr(s, "min_premium", 0.10),
-        # Test configuration (sandbox knobs, not live config)
-        "start_nlv": 100000,
-        "collateral_cap_pct": 20,
+        "delta_min": s.delta_min,
+        "delta_max": s.delta_max,
+        "put_min_premium": s.min_premium_put,
+        "cc_dte_min": s.cc_dte_min,
+        "cc_dte_max": s.cc_dte_max,
+        "cc_delta_min": s.cc_delta_min,
+        "cc_delta_max": s.cc_delta_max,
+        "cc_min_premium": s.min_premium,
+        # Account & deployment knobs — son's actual current NLV.
+        "start_nlv": 34224,
+        "collateral_cap_pct": round(r.total_exposure_pct * 100, 1),
         "uplift_k": 1.0,
         "gap_stress_pct": 0,
-        "margin_on": False,
+        # Live trades with IBKR portfolio margin → on by default.
+        "margin_on": True,
         "margin_multiple": 5.0,
-        "max_positions": 10,
-        # Risk gates exposed for testing — defaults match the live system so
-        # the backtest mirrors production unless the operator chooses to
-        # disable them for a stress run.
-        "iv_rank_min": 20,
-        "vix_halt": 30,
-        # Live default is 80% (see core.config.RiskConfig.max_margin_usage).
-        # Son's small account runs a tighter 60% cap.
-        "max_margin_usage_pct": 80,
+        "max_positions": r.max_portfolio_positions,
+        # Risk gates — aggressive son-mode values.
+        "iv_rank_min": s.iv_rank_min,
+        "vix_halt": r.vix_pause_threshold,
+        # Son-mode 60% margin ceiling.
+        "max_margin_usage_pct": round(r.max_margin_usage * 100, 1),
     }
     if last_params:
         for k, v in last_params.items():

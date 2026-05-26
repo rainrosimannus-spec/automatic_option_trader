@@ -91,38 +91,38 @@ def _pearson(a: list, b: list) -> float:
 
 @dataclass
 class Params:
+    # Defaults mirror the LIVE aggressive son-mode config (commit c522a8e +
+    # hybrid wheel 63d8ed8): bare `Params()` reproduces production behavior so
+    # the MarsWalk "Run now" with no overrides ≈ what the live trader does.
     # ── Put selling ──
-    dte_min: int = 5
-    dte_max: int = 14
+    dte_min: int = 0          # live VIX low/mid-tier US is 0-3 DTE
+    dte_max: int = 3
     delta_min: float = 0.15
     delta_max: float = 0.30
     put_min_premium: float = 0.0   # 0 = use settings.yaml default
     # ── Covered calls ──
-    cc_dte_min: int = 5
-    cc_dte_max: int = 21
-    cc_delta_min: float = 0.20
-    cc_delta_max: float = 0.40
+    cc_dte_min: int = 1            # live cfg.cc_dte_min
+    cc_dte_max: int = 7            # live cfg.cc_dte_max
+    cc_delta_min: float = 0.30     # live patient wheel (Strategy B default)
+    cc_delta_max: float = 0.45
     cc_min_premium: float = 0.0    # 0 = use settings.yaml default
     # ── Portfolio ──
-    start_capital: float = 100_000.0
-    max_positions: int = 10
+    start_capital: float = 34_224.0   # son's current NLV
+    max_positions: int = 50           # live risk.max_portfolio_positions
     contracts: int = 1
     # ── Risk gates (model the live limits) ──
     total_exposure_pct: float = 0.0   # 0 = NLV ramp (20/25/30%); >0 = fixed cap %
     vix_halt: float = 30.0            # halt NEW puts when VIX > this (live high-VIX halt)
-    iv_rank_min: float = 20.0         # require symbol IV-rank >= this to sell (0 = off)
-    max_margin_usage: float = 0.0     # 0 = use live settings.risk.max_margin_usage (80%);
-                                      # >0 = override (e.g. 0.60 for son's 60% cap).
+    iv_rank_min: float = 10.0         # live aggressive son-mode iv_rank_min
+    max_margin_usage: float = 0.0     # 0 = use live settings.risk.max_margin_usage (60%
+                                      # son-mode); >0 = override.
     # ── Pricing model ──
     short_dte_uplift_k: float = 1.0   # near-expiry vol-premium uplift (0 = pure BSM)
     gap_stress: float = 0.0           # what-if: extra adverse mark on big down days
                                       # (>=5% drop) — models close understating an
                                       # intraday/overnight gap. 0 = off (historical).
     # ── Margin model ──
-    margin_on: bool = False           # OFF (default) = cash-secured (notional<=NLV*cap).
-                                      # ON = portfolio-margin proxy: per-put margin
-                                      # requirement is notional/margin_multiple, so the
-                                      # cap admits notional up to NLV*cap*margin_multiple.
+    margin_on: bool = True            # live runs with IBKR portfolio margin
     margin_multiple: float = 5.0      # IBKR portfolio-margin proxy (~5x typical OTM put)
     # ── Live-system defenses (ports from src.strategy.risk) ──
     # 0 = use the live config default (so the backtest mirrors production); >0 overrides.
@@ -503,16 +503,31 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             spot, iv = q
             cb = st["cost_basis"]
             net_cb = cb - st.get("realized_cc", 0.0)
-            if spot < cb * 0.95:          # rescue branch (stock underwater)
+            # Hybrid-wheel CC selection — mirrors live src/strategy/wheel.py:
+            #   rescue (spot < 95% cb)        → 0.05-0.35 wide band
+            #   distressed (below own MA200)  → deep-ITM 0.80-0.95 (exit velocity)
+            #   patient (above own MA200)     → configured cc_delta band (Strategy B)
+            sym_ma_today = per_name_ma200.get(sym, {}).get(d) if per_name_ma200 else None
+            below_own_ma200 = (sym_ma_today is not None and spot < sym_ma_today)
+            if spot < cb * 0.95:
                 cdmin, cdmax = 0.05, 0.35
-            else:                          # configured CC delta band
+                cc_branch = "rescue"
+            elif below_own_ma200:
+                cdmin, cdmax = 0.80, 0.95
+                cc_branch = "distressed_exit"
+            else:
                 cdmin, cdmax = params.cc_delta_min, params.cc_delta_max
+                cc_branch = "patient_wheel"
             min_strike = net_cb if cc_above_cb else None
             chain = [sc for sc in pricing.build_contracts(spot, d, cc_dte_max + 7)
                      if cc_dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= cc_dte_max
                      and (min_strike is None or sc.strike >= min_strike)]
             cc_iv = pricing.effective_iv(iv, (cc_dte_min + cc_dte_max) // 2, params.short_dte_uplift_k)
             cands = score_call_candidates(spot, cc_iv, chain, cc_cfg, cdmin, cdmax, d)
+            # Distressed: if no deep-ITM candidate clears min_strike, fall back to
+            # the wider exit-mode band (0.35-0.55) like live wheel.py does.
+            if not cands and cc_branch == "distressed_exit":
+                cands = score_call_candidates(spot, cc_iv, chain, cc_cfg, 0.35, 0.55, d)
             if not cands:
                 continue
             top = max(cands, key=lambda c: c.score)
