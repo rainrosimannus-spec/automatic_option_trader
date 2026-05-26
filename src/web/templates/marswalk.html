@@ -33,11 +33,11 @@
       <div class="flex flex-wrap gap-x-4 gap-y-3 items-end">
         <div>
           <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Start NLV $</div>
-          {{ num('start_nlv', defaults.start_nlv, 50000, 1000, 100000000, 'w-28') }}
+          {{ num('start_nlv', defaults.start_nlv, 50000, 0, 100000000, 'w-28') }}
         </div>
         <div>
           <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Collateral cap %</div>
-          {{ num('collateral_cap_pct', defaults.collateral_cap_pct, 5, 1, 95) }}
+          {{ num('collateral_cap_pct', defaults.collateral_cap_pct, 5, 0, 95) }}
         </div>
         <div>
           <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">IV uplift k</div>
@@ -49,7 +49,7 @@
         </div>
         <div>
           <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Max positions</div>
-          {{ num('max_positions', defaults.max_positions, 5, 1, 200) }}
+          {{ num('max_positions', defaults.max_positions, 1, 1, 200) }}
         </div>
         <div>
           <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Margin</div>
