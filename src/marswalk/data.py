@@ -403,16 +403,18 @@ def fetch_vix_yahoo(regime, force: bool = False):
 def ensure_market_data(regime, universe):
     """Fetch symbols not cached for this regime (+ VIX + earnings).
 
-    Forward-scenario regimes (those with `historical_analog`) fall through to
-    their analog window and use Yahoo for the historical data — this is
-    cheaper, RTH-safe (doesn't contend with the IBKR portfolio lock), and
-    reaches back further than IBKR's historical option chains."""
+    Routes to Yahoo when (a) the regime is a forward-scenario analog OR
+    (b) the regime carries a `proxy_universe` (per-name ticker remap; only
+    `fetch_symbols_yahoo` honors it). Otherwise uses IBKR. Yahoo path is
+    cheaper, RTH-safe (no portfolio-lock contention), and reaches back
+    further than IBKR's option-chain history."""
     _, _, is_analog = regime.effective_window()
+    use_yahoo = is_analog or bool(getattr(regime, "proxy_universe", None))
     missing = [s for s in universe if not has_data(regime.id, s)]
     if missing or not has_data(regime.id, "^VIX"):
         log.info("marswalk_fetching", regime=regime.id, symbols=len(missing),
-                 source=("yahoo" if is_analog else "ibkr"))
-        if is_analog:
+                 source=("yahoo" if use_yahoo else "ibkr"))
+        if use_yahoo:
             # Yahoo path — no IBKR contention, RTH-safe.
             if missing:
                 fetch_symbols_yahoo(regime, missing)

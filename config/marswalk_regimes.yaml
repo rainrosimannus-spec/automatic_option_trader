@@ -214,7 +214,7 @@ regimes:
       AVGO: AMAT     # semi-cap equipment (-78%)
       META: AKAM     # internet darling, -99% trough
       GOOGL: AMZN    # consumer internet (-94%)
-      ANET: JNPR     # networking (-92%)
+      ANET: CIEN     # optical networking (-95% — JNPR was the first choice but Yahoo 404s it post-HPE delisting 2025)
       ARM: INTC      # chip designer (-82%)
       BKNG: AMZN     # online-consumer
       NOW: ORCL      # enterprise software (-84%)
@@ -229,8 +229,8 @@ regimes:
       RACE: F        # auto (-76%)
       MA: AXP        # payments (-50%)
       V: AXP
-      LULU: GPS      # apparel (-85%)
-      DECK: GPS
+      LULU: GAP      # apparel (-85%) — Gap Inc, ticker renamed GPS→GAP in 2024
+      DECK: GAP
       CMG: MCD       # restaurant
       HWM: BA        # aerospace (-50%)
       DXCM: MDT      # medical device
