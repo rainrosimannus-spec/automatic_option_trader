@@ -19,6 +19,7 @@ Pure/offline: no IBKR, no trades.db. `market` is injected by the caller.
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
 
@@ -166,6 +167,12 @@ class Params:
     intraday_loss_halt_floor: float = 50_000.0   # absolute $ floor on the halt threshold
     daily_cb_pct: float = 0.05               # daily NLV drop > 5% → full halt
     daily_cb_halt_days: int = 5              # halt persists for N trading days after trigger
+    # Portfolio delta cap (mirrors live src/strategy/risk.py:700-754).
+    # Block new short puts when total |delta|×qty×100 across open positions
+    # reaches the NLV-tier max. Skipped entirely below delta_nlv_threshold.
+    # NLV-tier scaling: <200K → 1×, <500K → 2×, ≥500K → 4× base cap.
+    max_portfolio_delta: float = 500.0
+    delta_nlv_threshold: float = 50_000.0
     # Bear-market gate. Four modes (compared in the engine's candidate / qty_mult
     # paths): "off" = no gate, "halve_contracts" = halve total contracts when SPY
     # < MA200, "cap_multiplier" = cap iv_rank_size multiplier at N when SPY <
@@ -654,12 +661,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         #     Replaces fixed params.delta_min/max for the day's put-selling pass.
         #     SPY-MA50 clamp pushes tier-min up while SPY trades below its 50d SMA;
         #     SPY 10d<20d "bearish" forces high tier AND (if already high) tightens.
+        # Compute spy_bearish unconditionally (used by both the delta-tier
+        # adjustment AND the universe-halve gate below). SPY 10d < SPY 20d.
+        _spy_dist, spy_bearish = _spy_signals(d)
         if params.dynamic_delta_enabled and vix_now is not None:
             vix_prev = vix_series.get(dates[max(0, dates.index(d) - 1)])
-            spy_dist, spy_bearish = _spy_signals(d)
             tier = _vix_tier(vix_now, vix_prev,
                              params.vix_spike_bump_1, params.vix_spike_bump_2,
-                             spy_dist,
+                             _spy_dist,
                              params.spy_ma50_clamp_mid_pct,
                              params.spy_ma50_clamp_high_pct)
             day_delta_min, day_delta_max = _tier_delta_range(tier, cfg, spy_bearish)
@@ -695,9 +704,36 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         held = {p["sym"] for p in short_puts} | set(stocks.keys())
         slots = int((params.max_positions - len(short_puts)) * dd_mult)
         corr_on = prev_nlv > rcfg.correlation_nlv_threshold
+        # Portfolio delta cap (mirrors live src/strategy/risk.py:700-754).
+        # Compute current total |delta|×qty×100 across open puts; set NLV-tier
+        # cap. Skipped for small accounts. Gate triggers per-candidate at commit.
+        delta_cap_on = prev_nlv >= params.delta_nlv_threshold
+        portfolio_delta = 0.0
+        max_delta_cap = float("inf")
+        if delta_cap_on:
+            portfolio_delta = sum(
+                p.get("entry_delta", 0.0) * p["qty"] * 100 for p in short_puts
+            )
+            if prev_nlv < 200_000:
+                max_delta_cap = params.max_portfolio_delta
+            elif prev_nlv < 500_000:
+                max_delta_cap = params.max_portfolio_delta * 2
+            else:
+                max_delta_cap = params.max_portfolio_delta * 4
+        # SPY universe-halve gate (mirrors live src/strategy/put_seller.py:77 +
+        # check_spy_ma_gate). When SPY 10d < 20d MA, scan half the universe per
+        # day. Per-day seeded so the same backtest is reproducible.
+        if spy_bearish and len(universe) > 1:
+            rng = random.Random(d.toordinal())
+            half_n = max(1, len(universe) // 2)
+            shuffled = list(universe)
+            rng.shuffle(shuffled)
+            scan_universe = shuffled[:half_n]
+        else:
+            scan_universe = universe
         if slots > 0 and not halted:
             ranked = []
-            for sym in universe:
+            for sym in scan_universe:
                 if sym in held:
                     continue
                 q = pv(sym, d)
@@ -706,9 +742,20 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 spot, iv = q
                 ivr = iv_rank(sym, d, iv)  # computed unconditionally for iv_rank_sizing
                 # IV-rank gate. Bull-regime override raises the floor to skip
-                # dead-IV consumer staples; baseline uses params.iv_rank_min.
-                effective_ivr_min = (params.bull_regime_iv_rank_min if bull_today
-                                     else params.iv_rank_min)
+                # dead-IV consumer staples; baseline is VIX-adaptive (mirrors
+                # live src/strategy/risk.py:991-996): VIX<15 → max(15, base-15),
+                # VIX<20 → max(15, base-10), else base. Relaxes in calm regimes
+                # where market-wide IV-rank compresses.
+                if bull_today:
+                    effective_ivr_min = params.bull_regime_iv_rank_min
+                else:
+                    base_min = params.iv_rank_min
+                    if vix_now is not None and vix_now < 15:
+                        effective_ivr_min = max(15.0, base_min - 15)
+                    elif vix_now is not None and vix_now < 20:
+                        effective_ivr_min = max(15.0, base_min - 10)
+                    else:
+                        effective_ivr_min = base_min
                 if effective_ivr_min > 0:
                     if ivr is not None and ivr < effective_ivr_min:
                         continue
@@ -830,10 +877,17 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                                         if _SECTORS.get(p["sym"], "Other") == sec)
                     if (sec_committed + need) / (reserved + need) > rcfg.max_sector_pct:
                         continue
+                # Portfolio delta cap: block new entries once total delta is at
+                # or above the NLV-tier max (mirrors live, src/strategy/risk.py:744).
+                if delta_cap_on and portfolio_delta >= max_delta_cap:
+                    continue
                 cash += top.bid * 100 * contracts
+                entry_delta = abs(getattr(top, "delta", 0.0) or 0.0)
                 short_puts.append({"sym": sym, "strike": top.strike,
                                    "expiry": _exp_date(top.expiry),
-                                   "premium": top.bid, "qty": contracts})
+                                   "premium": top.bid, "qty": contracts,
+                                   "entry_delta": entry_delta})
+                portfolio_delta += entry_delta * contracts * 100
                 held.add(sym)
                 slots -= 1
                 n_trades += 1
