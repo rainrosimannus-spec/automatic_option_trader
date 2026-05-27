@@ -108,7 +108,7 @@ class Params:
     cc_delta_max: float = 0.45
     cc_min_premium: float = 0.0    # 0 = use settings.yaml default
     # ── Portfolio ──
-    start_capital: float = 34_224.0   # son's current NLV
+    start_capital: float = 4_000_000.0   # forward-looking simulation scale (NOT matched to live account; see memory: marswalk-start-capital)
     max_positions: int = 50           # live risk.max_portfolio_positions
     contracts: int = 2                # growth-mode 2026-05-26: double base size
     # ── Risk gates (model the live limits) ──
