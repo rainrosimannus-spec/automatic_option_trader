@@ -168,9 +168,89 @@ regimes:
     end: "2016-02-11"
     why: "20-month broad-market chop while oil collapsed $107→$26 (1/4). USD strengthening + China slowdown + August 2015 mini-crash + early-2016 selloff. SPY went ~+5% net over 20 months with two -12% corrections. Tests the wheel's ability to grind through multiple shallow corrections + survivorship pressure without a clear trend. Note: universe is tech-heavy; minimal direct oil exposure → tests SECOND-order effects (input-cost tailwind for everyone except XOM/CVX, which aren't in this universe)."
 
-  # Forward scenarios (ai_crash, energy_bounce_truce) removed 2026-05-26.
-  # Dot-com analog printed +2%/yr over 31 months — survivorship bias made it
-  # uninformative (only names that SURVIVED 2000-2002 are in today's universe).
-  # 1991 analog printed 0% with only 15/47 names existing — too thin to read.
-  # If/when the actual forward windows open, the data layer can pick them up
-  # again without needing the analog fallback.
+  - id: gfc_2008
+    rank: 14
+    name: "2008 GFC / Lehman crash"
+    category: crash
+    start: "2008-09-02"
+    end: "2009-03-09"
+    why: "Acute phase of the global financial crisis: Lehman bankruptcy (Sept 15) through SPX bottom at 676 (Mar 9). SPX -46% in 6 months, VIX peaked 80, credit markets froze. Heavy survivorship: only ~20/47 universe names existed (most modern megacaps post-date this). Read as 'how does the wheel survive a credit-freeze tail event on the names that EXISTED' — not a broad-outcome predictor. Worst-case capital-stuck-in-assigned-stock scenario."
+
+  - id: q4_2018
+    rank: 15
+    name: "2018 Q4 Powell-pivot selloff"
+    category: crash
+    start: "2018-10-01"
+    end: "2018-12-31"
+    why: "SPX -19.8% in 3 months on a hawkish-Fed surprise, bottoming Christmas Eve. Faster than bear_2022 (3mo vs 9mo), shallower than tariff_2025. Full universe except recent IPOs (HWM, ARM, PLTR, ABNB). Clean rapid-crash test for the wheel's assignment cadence — does it get caught with full collateral deployed near the top?"
+
+  - id: volmageddon_2018
+    rank: 16
+    name: "Feb 2018 Volmageddon / XIV blowup"
+    category: crash
+    start: "2018-01-22"
+    end: "2018-03-09"
+    why: "Pure short-vol shock from a clean uptrend: VIX 17→50 in two sessions (Feb 5-6), XIV ETN blew up, SPX -10% in 9 days then chopped. Window padded to ~6 weeks so the wheel has time to enter, get shocked, and recover. Tests the strategy's vol-spike response when ENTERED into low vol (opposite of carry_2024 which spiked from already-elevated levels)."
+
+  - id: debt_2011
+    rank: 17
+    name: "2011 US debt downgrade + Eurozone crisis"
+    category: crash
+    start: "2011-07-22"
+    end: "2011-10-31"
+    why: "S&P downgrade of US credit (Aug 5) + Eurozone sovereign-debt fears. SPX -19% in 3 weeks (Jul-Aug), VIX 48, then 2 months of choppy basing before recovery. Crisis-grade vol WITHOUT recession — tests whether the wheel can re-engage premium-selling as the storm passes. Universe thin (~25/47 names existed) — read with survivorship caveat."
+
+  - id: flash_2010
+    rank: 18
+    name: "May 2010 Flash Crash"
+    category: whipsaw
+    start: "2010-04-23"
+    end: "2010-07-02"
+    why: "Intraday liquidity collapse on May 6 (Dow -9% intraday, snap-back same session) inside a broader Apr-Jul selloff (SPX -16% peak-to-trough). Daily-bar backtests can't replicate the intraday event itself, but the surrounding window tests gap risk + the wheel's behavior through a non-fundamental liquidity shock. Universe ~22/47 names — keep on dashboard for shape comparison, not absolute returns."
+
+  - id: ai_crash
+    rank: 19
+    name: "Synthetic AI crash (today's universe ↔ dot-com proxies)"
+    category: crash
+    start: "2000-03-10"
+    end: "2002-10-09"
+    why: "Same 31-month window as dotcom_2000, but today's AI-era megacaps are remapped onto real dot-com bubble victims (NVDA←CSCO, META←AKAM, GOOGL←AMZN, ANET←JNPR, AVGO/ASML←AMAT, NOW/CRM/PLTR/VEEV←ORCL, BKNG/NFLX/ABNB←AMZN, MPWR/FSLR←MU, etc.). Healthcare and consumer staples (LLY, COST, MCD, IDXX, SYK, MTD, VRTX, ROL, SPGI, AZN, AAPL, ADBE, ADSK, AMD, CDNS, KLAC, LRCX, MSFT, ORCL, QCOM) keep their real 2000-02 bars — they ran flat-to-up through the bust, anchoring a realistic 'tech bubble bursts, defensives hold' regime. The engine sees today's 47-name universe with today's sectors and today's gates; only the price/IV inputs are remapped. This is the resilience answer to: 'what happens to the wheel if today's AI megacaps crash like their dot-com peers did?'"
+    proxy_universe:
+      # AI-era megacaps → canonical dot-com bubble victims (all SURVIVOR tickers
+      # still on Yahoo today; YHOO/AOL/PCLN/JDSU/ITWO etc. are delisted)
+      NVDA: CSCO     # networking king of the bubble (-89%)
+      AVGO: AMAT     # semi-cap equipment (-78%)
+      META: AKAM     # internet darling, -99% trough
+      GOOGL: AMZN    # consumer internet (-94%)
+      ANET: JNPR     # networking (-92%)
+      ARM: INTC      # chip designer (-82%)
+      BKNG: AMZN     # online-consumer
+      NOW: ORCL      # enterprise software (-84%)
+      CRM: ORCL
+      PLTR: ORCL
+      VEEV: ORCL
+      ASML: AMAT
+      MPWR: MU       # analog/memory (-90%)
+      NFLX: AMZN
+      FSLR: MU       # no real solar analog; deep-cyclical semi proxy
+      ABNB: AMZN     # no real travel-internet analog
+      RACE: F        # auto (-76%)
+      MA: AXP        # payments (-50%)
+      V: AXP
+      LULU: GPS      # apparel (-85%)
+      DECK: GPS
+      CMG: MCD       # restaurant
+      HWM: BA        # aerospace (-50%)
+      DXCM: MDT      # medical device
+      ISRG: MDT
+      ZTS: PFE       # spun out of PFE in 2013
+      # Real-data (fetches own 2000-02 bars): AAPL, ADBE, ADSK, AMD, AZN, CDNS,
+      # COST, IDXX, KLAC, LLY, LRCX, MCD, MSFT, MTD, ORCL, QCOM, ROL, SPGI, SYK, VRTX
+
+  # History: forward scenarios (ai_crash, energy_bounce_truce) using the
+  # historical_analog mechanism were removed 2026-05-26 — dot-com analog
+  # printed +2%/yr because the data fetcher pulled today's tickers (which mostly
+  # didn't exist yet), and the 1991 analog was too thin (15/47 names).
+  # 2026-05-27: ai_crash re-added above, but using the new `proxy_universe`
+  # mechanism (per-name ticker substitution) so today's universe gets dot-com
+  # bubble-victim price paths instead of empty bars.

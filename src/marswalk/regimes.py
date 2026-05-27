@@ -29,6 +29,11 @@ class Regime:
     end: str     # YYYY-MM-DD inclusive
     why: str = ""
     historical_analog: HistoricalAnalog | None = None
+    # Per-name ticker substitution: fetch bars from the proxy ticker but store
+    # them under today's universe key. Used by `ai_crash` to drape today's
+    # 47-name universe over the 2000-02 dot-com bust on a name-by-name basis.
+    # Names not in the dict fetch their own real bars.
+    proxy_universe: dict[str, str] | None = None
 
     def effective_window(self, today: str | None = None) -> tuple[str, str, bool]:
         """Return (start, end, is_analog). If `start > today` and an analog is

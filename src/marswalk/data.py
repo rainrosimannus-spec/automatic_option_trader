@@ -134,12 +134,17 @@ def fetch_symbols_yahoo(regime, symbols: list[str], force: bool = False):
     p2 = int(datetime.combine(end, datetime.min.time()).timestamp())
     pre_regime_id = f"{regime.id}_pre"
 
+    proxy_map = getattr(regime, "proxy_universe", None) or {}
+
     for sym in symbols:
         # Skip only if BOTH in-regime AND pre-regime warmup are cached. Auto-heals
         # older regimes that have in-regime bars but no pre-warmup (mode B needs it).
         if not force and has_data(regime.id, sym) and has_data(pre_regime_id, sym):
             continue
-        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+        # Proxy mapping: fetch bars from the proxy ticker (e.g. CSCO) but store
+        # them under the universe key (e.g. NVDA) so the engine sees today's name.
+        fetch_sym = proxy_map.get(sym, sym)
+        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{fetch_sym}"
                f"?period1={p1}&period2={p2}&interval=1d")
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         try:
@@ -147,7 +152,7 @@ def fetch_symbols_yahoo(regime, symbols: list[str], force: bool = False):
             payload = json.loads(body)
             result = payload.get("chart", {}).get("result")
             if not result:
-                log.warning("marswalk_yahoo_no_result", regime=regime.id, symbol=sym)
+                log.warning("marswalk_yahoo_no_result", regime=regime.id, symbol=sym, fetch=fetch_sym)
                 continue
             result = result[0]
             ts = result.get("timestamp") or []
@@ -196,7 +201,7 @@ def fetch_symbols_yahoo(regime, symbols: list[str], force: bool = False):
             if pre_rows:
                 _store(pre_regime_id, sym, pre_rows)
         except Exception as e:
-            log.warning("marswalk_yahoo_failed", regime=regime.id, symbol=sym, error=str(e))
+            log.warning("marswalk_yahoo_failed", regime=regime.id, symbol=sym, fetch=fetch_sym, error=str(e))
 
 
 def _store(regime_id, symbol, rows):
