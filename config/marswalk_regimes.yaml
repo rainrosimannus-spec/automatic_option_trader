@@ -152,6 +152,22 @@ regimes:
     end: "2026-05-22"
     why: "US + Israel at war with Iran and its regional allies since 2026-02-28 — a live, vol-elevated geopolitical regime with event gaps. Overlaps the real options account's life (started ~Feb 22), which returned +22.5% — so this is the CALIBRATION ANCHOR: tune short_dte_uplift_k until the backtest here ~matches +22.5%."
 
+  - id: dotcom_2000
+    rank: 12
+    name: "2000-2002 dot-com bust"
+    category: crash
+    start: "2000-03-10"
+    end: "2002-10-09"
+    why: "31-month NDX -78% grinding bear, the longest sustained tech crash. Survivorship-biased: only ~22/47 universe names existed yet (the rest IPO'd later, including the AI-era megacaps). Result must be read as 'how does the wheel behave on the SURVIVING names through a once-in-a-generation tech collapse' — not a predictor of broad outcome. Worth keeping on the dashboard for shape comparison vs bear_2022's 9-month rate-hike bear."
+
+  - id: oil_crash_2014
+    rank: 13
+    name: "2014-2016 oil halving + China growth fears"
+    category: sideways
+    start: "2014-06-20"
+    end: "2016-02-11"
+    why: "20-month broad-market chop while oil collapsed $107→$26 (1/4). USD strengthening + China slowdown + August 2015 mini-crash + early-2016 selloff. SPY went ~+5% net over 20 months with two -12% corrections. Tests the wheel's ability to grind through multiple shallow corrections + survivorship pressure without a clear trend. Note: universe is tech-heavy; minimal direct oil exposure → tests SECOND-order effects (input-cost tailwind for everyone except XOM/CVX, which aren't in this universe)."
+
   # Forward scenarios (ai_crash, energy_bounce_truce) removed 2026-05-26.
   # Dot-com analog printed +2%/yr over 31 months — survivorship bias made it
   # uninformative (only names that SURVIVED 2000-2002 are in today's universe).
