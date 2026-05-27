@@ -477,6 +477,12 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     nlv_window: list[float] = [start_cap]
 
     for d in dates:
+        # Hoisted VIX lookups (used by Lever A direction-aware halt below and
+        # the existing VIX-tier delta logic in Section 4).
+        vix_q = pv("^VIX", d)
+        vix_now = vix_q[0] if vix_q else None
+        vix_prev = vix_series.get(dates[max(0, dates.index(d) - 1)])
+
         # ── 1. Settle expiring short puts ──
         keep = []
         for p in short_puts:
@@ -565,9 +571,22 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
 
         # ── 4. Sell new puts — gated like live: VIX/margin halt, IV-rank, earnings,
         #      correlation, collateral cap, sector cap ──
-        vix_q = pv("^VIX", d)
-        vix_now = vix_q[0] if vix_q else None
-        halted = vix_now is not None and vix_now > params.vix_halt
+        # vix_now / vix_prev hoisted to top of day loop.
+        # Direction-aware VIX gate (mirrors live risk.py:267-309, commit e6df8d9).
+        # When VIX > halt threshold:
+        #   - prev unknown            → halt (fail-closed for safety)
+        #   - prev - now > 2.0        → allow (vol-crush phase: theta + vega pay)
+        #   - prev - now <= 2.0       → halt (rising or flat-high: panic)
+        # Before this parity fix the engine halted on any VIX > threshold,
+        # missing the vol-crush phase that live trader writes through.
+        halted = False
+        if vix_now is not None and vix_now > params.vix_halt:
+            if vix_prev is None:
+                halted = True
+            elif (vix_prev - vix_now) > 2.0:
+                halted = False
+            else:
+                halted = True
         # Margin gate: committed capital (open put collateral + held stock value) vs NLV.
         put_collateral = sum(p["strike"] * 100 * p["qty"] for p in short_puts)
         stock_value = 0.0
