@@ -113,7 +113,7 @@ class Params:
     # ── Risk gates (model the live limits) ──
     total_exposure_pct: float = 0.0   # 0 = NLV ramp (20/25/30%); >0 = fixed cap %
     vix_halt: float = 35.0            # growth-mode 2026-05-26: only halt on panic spikes
-    iv_rank_min: float = 0.0          # growth-mode 2026-05-26: accept all positive-EV setups
+    iv_rank_min: float = 20.0         # 2026-05-27: reverted from 0 (mirrors live settings.yaml + StrategyConfig default after honest review — see commit e6df8d9)
     # Bull-regime adaptive overrides (2026-05-26). When SPY > MA200 AND
     # VIX < bull_regime_vix_max: switch to a higher-delta / smaller-per-name /
     # IV-rank-gated profile to fight bull-regime yield ceiling. See live
