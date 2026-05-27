@@ -409,7 +409,11 @@ def ensure_market_data(regime, universe):
     cheaper, RTH-safe (no portfolio-lock contention), and reaches back
     further than IBKR's option-chain history."""
     _, _, is_analog = regime.effective_window()
-    use_yahoo = is_analog or bool(getattr(regime, "proxy_universe", None))
+    use_yahoo = (
+        is_analog
+        or bool(getattr(regime, "proxy_universe", None))
+        or bool(getattr(regime, "universe_extension", None))
+    )
     missing = [s for s in universe if not has_data(regime.id, s)]
     if missing or not has_data(regime.id, "^VIX"):
         log.info("marswalk_fetching", regime=regime.id, symbols=len(missing),

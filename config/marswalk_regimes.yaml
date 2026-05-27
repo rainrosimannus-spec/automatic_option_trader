@@ -166,7 +166,25 @@ regimes:
     category: crash
     start: "2008-09-02"
     end: "2009-03-09"
-    why: "Acute phase of the global financial crisis: Lehman bankruptcy (Sept 15) through SPX bottom at 676 (Mar 9). SPX -46% in 6 months, VIX peaked 80, credit markets froze. Heavy survivorship: only ~20/47 universe names existed (most modern megacaps post-date this). Read as 'how does the wheel survive a credit-freeze tail event on the names that EXISTED' — not a broad-outcome predictor. Worst-case capital-stuck-in-assigned-stock scenario."
+    why: "Acute phase of the global financial crisis: Lehman bankruptcy (Sept 15) through SPX bottom at 676 (Mar 9). SPX -46% in 6 months, VIX peaked 80, credit markets froze. Universe SUPPLEMENTED with 16 broad-market names (financials, energy, staples, healthcare, industrials, classic tech) so effective coverage is 50 names — matches the live opt universe size, tests sector-diversified wheel survival rather than tech-only survival."
+    # 16-name broad-market supplement (existed 2008, still liquid+optionable). Added 2026-05-27.
+    universe_extension:
+      - JPM
+      - BAC
+      - XOM
+      - CVX
+      - JNJ
+      - PFE
+      - KO
+      - PG
+      - WMT
+      - HD
+      - CAT
+      - BA
+      - AMZN
+      - INTC
+      - IBM
+      - CSCO
 
   - id: q4_2018
     rank: 14
@@ -190,7 +208,8 @@ regimes:
     category: crash
     start: "2011-07-22"
     end: "2011-10-31"
-    why: "S&P downgrade of US credit (Aug 5) + Eurozone sovereign-debt fears. SPX -19% in 3 weeks (Jul-Aug), VIX 48, then 2 months of choppy basing before recovery. Crisis-grade vol WITHOUT recession — tests whether the wheel can re-engage premium-selling as the storm passes. Universe thin (~25/47 names existed) — read with survivorship caveat."
+    why: "S&P downgrade of US credit (Aug 5) + Eurozone sovereign-debt fears. SPX -19% in 3 weeks (Jul-Aug), VIX 48, then 2 months of choppy basing before recovery. Crisis-grade vol WITHOUT recession — tests whether the wheel can re-engage premium-selling as the storm passes. Universe SUPPLEMENTED with 16 broad-market names — effective coverage 50, matches live opt universe size."
+    universe_extension: [JPM, BAC, XOM, CVX, JNJ, PFE, KO, PG, WMT, HD, CAT, BA, AMZN, INTC, IBM, CSCO]
 
   - id: flash_2010
     rank: 17
@@ -198,7 +217,8 @@ regimes:
     category: whipsaw
     start: "2010-04-23"
     end: "2010-07-02"
-    why: "Intraday liquidity collapse on May 6 (Dow -9% intraday, snap-back same session) inside a broader Apr-Jul selloff (SPX -16% peak-to-trough). Daily-bar backtests can't replicate the intraday event itself, but the surrounding window tests gap risk + the wheel's behavior through a non-fundamental liquidity shock. Universe ~22/47 names — keep on dashboard for shape comparison, not absolute returns."
+    why: "Intraday liquidity collapse on May 6 (Dow -9% intraday, snap-back same session) inside a broader Apr-Jul selloff (SPX -16% peak-to-trough). Daily-bar backtests can't replicate the intraday event itself, but the surrounding window tests gap risk + the wheel's behavior through a non-fundamental liquidity shock. Universe SUPPLEMENTED with 16 broad-market names — effective coverage 50, matches live opt universe size."
+    universe_extension: [JPM, BAC, XOM, CVX, JNJ, PFE, KO, PG, WMT, HD, CAT, BA, AMZN, INTC, IBM, CSCO]
 
   - id: ai_crash
     rank: 18

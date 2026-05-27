@@ -52,21 +52,26 @@ def run_all_regimes(params: Params, fetch: bool = True):
         for reg in regimes:
             _state["msg"] = f"running {reg.id}"
             try:
+                # Per-regime universe extension (e.g. broad-market names added
+                # to gfc_2008/debt_2011/flash_2010 to test sector-diversified
+                # wheel survival in pre-2015 windows). None for most regimes.
+                ext = reg.universe_extension or []
+                eff_universe = list(universe) + [s for s in ext if s not in universe]
                 # Forward-scenario regimes use Yahoo for their historical analog
                 # window — RTH-safe and free of IBKR contention. Always fetch
                 # them regardless of the global `fetch` flag (which controls
                 # the IBKR path).
                 _, _, is_analog = reg.effective_window()
                 if fetch or is_analog:
-                    mw_data.ensure_market_data(reg, universe)
-                market = mw_data.load_market(reg, universe)
+                    mw_data.ensure_market_data(reg, eff_universe)
+                market = mw_data.load_market(reg, eff_universe)
                 if not market:
                     log.warning("marswalk_no_data", regime=reg.id)
                     _state["done"] += 1
                     continue
-                earnings = mw_data.load_earnings(universe)
+                earnings = mw_data.load_earnings(eff_universe)
                 res = run_regime(reg.id, reg.name, reg.category, reg.rank,
-                                 universe, market, params, earnings=earnings)
+                                 eff_universe, market, params, earnings=earnings)
                 if res:
                     _replace_prior(reg.id, params)
                     save_run(res)

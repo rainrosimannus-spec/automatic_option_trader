@@ -34,6 +34,12 @@ class Regime:
     # 47-name universe over the 2000-02 dot-com bust on a name-by-name basis.
     # Names not in the dict fetch their own real bars.
     proxy_universe: dict[str, str] | None = None
+    # Extra symbols appended to the base universe for THIS regime only. Used to
+    # supplement old regimes (2008-2011) with broad-market names (JPM, XOM, JNJ
+    # etc.) that the live screener wouldn't pick today but existed then —
+    # tests how a sector-diversified wheel would have fared. Other regimes are
+    # untouched (extension=None).
+    universe_extension: list[str] | None = None
 
     def effective_window(self, today: str | None = None) -> tuple[str, str, bool]:
         """Return (start, end, is_analog). If `start > today` and an analog is
