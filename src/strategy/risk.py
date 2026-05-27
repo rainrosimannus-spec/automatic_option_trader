@@ -1091,12 +1091,29 @@ class RiskManager:
         # When rolling NLV is flat (< threshold over lookback days), boost the
         # ladder result. Capped by iv_rank_size_max_multiplier — never exceeds
         # the existing hard ceiling.
+        # Deep-bear safeguard: suppress when SPY > stagnation_deep_bear_threshold
+        # below MA200 — doubling positions into a sustained collapse stacks
+        # losses (gfc_2008 backtest evidence).
         if strat_cfg.stagnation_boost_enabled:
             rolling = self._rolling_nlv_return_pct(strat_cfg.stagnation_lookback_days)
             if rolling is not None and rolling < strat_cfg.stagnation_threshold_pct:
-                base = int(round(base * strat_cfg.stagnation_multiplier))
-                log.info("stagnation_boost_active", rolling_pct=round(rolling, 2),
-                         threshold=strat_cfg.stagnation_threshold_pct, base=base)
+                deep_bear = False
+                try:
+                    regime = self.get_regime()
+                    dist = regime.spy_distance_below_ma200
+                    if dist is not None and dist > strat_cfg.stagnation_deep_bear_threshold:
+                        deep_bear = True
+                except Exception:
+                    deep_bear = False  # fail-open: data unavailable → allow boost
+                if deep_bear:
+                    log.info("stagnation_boost_suppressed_deep_bear",
+                             rolling_pct=round(rolling, 2),
+                             pct_below_ma200=round(dist, 4) if dist else None,
+                             threshold=strat_cfg.stagnation_deep_bear_threshold)
+                else:
+                    base = int(round(base * strat_cfg.stagnation_multiplier))
+                    log.info("stagnation_boost_active", rolling_pct=round(rolling, 2),
+                             threshold=strat_cfg.stagnation_threshold_pct, base=base)
         capped = max(1, min(base, strat_cfg.iv_rank_size_max_multiplier))
         gated = int(round(capped * self._ma200_size_multiplier()))
         return max(1, gated)

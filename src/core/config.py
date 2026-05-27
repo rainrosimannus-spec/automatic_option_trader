@@ -126,6 +126,12 @@ class StrategyConfig(BaseModel):
     stagnation_lookback_days: int = 60
     stagnation_threshold_pct: float = 1.0
     stagnation_multiplier: float = 2.0
+    # Deep-bear safeguard for stagnation booster (2026-05-27): suppress booster
+    # when SPY is more than this fraction below MA200. Doubling positions into
+    # a sustained collapse stacks losses (gfc_2008 backtest: -1.35pp penalty
+    # when unguarded). gfc-class regimes (SPY 30-40% below MA200) → suppressed.
+    # debt_2011 / bear_2022 (~15% below) → boost still fires normally.
+    stagnation_deep_bear_threshold: float = 0.15
     # #4 Weekend/holiday theta capture: small additive score bonus for contracts
     # that span non-trading (weekend) days — rewards capturing decay without
     # market exposure. weight 0 disables. Revert: weekend_theta_enabled = false.
