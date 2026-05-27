@@ -199,6 +199,12 @@ class Params:
     stagnation_lookback_days: int = 60
     stagnation_threshold_pct: float = 1.0
     stagnation_multiplier: float = 2.0
+    # Deep-bear safeguard for stagnation booster (2026-05-27): suppress booster
+    # when SPY is more than this fraction below MA200. Doubling positions into
+    # a sustained collapse stacked losses in gfc_2008 (-1.35pp penalty).
+    # gfc_2008 had SPY 30-40% below MA200 → boost suppressed.
+    # debt_2011 / bear_2022 had SPY ~15% below → boost still fires.
+    stagnation_deep_bear_threshold: float = 0.15
     # Bear-market gate. Four modes (compared in the engine's candidate / qty_mult
     # paths): "off" = no gate, "halve_contracts" = halve total contracts when SPY
     # < MA200, "cap_multiplier" = cap iv_rank_size multiplier at N when SPY <
@@ -698,6 +704,9 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         # (c-stag) Stagnation detector (long-grind countermeasure candidate 3).
         # Rolling lookback_days NLV return < stagnation_threshold_pct → boost
         # qty_mult below by stagnation_multiplier (capped by existing ivr_cap).
+        # Deep-bear safeguard: suppress when SPY > stagnation_deep_bear_threshold
+        # below MA200 — doubling positions into a sustained collapse stacks
+        # losses (gfc_2008 historical evidence, -1.35pp penalty when unguarded).
         stagnation_active = False
         if params.stagnation_boost_enabled and len(nlv_window) >= 5:
             lb = min(len(nlv_window) - 1, params.stagnation_lookback_days)
@@ -706,7 +715,15 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             if lookback_nlv > 0:
                 rolling_ret_pct = (current_nlv - lookback_nlv) / lookback_nlv * 100
                 if rolling_ret_pct < params.stagnation_threshold_pct:
-                    stagnation_active = True
+                    spy_ma_today = spy_ma200.get(d)
+                    spy_today_close = spy_closes.get(d)
+                    deep_bear = False
+                    if spy_ma_today and spy_today_close and spy_ma_today > 0:
+                        pct_below = (spy_ma_today - spy_today_close) / spy_ma_today
+                        if pct_below > params.stagnation_deep_bear_threshold:
+                            deep_bear = True
+                    if not deep_bear:
+                        stagnation_active = True
 
         # (c) VIX-tier dynamic delta (risk.dynamic_delta_range + effective_vix_tier).
         #     Replaces fixed params.delta_min/max for the day's put-selling pass.

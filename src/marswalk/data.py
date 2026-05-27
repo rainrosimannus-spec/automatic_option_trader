@@ -423,6 +423,11 @@ def ensure_market_data(regime, universe):
             if missing:
                 fetch_symbols_yahoo(regime, missing)
             fetch_vix_yahoo(regime)
+            fetch_spy_yahoo(regime)   # MA200/MA50 gates need SPY — was missing,
+                                       # silently no-op'd the deep-bear/MA gates
+                                       # for Yahoo-routed regimes (gfc_2008,
+                                       # debt_2011, flash_2010, q4_2018,
+                                       # volmageddon_2018, ai_crash).
         else:
             fetch_and_cache(regime, missing)  # IBKR path — also fetches ^VIX
     if any(not has_data("_earnings", s) for s in universe):
