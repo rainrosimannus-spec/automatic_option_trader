@@ -173,6 +173,32 @@ class Params:
     # NLV-tier scaling: <200K → 1×, <500K → 2×, ≥500K → 4× base cap.
     max_portfolio_delta: float = 500.0
     delta_nlv_threshold: float = 50_000.0
+    # ── Long-grind countermeasures (sweep-validated 2026-05-27; see
+    # scripts/longgrind_sweep.py for the 18-regime × 4-config evaluation).
+    # Candidate 1 (bear_regime_*): REJECTED by sweep — hurt iran_war/bear_2022/
+    # tariff_2025/covid_2020. Defaults to OFF; left as opt-in field for future
+    # retesting if rule changes.
+    bear_regime_enabled: bool = False
+    bear_regime_vix_min: float = 22.0
+    bear_regime_dte_min: int = 3
+    bear_regime_dte_max: int = 10
+    # Candidate 2 (VIX-adaptive k): ACCEPTED — lifts gfc_2008 +1.95pp, iran_war
+    # +1.29pp, no regime hurt. Raises pricing-model k in high-VIX regimes to
+    # close the realized-vol-vs-implied-vol gap. MARSWALK-ONLY (live uses real
+    # market IV; no synthetic-pricing analog exists).
+    k_vix_adaptive_enabled: bool = True
+    k_vix_high_threshold: float = 25.0
+    k_vix_panic_threshold: float = 35.0
+    k_vix_high: float = 1.7
+    k_vix_panic: float = 2.5
+    # Candidate 3 (stagnation booster): ACCEPTED — lifts ai_crash +3.11pp,
+    # oil_crash +1.67pp, bull_2021 +1.81pp; no regime hurt ≤-2pp. PORTED TO
+    # LIVE (src/strategy/risk.py iv_rank_size_multiplier + StrategyConfig).
+    # When rolling N-day NLV return is below threshold, multiply qty_mult.
+    stagnation_boost_enabled: bool = True
+    stagnation_lookback_days: int = 60
+    stagnation_threshold_pct: float = 1.0
+    stagnation_multiplier: float = 2.0
     # Bear-market gate. Four modes (compared in the engine's candidate / qty_mult
     # paths): "off" = no gate, "halve_contracts" = halve total contracts when SPY
     # < MA200, "cap_multiplier" = cap iv_rank_size multiplier at N when SPY <
@@ -657,6 +683,31 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     and vix_now < params.bull_regime_vix_max):
                 bull_today = True
 
+        # (c-bear) Bear-regime detector (long-grind countermeasure candidate 1).
+        # Mutually exclusive with bull_today. When True, DTE override below
+        # extends 0-3 → bear_regime_dte_min/max.
+        bear_today = False
+        if (params.bear_regime_enabled and not bull_today
+                and vix_now is not None and vix_now > params.bear_regime_vix_min):
+            spy_ma_today = spy_ma200.get(d)
+            spy_today_close = spy_closes.get(d)
+            if (spy_ma_today is not None and spy_today_close is not None
+                    and spy_today_close < spy_ma_today):
+                bear_today = True
+
+        # (c-stag) Stagnation detector (long-grind countermeasure candidate 3).
+        # Rolling lookback_days NLV return < stagnation_threshold_pct → boost
+        # qty_mult below by stagnation_multiplier (capped by existing ivr_cap).
+        stagnation_active = False
+        if params.stagnation_boost_enabled and len(nlv_window) >= 5:
+            lb = min(len(nlv_window) - 1, params.stagnation_lookback_days)
+            lookback_nlv = nlv_window[-lb - 1] if lb < len(nlv_window) else nlv_window[0]
+            current_nlv = nlv_window[-1]
+            if lookback_nlv > 0:
+                rolling_ret_pct = (current_nlv - lookback_nlv) / lookback_nlv * 100
+                if rolling_ret_pct < params.stagnation_threshold_pct:
+                    stagnation_active = True
+
         # (c) VIX-tier dynamic delta (risk.dynamic_delta_range + effective_vix_tier).
         #     Replaces fixed params.delta_min/max for the day's put-selling pass.
         #     SPY-MA50 clamp pushes tier-min up while SPY trades below its 50d SMA;
@@ -796,16 +847,28 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     name_below = sym_ma is not None and spot < sym_ma
                     if (breadth >= params.ma200_breadth_full_threshold) and name_below:
                         continue
-                # Bull-regime DTE override: in confirmed bulls extend DTE from
-                # the cash-machine 0-3 to 0-7. Mirrors live put_seller._resolve_dte.
-                day_dte_min, day_dte_max = (
-                    (params.bull_regime_dte_min, params.bull_regime_dte_max)
-                    if bull_today else (params.dte_min, params.dte_max)
-                )
+                # DTE override: bull-regime extends 0-3 → 0-7 (mirrors live).
+                # Bear-regime (sweep candidate 1) extends 0-3 → bear_regime_dte_*
+                # to capture more theta per cycle in extended-grind crash regimes.
+                # Mutually exclusive (bear_today is False when bull_today is True).
+                if bull_today:
+                    day_dte_min, day_dte_max = (params.bull_regime_dte_min, params.bull_regime_dte_max)
+                elif bear_today:
+                    day_dte_min, day_dte_max = (params.bear_regime_dte_min, params.bear_regime_dte_max)
+                else:
+                    day_dte_min, day_dte_max = (params.dte_min, params.dte_max)
                 chain = [sc for sc in pricing.build_contracts(spot, d, day_dte_max + 7, symbol=sym)
                          if day_dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= day_dte_max]
+                # VIX-adaptive k (sweep candidate 2): raise short_dte_uplift_k in
+                # high-VIX regimes to close the realized-vol-vs-implied-vol gap.
+                k_today = params.short_dte_uplift_k
+                if params.k_vix_adaptive_enabled and vix_now is not None:
+                    if vix_now > params.k_vix_panic_threshold:
+                        k_today = params.k_vix_panic
+                    elif vix_now > params.k_vix_high_threshold:
+                        k_today = params.k_vix_high
                 score_iv = pricing.effective_iv(iv, (day_dte_min + day_dte_max) // 2,
-                                                params.short_dte_uplift_k)
+                                                k_today)
                 cands = score_put_candidates(spot, score_iv, chain, put_cfg,
                                              day_delta_min, day_delta_max,
                                              day_dte_min, day_dte_max, d)
@@ -837,6 +900,11 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                         qty_mult = min(4, ivr_cap)
                     elif ivr >= getattr(cfg, "iv_rank_size_mid", 50):
                         qty_mult = min(2, ivr_cap)
+                # Stagnation booster (sweep candidate 3): double qty_mult when
+                # rolling NLV is flat. Capped by ivr_cap so we never exceed the
+                # existing 10× hard ceiling.
+                if stagnation_active:
+                    qty_mult = min(int(round(qty_mult * params.stagnation_multiplier)), ivr_cap)
                 contracts = params.contracts * qty_mult
                 # Mode E (breadth_gradual): halve contracts when in HALVE regime
                 # (off_threshold <= breadth < full_threshold) AND name is below

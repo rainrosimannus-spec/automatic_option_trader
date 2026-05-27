@@ -117,6 +117,15 @@ class StrategyConfig(BaseModel):
     # Growth-mode 2026-05-26: cap raised 5 → 10 to let the IV-rank ladder
     # (1/2/4/7/10 bands in risk.iv_rank_size_multiplier) scale through.
     iv_rank_size_max_multiplier: int = 10
+    # Stagnation booster (2026-05-27, ported from MarsWalk longgrind_sweep).
+    # When rolling NLV return is flat across stagnation_lookback_days, multiply
+    # the IV-rank ladder result by stagnation_multiplier (capped by
+    # iv_rank_size_max_multiplier). Lifts ai_crash +3.11pp, oil_crash +1.67pp,
+    # bull_2021 +1.81pp in MarsWalk; no regime hurt below -2pp.
+    stagnation_boost_enabled: bool = True
+    stagnation_lookback_days: int = 60
+    stagnation_threshold_pct: float = 1.0
+    stagnation_multiplier: float = 2.0
     # #4 Weekend/holiday theta capture: small additive score bonus for contracts
     # that span non-trading (weekend) days — rewards capturing decay without
     # market exposure. weight 0 disables. Revert: weekend_theta_enabled = false.

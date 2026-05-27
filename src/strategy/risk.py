@@ -349,6 +349,32 @@ class RiskManager:
             )
         return RiskCheck(True)
 
+    def _rolling_nlv_return_pct(self, lookback_days: int) -> float | None:
+        """Percent change in NLV vs lookback_days ago. Positive = grew, negative
+        = lost. Returns None if insufficient history (caller decides fail-open).
+        Used by the stagnation-boost detector to multiply the IV-rank ladder
+        when NLV has gone nowhere — mirrors MarsWalk +stag (longgrind_sweep)."""
+        try:
+            from src.core.models import AccountSnapshot
+            with get_db() as db:
+                rows = (
+                    db.query(AccountSnapshot)
+                    .order_by(AccountSnapshot.date.desc())
+                    .limit(lookback_days + 1)
+                    .all()
+                )
+            if not rows or len(rows) < 2:
+                return None
+            current = rows[0].net_liquidation
+            # rows[-1] is the OLDEST in the window (limit returns desc).
+            past = rows[-1].net_liquidation
+            if current <= 0 or past <= 0:
+                return None
+            return (current - past) / past * 100
+        except Exception as e:
+            log.debug("rolling_nlv_calc_failed", error=str(e))
+            return None
+
     def _get_recent_nlv_drawdown(self) -> float:
         """
         Compute NLV drawdown over the lookback window.
@@ -1061,6 +1087,16 @@ class RiskManager:
             base = 2
         else:
             base = 1
+        # Stagnation booster (2026-05-27, ported from MarsWalk longgrind_sweep).
+        # When rolling NLV is flat (< threshold over lookback days), boost the
+        # ladder result. Capped by iv_rank_size_max_multiplier — never exceeds
+        # the existing hard ceiling.
+        if strat_cfg.stagnation_boost_enabled:
+            rolling = self._rolling_nlv_return_pct(strat_cfg.stagnation_lookback_days)
+            if rolling is not None and rolling < strat_cfg.stagnation_threshold_pct:
+                base = int(round(base * strat_cfg.stagnation_multiplier))
+                log.info("stagnation_boost_active", rolling_pct=round(rolling, 2),
+                         threshold=strat_cfg.stagnation_threshold_pct, base=base)
         capped = max(1, min(base, strat_cfg.iv_rank_size_max_multiplier))
         gated = int(round(capped * self._ma200_size_multiplier()))
         return max(1, gated)
