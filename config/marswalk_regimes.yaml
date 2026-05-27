@@ -152,16 +152,8 @@ regimes:
     end: "2026-05-22"
     why: "US + Israel at war with Iran and its regional allies since 2026-02-28 — a live, vol-elevated geopolitical regime with event gaps. Overlaps the real options account's life (started ~Feb 22), which returned +22.5% — so this is the CALIBRATION ANCHOR: tune short_dte_uplift_k until the backtest here ~matches +22.5%."
 
-  - id: dotcom_2000
-    rank: 12
-    name: "2000-2002 dot-com bust"
-    category: crash
-    start: "2000-03-10"
-    end: "2002-10-09"
-    why: "31-month NDX -78% grinding bear, the longest sustained tech crash. Survivorship-biased: only ~22/47 universe names existed yet (the rest IPO'd later, including the AI-era megacaps). Result must be read as 'how does the wheel behave on the SURVIVING names through a once-in-a-generation tech collapse' — not a predictor of broad outcome. Worth keeping on the dashboard for shape comparison vs bear_2022's 9-month rate-hike bear."
-
   - id: oil_crash_2014
-    rank: 13
+    rank: 12
     name: "2014-2016 oil halving + China growth fears"
     category: sideways
     start: "2014-06-20"
@@ -169,7 +161,7 @@ regimes:
     why: "20-month broad-market chop while oil collapsed $107→$26 (1/4). USD strengthening + China slowdown + August 2015 mini-crash + early-2016 selloff. SPY went ~+5% net over 20 months with two -12% corrections. Tests the wheel's ability to grind through multiple shallow corrections + survivorship pressure without a clear trend. Note: universe is tech-heavy; minimal direct oil exposure → tests SECOND-order effects (input-cost tailwind for everyone except XOM/CVX, which aren't in this universe)."
 
   - id: gfc_2008
-    rank: 14
+    rank: 13
     name: "2008 GFC / Lehman crash"
     category: crash
     start: "2008-09-02"
@@ -177,7 +169,7 @@ regimes:
     why: "Acute phase of the global financial crisis: Lehman bankruptcy (Sept 15) through SPX bottom at 676 (Mar 9). SPX -46% in 6 months, VIX peaked 80, credit markets froze. Heavy survivorship: only ~20/47 universe names existed (most modern megacaps post-date this). Read as 'how does the wheel survive a credit-freeze tail event on the names that EXISTED' — not a broad-outcome predictor. Worst-case capital-stuck-in-assigned-stock scenario."
 
   - id: q4_2018
-    rank: 15
+    rank: 14
     name: "2018 Q4 Powell-pivot selloff"
     category: crash
     start: "2018-10-01"
@@ -185,7 +177,7 @@ regimes:
     why: "SPX -19.8% in 3 months on a hawkish-Fed surprise, bottoming Christmas Eve. Faster than bear_2022 (3mo vs 9mo), shallower than tariff_2025. Full universe except recent IPOs (HWM, ARM, PLTR, ABNB). Clean rapid-crash test for the wheel's assignment cadence — does it get caught with full collateral deployed near the top?"
 
   - id: volmageddon_2018
-    rank: 16
+    rank: 15
     name: "Feb 2018 Volmageddon / XIV blowup"
     category: crash
     start: "2018-01-22"
@@ -193,7 +185,7 @@ regimes:
     why: "Pure short-vol shock from a clean uptrend: VIX 17→50 in two sessions (Feb 5-6), XIV ETN blew up, SPX -10% in 9 days then chopped. Window padded to ~6 weeks so the wheel has time to enter, get shocked, and recover. Tests the strategy's vol-spike response when ENTERED into low vol (opposite of carry_2024 which spiked from already-elevated levels)."
 
   - id: debt_2011
-    rank: 17
+    rank: 16
     name: "2011 US debt downgrade + Eurozone crisis"
     category: crash
     start: "2011-07-22"
@@ -201,7 +193,7 @@ regimes:
     why: "S&P downgrade of US credit (Aug 5) + Eurozone sovereign-debt fears. SPX -19% in 3 weeks (Jul-Aug), VIX 48, then 2 months of choppy basing before recovery. Crisis-grade vol WITHOUT recession — tests whether the wheel can re-engage premium-selling as the storm passes. Universe thin (~25/47 names existed) — read with survivorship caveat."
 
   - id: flash_2010
-    rank: 18
+    rank: 17
     name: "May 2010 Flash Crash"
     category: whipsaw
     start: "2010-04-23"
@@ -209,7 +201,7 @@ regimes:
     why: "Intraday liquidity collapse on May 6 (Dow -9% intraday, snap-back same session) inside a broader Apr-Jul selloff (SPX -16% peak-to-trough). Daily-bar backtests can't replicate the intraday event itself, but the surrounding window tests gap risk + the wheel's behavior through a non-fundamental liquidity shock. Universe ~22/47 names — keep on dashboard for shape comparison, not absolute returns."
 
   - id: ai_crash
-    rank: 19
+    rank: 18
     name: "Synthetic AI crash (today's universe ↔ dot-com proxies)"
     category: crash
     start: "2000-03-10"
@@ -247,10 +239,8 @@ regimes:
       # Real-data (fetches own 2000-02 bars): AAPL, ADBE, ADSK, AMD, AZN, CDNS,
       # COST, IDXX, KLAC, LLY, LRCX, MCD, MSFT, MTD, ORCL, QCOM, ROL, SPGI, SYK, VRTX
 
-  # History: forward scenarios (ai_crash, energy_bounce_truce) using the
-  # historical_analog mechanism were removed 2026-05-26 — dot-com analog
-  # printed +2%/yr because the data fetcher pulled today's tickers (which mostly
-  # didn't exist yet), and the 1991 analog was too thin (15/47 names).
-  # 2026-05-27: ai_crash re-added above, but using the new `proxy_universe`
-  # mechanism (per-name ticker substitution) so today's universe gets dot-com
-  # bubble-victim price paths instead of empty bars.
+  # History: the survivors-only `dotcom_2000` regime (added 2026-05-27) was
+  # removed the same day — survivorship bias made it uninformative (only the
+  # names that SURVIVED 2000-2002 were in the universe). The synthetic
+  # `ai_crash` regime above replaces it: same 31-month window, but per-name
+  # ticker proxies map today's AI-era names onto real dot-com bubble victims.
