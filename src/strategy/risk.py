@@ -265,15 +265,48 @@ class RiskManager:
 
     # ── Individual checks ───────────────────────────────────
     def check_vix_gate(self) -> RiskCheck:
-        """Block trading if VIX is above threshold. Fail-open if VIX unavailable."""
+        """Block trading if VIX is above threshold AND rising. Direction-aware
+        2026-05-27: VIX 30↑ (fear building, prices falling) and VIX 30↓ (vol
+        crush, theta + vega paying you) are opposite states. If VIX is above
+        threshold but clearly falling vs yesterday, keep writing into the crush.
+        Fail-open if VIX unavailable; fail-closed if no prev-day data (treats
+        unknown direction as rising for safety)."""
         regime = self.get_regime()
         if regime.vix is None:
             log.warning("vix_data_unavailable_allowing_trades")
             return RiskCheck(True)  # fail open — allow trading if VIX data unavailable
-        if regime.vix > self.cfg.vix_pause_threshold:
-            log.warning("vix_gate_triggered", vix=regime.vix, threshold=self.cfg.vix_pause_threshold)
-            return RiskCheck(False, f"VIX at {regime.vix:.1f} > {self.cfg.vix_pause_threshold} threshold")
-        return RiskCheck(True)
+        if regime.vix <= self.cfg.vix_pause_threshold:
+            return RiskCheck(True)
+
+        prev = regime.vix_prev_day
+        if prev is None:
+            log.warning("vix_gate_triggered_no_prev",
+                        vix=regime.vix, threshold=self.cfg.vix_pause_threshold)
+            return RiskCheck(
+                False,
+                f"VIX at {regime.vix:.1f} > {self.cfg.vix_pause_threshold} threshold (no prev-day — halt for safety)",
+            )
+
+        falling_delta = prev - regime.vix
+        if falling_delta > 2.0:
+            log.info("vix_above_threshold_but_falling",
+                     vix=regime.vix, prev=prev, drop=round(falling_delta, 2),
+                     threshold=self.cfg.vix_pause_threshold)
+            return RiskCheck(
+                True,
+                reason=(
+                    f"VIX {regime.vix:.1f} > {self.cfg.vix_pause_threshold} but falling "
+                    f"(prev {prev:.1f}, Δ −{falling_delta:.1f}) — keep writing into vol crush"
+                ),
+            )
+
+        log.warning("vix_gate_triggered_rising",
+                    vix=regime.vix, prev=prev,
+                    threshold=self.cfg.vix_pause_threshold)
+        return RiskCheck(
+            False,
+            f"VIX at {regime.vix:.1f} > {self.cfg.vix_pause_threshold} (prev {prev:.1f}, rising/flat-high)",
+        )
 
     def check_spy_ma_gate(self, market: str | None = None) -> RiskCheck:
         """

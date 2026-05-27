@@ -60,7 +60,13 @@ class StrategyConfig(BaseModel):
     }
     # IV Rank
     iv_rank_enabled: bool = True
-    iv_rank_min: int = 0                # growth-mode 2026-05-26: accept all positive-EV IV ranks
+    # 2026-05-27: reverted from 0 → 20 after honest review. The growth-mode
+    # premise ("write everything, capital must deploy") was contradicted by
+    # the same session's bull-regime IV-rank floor of 50 (skip dead-IV names).
+    # Low-IV-rank writes have structurally bad premium-to-risk ratio: collect
+    # pennies, take full assignment loss in a drawdown. Bull-regime floor of 50
+    # remains the layered defense for confirmed bulls.
+    iv_rank_min: int = 20
     iv_lookback_days: int = 252
     # Dynamic delta
     dynamic_delta_enabled: bool = True
