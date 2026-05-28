@@ -40,6 +40,29 @@ class Regime:
     # tests how a sector-diversified wheel would have fared. Other regimes are
     # untouched (extension=None).
     universe_extension: list[str] | None = None
+    # Synthetic exchange-blackout windows. Each entry is {"start": "YYYY-MM-DD",
+    # "end": "YYYY-MM-DD"} — inclusive halted-trading dates. The service layer
+    # drops every bar in these windows (across every symbol incl. ^SPY/^VIX) so
+    # the engine sees a date-axis gap and trades nothing during the halt. Used
+    # by `blackout_3day` to model cyber/grid/power-outage events. None for most.
+    halts: list[dict] | None = None
+    # One-time price discontinuity applied to the FIRST surviving bar after EACH
+    # halt window: equity close *= (1 + gap_open_pct); equity IV *= 2.0 to model
+    # the vol-spike on resumption; ^VIX close *= 2.0 (VIX is itself implied vol).
+    # e.g. -0.30 = -30% gap-down. Ignored unless `halts` is set.
+    gap_open_pct: float | None = None
+    # Synthetic one-day price shocks (no halt period). Each entry is
+    # {"date": "YYYY-MM-DD", "pct": -0.15}. From shock date forward every equity
+    # bar gets a permanent close shift × (1+pct); IV/VIX are bumped 2× on the
+    # shock date only. Used by `stacked_2x` to overlay a 2nd Lehman-class event
+    # on top of gfc_2008's natural drawdown — tests correlation-breakdown defenses.
+    shocks: list[dict] | None = None
+    # Multiplicative price scaler for OLD regimes whose nominal price levels
+    # (1970s blue chips at $4-30) are too low to interact meaningfully with the
+    # wheel's premium minimums + $4M NLV scale. Used by stagflation_70s with
+    # ~7.5x (1973→2024 CPI ratio) so the engine sees today-scale prices while
+    # day-over-day RETURNS remain identical. Default 1.0 = no scaling.
+    price_multiplier: float = 1.0
 
     def effective_window(self, today: str | None = None) -> tuple[str, str, bool]:
         """Return (start, end, is_analog). If `start > today` and an analog is

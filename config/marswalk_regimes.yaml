@@ -264,3 +264,97 @@ regimes:
   # names that SURVIVED 2000-2002 were in the universe). The synthetic
   # `ai_crash` regime above replaces it: same 31-month window, but per-name
   # ticker proxies map today's AI-era names onto real dot-com bubble victims.
+
+  - id: stagflation_70s
+    rank: 20
+    name: "1973-1982 stagflation (Volcker era)"
+    category: crash
+    start: "1973-01-02"
+    end: "1982-12-31"
+    why: "10-year survival test through the worst decade of US equities since WW2: 1973-74 bear (-48% SPX), 1979-1982 second oil shock + Volcker's 20% rate hikes + double-dip recession. Real returns were ~-50% over the decade once inflation is netted out (nominal returns ~0%). Today's universe is mapped onto 1970s blue-chips (IBM/INTC for tech, T/DIS for communication, MCD/F for consumer, KO/PG for staples, JNJ/MRK/PFE/LLY for healthcare, XOM for energy, BA/CAT/MMM for industrials) via proxy_universe — 14 unique 1970s names back the 47-name universe. Prices are scaled ×7.5 (1973→2024 CPI ratio) so the engine sees today-scale dollar levels while day-over-day RETURNS remain identical to history; this keeps the wheel's premium minimums + $4M NLV scale meaningful. LIMITATIONS: (1) ^VIX silently skipped (instrument didn't exist pre-1990; VIX-tier delta/halt/bull-regime gates no-op, engine falls back to fixed 0.15-0.30 delta), (2) ^SPY data unavailable pre-1993 (SPY-MA200/MA50 gates no-op, fail-open), (3) NOMINAL returns only — real (inflation-adjusted) view not yet implemented (CPI tracking is the follow-up). Despite limits, the wheel still sees real per-name vol via the realized-vol IV proxy, so iv_rank ladder sizing adapts."
+    price_multiplier: 7.5
+    # Proxy_universe: map all 47 today-names to 14 unique 1970s blue-chips with
+    # Yahoo data back to 1973. LLY and MCD existed in 1973 with their own Yahoo
+    # data (not proxied — fetched as-is). All other today-names route through
+    # one of: IBM, INTC, T, DIS, KO, PG, MCD, F, JNJ, MRK, PFE, XOM, BA, CAT, MMM.
+    proxy_universe:
+      # Tech (large-cap) → IBM
+      AAPL: IBM
+      ADBE: IBM
+      ADSK: IBM
+      CDNS: IBM
+      CRM: IBM
+      MSFT: IBM
+      NOW: IBM
+      ORCL: IBM
+      PLTR: IBM
+      VEEV: IBM
+      # Tech (semis / hardware) → INTC
+      AMD: INTC
+      ANET: INTC
+      ARM: INTC
+      ASML: INTC
+      AVGO: INTC
+      FSLR: INTC
+      KLAC: INTC
+      LRCX: INTC
+      MPWR: INTC
+      NVDA: INTC
+      QCOM: INTC
+      # Communication → T / DIS
+      GOOGL: T
+      META: DIS
+      NFLX: DIS
+      # Consumer Discretionary
+      ABNB: MCD
+      BKNG: MCD
+      CMG: MCD
+      DECK: F
+      LULU: F
+      RACE: F
+      CPRT: F
+      # Consumer Staples
+      COST: KO
+      MA: KO          # no 1970s payments analog → defensive staple proxy
+      V: KO
+      # Healthcare
+      AZN: MRK
+      DXCM: JNJ
+      IDXX: JNJ
+      ISRG: JNJ
+      SYK: JNJ
+      VRTX: MRK
+      ZTS: MRK
+      # Industrials
+      HWM: BA
+      MTD: MMM
+      ROL: MMM
+      SPGI: MMM       # no 1970s financials analog → industrial diversified proxy
+      # Not mapped (fetched as-is, existed pre-1973): LLY, MCD
+
+  - id: stacked_2x
+    rank: 21
+    name: "GFC 2008 + synthetic 2nd Lehman-class shock (Nov 20 -15%)"
+    category: crash
+    start: "2008-09-02"
+    end: "2009-03-09"
+    why: "Overlays gfc_2008 with a synthetic -15% one-day shock on 2008-11-20 — the actual short-term Nov trough (SPX 752, deepest day of the Nov bottom). Models the black-swan pattern type C from 2026-05-27 brainstorm: correlation breakdown / multi-crisis stacking, where defensive sectors crash alongside cyclicals. Tests whether the wheel's sector cap (30%) and correlation gate (0.85) still constrain risk when correlations break (every sector crashes 15% the same day). Same 16-name broad-market universe extension as gfc_2008."
+    universe_extension: [JPM, BAC, XOM, CVX, JNJ, PFE, KO, PG, WMT, HD, CAT, BA, AMZN, INTC, IBM, CSCO]
+    shocks:
+      - date: "2008-11-20"
+        pct: -0.15
+
+  - id: blackout_3day
+    rank: 19
+    name: "Synthetic 3-day exchange blackout + -30% gap reopen"
+    category: crash
+    start: "2024-01-02"
+    end: "2024-07-15"
+    why: "Overlays grind_2024h1's 6.5-month calm-bull window with a 3-trading-day total exchange halt mid-regime (April 15-17, 2024) followed by a -30% gap on resumption (April 18). Models the highest-priority uncovered pattern type from the black-swan brainstorm 2026-05-27: cyber attack on financial infrastructure / multi-day power outage / Carrington-scale solar event. The wheel has ~3 months of bull-deployment momentum (high IV-rank sizing → up to 10× contracts on best names) when the halt strikes; 0-3 DTE puts that expire mid-halt settle on day 4 at the -30%-gapped price, the cruelest assignment test in the suite. IV is bumped 2× on the gap bar to model the realized vol explosion on reopen."
+    # Halt dates are in the regime's effective window (here = actual 2024 dates,
+    # no historical_analog). The service layer drops every bar (incl ^SPY/^VIX)
+    # whose date falls in [start, end] inclusive — engine sees a date-axis gap.
+    halts:
+      - start: "2024-04-15"
+        end: "2024-04-17"
+    gap_open_pct: -0.30

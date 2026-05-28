@@ -12,6 +12,7 @@ from src.core.logger import get_logger
 from src.marswalk.regimes import load_config
 from src.marswalk.engine import Params, run_regime, save_run
 from src.marswalk import data as mw_data
+from src.marswalk.synthetic import apply_halts, apply_shocks
 from src.marswalk.models import get_mw_db, Run, Point
 
 log = get_logger("marswalk.service")
@@ -69,6 +70,23 @@ def run_all_regimes(params: Params, fetch: bool = True):
                     log.warning("marswalk_no_data", regime=reg.id)
                     _state["done"] += 1
                     continue
+                # Synthetic exchange-blackout transform (blackout_3day etc.).
+                # Drops halt-window bars + gaps the first post-halt bar.
+                if reg.halts:
+                    market = apply_halts(market, reg.halts,
+                                         gap_open_pct=reg.gap_open_pct or 0.0)
+                # Synthetic shock transform (stacked_2x etc.) — single-day
+                # permanent equity gap with no halt period.
+                if reg.shocks:
+                    market = apply_shocks(market, reg.shocks)
+                # Price scaler for old regimes (stagflation_70s) so nominal $
+                # levels match the $4M NLV scale. Returns unchanged.
+                if reg.price_multiplier and reg.price_multiplier != 1.0:
+                    mult = float(reg.price_multiplier)
+                    market = {
+                        sym: [(d, c * mult, iv) for (d, c, iv) in bars]
+                        for sym, bars in market.items()
+                    }
                 earnings = mw_data.load_earnings(eff_universe)
                 res = run_regime(reg.id, reg.name, reg.category, reg.rank,
                                  eff_universe, market, params, earnings=earnings)
