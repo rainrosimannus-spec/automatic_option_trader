@@ -105,6 +105,83 @@ def sell_put(
 
 
 
+def buy_treasury_etf(
+    symbol: str,
+    shares: int,
+    limit_price: Optional[float] = None,
+) -> Optional[IBTrade]:
+    """Place a BUY order on a Treasury / money-market ETF (e.g. SGOV) for the
+    cash-and-carry feature. Mirrors `sell_put` shape — uses ib_lock, returns
+    IBTrade or None on rejection. Limit when price given, else market.
+
+    Called by src/strategy/cash_carry.py when the grind detector switches ON
+    and idle cash should be rotated into the ETF for yield."""
+    with get_ib_lock():
+        ib = get_ib()
+        contract = Stock(symbol, "SMART", "USD")
+        ib.qualifyContracts(contract)
+
+        if limit_price:
+            order = LimitOrder("BUY", shares, limit_price)
+        else:
+            order = MarketOrder("BUY", shares)
+        order.tif = "DAY"
+        order.outsideRth = False
+
+        log.info("placing_buy_treasury_etf",
+                 symbol=symbol, shares=shares, limit=limit_price)
+        trade = ib.placeOrder(contract, order)
+        ib.sleep(2)
+
+        status = trade.orderStatus.status
+        log_msg = trade.log[-1].message if trade.log and trade.log[-1].message else ""
+        log.info("treasury_etf_buy_status", symbol=symbol, status=status,
+                 message=log_msg[:200])
+
+        if status in ("Cancelled", "Inactive"):
+            log.error("treasury_etf_buy_rejected", symbol=symbol,
+                      status=status, reason=log_msg[:200])
+            return None
+        return trade
+
+
+def sell_treasury_etf(
+    symbol: str,
+    shares: int,
+    limit_price: Optional[float] = None,
+) -> Optional[IBTrade]:
+    """Place a SELL order on a Treasury / money-market ETF. Mirror of
+    buy_treasury_etf — called when the grind detector switches OFF and the
+    cash-carry position is being unwound back to USD."""
+    with get_ib_lock():
+        ib = get_ib()
+        contract = Stock(symbol, "SMART", "USD")
+        ib.qualifyContracts(contract)
+
+        if limit_price:
+            order = LimitOrder("SELL", shares, limit_price)
+        else:
+            order = MarketOrder("SELL", shares)
+        order.tif = "DAY"
+        order.outsideRth = False
+
+        log.info("placing_sell_treasury_etf",
+                 symbol=symbol, shares=shares, limit=limit_price)
+        trade = ib.placeOrder(contract, order)
+        ib.sleep(2)
+
+        status = trade.orderStatus.status
+        log_msg = trade.log[-1].message if trade.log and trade.log[-1].message else ""
+        log.info("treasury_etf_sell_status", symbol=symbol, status=status,
+                 message=log_msg[:200])
+
+        if status in ("Cancelled", "Inactive"):
+            log.error("treasury_etf_sell_rejected", symbol=symbol,
+                      status=status, reason=log_msg[:200])
+            return None
+        return trade
+
+
 def _verify_short_position(symbol: str, expiry: str, strike: float,
                            right: str, quantity: int) -> bool:
     """

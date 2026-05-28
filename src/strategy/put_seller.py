@@ -144,6 +144,16 @@ class PutSeller:
             except Exception as e:
                 log.error("put_scan_error", symbol=symbol, error=str(e))
 
+        # Cash-and-carry orchestration — react to detector state once per scan.
+        # No-op when cfg.risk.cash_carry_enabled is False. Idempotent within a
+        # state (if SGOV already held while detector ON, no second buy).
+        try:
+            from src.strategy.cash_carry import maybe_rotate
+            grind_active, _ = self.risk.evaluate_grind_detector()
+            maybe_rotate(grind_active)
+        except Exception as e:
+            log.warning("cash_carry_rotate_error", error=str(e))
+
         log.info("put_scan_completed", market=market_label, trades=len(traded), symbols=traded)
         return traded
 

@@ -79,6 +79,11 @@ class RiskManager:
         self._iv_rank_cache: dict[str, tuple[datetime, float | None]] = {}
         # Per-name MA200 cache: (date_iso, is_below). One IBKR call/sym/day.
         self._ma200_cache: dict[str, tuple[str, bool | None]] = {}
+        # Cash-and-carry grind detector state (cached per scan). Persists across
+        # process restarts via SystemState keys (grind_active / grind_raw_true_streak
+        # / grind_raw_false_streak / grind_last_eval_date).
+        self._grind_active_cached: bool | None = None
+        self._grind_reason_cached: str = ""
 
     # ── Market regime ───────────────────────────────────────
     def get_regime(self, force_refresh: bool = False) -> MarketRegime:
@@ -348,6 +353,156 @@ class RiskManager:
                 reduce_pct=reduction,
             )
         return RiskCheck(True)
+
+    # ── Cash-and-carry: grind-detector state persistence ────────────────────
+    # SystemState keys used (string-valued):
+    #   grind_active                — "true" / "false"
+    #   grind_raw_true_streak       — int (consecutive raw-true detector days)
+    #   grind_raw_false_streak      — int (consecutive raw-false detector days)
+    #   grind_last_eval_date        — YYYY-MM-DD (detector evaluates once per
+    #                                 business day; idempotent on re-scan)
+    # Same pattern as the existing VIX-history persistence in _store_regime.
+
+    def _load_grind_state(self) -> tuple[bool, int, int, str | None]:
+        """Return (active, raw_true_streak, raw_false_streak, last_eval_date)."""
+        try:
+            with get_db() as db:
+                rows = {
+                    s.key: s.value for s in db.query(SystemState).filter(
+                        SystemState.key.in_([
+                            "grind_active", "grind_raw_true_streak",
+                            "grind_raw_false_streak", "grind_last_eval_date",
+                        ])
+                    ).all()
+                }
+            return (
+                rows.get("grind_active", "false") == "true",
+                int(rows.get("grind_raw_true_streak") or "0"),
+                int(rows.get("grind_raw_false_streak") or "0"),
+                rows.get("grind_last_eval_date") or None,
+            )
+        except Exception as e:
+            log.debug("grind_state_load_failed", error=str(e))
+            return (False, 0, 0, None)
+
+    def _save_grind_state(self, active: bool, raw_true_streak: int,
+                          raw_false_streak: int, last_eval_date: str) -> None:
+        """Idempotent upsert of the four grind-state keys."""
+        try:
+            with get_db() as db:
+                pairs = {
+                    "grind_active": "true" if active else "false",
+                    "grind_raw_true_streak": str(raw_true_streak),
+                    "grind_raw_false_streak": str(raw_false_streak),
+                    "grind_last_eval_date": last_eval_date,
+                }
+                for key, value in pairs.items():
+                    row = db.query(SystemState).filter(SystemState.key == key).first()
+                    if row:
+                        row.value = value
+                    else:
+                        db.add(SystemState(key=key, value=value))
+                db.commit()
+        except Exception as e:
+            log.warning("grind_state_save_failed", error=str(e))
+
+    def evaluate_grind_detector(self, force: bool = False) -> tuple[bool, str]:
+        """Evaluate the cash-and-carry grind detector once per business day.
+
+        Returns (active, reason). Caches the result in self._grind_active_cached
+        for the current scan; subsequent calls within the same scan reuse the
+        cached value. Persists debounce state across process restarts via
+        SystemState (grind_active / grind_raw_*_streak / grind_last_eval_date).
+
+        Day-level idempotency: signals are recomputed only if the last
+        evaluation date isn't today (IBKR fetch is ~10 seconds — too heavy
+        for every 30-minute scan). Subsequent scans the same day read the
+        persisted state without re-fetching. Pass force=True to override.
+        """
+        if not self.cfg.cash_carry_detector_enabled:
+            self._grind_active_cached = False
+            self._grind_reason_cached = "detector disabled"
+            return (False, self._grind_reason_cached)
+
+        if self._grind_active_cached is not None and not force:
+            return (self._grind_active_cached, self._grind_reason_cached)
+
+        active, true_streak, false_streak, last_eval = self._load_grind_state()
+        today = date.today().isoformat()
+
+        # Day-level idempotency: don't recompute signals if already done today.
+        if last_eval == today and not force:
+            self._grind_active_cached = active
+            self._grind_reason_cached = (
+                f"cached (last_eval={last_eval}, "
+                f"streaks {true_streak}/{false_streak})"
+            )
+            return (active, self._grind_reason_cached)
+
+        # Compute today's raw detector signals.
+        from src.broker.market_data import compute_grind_signals
+        try:
+            # US-listed names only — SGOV is US, and the wheel's universe is
+            # tech-heavy US. EU/ASIA exchanges have different timing/holidays.
+            symbols = self.universe.symbols_for_market("SMART") if self.universe else []
+        except Exception:
+            symbols = []
+        if not symbols:
+            log.info("grind_skip_no_universe")
+            self._grind_active_cached = active
+            self._grind_reason_cached = "no universe"
+            return (active, self._grind_reason_cached)
+
+        signals = compute_grind_signals(
+            symbols,
+            rv_window_days=self.cfg.cash_carry_detect_window_days,
+            trend_window_days=self.cfg.cash_carry_trend_window_days,
+        )
+        if signals is None:
+            log.warning("grind_signals_unavailable_keeping_state")
+            self._grind_active_cached = active
+            self._grind_reason_cached = "signals unavailable; keeping prior state"
+            return (active, self._grind_reason_cached)
+
+        rv = signals.get("realized_vol_median")
+        trend = signals.get("spy_trend_return_pct")
+        if rv is None or trend is None:
+            log.info(
+                "grind_signals_partial",
+                rv=rv, trend=trend, n_syms=signals.get("n_symbols_used"),
+            )
+            self._grind_active_cached = active
+            self._grind_reason_cached = (
+                f"signals partial (rv={rv}, trend={trend}); keeping prior state"
+            )
+            return (active, self._grind_reason_cached)
+
+        raw = (rv > self.cfg.cash_carry_realized_vol_threshold
+               and abs(trend) < self.cfg.cash_carry_trend_max_abs_pct)
+
+        if raw:
+            true_streak += 1
+            false_streak = 0
+            if not active and true_streak >= self.cfg.cash_carry_on_days_required:
+                active = True
+                log.info("grind_detector_activated",
+                         rv=round(rv, 4), trend_pct=round(trend, 2))
+        else:
+            false_streak += 1
+            true_streak = 0
+            if active and false_streak >= self.cfg.cash_carry_off_days_required:
+                active = False
+                log.info("grind_detector_deactivated",
+                         rv=round(rv, 4), trend_pct=round(trend, 2))
+
+        self._save_grind_state(active, true_streak, false_streak, today)
+        self._grind_active_cached = active
+        self._grind_reason_cached = (
+            f"rv={round(rv, 4)} (>{self.cfg.cash_carry_realized_vol_threshold}?) "
+            f"trend={round(trend, 2)}% (|.|<{self.cfg.cash_carry_trend_max_abs_pct}?) "
+            f"streaks true/false={true_streak}/{false_streak}"
+        )
+        return (active, self._grind_reason_cached)
 
     def _rolling_nlv_return_pct(self, lookback_days: int) -> float | None:
         """Percent change in NLV vs lookback_days ago. Positive = grew, negative
@@ -1548,6 +1703,21 @@ class RiskManager:
             )
         return RiskCheck(True)
 
+    def check_cash_carry_gate(self) -> RiskCheck:
+        """Block new put entries while the high-vol-grind detector is active
+        AND cash-and-carry is enabled. Existing positions settle naturally;
+        idle cash gets rotated to the cash-carry ticker by the wheel
+        orchestrator (see strategy.wheel.maybe_rotate_cash_carry)."""
+        if not (self.cfg.cash_carry_enabled and self.cfg.cash_carry_detector_enabled):
+            return RiskCheck(True)
+        active, reason = self.evaluate_grind_detector()
+        if active:
+            return RiskCheck(
+                False,
+                f"Cash-and-carry mode active — new puts paused. {reason}",
+            )
+        return RiskCheck(True)
+
     # ── Master check ────────────────────────────────────────
     def can_open_put(self, symbol: str, market: str | None = None) -> RiskCheck:
         """Run all pre-trade checks for selling a put."""
@@ -1562,6 +1732,7 @@ class RiskManager:
             self.check_duplicate_position(symbol),  # DB read — instant
             self.check_daily_limit(),          # DB read — instant
             self.check_vix_gate(),             # cached — instant
+            self.check_cash_carry_gate(),      # cached after first scan/day
             self.check_margin_usage(),
             self.check_daily_deployment(),
             self.check_position_size(symbol),

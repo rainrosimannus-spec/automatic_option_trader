@@ -246,6 +246,24 @@ class RiskConfig(BaseModel):
     wheel_exit_margin_rate_annual: float = 0.07   # margin interest rate for surcharge in min_strike
     wheel_cc_profit_threshold: float = 0.80       # close CC when (entry - ask)/entry >= this (80% profit)
     wheel_sell_fee_per_share: float = 0.04        # per-share sell commission used in pre-market exit threshold
+    # ── Cash-and-carry mode (high-vol-grind detector + SGOV rotation) ──
+    # Ported 2026-05-28 from MarsWalk after the high-vol-grind detector + parameter-
+    # override experiment (memory: stagflation-strategy-attempted-2026-05-28) showed
+    # the WHEEL itself can't beat T-bills in stagflation-class regimes. Cash-and-carry
+    # halts new put writes when the detector fires and rotates idle cash into a
+    # short-Treasury ETF (default SGOV) so it earns the prevailing yield. When the
+    # detector clears, sells the ETF and resumes the wheel.
+    # All flags default OFF so existing live behavior is unchanged until opt-in.
+    cash_carry_enabled: bool = False              # master switch for the whole feature
+    cash_carry_detector_enabled: bool = False     # compute the detector signal each scan
+    cash_carry_ticker: str = "SGOV"               # treasury-ETF symbol used for cash rotation
+    cash_carry_realized_vol_threshold: float = 0.25   # universe-median 60d rv (annualized) > this
+    cash_carry_trend_window_days: int = 180           # SPY trailing-return window
+    cash_carry_trend_max_abs_pct: float = 20.0        # |SPY trailing return| < this
+    cash_carry_detect_window_days: int = 60           # realized-vol lookback per symbol
+    cash_carry_on_days_required: int = 15             # consecutive raw-True days to flip ON
+    cash_carry_off_days_required: int = 5             # consecutive raw-False days to flip OFF
+    cash_carry_min_cash_buffer: float = 25_000.0      # don't tie up cash below this in SGOV
 
 
 class ScheduleConfig(BaseModel):

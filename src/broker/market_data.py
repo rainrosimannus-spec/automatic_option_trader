@@ -503,6 +503,118 @@ def get_spy_moving_averages(
         return None
 
 
+def compute_grind_signals(
+    symbols: list[str],
+    rv_window_days: int = 60,
+    trend_window_days: int = 180,
+) -> Optional[dict]:
+    """Compute the two signals the cash-and-carry grind detector needs:
+
+    1. Universe-median trailing N-day realized vol (annualized, decimal).
+    2. SPY trailing M-day price return (percent).
+
+    Fetches daily bars from IBKR for SPY + each symbol. Should be called once
+    per business day (cache the result in SystemState; downstream scans read
+    cached value). All fetches use the existing ib_lock + market_data_type
+    plumbing so we don't conflict with other IBKR calls.
+
+    Returns dict with keys: realized_vol_median (float | None), n_symbols_used
+    (int), spy_trend_return_pct (float | None), n_spy_bars (int). Returns
+    None only on catastrophic failure (no IBKR connection at all). Individual
+    symbol failures degrade gracefully — the median is taken over whatever
+    symbols return data.
+    """
+    import math as _math
+    try:
+        with get_ib_lock():
+            _ensure_market_data_type()
+            ib = get_ib()
+
+            # SPY: fetch trend_window_days + 5 bars for the rolling return.
+            spy_contract = Stock("SPY", "SMART", "USD")
+            ib.qualifyContracts(spy_contract)
+            spy_bars = ib.reqHistoricalData(
+                spy_contract,
+                endDateTime="",
+                durationStr=f"{trend_window_days + 5} D",
+                barSizeSetting="1 day",
+                whatToShow="TRADES",
+                useRTH=False,
+                formatDate=1,
+                timeout=15,
+            )
+            spy_closes = [b.close for b in (spy_bars or [])]
+            spy_trend_return_pct: Optional[float] = None
+            if len(spy_closes) > trend_window_days:
+                back = spy_closes[-trend_window_days - 1]
+                cur = spy_closes[-1]
+                if back > 0:
+                    spy_trend_return_pct = (cur / back - 1.0) * 100.0
+            n_spy_bars = len(spy_closes)
+
+            # Per-symbol: fetch rv_window_days + 5 daily bars; compute realized
+            # vol (std of log-returns × √252). Sequential — IBKR rate-limits
+            # parallel reqHistoricalData. ~47 symbols × ~200ms = ~10s.
+            rvs: list[float] = []
+            for sym in symbols:
+                try:
+                    contract = Stock(sym, "SMART", "USD")
+                    ib.qualifyContracts(contract)
+                    bars = ib.reqHistoricalData(
+                        contract,
+                        endDateTime="",
+                        durationStr=f"{rv_window_days + 5} D",
+                        barSizeSetting="1 day",
+                        whatToShow="TRADES",
+                        useRTH=False,
+                        formatDate=1,
+                        timeout=10,
+                    )
+                    closes = [b.close for b in (bars or []) if b.close and b.close > 0]
+                    if len(closes) < rv_window_days:
+                        continue
+                    window = closes[-rv_window_days:]
+                    rets = [
+                        _math.log(window[i] / window[i - 1])
+                        for i in range(1, len(window))
+                        if window[i - 1] > 0
+                    ]
+                    if len(rets) < 5:
+                        continue
+                    mu = sum(rets) / len(rets)
+                    var = sum((r - mu) ** 2 for r in rets) / max(len(rets) - 1, 1)
+                    rvs.append(_math.sqrt(var) * _math.sqrt(252))
+                except Exception as e:
+                    log.debug("grind_symbol_fetch_failed", symbol=sym, error=str(e))
+                    continue
+
+        rv_median: Optional[float] = None
+        if rvs:
+            rvs.sort()
+            mid = len(rvs) // 2
+            rv_median = (
+                rvs[mid] if len(rvs) % 2 == 1
+                else (rvs[mid - 1] + rvs[mid]) / 2.0
+            )
+
+        log.info(
+            "grind_signals_computed",
+            rv_median=round(rv_median, 4) if rv_median is not None else None,
+            n_symbols_used=len(rvs),
+            spy_trend_pct=round(spy_trend_return_pct, 2) if spy_trend_return_pct is not None else None,
+            n_spy_bars=n_spy_bars,
+        )
+        return {
+            "realized_vol_median": rv_median,
+            "n_symbols_used": len(rvs),
+            "spy_trend_return_pct": spy_trend_return_pct,
+            "n_spy_bars": n_spy_bars,
+        }
+    except Exception as e:
+        log.warning("grind_signals_fetch_failed", error=str(e))
+        return None
+
+
 def get_stock_ma200(
     symbol: str,
     exchange: str = "SMART",
