@@ -241,15 +241,19 @@ class Params:
     # Existing positions settle normally; idle cash accrues regime.cash_yield_annual.
     # Default OFF — opt-in per Params instance (or sweep candidate).
     cash_carry_when_grind: bool = False
-    # Multi-leg short structures (PROTOTYPE 2026-05-28).
-    # "off"          → wheel-only (current default, all 21 regimes unchanged)
-    # "strangle"     → sell a symmetric-delta call alongside each put (naked)
-    # "iron_condor"  → strangle + long-leg hedges (capped loss per side)
-    # IC long-leg strike offset = short-leg strike × (1 ± ic_long_offset_pct).
-    # MarsWalk-only prototype; live port deferred per the 2026-05-28 plan.
-    # See memory: live-marswalk-parity-rule (this is the rare exemption — a
-    # MarsWalk-only experiment to validate the analytical estimate; live port
-    # only if sweep shows clean win across regimes).
+    # When True, sell a symmetric-delta call alongside each put on days the
+    # high-vol-grind detector is active. Mutually exclusive with cash_carry
+    # action (they share the same detector). Head-to-head on stagflation_70s
+    # showed strangle alone (+94.74%) beats cash-carry alone (+85.13%) by
+    # +9.61pp. Default OFF — opt-in per Params or per-regime YAML.
+    strangle_when_grind: bool = False
+    # Multi-leg short structures (2026-05-28).
+    # "off"          → wheel-only put-selling (default; preserves byte-for-byte
+    #                  behavior on all 21 regimes when strangle_when_grind=False)
+    # "strangle"     → always-on: sell a symmetric-delta call alongside every put
+    # "iron_condor"  → REJECTED by sweep (hurts 17 regimes ≤-2pp at 3% offset)
+    # See also `strangle_when_grind` below — preferred deployment is detector-
+    # triggered, mirroring how cash-carry uses the same hvg detector.
     strangle_mode: str = "off"                # "off" | "strangle" | "iron_condor"
     strangle_call_delta_min: float = 0.15     # symmetric to default put delta band
     strangle_call_delta_max: float = 0.30
@@ -1203,16 +1207,23 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 slots -= 1
                 n_trades += 1
 
-                # ── Strangle leg (PROTOTYPE 2026-05-28) ─────────────────────
-                # When strangle_mode != "off", also sell a symmetric-delta call
-                # for this name + expiry. For iron_condor, also buy long-leg
-                # hedges further OTM. The `chain` variable from the put-scoring
-                # first loop is for the WRONG symbol here (we're in the ranked
-                # loop now), so rebuild for this sym + the put's DTE band.
-                # Use a strangle-specific cfg shim with min_premium=0.01 — the
-                # live cc_cfg.min_premium=0.10 floor rejects most 0-3 DTE OTM
-                # calls. For the strangle prototype we accept any premium.
-                if params.strangle_mode in ("strangle", "iron_condor"):
+                # ── Strangle leg (2026-05-28) ───────────────────────────────
+                # Fires when EITHER:
+                #   strangle_mode != "off"                              (always-on)
+                #   strangle_when_grind=True AND hvg_active=True        (triggered)
+                # The triggered path is the preferred deployment — mirrors how
+                # cash-carry uses the same hvg detector but with a different
+                # action ("skip + hold cash" vs "sell strangle"). For iron_condor,
+                # also buy long-leg hedges further OTM.
+                # The `chain` variable from the put-scoring first loop is for the
+                # WRONG symbol here, so rebuild for this sym + the put's DTE band.
+                # min_premium shim — live cc cfg's 0.10 floor rejects most 0-3
+                # DTE OTM calls; for strangle we accept any premium.
+                _strangle_active = (
+                    params.strangle_mode in ("strangle", "iron_condor")
+                    or (params.strangle_when_grind and hvg_active)
+                )
+                if _strangle_active:
                     # Recompute current symbol's spot + IV (the `spot` / `score_iv`
                     # locals from the first loop leak the LAST symbol's values).
                     q_sym = pv(sym, d)
