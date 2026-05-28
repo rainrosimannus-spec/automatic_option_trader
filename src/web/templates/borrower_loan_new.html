@@ -20,6 +20,44 @@
         </p>
     </div>
 
+    {# Loan gate panel: trailing trading return vs 24% target. See src/borrower/loan_gates.py #}
+    {% if gate_report %}
+    <div class="mb-6 bg-gray-900 border
+            {% if gate_report.new_loan_status == 'BLOCK' %}border-red-600/60
+            {% elif gate_report.new_loan_status == 'WARN' %}border-amber-600/60
+            {% else %}border-emerald-600/60{% endif %}
+            rounded p-4">
+        <div class="flex items-center justify-between mb-3">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Loan gate — trailing trading return</div>
+            <div class="text-xs
+                {% if gate_report.new_loan_status == 'BLOCK' %}text-red-400
+                {% elif gate_report.new_loan_status == 'WARN' %}text-amber-400
+                {% else %}text-emerald-400{% endif %}">
+                {{ gate_report.new_loan_status }}
+            </div>
+        </div>
+        <div class="grid grid-cols-3 gap-4 text-sm">
+            <div>
+                <div class="text-xs text-gray-500">90d annualized</div>
+                <div class="text-lg font-semibold">
+                    {% if gate_report.r90_annual_pct is not none %}{{ "%.2f"|format(gate_report.r90_annual_pct) }}%{% else %}—{% endif %}
+                </div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500">365d annualized</div>
+                <div class="text-lg font-semibold">
+                    {% if gate_report.r365_annual_pct is not none %}{{ "%.2f"|format(gate_report.r365_annual_pct) }}%{% else %}—{% endif %}
+                </div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500">Target</div>
+                <div class="text-lg font-semibold text-gray-400">{{ "%.0f"|format(gate_report.target_pct) }}%</div>
+            </div>
+        </div>
+        <p class="text-xs text-gray-400 mt-3">{{ gate_report.note }}</p>
+    </div>
+    {% endif %}
+
     <form method="POST" action="/borrower/loans-new" class="space-y-6">
 
         <div class="bg-gray-900 border border-gray-800 rounded p-5">
@@ -257,6 +295,20 @@
                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none"></textarea>
             </div>
         </div>
+
+        {% if gate_report and gate_report.new_loan_status == 'BLOCK' %}
+        <div class="bg-red-950/40 border border-red-700/50 rounded p-4">
+            <div class="text-sm text-red-300 mb-2 font-semibold">
+                Trading return below 24% target — new loans not recommended.
+            </div>
+            <p class="text-xs text-gray-400 mb-3">{{ gate_report.note }}</p>
+            <label class="flex items-start gap-2 text-xs text-gray-300">
+                <input type="checkbox" name="override_loan_gate" value="true"
+                       class="mt-0.5 bg-gray-950 border border-gray-700 rounded">
+                <span>I acknowledge trading is below target and want to take this loan anyway.</span>
+            </label>
+        </div>
+        {% endif %}
 
         <div class="flex justify-between items-center pt-2">
             <a href="/borrower/loans" class="text-sm text-gray-400 hover:text-gray-300">&larr; Cancel</a>

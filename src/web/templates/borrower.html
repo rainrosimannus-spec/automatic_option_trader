@@ -9,6 +9,38 @@
         <p class="text-gray-400 text-sm mt-1">Bruno — MesiCap loan portfolio management</p>
     </div>
 
+    {# Loan-gate banner — surfaces BLOCK status and pending repayment proposals.
+       See src/borrower/loan_gates.py + /borrower/proposals page. #}
+    {% if gate_report and gate_report.new_loan_status == 'BLOCK' %}
+    <div class="bg-red-950/40 border border-red-700/60 rounded p-4 mb-6">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+                <div class="text-sm text-red-300 font-semibold">Trading return below 24% target — new loans paused.</div>
+                <div class="text-xs text-gray-400 mt-1">{{ gate_report.note }}</div>
+            </div>
+            <a href="/borrower/loans-new" class="text-xs px-3 py-1 rounded border border-red-700/60 text-red-300 hover:bg-red-950/60">
+                Override anyway →
+            </a>
+        </div>
+    </div>
+    {% endif %}
+    {% if pending_proposal_count and pending_proposal_count > 0 %}
+    <div class="bg-amber-950/30 border border-amber-700/60 rounded p-4 mb-6">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+                <div class="text-sm text-amber-300 font-semibold">
+                    {{ pending_proposal_count }} loan{{ '' if pending_proposal_count == 1 else 's' }}
+                    flagged for early repayment.
+                </div>
+                <div class="text-xs text-gray-400 mt-1">Interest rate exceeds current trailing trading return.</div>
+            </div>
+            <a href="/borrower/proposals" class="text-xs px-3 py-1 rounded border border-amber-700/60 text-amber-300 hover:bg-amber-950/60">
+                Review proposals →
+            </a>
+        </div>
+    </div>
+    {% endif %}
+
     {% if capacity %}
     <div class="bg-gray-900 border rounded p-5 mb-6
         {% if capacity.status == 'red' %}border-red-900

@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Loan-repayment Proposals{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500"><a href="/borrower" class="hover:text-gray-300">&larr; Back to Borrower</a></p>
+        <h1 class="text-3xl font-semibold mt-2">Loan-repayment Proposals</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            Daily-generated recommendations to repay loans early when their interest rate
+            exceeds the current trailing trading return. See <code>src/borrower/loan_gates.py</code>
+            for the gate logic; the scheduler job runs at 06:30 UTC.
+        </p>
+    </div>
+
+    {# PENDING — actionable #}
+    <div class="bg-gray-900 border border-gray-800 rounded p-5 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">
+            Pending ({{ pending|length }})
+        </div>
+        {% if pending %}
+        <div class="space-y-3">
+            {% for p in pending %}
+            {% set loan = loan_by_id.get(p.loan_id) %}
+            <div class="bg-gray-950 border border-amber-700/40 rounded p-4">
+                <div class="flex items-start justify-between gap-3 flex-wrap">
+                    <div class="flex-1 min-w-[260px]">
+                        <div class="text-sm font-medium">
+                            <a href="/borrower/loans/{{ p.loan_id }}" class="hover:text-amber-300">
+                                {{ loan.contract_reference if loan else 'loan #' ~ p.loan_id }}
+                            </a>
+                        </div>
+                        <div class="text-xs text-gray-500 mt-0.5">{{ p.reason }}</div>
+                        <div class="text-xs text-gray-600 mt-1">
+                            Proposed: {{ '%.2f'|format(p.proposed_amount) }} {{ p.proposed_currency }}
+                            · raised {{ p.proposed_date }}
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-2 flex-wrap">
+                        <form method="post" action="/borrower/proposals/{{ p.id }}/approve">
+                            <button type="submit"
+                                    class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-3 py-1.5 rounded text-xs">
+                                Approve → record movement
+                            </button>
+                        </form>
+                        <form method="post" action="/borrower/proposals/{{ p.id }}/reject" class="flex items-center gap-2">
+                            <input type="text" name="decided_note" required placeholder="Reason for rejection"
+                                   class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs w-48 focus:border-amber-300/50 focus:outline-none">
+                            <button type="submit"
+                                    class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded text-xs">
+                                Reject
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-sm text-gray-500">No pending proposals — every active loan's rate is within current trading return.</p>
+        {% endif %}
+    </div>
+
+    {# History #}
+    <div class="bg-gray-900 border border-gray-800 rounded p-5">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">
+            History ({{ history|length }})
+        </div>
+        {% if history %}
+        <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+                <thead>
+                    <tr class="text-left text-gray-500 border-b border-gray-800">
+                        <th class="px-2 py-2">Raised</th>
+                        <th class="px-2 py-2">Loan</th>
+                        <th class="px-2 py-2 text-right">Proposed</th>
+                        <th class="px-2 py-2">Status</th>
+                        <th class="px-2 py-2">Decided</th>
+                        <th class="px-2 py-2">Note</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in history %}
+                    {% set loan = loan_by_id.get(p.loan_id) %}
+                    <tr class="border-b border-gray-900 hover:bg-gray-950/50">
+                        <td class="px-2 py-2 text-gray-400">{{ p.proposed_date }}</td>
+                        <td class="px-2 py-2">
+                            <a href="/borrower/loans/{{ p.loan_id }}" class="hover:text-amber-300">
+                                {{ loan.contract_reference if loan else 'loan #' ~ p.loan_id }}
+                            </a>
+                        </td>
+                        <td class="px-2 py-2 text-right tabular-nums">
+                            {{ '%.2f'|format(p.proposed_amount) }} {{ p.proposed_currency }}
+                        </td>
+                        <td class="px-2 py-2">
+                            <span class="px-2 py-0.5 rounded text-[10px] uppercase
+                                {% if p.status.value == 'executed' %}bg-emerald-900/60 text-emerald-300
+                                {% elif p.status.value == 'approved' %}bg-amber-900/60 text-amber-300
+                                {% else %}bg-gray-800 text-gray-400{% endif %}">
+                                {{ p.status.value }}
+                            </span>
+                        </td>
+                        <td class="px-2 py-2 text-gray-500">
+                            {{ p.decided_at.strftime('%Y-%m-%d') if p.decided_at else '—' }}
+                        </td>
+                        <td class="px-2 py-2 text-gray-400">{{ p.decided_note or '' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-sm text-gray-500">No history yet.</p>
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

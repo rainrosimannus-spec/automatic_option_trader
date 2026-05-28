@@ -100,7 +100,10 @@ def borrower_landing(request: Request):
     from src.borrower.deadman import compute_state, executor_contact
     from src.borrower.quorum import pending_approval_loans
     from src.borrower.headroom import compute_capacity_summary
-    from src.borrower.models import ContactUpdateRequest, Counterparty
+    from src.borrower.loan_gates import compute_loan_gates
+    from src.borrower.models import (
+        ContactUpdateRequest, Counterparty, LoanRepaymentProposal, ProposalStatus,
+    )
     principal = current_principal(request)
     pending = pending_approval_loans(principal.id) if principal else []
     session = BrunoSession()
@@ -119,6 +122,12 @@ def borrower_landing(request: Request):
             "subject": r.subject,
             "created_at": r.created_at,
         } for r in open_requests_rows]
+        pending_proposal_count = (
+            session.query(LoanRepaymentProposal)
+            .filter(LoanRepaymentProposal.status == ProposalStatus.PENDING)
+            .count()
+        )
+        gate_report = compute_loan_gates()
         return templates.TemplateResponse("borrower.html", {
             "request": request,
             "current_principal": principal,
@@ -127,6 +136,8 @@ def borrower_landing(request: Request):
             "pending_approvals": pending,
             "open_contact_requests": open_requests,
             "capacity": capacity,
+            "gate_report": gate_report,
+            "pending_proposal_count": pending_proposal_count,
         })
     finally:
         session.close()
@@ -1209,9 +1220,11 @@ def borrower_portal_user_unlock(request: Request, pu_id: int):
 @router.get("/loans-new", response_class=HTMLResponse)
 def borrower_loan_new_form(request: Request):
     """Show the New Loan form."""
+    from src.borrower.loan_gates import compute_loan_gates
     session = BrunoSession()
     try:
         counterparties = session.query(Counterparty).order_by(Counterparty.name).all()
+        gate_report = compute_loan_gates()
         return templates.TemplateResponse("borrower_loan_new.html", {
             "request": request,
             "counterparties": counterparties,
@@ -1225,6 +1238,7 @@ def borrower_loan_new_form(request: Request):
             "currencies": ["EUR", "USD", "AUD", "GBP"],
             "form_data": {},
             "errors": {},
+            "gate_report": gate_report,
         })
     finally:
         session.close()
@@ -1259,9 +1273,23 @@ def borrower_loan_new_submit(
     is_nlv_collateralized: bool = Form(False),
     notes: str = Form(""),
     initial_status: str = Form("draft"),
+    override_loan_gate: bool = Form(False),
 ):
     """Process the New Loan form submission."""
     from datetime import datetime
+    from src.borrower.loan_gates import compute_loan_gates
+    # Server-side gate check — recompute, do not trust client-supplied state.
+    # BLOCK iff trailing trading return < 24% with sufficient history. Admin
+    # can bypass by checking 'override_loan_gate'. See src/borrower/loan_gates.py.
+    gate = compute_loan_gates()
+    if gate.new_loan_status == "BLOCK" and not override_loan_gate:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Loan gate: {gate.note} Submit again with 'Override loan gate' "
+                "checked to acknowledge and proceed."
+            ),
+        )
     session = BrunoSession()
     try:
         parse = lambda s: datetime.strptime(s, "%Y-%m-%d").date()
@@ -1305,6 +1333,112 @@ def borrower_loan_new_submit(
         session.rollback()
         log.error(f"loan_create_error: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to create loan: {e}")
+    finally:
+        session.close()
+
+
+# =============================================================================
+# Loan-repayment proposals (see src/borrower/loan_gates.py + scheduler job)
+# =============================================================================
+
+@router.get("/proposals", response_class=HTMLResponse)
+def borrower_proposals_list(request: Request):
+    """List all loan-repayment proposals. PENDING at top, then history."""
+    from src.borrower.models import LoanRepaymentProposal, ProposalStatus
+    session = BrunoSession()
+    try:
+        # ORDER BY pending first (status='pending' sorts before others via custom key),
+        # then by created_at desc within each group.
+        all_props = (
+            session.query(LoanRepaymentProposal)
+            .order_by(LoanRepaymentProposal.created_at.desc())
+            .limit(200)
+            .all()
+        )
+        loan_by_id = {l.id: l for l in session.query(Loan).all()}
+        pending = [p for p in all_props if p.status == ProposalStatus.PENDING]
+        history = [p for p in all_props if p.status != ProposalStatus.PENDING]
+        return templates.TemplateResponse("borrower_proposals.html", {
+            "request": request,
+            "pending": pending,
+            "history": history,
+            "loan_by_id": loan_by_id,
+        })
+    finally:
+        session.close()
+
+
+@router.post("/proposals/{proposal_id}/approve")
+def borrower_proposal_approve(request: Request, proposal_id: int):
+    """Flip proposal to APPROVED, redirect to movement-new prefilled."""
+    from datetime import datetime
+    from src.borrower.models import LoanRepaymentProposal, ProposalStatus
+    session = BrunoSession()
+    try:
+        prop = session.query(LoanRepaymentProposal).filter_by(id=proposal_id).first()
+        if not prop:
+            raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found")
+        if prop.status != ProposalStatus.PENDING:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Proposal already {prop.status.value} — cannot approve",
+            )
+        before = snapshot(prop)
+        principal = current_principal(request)
+        prop.status = ProposalStatus.APPROVED
+        prop.decided_at = datetime.utcnow()
+        prop.decided_by_user_id = principal.id if principal else None
+        write_audit(session, action="approve", entity_type="LoanRepaymentProposal",
+                    entity_id=prop.id, before=before, after=snapshot(prop), request=request)
+        session.commit()
+        # Redirect to movement-new form with prefill query params. The form
+        # passes proposal_id through to the submit handler, which back-fills
+        # executed_movement_id and flips status -> EXECUTED on success.
+        from urllib.parse import urlencode
+        qs = urlencode({
+            "prefill_amount": prop.proposed_amount,
+            "prefill_reason": prop.reason,
+            "proposal_id": prop.id,
+        })
+        return RedirectResponse(
+            url=f"/borrower/loans/{prop.loan_id}/movements-new?{qs}",
+            status_code=303,
+        )
+    finally:
+        session.close()
+
+
+@router.post("/proposals/{proposal_id}/reject")
+def borrower_proposal_reject(
+    request: Request,
+    proposal_id: int,
+    decided_note: str = Form(...),
+):
+    """Flip proposal to REJECTED. decided_note is mandatory."""
+    from datetime import datetime
+    from src.borrower.models import LoanRepaymentProposal, ProposalStatus
+    if not decided_note.strip():
+        raise HTTPException(status_code=400, detail="Rejection requires a written reason.")
+    session = BrunoSession()
+    try:
+        prop = session.query(LoanRepaymentProposal).filter_by(id=proposal_id).first()
+        if not prop:
+            raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found")
+        if prop.status != ProposalStatus.PENDING:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Proposal already {prop.status.value} — cannot reject",
+            )
+        before = snapshot(prop)
+        principal = current_principal(request)
+        prop.status = ProposalStatus.REJECTED
+        prop.decided_at = datetime.utcnow()
+        prop.decided_by_user_id = principal.id if principal else None
+        prop.decided_note = decided_note.strip()
+        write_audit(session, action="reject", entity_type="LoanRepaymentProposal",
+                    entity_id=prop.id, before=before, after=snapshot(prop), request=request)
+        session.commit()
+        return RedirectResponse(url="/borrower/proposals", status_code=303)
     finally:
         session.close()
 
@@ -1655,8 +1789,19 @@ def borrower_document_delete(request: Request, loan_id: int, doc_id: int):
 
 
 @router.get("/loans/{loan_id}/movements-new", response_class=HTMLResponse)
-def borrower_movement_new_form(request: Request, loan_id: int):
-    """Show the New Movement form for a specific loan."""
+def borrower_movement_new_form(
+    request: Request,
+    loan_id: int,
+    prefill_amount: float | None = None,
+    prefill_reason: str | None = None,
+    proposal_id: int | None = None,
+):
+    """Show the New Movement form for a specific loan.
+
+    Query params (set when an approved LoanRepaymentProposal redirects here):
+      prefill_amount / prefill_reason — pre-fill amount + description fields
+      proposal_id — passed through as hidden field; submit handler closes it
+    """
     session = BrunoSession()
     try:
         loan = session.query(Loan).filter_by(id=loan_id).first()
@@ -1667,6 +1812,9 @@ def borrower_movement_new_form(request: Request, loan_id: int):
             "request": request,
             "loan": loan,
             "movement_types": [t.value for t in MovementType],
+            "prefill_amount": prefill_amount,
+            "prefill_reason": prefill_reason,
+            "proposal_id": proposal_id,
         })
     finally:
         session.close()
@@ -1683,9 +1831,14 @@ def borrower_movement_new_submit(
     bank_reference: str = Form(""),
     bank_account_iban: str = Form(""),
     description: str = Form(""),
+    proposal_id: int | None = Form(None),
 ):
-    """Process the New Movement form submission."""
+    """Process the New Movement form submission.
+
+    If `proposal_id` is present (came from an approved LoanRepaymentProposal),
+    flip that proposal to EXECUTED and back-fill its executed_movement_id."""
     from datetime import datetime
+    from src.borrower.models import LoanRepaymentProposal, ProposalStatus
     session = BrunoSession()
     try:
         loan = session.query(Loan).filter_by(id=loan_id).first()
@@ -1714,6 +1867,18 @@ def borrower_movement_new_submit(
         session.flush()
         write_audit(session, action="create", entity_type="LoanMovement", entity_id=mv.id,
                     after=snapshot(mv), request=request)
+        # Back-fill the linked proposal, if any. Only APPROVED proposals can
+        # transition to EXECUTED via this path (a PENDING one hasn't been
+        # admin-approved; a REJECTED/EXECUTED one is already settled).
+        if proposal_id is not None:
+            prop = session.query(LoanRepaymentProposal).filter_by(id=proposal_id).first()
+            if prop is not None and prop.status == ProposalStatus.APPROVED:
+                before = snapshot(prop)
+                prop.status = ProposalStatus.EXECUTED
+                prop.executed_movement_id = mv.id
+                write_audit(session, action="execute", entity_type="LoanRepaymentProposal",
+                            entity_id=prop.id, before=before, after=snapshot(prop),
+                            request=request)
         session.commit()
         return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
     except HTTPException:

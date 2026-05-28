@@ -59,7 +59,7 @@
                 <div>
                     <label class="block text-xs text-gray-400 mb-1">Amount <span class="text-red-400">*</span></label>
                     <input type="number" name="amount" required step="0.01" min="0" placeholder="0.00"
-                           value="{{ '%.2f'|format(movement.amount) if is_edit else '' }}"
+                           value="{% if is_edit %}{{ '%.2f'|format(movement.amount) }}{% elif prefill_amount %}{{ '%.2f'|format(prefill_amount) }}{% endif %}"
                            class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums focus:border-amber-300/50 focus:outline-none">
                     <p class="text-xs text-gray-600 mt-1">Positive number. Direction comes from the movement type.</p>
                 </div>
@@ -92,8 +92,17 @@
             <div class="mt-4">
                 <label class="block text-xs text-gray-400 mb-1">Description</label>
                 <textarea name="description" rows="2" placeholder="Free-form description (e.g., 'Monthly tranche per master agreement')"
-                          class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">{{ movement.description or '' if is_edit else '' }}</textarea>
+                          class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">{% if is_edit %}{{ movement.description or '' }}{% elif prefill_reason %}{{ prefill_reason }}{% endif %}</textarea>
             </div>
+
+            {# Hidden field linking this movement back to an approved repay proposal.
+               Submit handler flips the proposal to EXECUTED + sets executed_movement_id. #}
+            {% if proposal_id %}
+            <input type="hidden" name="proposal_id" value="{{ proposal_id }}">
+            <div class="mt-3 text-xs text-amber-300/80">
+                Recording this movement will close repayment proposal #{{ proposal_id }} (status → EXECUTED).
+            </div>
+            {% endif %}
         </div>
 
         <div class="flex justify-between items-center pt-2 gap-2 flex-wrap">
