@@ -105,6 +105,99 @@ def sell_put(
 
 
 
+def sell_call_to_open_naked(
+    symbol: str,
+    expiry: str,
+    strike: float,
+    quantity: int = 1,
+    limit_price: Optional[float] = None,
+    exchange: str = "SMART",
+    currency: str = "USD",
+) -> Optional[IBTrade]:
+    """Sell to open a NAKED short call — strangle leg (no underlying stock).
+
+    Mirror of sell_put with right="C". Used by strangle_when_grind mode: when
+    the wheel sells a put, this also sells a symmetric-delta call at the same
+    expiry. If the call expires ITM and is assigned, IBKR will short-sell the
+    underlying — handled by the daily ITM-avoidance check in
+    src/strategy/cash_carry.py:close_naked_calls_before_assignment (closes
+    naked calls when ITM AND DTE <= strangle_itm_close_dte).
+
+    Requires IBKR portfolio margin (the broker must accept naked short calls)."""
+    with get_ib_lock():
+        ib = get_ib()
+        contract = Option(symbol, expiry, strike, "C", exchange, currency=currency)
+        contract.multiplier = "100"
+
+        if limit_price:
+            order = LimitOrder("SELL", quantity, limit_price)
+        else:
+            order = MarketOrder("SELL", quantity)
+        order.tif = "DAY"
+        order.outsideRth = False
+
+        log.info("placing_sell_call_naked",
+                 symbol=symbol, strike=strike, expiry=expiry,
+                 qty=quantity, limit=limit_price,
+                 exchange=exchange, currency=currency)
+
+        trade = ib.placeOrder(contract, order)
+        ib.sleep(2)
+
+        status = trade.orderStatus.status
+        log_msg = trade.log[-1].message if trade.log and trade.log[-1].message else ""
+        log.info("naked_call_status", symbol=symbol, strike=strike,
+                 expiry=expiry, status=status, message=log_msg[:200])
+
+        if status in ("Cancelled", "Inactive"):
+            log.error("naked_call_rejected", symbol=symbol, strike=strike,
+                      expiry=expiry, status=status, reason=log_msg[:200])
+            return None
+        return trade
+
+
+def buy_to_close_call_naked(
+    symbol: str,
+    expiry: str,
+    strike: float,
+    quantity: int = 1,
+    limit_price: Optional[float] = None,
+    exchange: str = "SMART",
+    currency: str = "USD",
+) -> Optional[IBTrade]:
+    """Buy-to-close a naked short call (strangle leg). Used by the ITM-
+    avoidance check to flatten before assignment. Mirror of buy_to_close_call
+    but tagged for strangle accounting."""
+    with get_ib_lock():
+        ib = get_ib()
+        contract = Option(symbol, expiry, strike, "C", exchange, currency=currency)
+        contract.multiplier = "100"
+
+        if limit_price:
+            order = LimitOrder("BUY", quantity, limit_price)
+        else:
+            order = MarketOrder("BUY", quantity)
+        order.tif = "DAY"
+        order.outsideRth = False
+
+        log.info("placing_buy_close_naked_call",
+                 symbol=symbol, strike=strike, expiry=expiry,
+                 qty=quantity, limit=limit_price)
+        trade = ib.placeOrder(contract, order)
+        ib.sleep(2)
+
+        status = trade.orderStatus.status
+        log_msg = trade.log[-1].message if trade.log and trade.log[-1].message else ""
+        log.info("naked_call_close_status", symbol=symbol, status=status,
+                 message=log_msg[:200])
+
+        if status in ("Cancelled", "Inactive"):
+            log.error("naked_call_close_rejected", symbol=symbol,
+                      status=status, reason=log_msg[:200])
+            return None
+        return trade
+
+
 def buy_treasury_etf(
     symbol: str,
     shares: int,

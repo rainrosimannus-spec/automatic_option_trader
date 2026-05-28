@@ -1915,6 +1915,20 @@ def create_scheduler() -> BackgroundScheduler:
         max_instances=1,
     )
 
+    # Strangle: daily ITM-avoidance check for naked short calls — 30 min
+    # before US market close (15:30 ET = 20:30 UTC during DST / 21:30 UTC
+    # outside DST; use 20:30 + 21:30 to cover both, jobs are idempotent).
+    # Closes any naked short call that is ITM AND DTE ≤ threshold to avoid
+    # being assigned into a short stock position overnight.
+    from src.strategy.cash_carry import close_naked_calls_before_assignment
+    scheduler.add_job(
+        close_naked_calls_before_assignment,
+        CronTrigger(hour="20,21", minute=30, day_of_week="mon-fri", timezone=utc_tz),
+        id="strangle_itm_check",
+        name="Strangle: ITM-Avoidance Check (Naked Calls)",
+        max_instances=1,
+    )
+
     return scheduler
 
 

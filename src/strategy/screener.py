@@ -226,12 +226,17 @@ def screen_calls(
     stock_exchange: str | None = None,
     stock_price_override: float | None = None,
     max_dte_override: int | None = None,
+    target_expiry: str | None = None,
 ) -> Optional[ScoredContract]:
     """
     Screen and rank call contracts for covered call writing.
     delta_min/max_override: for progressive strike management.
     stock_price_override: use live price instead of get_stock_price (yesterday close).
     max_dte_override: cap DTE for roll-up scenarios (e.g. 14 days).
+    target_expiry: if set (YYYYMMDD), filter candidates to ONLY this expiry.
+        Used by the strangle leg in put_seller to match the just-sold put's
+        expiry exactly. Other callers leave it None and get the best
+        candidate across all expiries in the cc_dte_min..max range.
     Uses Black-Scholes theoretical pricing from historical IV data.
     """
     from src.broker.connection import ensure_main_event_loop
@@ -274,6 +279,10 @@ def screen_calls(
     cc_delta_min = delta_min_override if delta_min_override is not None else cfg.cc_delta_min
     cc_delta_max = delta_max_override if delta_max_override is not None else cfg.cc_delta_max
     candidates = score_call_candidates(stock_price, iv, contracts, cfg, cc_delta_min, cc_delta_max, today)
+
+    # Strangle leg uses target_expiry to match the just-sold put's expiry.
+    if target_expiry is not None:
+        candidates = [c for c in candidates if c.expiry == target_expiry]
 
     if not candidates:
         log.debug("no_qualifying_calls", symbol=symbol)

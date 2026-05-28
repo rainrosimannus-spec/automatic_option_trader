@@ -278,6 +278,18 @@ class RiskConfig(BaseModel):
     cash_carry_on_days_required: int = 15             # consecutive raw-True days to flip ON
     cash_carry_off_days_required: int = 5             # consecutive raw-False days to flip OFF
     cash_carry_min_cash_buffer: float = 25_000.0      # don't tie up cash below this in SGOV
+    # ── Strangle mode (mirror of MarsWalk Params.strangle_when_grind) ──
+    # When True AND the high-vol-grind detector is active, sell a symmetric-
+    # delta call alongside each put (naked short call). Mutually exclusive
+    # with cash_carry action — they share the hvg detector. Head-to-head on
+    # stagflation_70s: strangle (+88.28%/2.85%DD) beats cash-carry
+    # (+85.13%/1.68%DD) by +3.15pp triggered, +9.61pp always-on. Default OFF.
+    # Naked short calls require IBKR portfolio margin AND a daily check that
+    # closes ITM calls before expiry (see scheduler/jobs.py).
+    strangle_when_grind: bool = False
+    strangle_call_delta_min: float = 0.15         # symmetric to put delta band
+    strangle_call_delta_max: float = 0.30
+    strangle_itm_close_dte: int = 1               # buy-to-close naked calls when ITM and DTE <= this
 
 
 class ScheduleConfig(BaseModel):

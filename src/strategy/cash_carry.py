@@ -171,3 +171,82 @@ def _rotate_out(position: Position, ticker: str) -> None:
             pos.status = PositionStatus.CLOSED
             pos.closed_at = datetime.utcnow()
             db.commit()
+
+
+def close_naked_calls_before_assignment() -> None:
+    """Daily ITM-avoidance check for naked short calls (strangle leg).
+
+    For each open `short_call_naked` position:
+      - if DTE > strangle_itm_close_dte → leave alone (let theta work)
+      - if DTE <= threshold AND spot > strike (ITM) → buy-to-close now to
+        avoid IBKR auto-assigning us into a short stock position
+      - if DTE <= threshold AND spot <= strike (OTM) → leave alone (will expire
+        worthless overnight; broker auto-closes)
+
+    Called by the scheduler each market day (suggest 30 min before close).
+    Idempotent — won't re-close already-closed positions.
+    """
+    from datetime import date, datetime as _dt
+    from src.broker.orders import buy_to_close_call_naked
+    from src.broker.market_data import get_stock_price
+
+    cfg = get_settings().risk
+    if not cfg.strangle_when_grind:
+        # If strangle mode is disabled, no naked calls should exist. Skip.
+        return
+
+    today = date.today()
+    with get_db() as db:
+        positions = (
+            db.query(Position)
+            .filter(
+                Position.position_type == "short_call_naked",
+                Position.status == PositionStatus.OPEN,
+            )
+            .all()
+        )
+
+    if not positions:
+        return
+
+    closed = 0
+    for pos in positions:
+        try:
+            # Parse expiry (YYYYMMDD) and compute DTE
+            exp_date = _dt.strptime(pos.expiry, "%Y%m%d").date()
+            dte = (exp_date - today).days
+            if dte > cfg.strangle_itm_close_dte:
+                continue  # Plenty of time; let theta decay
+            spot = get_stock_price(pos.symbol)
+            if not spot or spot <= 0:
+                log.warning("strangle_itm_check_no_price", symbol=pos.symbol)
+                continue
+            if spot <= pos.strike:
+                # OTM — will expire worthless overnight. Leave it.
+                continue
+            # ITM AND about to expire → buy-to-close NOW.
+            log.warning(
+                "strangle_call_itm_closing",
+                symbol=pos.symbol, strike=pos.strike, expiry=pos.expiry,
+                spot=spot, dte=dte,
+            )
+            trade = buy_to_close_call_naked(
+                symbol=pos.symbol,
+                expiry=pos.expiry,
+                strike=pos.strike,
+                quantity=pos.quantity or 1,
+            )
+            if trade is not None:
+                with get_db() as db:
+                    p = db.query(Position).filter(Position.id == pos.id).first()
+                    if p:
+                        p.status = PositionStatus.CLOSED
+                        p.closed_at = _dt.utcnow()
+                        db.commit()
+                closed += 1
+        except Exception as e:
+            log.error("strangle_itm_check_error",
+                      symbol=pos.symbol, error=str(e))
+
+    log.info("strangle_itm_check_done",
+             scanned=len(positions), closed=closed)

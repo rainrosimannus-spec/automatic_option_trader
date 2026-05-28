@@ -481,7 +481,103 @@ class PutSeller:
             exchange=exchange,
             currency=currency,
         )
+
+        # ── Strangle leg (mirror of src/marswalk/engine.py:1213-1276) ─────
+        # When strangle_when_grind=True AND the hvg detector is active, also
+        # sell a symmetric-delta call at the same expiry. Naked short — broker
+        # must accept under portfolio margin. Daily ITM-avoidance check in
+        # src/strategy/cash_carry.py closes ITM calls before assignment.
+        cfg_risk = get_settings().risk
+        if cfg_risk.strangle_when_grind:
+            try:
+                hvg_active, _ = self.risk.evaluate_grind_detector()
+                if hvg_active:
+                    self._sell_strangle_call_leg(
+                        symbol, candidate.expiry, quantity,
+                        opt_exchange, currency,
+                    )
+            except Exception as e:
+                log.warning("strangle_leg_failed", symbol=symbol, error=str(e))
+
         return True
+
+    def _sell_strangle_call_leg(self, symbol: str, expiry: str, quantity: int,
+                                  opt_exchange: str, currency: str) -> None:
+        """Sell a symmetric-delta call to pair with the just-sold put.
+        Screens the call chain, picks best-score candidate, places order, and
+        records as Position(position_type='short_call_naked'). Idempotent
+        protection: skip if a naked-call position already exists for this
+        symbol+expiry."""
+        from src.broker.orders import sell_call_to_open_naked
+        from src.strategy.screener import screen_calls
+        from src.core.models import Position, PositionStatus
+        from src.core.database import get_db
+        from datetime import datetime
+
+        cfg_risk = get_settings().risk
+        # Skip if a naked-call position already exists for this name+expiry
+        # (avoid stacking on re-scans within the same day).
+        with get_db() as db:
+            existing = db.query(Position).filter(
+                Position.symbol == symbol,
+                Position.position_type == "short_call_naked",
+                Position.expiry == expiry,
+                Position.status == PositionStatus.OPEN,
+            ).first()
+            if existing:
+                log.info("strangle_call_already_held",
+                         symbol=symbol, expiry=expiry, qty=existing.quantity)
+                return
+
+        # Screen for a symmetric-delta call. screen_calls uses cc_delta_min/max
+        # by default — we override with strangle-specific band, and target_expiry
+        # filters to ONLY the just-sold put's expiry.
+        call_cand = screen_calls(
+            symbol, exchange=opt_exchange, currency=currency,
+            delta_min_override=cfg_risk.strangle_call_delta_min,
+            delta_max_override=cfg_risk.strangle_call_delta_max,
+            target_expiry=expiry,
+        )
+        if call_cand is None:
+            log.info("strangle_call_no_candidate", symbol=symbol, expiry=expiry)
+            return
+
+        trade = sell_call_to_open_naked(
+            symbol=symbol,
+            expiry=call_cand.expiry,
+            strike=call_cand.strike,
+            quantity=quantity,
+            limit_price=round(call_cand.bid, 2),
+            exchange=opt_exchange,
+            currency=currency,
+        )
+        if trade is None:
+            log.warning("strangle_call_order_failed",
+                        symbol=symbol, strike=call_cand.strike, expiry=expiry)
+            return
+
+        with get_db() as db:
+            pos = Position(
+                symbol=symbol,
+                status=PositionStatus.OPEN,
+                position_type="short_call_naked",
+                strike=call_cand.strike,
+                expiry=call_cand.expiry,
+                entry_premium=call_cand.bid,
+                quantity=quantity,
+                total_premium_collected=call_cand.bid * 100 * quantity,
+                opened_at=datetime.utcnow(),
+                is_wheel=False,
+            )
+            db.add(pos)
+            db.commit()
+
+        log.info(
+            "strangle_call_sold",
+            symbol=symbol, strike=call_cand.strike, expiry=call_cand.expiry,
+            delta=round(call_cand.delta, 3), premium=round(call_cand.bid, 2),
+            quantity=quantity,
+        )
 
     def _record_trade(self, symbol, candidate, order_id, current_vix, contract_size=100, currency="USD", quantity=None):
         """Save the trade and position to the database."""
