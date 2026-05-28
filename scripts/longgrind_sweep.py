@@ -35,16 +35,17 @@ from marswalk.regimes import load_config
 
 CONFIGS: dict[str, dict] = {
     "baseline":   {},
-    "+bear_dte":  {"bear_regime_enabled": True},
-    "+vix_k":     {"k_vix_adaptive_enabled": True},
-    "+stag":      {"stagnation_boost_enabled": True},
-    # Multi-leg short structures (PROTOTYPE 2026-05-28). MarsWalk-only.
     "+strangle":  {"strangle_mode": "strangle"},
     "+iron_cdr":  {"strangle_mode": "iron_condor"},
+    # Crash detector (2026-05-28). Both actions tested side-by-side.
+    "+crash_cc":  {"crash_when_active_enabled": True, "crash_carry_when_active": True},
+    "+crash_str": {"crash_when_active_enabled": True, "crash_strangle_when_active": True},
 }
 
 # Regimes the user flagged as long-grind underperformers (the targets to lift).
 LONG_GRIND_TARGETS = ["ai_crash", "oil_crash_2014", "stagflation_70s"]
+# Lehman-class crash regimes (the crash detector's primary targets).
+CRASH_TARGETS = ["gfc_2008", "stacked_2x"]
 
 # Regimes that should NOT be hurt — bull/grind regimes carrying the wheel.
 BULL_TARGETS = ["bull_2021", "ai_2023", "grind_2024h1", "iran_war_2026"]

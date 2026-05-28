@@ -247,6 +247,25 @@ class Params:
     # showed strangle alone (+94.74%) beats cash-carry alone (+85.13%) by
     # +9.61pp. Default OFF — opt-in per Params or per-regime YAML.
     strangle_when_grind: bool = False
+    # ── Crash detector (2026-05-28) — opposite shape of grind detector ──
+    # Crash = sustained high vol AND sharp trend. Designed for Lehman-class
+    # regimes (gfc_2008, stacked_2x). The grind detector's |trend|<20% gate
+    # NEVER fires in crashes — by design, it's for stagnation. Crash detector
+    # uses |trend| > 15% to catch the opposite shape. Faster ON (5d) and slower
+    # OFF (10d) than grind — crashes need quick response and stable recovery.
+    crash_when_active_enabled: bool = False
+    crash_realized_vol_threshold: float = 0.40   # severe — only fires in true crisis
+    crash_trend_abs_pct: float = 15.0            # |60d trend| > 15% (either direction)
+    crash_detect_window_days: int = 60
+    crash_on_days_required: int = 5
+    crash_off_days_required: int = 10
+    # When True AND crash_active, halt the put-selling pass (same as cash-carry
+    # for grind). Existing positions settle; cash accrues regime.cash_yield_annual.
+    crash_carry_when_active: bool = False
+    # When True AND crash_active, sell strangles instead of just puts (mirror of
+    # strangle_when_grind). RECOMMENDED OFF for crashes — call leg gets crushed
+    # on V-shape rebounds. Kept as opt-in for sweep validation.
+    crash_strangle_when_active: bool = False
     # Multi-leg short structures (2026-05-28).
     # "off"          → wheel-only put-selling (default; preserves byte-for-byte
     #                  behavior on all 21 regimes when strangle_when_grind=False)
@@ -545,7 +564,10 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     univ_realized_vol: dict = {}
     # Universe-median 180-day price return per day (fallback when SPY missing).
     univ_ret_trend: dict = {}
-    if params.high_vol_grind_enabled:
+    # Universe-median 60-day price return per day (used by crash detector's
+    # |trend| > X gate; opposite shape from grind's 180d window).
+    univ_ret_60d: dict = {}
+    if params.high_vol_grind_enabled or params.crash_when_active_enabled:
         import math as _math
         rv_window = params.high_vol_grind_detect_window_days
         # Pre-index each symbol's returns into a per-date ordered series.
@@ -612,6 +634,37 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                         else (samples[mid - 1] + samples[mid]) / 2.0
                     )
 
+        # Universe-median 60-day return — for the crash detector. Only computed
+        # if crash_when_active_enabled (grind uses 180d via univ_ret_trend).
+        if params.crash_when_active_enabled:
+            sym_closes_60: dict = {}
+            for sym in universe:
+                if sym in lut:
+                    ordered = sorted(lut[sym].items())
+                    sym_closes_60[sym] = ordered
+            for d in dates:
+                samples = []
+                target_back = d - timedelta(days=60)
+                for sym, ordered in sym_closes_60.items():
+                    d_close = None
+                    back_close = None
+                    for bd, (c, _iv) in ordered:
+                        if bd <= d:
+                            d_close = c
+                        if bd <= target_back:
+                            back_close = c
+                        if bd > d:
+                            break
+                    if d_close and back_close and back_close > 0:
+                        samples.append((d_close / back_close - 1) * 100.0)
+                if samples:
+                    samples.sort()
+                    mid = len(samples) // 2
+                    univ_ret_60d[d] = (
+                        samples[mid] if len(samples) % 2 == 1
+                        else (samples[mid - 1] + samples[mid]) / 2.0
+                    )
+
     def _spy_signals(d):
         """Return (dist_below_ma50_or_None, spy_bearish_bool) for date d."""
         spot = spy_closes.get(d)
@@ -642,6 +695,11 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     hvg_raw_true_streak = 0
     hvg_raw_false_streak = 0
     hvg_active_days = 0
+    # Crash detector state (parallel structure to hvg).
+    crash_active = False
+    crash_raw_true_streak = 0
+    crash_raw_false_streak = 0
+    crash_active_days = 0
     # Cash interest accrual telemetry — total dollars added across the regime.
     cash_yield_total = 0.0
     daily_yield_rate = (cash_yield_annual / 365.0) if cash_yield_annual else 0.0
@@ -926,6 +984,38 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         if hvg_active:
             hvg_active_days += 1
 
+        # (c-crash) Crash detector (2026-05-28) — opposite shape of hvg.
+        # High vol AND SHARP trend (|60d trend| > X). Mutually exclusive with
+        # bull/bear/hvg (different shape from each). 5d-on, 10d-off debounce
+        # (fast response, slow recovery — crashes have whipsaw rebounds).
+        if (params.crash_when_active_enabled and not bull_today
+                and not bear_today and not hvg_active):
+            rv = univ_realized_vol.get(d)
+            trend60 = univ_ret_60d.get(d)
+            if rv is not None and trend60 is not None:
+                raw = (rv > params.crash_realized_vol_threshold
+                       and abs(trend60) > params.crash_trend_abs_pct)
+            else:
+                raw = False
+            if raw:
+                crash_raw_true_streak += 1
+                crash_raw_false_streak = 0
+                if (not crash_active
+                        and crash_raw_true_streak >= params.crash_on_days_required):
+                    crash_active = True
+            else:
+                crash_raw_false_streak += 1
+                crash_raw_true_streak = 0
+                if (crash_active
+                        and crash_raw_false_streak >= params.crash_off_days_required):
+                    crash_active = False
+        else:
+            crash_active = False
+            crash_raw_true_streak = 0
+            crash_raw_false_streak = 0
+        if crash_active:
+            crash_active_days += 1
+
         # (c-stag) Stagnation detector (long-grind countermeasure candidate 3).
         # Rolling lookback_days NLV return < stagnation_threshold_pct → boost
         # qty_mult below by stagnation_multiplier (capped by existing ivr_cap).
@@ -1024,10 +1114,12 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             scan_universe = shuffled[:half_n]
         else:
             scan_universe = universe
-        # Cash-and-carry gate: when high-vol-grind detector is active AND the
-        # mode is enabled, skip the put-selling pass entirely. Existing
-        # positions settle normally; idle cash accrues regime.cash_yield_annual.
-        if hvg_active and params.cash_carry_when_grind:
+        # Cash-and-carry gate: when high-vol-grind detector OR crash detector
+        # is active AND the corresponding action mode is enabled, skip the
+        # put-selling pass entirely. Existing positions settle normally; idle
+        # cash accrues regime.cash_yield_annual.
+        if (hvg_active and params.cash_carry_when_grind) or (
+                crash_active and params.crash_carry_when_active):
             slots = 0
         if slots > 0 and not halted:
             ranked = []
@@ -1222,6 +1314,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 _strangle_active = (
                     params.strangle_mode in ("strangle", "iron_condor")
                     or (params.strangle_when_grind and hvg_active)
+                    or (params.crash_strangle_when_active and crash_active)
                 )
                 if _strangle_active:
                     # Recompute current symbol's spot + IV (the `spot` / `score_iv`
@@ -1363,6 +1456,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "n_trades": n_trades, "n_assignments": n_assign,
         "n_halt_days": n_halt_days,
         "n_hvg_days": hvg_active_days,
+        "n_crash_days": crash_active_days,
         "cash_yield_total": round(cash_yield_total, 2),
         "points": points,
     }

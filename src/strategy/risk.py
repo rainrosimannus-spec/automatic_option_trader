@@ -504,6 +504,128 @@ class RiskManager:
         )
         return (active, self._grind_reason_cached)
 
+    # ── Crash detector (mirror of MarsWalk crash detector) ──────────────────
+    # Opposite shape from hvg: high vol AND SHARP trend (|60d|>15%). Designed
+    # for Lehman-class regimes. State keys: crash_active, crash_raw_*_streak,
+    # crash_last_eval_date.
+
+    def _load_crash_state(self) -> tuple[bool, int, int, str | None]:
+        try:
+            with get_db() as db:
+                rows = {
+                    s.key: s.value for s in db.query(SystemState).filter(
+                        SystemState.key.in_([
+                            "crash_active", "crash_raw_true_streak",
+                            "crash_raw_false_streak", "crash_last_eval_date",
+                        ])
+                    ).all()
+                }
+            return (
+                rows.get("crash_active", "false") == "true",
+                int(rows.get("crash_raw_true_streak") or "0"),
+                int(rows.get("crash_raw_false_streak") or "0"),
+                rows.get("crash_last_eval_date") or None,
+            )
+        except Exception as e:
+            log.debug("crash_state_load_failed", error=str(e))
+            return (False, 0, 0, None)
+
+    def _save_crash_state(self, active: bool, raw_true_streak: int,
+                          raw_false_streak: int, last_eval_date: str) -> None:
+        try:
+            with get_db() as db:
+                pairs = {
+                    "crash_active": "true" if active else "false",
+                    "crash_raw_true_streak": str(raw_true_streak),
+                    "crash_raw_false_streak": str(raw_false_streak),
+                    "crash_last_eval_date": last_eval_date,
+                }
+                for key, value in pairs.items():
+                    row = db.query(SystemState).filter(SystemState.key == key).first()
+                    if row:
+                        row.value = value
+                    else:
+                        db.add(SystemState(key=key, value=value))
+                db.commit()
+        except Exception as e:
+            log.warning("crash_state_save_failed", error=str(e))
+
+    def evaluate_crash_detector(self, force: bool = False) -> tuple[bool, str]:
+        """Day-level idempotent eval. Reuses compute_grind_signals output —
+        same upstream signals (universe rv + SPY trend) but different
+        thresholds. Crash = rv > crash_realized_vol_threshold AND
+        |trend60d| > crash_trend_abs_pct."""
+        if not self.cfg.crash_when_active_enabled:
+            self._crash_active_cached = False
+            self._crash_reason_cached = "detector disabled"
+            return (False, self._crash_reason_cached)
+        if getattr(self, "_crash_active_cached", None) is not None and not force:
+            return (self._crash_active_cached, self._crash_reason_cached)
+
+        active, true_streak, false_streak, last_eval = self._load_crash_state()
+        today = date.today().isoformat()
+        if last_eval == today and not force:
+            self._crash_active_cached = active
+            self._crash_reason_cached = (
+                f"cached (last_eval={last_eval}, "
+                f"streaks {true_streak}/{false_streak})"
+            )
+            return (active, self._crash_reason_cached)
+
+        from src.broker.market_data import compute_grind_signals
+        try:
+            symbols = self.universe.symbols_for_market("SMART") if self.universe else []
+        except Exception:
+            symbols = []
+        if not symbols:
+            self._crash_active_cached = active
+            self._crash_reason_cached = "no universe"
+            return (active, self._crash_reason_cached)
+        # The 60d return signal is approximated via SPY trend with a 60d window
+        # (overriding the default 180d for the trend window). compute_grind_signals
+        # returns SPY trend at trend_window_days — we call with trend_window=60.
+        signals = compute_grind_signals(
+            symbols,
+            rv_window_days=self.cfg.crash_detect_window_days,
+            trend_window_days=self.cfg.crash_detect_window_days,  # 60d for crash
+        )
+        if signals is None:
+            self._crash_active_cached = active
+            self._crash_reason_cached = "signals unavailable; keeping prior state"
+            return (active, self._crash_reason_cached)
+        rv = signals.get("realized_vol_median")
+        trend = signals.get("spy_trend_return_pct")
+        if rv is None or trend is None:
+            self._crash_active_cached = active
+            self._crash_reason_cached = (
+                f"signals partial (rv={rv}, trend={trend}); keeping prior state"
+            )
+            return (active, self._crash_reason_cached)
+        raw = (rv > self.cfg.crash_realized_vol_threshold
+               and abs(trend) > self.cfg.crash_trend_abs_pct)
+        if raw:
+            true_streak += 1
+            false_streak = 0
+            if not active and true_streak >= self.cfg.crash_on_days_required:
+                active = True
+                log.warning("crash_detector_activated",
+                            rv=round(rv, 4), trend_pct=round(trend, 2))
+        else:
+            false_streak += 1
+            true_streak = 0
+            if active and false_streak >= self.cfg.crash_off_days_required:
+                active = False
+                log.info("crash_detector_deactivated",
+                         rv=round(rv, 4), trend_pct=round(trend, 2))
+        self._save_crash_state(active, true_streak, false_streak, today)
+        self._crash_active_cached = active
+        self._crash_reason_cached = (
+            f"rv={round(rv, 4)} (>{self.cfg.crash_realized_vol_threshold}?) "
+            f"|trend|={round(abs(trend), 2)}% (>{self.cfg.crash_trend_abs_pct}?) "
+            f"streaks true/false={true_streak}/{false_streak}"
+        )
+        return (active, self._crash_reason_cached)
+
     def _rolling_nlv_return_pct(self, lookback_days: int) -> float | None:
         """Percent change in NLV vs lookback_days ago. Positive = grew, negative
         = lost. Returns None if insufficient history (caller decides fail-open).
@@ -1836,6 +1958,23 @@ class RiskManager:
             )
         return RiskCheck(True)
 
+    def check_crash_carry_gate(self) -> RiskCheck:
+        """Block new put entries while the crash detector is active AND
+        crash_carry_when_active is enabled. Mirror of check_cash_carry_gate
+        but with the crash detector (opposite shape: high vol + sharp trend).
+        MarsWalk sweep recommended strangle over halt for crashes — this gate
+        is opt-in via YAML for users who prefer lower-DD over the strangle
+        alpha. Default OFF."""
+        if not self.cfg.crash_carry_when_active:
+            return RiskCheck(True)
+        active, reason = self.evaluate_crash_detector()
+        if active:
+            return RiskCheck(
+                False,
+                f"Crash-carry mode active — new puts paused. {reason}",
+            )
+        return RiskCheck(True)
+
     # ── Master check ────────────────────────────────────────
     def can_open_put(self, symbol: str, market: str | None = None) -> RiskCheck:
         """Run all pre-trade checks for selling a put."""
@@ -1852,6 +1991,7 @@ class RiskManager:
             self.check_vix_gate(),             # cached — instant
             self.check_daily_circuit_breaker(),  # state cached after first call/day
             self.check_cash_carry_gate(),      # cached after first scan/day
+            self.check_crash_carry_gate(),     # cached after first scan/day
             self.check_margin_usage(),
             self.check_daily_deployment(),
             self.check_position_size(symbol),

@@ -483,21 +483,29 @@ class PutSeller:
         )
 
         # ── Strangle leg (mirror of src/marswalk/engine.py:1213-1276) ─────
-        # When strangle_when_grind=True AND the hvg detector is active, also
-        # sell a symmetric-delta call at the same expiry. Naked short — broker
-        # must accept under portfolio margin. Daily ITM-avoidance check in
-        # src/strategy/cash_carry.py closes ITM calls before assignment.
+        # Fires when EITHER strangle_when_grind+hvg_active OR
+        # crash_strangle_when_active+crash_active. Sells a symmetric-delta
+        # call at the same expiry. Naked short — broker must accept under
+        # portfolio margin. Daily ITM-avoidance check closes ITM calls before
+        # assignment (src/strategy/cash_carry.py).
         cfg_risk = get_settings().risk
-        if cfg_risk.strangle_when_grind:
-            try:
+        try:
+            should_strangle = False
+            if cfg_risk.strangle_when_grind:
                 hvg_active, _ = self.risk.evaluate_grind_detector()
                 if hvg_active:
-                    self._sell_strangle_call_leg(
-                        symbol, candidate.expiry, quantity,
-                        opt_exchange, currency,
-                    )
-            except Exception as e:
-                log.warning("strangle_leg_failed", symbol=symbol, error=str(e))
+                    should_strangle = True
+            if not should_strangle and cfg_risk.crash_strangle_when_active:
+                crash_active, _ = self.risk.evaluate_crash_detector()
+                if crash_active:
+                    should_strangle = True
+            if should_strangle:
+                self._sell_strangle_call_leg(
+                    symbol, candidate.expiry, quantity,
+                    opt_exchange, currency,
+                )
+        except Exception as e:
+            log.warning("strangle_leg_failed", symbol=symbol, error=str(e))
 
         return True
 

@@ -167,6 +167,10 @@ regimes:
     start: "2008-09-02"
     end: "2009-03-09"
     why: "Acute phase of the global financial crisis: Lehman bankruptcy (Sept 15) through SPX bottom at 676 (Mar 9). SPX -46% in 6 months, VIX peaked 80, credit markets froze. Universe SUPPLEMENTED with 16 broad-market names (financials, energy, staples, healthcare, industrials, classic tech) so effective coverage is 50 names — matches the live opt universe size, tests sector-diversified wheel survival rather than tech-only survival."
+    # 2008 T-bill yield averaged ~2% (Fed funds was 0.25-2% during the crisis;
+    # 3-month T-bills were 1.5-2.5%). Adding so cash-carry mode has a yield
+    # baseline to compete against in crash-carry head-to-head testing.
+    cash_yield_annual: 0.02
     # 16-name broad-market supplement (existed 2008, still liquid+optionable). Added 2026-05-27.
     universe_extension:
       - JPM
@@ -379,6 +383,7 @@ regimes:
     end: "2009-03-09"
     why: "Overlays gfc_2008 with a synthetic -15% one-day shock on 2008-11-20 — the actual short-term Nov trough (SPX 752, deepest day of the Nov bottom). Models the black-swan pattern type C from 2026-05-27 brainstorm: correlation breakdown / multi-crisis stacking, where defensive sectors crash alongside cyclicals. Tests whether the wheel's sector cap (30%) and correlation gate (0.85) still constrain risk when correlations break (every sector crashes 15% the same day). Same 16-name broad-market universe extension as gfc_2008."
     universe_extension: [JPM, BAC, XOM, CVX, JNJ, PFE, KO, PG, WMT, HD, CAT, BA, AMZN, INTC, IBM, CSCO]
+    cash_yield_annual: 0.02
     shocks:
       - date: "2008-11-20"
         pct: -0.15

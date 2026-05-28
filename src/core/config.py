@@ -290,6 +290,20 @@ class RiskConfig(BaseModel):
     strangle_call_delta_min: float = 0.15         # symmetric to put delta band
     strangle_call_delta_max: float = 0.30
     strangle_itm_close_dte: int = 1               # buy-to-close naked calls when ITM and DTE <= this
+    # ── Crash detector (mirror of MarsWalk Params.crash_*) ──
+    # Opposite shape from hvg detector: high vol AND SHARP trend (|60d| > 15%
+    # either direction). Designed for Lehman-class regimes (gfc_2008, etc).
+    # MW sweep showed strangle is the right action (NOT cash-carry — surprising
+    # finding, see live-marswalk-parity-rule memo). Both actions kept available
+    # via separate flags; user picks via YAML.
+    crash_when_active_enabled: bool = False
+    crash_realized_vol_threshold: float = 0.40
+    crash_trend_abs_pct: float = 15.0
+    crash_detect_window_days: int = 60
+    crash_on_days_required: int = 5
+    crash_off_days_required: int = 10
+    crash_carry_when_active: bool = False         # halt + hold cash (opt-in, lower-DD)
+    crash_strangle_when_active: bool = False      # sell strangles (recommended per sweep)
 
 
 class ScheduleConfig(BaseModel):
