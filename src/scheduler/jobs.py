@@ -1017,6 +1017,75 @@ def job_write_backup_ledger():
         log.error("bruno_backup_ledger_error", error=str(e))
 
 
+def job_loan_gate_proposals():
+    """Daily 06:30 UTC: compute loan-gate report; for each active loan whose
+    rate exceeds the binding trailing return, insert a PENDING
+    LoanRepaymentProposal row if one doesn't already exist. Idempotent on
+    (loan_id, status=PENDING). See src/borrower/loan_gates.py."""
+    from datetime import date
+    try:
+        from src.borrower.loan_gates import compute_loan_gates
+        from src.borrower.models import (
+            LoanRepaymentProposal, ProposalStatus, get_session_factory,
+        )
+        report = compute_loan_gates()
+        if report.new_loan_status != "BLOCK" or not report.repay_recommendations:
+            log.info(
+                "bruno_loan_gate_no_proposals",
+                status=report.new_loan_status,
+                recs=len(report.repay_recommendations),
+            )
+            return
+        session = get_session_factory()()
+        created = 0
+        skipped = 0
+        try:
+            for rec in report.repay_recommendations:
+                # Idempotency: skip if a non-terminal proposal already exists for
+                # this loan. PENDING = awaiting admin, APPROVED = movement form
+                # opened, EXECUTED/REJECTED = terminal so re-recommendation is OK.
+                existing = (
+                    session.query(LoanRepaymentProposal)
+                    .filter(
+                        LoanRepaymentProposal.loan_id == rec.loan_id,
+                        LoanRepaymentProposal.status.in_([
+                            ProposalStatus.PENDING, ProposalStatus.APPROVED,
+                        ]),
+                    )
+                    .first()
+                )
+                if existing is not None:
+                    skipped += 1
+                    continue
+                proposal = LoanRepaymentProposal(
+                    loan_id=rec.loan_id,
+                    proposed_amount=rec.outstanding,
+                    proposed_currency=rec.currency,
+                    proposed_date=date.today(),
+                    reason=rec.reason,
+                    status=ProposalStatus.PENDING,
+                )
+                session.add(proposal)
+                created += 1
+            session.commit()
+            log.info(
+                "bruno_loan_gate_proposals_run",
+                created=created, skipped_existing=skipped,
+                total_recs=len(report.repay_recommendations),
+            )
+        finally:
+            session.close()
+        # Outbound email alert is integration-gated — DB writes always run.
+        from src.core.config import get_settings
+        if get_settings().app.bruno_run_integrations and created > 0:
+            log.info("bruno_loan_gate_email_would_send", count=created)
+            # SMTP plumbing intentionally not invoked here — Bruno's outbound
+            # email path is still in dev (CLAUDE.md "What's next" #3). When SMTP
+            # is wired up, send a digest to PRINCIPALS naming the affected loans.
+    except Exception as e:
+        log.error("bruno_loan_gate_error", error=str(e))
+
+
 def job_merit_pull_quarter():
     """Pull the just-ended quarter's Merit closing balances. No-op when
     `bruno_run_integrations` is off; on Rasmus's production clone this runs
@@ -1832,6 +1901,17 @@ def create_scheduler() -> BackgroundScheduler:
         CronTrigger(hour=6, minute=15, timezone=utc_tz),
         id="bruno_deadman_check",
         name="Bruno: Dead-man State Check",
+        max_instances=1,
+    )
+
+    # Bruno: loan-gate proposals — daily 06:30 UTC. Computes trailing trading
+    # return vs each active loan's rate and inserts PENDING repay proposals.
+    # See src/borrower/loan_gates.py + /borrower/proposals admin page.
+    scheduler.add_job(
+        job_loan_gate_proposals,
+        CronTrigger(hour=6, minute=30, timezone=utc_tz),
+        id="bruno_loan_gate_proposals",
+        name="Bruno: Daily Loan-gate Proposals",
         max_instances=1,
     )
 
