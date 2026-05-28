@@ -63,6 +63,12 @@ class Regime:
     # ~7.5x (1973→2024 CPI ratio) so the engine sees today-scale prices while
     # day-over-day RETURNS remain identical. Default 1.0 = no scaling.
     price_multiplier: float = 1.0
+    # Annual interest rate accrued on positive cash each trading day. Used to
+    # model T-bill yield in regimes where the wheel can't compete with the
+    # risk-free rate (1970s stagflation: ~7% blended). When set, engine credits
+    # cash by (rate / 365) per day in run_regime's MTM block. None = unchanged
+    # (no accrual) — preserves byte-identical results for all other regimes.
+    cash_yield_annual: float | None = None
 
     def effective_window(self, today: str | None = None) -> tuple[str, str, bool]:
         """Return (start, end, is_analog). If `start > today` and an analog is

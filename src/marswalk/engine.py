@@ -225,6 +225,22 @@ class Params:
     ma200_breadth_off_threshold: float = 0.30
     ma200_breadth_full_threshold: float = 0.50
     ma200_breadth_halve_multiplier: float = 0.5
+    # High-vol-grind detector — fires when sustained high realized vol + no
+    # multi-month trend. Used ONLY to gate cash-and-carry mode (skip the put-
+    # selling pass while regime.cash_yield_annual accrues on idle cash). The
+    # 2026-05-28 attempt to use this for DTE/delta/iv_rank overrides was
+    # rejected — see memory stagflation-strategy-attempted-2026-05-28.
+    high_vol_grind_enabled: bool = False
+    high_vol_grind_realized_vol_threshold: float = 0.25
+    high_vol_grind_trend_window_days: int = 180
+    high_vol_grind_trend_max_abs_pct: float = 20.0
+    high_vol_grind_detect_window_days: int = 60
+    high_vol_grind_on_days_required: int = 15
+    high_vol_grind_off_days_required: int = 5
+    # When True, the put-selling pass is SKIPPED on days the detector is active.
+    # Existing positions settle normally; idle cash accrues regime.cash_yield_annual.
+    # Default OFF — opt-in per Params instance (or sweep candidate).
+    cash_carry_when_grind: bool = False
 
 
 class _CfgShim:
@@ -324,10 +340,13 @@ def _exposure_ramp(nlv: float) -> float:
 
 
 def run_regime(regime_id, regime_name, category, rank, universe, market, params: Params,
-               earnings=None):
+               earnings=None, cash_yield_annual: float | None = None):
     """
     market: {symbol: [(date_obj, close, iv), ...]} (each symbol's bars).
     earnings: optional {symbol: set(date)} of historical earnings dates (gate off if None).
+    cash_yield_annual: optional annual yield to accrue on positive cash daily.
+        Passed from the regime's YAML field (regimes.py Regime.cash_yield_annual).
+        None or 0 = no accrual. Used by stagflation_70s to model 1970s T-bill yield.
     Returns a result dict (summary + points). Does NOT write to any DB.
     """
     cfg = get_settings().strategy
@@ -478,6 +497,11 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     spy_ma200: dict = {}
     spy_ma_fast: dict = {}
     spy_ma_slow: dict = {}
+    # SPY N-day rolling return for the high-vol-grind detector's "no trend"
+    # signal. Falls back to a universe-median 180d return when SPY missing
+    # (pre-1993 regimes). Default trend window = 180 trading days.
+    spy_ret_trend: dict = {}
+    trend_win = params.high_vol_grind_trend_window_days
     if spy_dates:
         closes_in_order = [spy_closes[bd] for bd in spy_dates]
         for i, bd in enumerate(spy_dates):
@@ -489,6 +513,80 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 spy_ma_fast[bd] = sum(closes_in_order[i-params.spy_ma_fast:i]) / params.spy_ma_fast
             if i >= params.spy_ma_slow:
                 spy_ma_slow[bd] = sum(closes_in_order[i-params.spy_ma_slow:i]) / params.spy_ma_slow
+            if i >= trend_win and closes_in_order[i-trend_win] > 0:
+                spy_ret_trend[bd] = (closes_in_order[i] / closes_in_order[i-trend_win] - 1) * 100.0
+
+    # ── High-vol-grind detector upstream signals (only computed when enabled). ──
+    # Universe-median trailing 60-day realized vol (annualized) per day.
+    univ_realized_vol: dict = {}
+    # Universe-median 180-day price return per day (fallback when SPY missing).
+    univ_ret_trend: dict = {}
+    if params.high_vol_grind_enabled:
+        import math as _math
+        rv_window = params.high_vol_grind_detect_window_days
+        # Pre-index each symbol's returns into a per-date ordered series.
+        sym_ret_series: dict = {}
+        for sym in universe:
+            if sym not in ret_lut:
+                continue
+            ordered_dates = ret_dates.get(sym, [])
+            ordered_rets = [ret_lut[sym][bd] for bd in ordered_dates if bd in ret_lut[sym]]
+            if len(ordered_rets) >= rv_window:
+                sym_ret_series[sym] = (ordered_dates, ordered_rets)
+        for d in dates:
+            samples = []
+            for sym, (od, orr) in sym_ret_series.items():
+                last_idx = -1
+                for i, bd in enumerate(od):
+                    if bd <= d:
+                        last_idx = i
+                    else:
+                        break
+                if last_idx + 1 < rv_window:
+                    continue
+                rets_window = orr[last_idx + 1 - rv_window: last_idx + 1]
+                if len(rets_window) < 5:
+                    continue
+                mu = sum(rets_window) / len(rets_window)
+                var = sum((r - mu) ** 2 for r in rets_window) / max(len(rets_window) - 1, 1)
+                sd = _math.sqrt(var) * _math.sqrt(252)
+                samples.append(sd)
+            if samples:
+                samples.sort()
+                mid = len(samples) // 2
+                univ_realized_vol[d] = (
+                    samples[mid] if len(samples) % 2 == 1
+                    else (samples[mid - 1] + samples[mid]) / 2.0
+                )
+        # Universe-median 180d return fallback — only computed if SPY trend is empty.
+        if not spy_ret_trend:
+            sym_closes_ordered: dict = {}
+            for sym in universe:
+                if sym in lut:
+                    ordered = sorted(lut[sym].items())
+                    sym_closes_ordered[sym] = ordered
+            for d in dates:
+                samples = []
+                target_back = d - timedelta(days=trend_win)
+                for sym, ordered in sym_closes_ordered.items():
+                    d_close = None
+                    back_close = None
+                    for bd, (c, _iv) in ordered:
+                        if bd <= d:
+                            d_close = c
+                        if bd <= target_back:
+                            back_close = c
+                        if bd > d:
+                            break
+                    if d_close and back_close and back_close > 0:
+                        samples.append((d_close / back_close - 1) * 100.0)
+                if samples:
+                    samples.sort()
+                    mid = len(samples) // 2
+                    univ_ret_trend[d] = (
+                        samples[mid] if len(samples) % 2 == 1
+                        else (samples[mid - 1] + samples[mid]) / 2.0
+                    )
 
     def _spy_signals(d):
         """Return (dist_below_ma50_or_None, spy_bearish_bool) for date d."""
@@ -514,6 +612,15 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     cb_halt_remaining = 0
     # NLV history for the drawdown window (most-recent-last); seeded with start NLV.
     nlv_window: list[float] = [start_cap]
+    # High-vol-grind detector state machine. Counters track consecutive raw-True
+    # / raw-False days; on_days_required True → ON; off_days_required False → OFF.
+    hvg_active = False
+    hvg_raw_true_streak = 0
+    hvg_raw_false_streak = 0
+    hvg_active_days = 0
+    # Cash interest accrual telemetry — total dollars added across the regime.
+    cash_yield_total = 0.0
+    daily_yield_rate = (cash_yield_annual / 365.0) if cash_yield_annual else 0.0
 
     for d in dates:
         # Hoisted VIX lookups (used by Lever A direction-aware halt below and
@@ -701,6 +808,40 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     and spy_today_close < spy_ma_today):
                 bear_today = True
 
+        # (c-hvg) High-vol-grind detector — sustained high realized vol + no
+        # multi-month trend. Mutually exclusive with bull_today / bear_today.
+        # Raw signal both must hold; debounce: on_days_required consecutive
+        # True → switch ON; off_days_required consecutive False → switch OFF.
+        # Used ONLY to gate cash-carry mode (skip put-selling) when
+        # cash_carry_when_grind is True. No DTE/delta/iv_rank override path —
+        # those were tested 2026-05-28 and rejected (see memory note).
+        if params.high_vol_grind_enabled and not bull_today and not bear_today:
+            rv = univ_realized_vol.get(d)
+            trend = spy_ret_trend.get(d)
+            if trend is None:
+                trend = univ_ret_trend.get(d)
+            if rv is not None and trend is not None:
+                raw = (rv > params.high_vol_grind_realized_vol_threshold
+                       and abs(trend) < params.high_vol_grind_trend_max_abs_pct)
+            else:
+                raw = False
+            if raw:
+                hvg_raw_true_streak += 1
+                hvg_raw_false_streak = 0
+                if not hvg_active and hvg_raw_true_streak >= params.high_vol_grind_on_days_required:
+                    hvg_active = True
+            else:
+                hvg_raw_false_streak += 1
+                hvg_raw_true_streak = 0
+                if hvg_active and hvg_raw_false_streak >= params.high_vol_grind_off_days_required:
+                    hvg_active = False
+        else:
+            hvg_active = False
+            hvg_raw_true_streak = 0
+            hvg_raw_false_streak = 0
+        if hvg_active:
+            hvg_active_days += 1
+
         # (c-stag) Stagnation detector (long-grind countermeasure candidate 3).
         # Rolling lookback_days NLV return < stagnation_threshold_pct → boost
         # qty_mult below by stagnation_multiplier (capped by existing ivr_cap).
@@ -799,6 +940,11 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             scan_universe = shuffled[:half_n]
         else:
             scan_universe = universe
+        # Cash-and-carry gate: when high-vol-grind detector is active AND the
+        # mode is enabled, skip the put-selling pass entirely. Existing
+        # positions settle normally; idle cash accrues regime.cash_yield_annual.
+        if hvg_active and params.cash_carry_when_grind:
+            slots = 0
         if slots > 0 and not halted:
             ranked = []
             for sym in scan_universe:
@@ -1015,6 +1161,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         if len(nlv_window) > max_lb + 2:
             nlv_window = nlv_window[-(max_lb + 2):]
 
+        # Overnight cash-yield accrual (regime.cash_yield_annual). Credits cash
+        # only when positive; doesn't penalize negative-cash margin debit.
+        # Tomorrow's NLV will reflect this interest. None or 0 = no-op.
+        if daily_yield_rate > 0 and cash > 0:
+            interest = cash * daily_yield_rate
+            cash += interest
+            cash_yield_total += interest
+
     final = points[-1]
     return {
         "regime_id": regime_id, "regime_name": regime_name,
@@ -1027,6 +1181,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "max_drawdown_pct": round(max_dd, 2),
         "n_trades": n_trades, "n_assignments": n_assign,
         "n_halt_days": n_halt_days,
+        "n_hvg_days": hvg_active_days,
+        "cash_yield_total": round(cash_yield_total, 2),
         "points": points,
     }
 

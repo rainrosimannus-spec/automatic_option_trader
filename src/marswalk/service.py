@@ -89,7 +89,8 @@ def run_all_regimes(params: Params, fetch: bool = True):
                     }
                 earnings = mw_data.load_earnings(eff_universe)
                 res = run_regime(reg.id, reg.name, reg.category, reg.rank,
-                                 eff_universe, market, params, earnings=earnings)
+                                 eff_universe, market, params, earnings=earnings,
+                                 cash_yield_annual=reg.cash_yield_annual)
                 if res:
                     _replace_prior(reg.id, params)
                     save_run(res)

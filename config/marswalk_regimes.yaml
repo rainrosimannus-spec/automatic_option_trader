@@ -273,6 +273,15 @@ regimes:
     end: "1982-12-31"
     why: "10-year survival test through the worst decade of US equities since WW2: 1973-74 bear (-48% SPX), 1979-1982 second oil shock + Volcker's 20% rate hikes + double-dip recession. Real returns were ~-50% over the decade once inflation is netted out (nominal returns ~0%). Today's universe is mapped onto 1970s blue-chips (IBM/INTC for tech, T/DIS for communication, MCD/F for consumer, KO/PG for staples, JNJ/MRK/PFE/LLY for healthcare, XOM for energy, BA/CAT/MMM for industrials) via proxy_universe — 11 unique 1970s names back the 47-name universe via the proxy mapping. Universe is SUPPLEMENTED 2026-05-28 with 18 broad-market 1970s blue-chips that have full Yahoo coverage 1973-1982 and are not already proxy targets — restores parallel-position capacity that the correlation gate (max_correlation=0.85) otherwise collapses when 20+ today-tickers all map to the same physical bars (e.g. all tech → IBM). Prices are scaled ×7.5 (1973→2024 CPI ratio) so the engine sees today-scale dollar levels while day-over-day RETURNS remain identical to history; this keeps the wheel's premium minimums + $4M NLV scale meaningful. LIMITATIONS: (1) ^VIX silently skipped (instrument didn't exist pre-1990; VIX-tier delta/halt/bull-regime gates no-op, engine falls back to fixed 0.15-0.30 delta), (2) ^SPY data unavailable pre-1993 (SPY-MA200/MA50 gates no-op, fail-open), (3) NOMINAL returns only — real (inflation-adjusted) view not yet implemented (CPI tracking is the follow-up). Despite limits, the wheel still sees real per-name vol via the realized-vol IV proxy, so iv_rank ladder sizing adapts."
     price_multiplier: 7.5
+    # T-bill yield model for 1970s cash-and-carry mode (2026-05-28). 7% is the
+    # ~10-year average 1973-1982 3-month T-bill rate (peak 19% in 1981, trough
+    # ~4% in 1976-77). Accrues daily on positive cash. Combined with the
+    # high_vol_grind detector + Params.cash_carry_when_grind, this skips the
+    # wheel during sustained high-vol-no-trend periods and earns the risk-free
+    # rate instead — historically the strongest answer in stagflation. See
+    # memory: stagflation-strategy-attempted-2026-05-28 for the parameter-tweak
+    # attempt that confirmed the wheel can't beat T-bills in this regime.
+    cash_yield_annual: 0.07
     # 18-name 1970s blue-chip supplement (full Yahoo 1973-1982 coverage, NOT already
     # proxy_universe targets — each adds a genuinely new physical bar series).
     # Added 2026-05-28 to escape universe-collapse: 47 today-tickers → 11 physical
