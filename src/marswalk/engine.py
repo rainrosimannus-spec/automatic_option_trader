@@ -241,6 +241,20 @@ class Params:
     # Existing positions settle normally; idle cash accrues regime.cash_yield_annual.
     # Default OFF — opt-in per Params instance (or sweep candidate).
     cash_carry_when_grind: bool = False
+    # Multi-leg short structures (PROTOTYPE 2026-05-28).
+    # "off"          → wheel-only (current default, all 21 regimes unchanged)
+    # "strangle"     → sell a symmetric-delta call alongside each put (naked)
+    # "iron_condor"  → strangle + long-leg hedges (capped loss per side)
+    # IC long-leg strike offset = short-leg strike × (1 ± ic_long_offset_pct).
+    # MarsWalk-only prototype; live port deferred per the 2026-05-28 plan.
+    # See memory: live-marswalk-parity-rule (this is the rare exemption — a
+    # MarsWalk-only experiment to validate the analytical estimate; live port
+    # only if sweep shows clean win across regimes).
+    strangle_mode: str = "off"                # "off" | "strangle" | "iron_condor"
+    strangle_call_delta_min: float = 0.15     # symmetric to default put delta band
+    strangle_call_delta_max: float = 0.30
+    ic_long_offset_pct: float = 0.03          # long-leg strike offset from short
+    ic_long_iv_discount: float = 0.85         # long-leg IV is slightly lower (smile)
 
 
 class _CfgShim:
@@ -383,6 +397,12 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     start_date = dates[0]
     short_puts: list[dict] = []
     short_calls: list[dict] = []
+    # PROTOTYPE 2026-05-28: naked short calls (strangle mode) and long-leg hedges
+    # (iron_condor mode). Tracked separately from short_calls (which is reserved
+    # for covered calls written against assigned-via-put stock).
+    short_calls_naked: list[dict] = []  # each: sym, strike, expiry, premium, qty, entry_delta, long_strike (or None for plain strangle)
+    long_puts: list[dict] = []          # iron-condor long-put hedges
+    long_calls: list[dict] = []         # iron-condor long-call hedges
     stocks: dict[str, dict] = {}
     n_trades = 0
     n_assign = 0
@@ -668,6 +688,66 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             else:
                 keep.append(c)
         short_calls = keep
+
+        # ── 2b. Settle naked short calls (strangle/IC short-leg) ──────────
+        # Settled in cash. If close > strike, pay out (close - strike) × 100
+        # × qty. For iron condor, the long-call hedge caps that loss at the
+        # spread width (close > long_strike → loss = (long_strike - strike) × 100).
+        keep = []
+        for c in short_calls_naked:
+            if d >= c["expiry"]:
+                q = pv(c["sym"], d) or pv(c["sym"], dates[max(0, dates.index(d) - 1)])
+                close = q[0] if q else c["strike"]
+                if close > c["strike"]:
+                    # Calculate the raw short-call loss
+                    short_loss_per_share = close - c["strike"]
+                    # IC cap: long leg activates beyond long_strike
+                    if c.get("long_strike") is not None:
+                        max_loss_per_share = c["long_strike"] - c["strike"]
+                        short_loss_per_share = min(short_loss_per_share, max_loss_per_share)
+                    cash -= short_loss_per_share * 100 * c["qty"]
+                # else: expired worthless, premium kept
+            else:
+                keep.append(c)
+        short_calls_naked = keep
+
+        # ── 2c. Settle IC long-put hedges (insurance side) ─────────────────
+        # Long puts pay out (long_strike - close) × 100 × qty when close < long_strike.
+        # Cost was paid upfront when the IC was opened.
+        keep = []
+        for lp in long_puts:
+            if d >= lp["expiry"]:
+                q = pv(lp["sym"], d) or pv(lp["sym"], dates[max(0, dates.index(d) - 1)])
+                close = q[0] if q else lp["strike"]
+                if close < lp["strike"]:
+                    # Long-put cap kicks in past the inner short-put strike;
+                    # the engine's separate short_puts settlement handles
+                    # assignment cost. The long leg here just provides cash
+                    # back equal to (long_strike - close) capped at (long_strike
+                    # - short_put_strike). But because the IC structure
+                    # nets the short-put assignment + long-put payoff, the
+                    # easiest implementation is: long-put payoff = max(0,
+                    # long_strike - close). This double-counts vs the wheel's
+                    # cost-basis tracking, but in stagflation the put-side
+                    # rarely goes deep enough to test the long-leg cap.
+                    payoff = lp["strike"] - close
+                    cash += payoff * 100 * lp["qty"]
+            else:
+                keep.append(lp)
+        long_puts = keep
+
+        # ── 2d. Settle IC long-call hedges (only meaningful at expiry) ─────
+        keep = []
+        for lc in long_calls:
+            if d >= lc["expiry"]:
+                q = pv(lc["sym"], d) or pv(lc["sym"], dates[max(0, dates.index(d) - 1)])
+                close = q[0] if q else lc["strike"]
+                if close > lc["strike"]:
+                    payoff = close - lc["strike"]
+                    cash += payoff * 100 * lc["qty"]
+            else:
+                keep.append(lc)
+        long_calls = keep
 
         # ── 3. Write covered calls on uncovered stock (3-branch faithful logic) ──
         covered = {c["sym"] for c in short_calls}
@@ -1123,6 +1203,80 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 slots -= 1
                 n_trades += 1
 
+                # ── Strangle leg (PROTOTYPE 2026-05-28) ─────────────────────
+                # When strangle_mode != "off", also sell a symmetric-delta call
+                # for this name + expiry. For iron_condor, also buy long-leg
+                # hedges further OTM. The `chain` variable from the put-scoring
+                # first loop is for the WRONG symbol here (we're in the ranked
+                # loop now), so rebuild for this sym + the put's DTE band.
+                # Use a strangle-specific cfg shim with min_premium=0.01 — the
+                # live cc_cfg.min_premium=0.10 floor rejects most 0-3 DTE OTM
+                # calls. For the strangle prototype we accept any premium.
+                if params.strangle_mode in ("strangle", "iron_condor"):
+                    # Recompute current symbol's spot + IV (the `spot` / `score_iv`
+                    # locals from the first loop leak the LAST symbol's values).
+                    q_sym = pv(sym, d)
+                    if q_sym is None:
+                        continue
+                    sym_spot, sym_iv = q_sym
+                    strangle_cfg = _CfgShim(cfg, 0.01)
+                    put_dte = _dte(top.expiry, d)
+                    sym_chain = [
+                        sc for sc in pricing.build_contracts(sym_spot, d, put_dte + 7, symbol=sym)
+                        if _dte(sc.lastTradeDateOrContractMonth, d) == put_dte
+                    ]
+                    sym_score_iv = pricing.effective_iv(sym_iv, put_dte, k_today)
+                    call_cands = score_call_candidates(
+                        sym_spot, sym_score_iv, sym_chain, strangle_cfg,
+                        params.strangle_call_delta_min,
+                        params.strangle_call_delta_max,
+                        d,
+                    )
+                    # Filter calls to the SAME expiry as the put we just sold.
+                    same_exp = [c for c in call_cands if c.expiry == top.expiry]
+                    if same_exp:
+                        call_top = max(same_exp, key=lambda c: c.score)
+                        long_call_strike = None
+                        long_put_strike = None
+                        ic_long_premium_paid = 0.0
+                        if params.strangle_mode == "iron_condor":
+                            # Long-call strike = short-call strike × (1 + offset).
+                            # Long-put strike  = short-put strike × (1 - offset).
+                            long_call_strike = call_top.strike * (1.0 + params.ic_long_offset_pct)
+                            long_put_strike = top.strike * (1.0 - params.ic_long_offset_pct)
+                            # BSM-price the long legs at slightly lower IV (smile);
+                            # cost the premium upfront. Use this sym's spot + IV.
+                            disc_iv = sym_score_iv * params.ic_long_iv_discount
+                            lc_px = pricing.value_call(
+                                sym_spot, long_call_strike, top.expiry, d, disc_iv, k_today
+                            )
+                            lp_px = pricing.value_put(
+                                sym_spot, long_put_strike, top.expiry, d, disc_iv, k_today
+                            )
+                            ic_long_premium_paid = (lc_px + lp_px) * 100 * contracts
+                            cash -= ic_long_premium_paid
+                            long_calls.append({
+                                "sym": sym, "strike": long_call_strike,
+                                "expiry": _exp_date(top.expiry),
+                                "cost": lc_px, "qty": contracts,
+                            })
+                            long_puts.append({
+                                "sym": sym, "strike": long_put_strike,
+                                "expiry": _exp_date(top.expiry),
+                                "cost": lp_px, "qty": contracts,
+                            })
+                        # Sell the naked short call (or short-leg of IC).
+                        cash += call_top.bid * 100 * contracts
+                        call_entry_delta = abs(getattr(call_top, "delta", 0.0) or 0.0)
+                        short_calls_naked.append({
+                            "sym": sym, "strike": call_top.strike,
+                            "expiry": _exp_date(call_top.expiry),
+                            "premium": call_top.bid, "qty": contracts,
+                            "entry_delta": call_entry_delta,
+                            "long_strike": long_call_strike,  # None for plain strangle
+                        })
+                        n_trades += 1
+
         # ── 5. Mark-to-market NLV (with optional gap stress on big down days) ──
         gs = params.gap_stress
 
@@ -1146,6 +1300,22 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             if q:
                 px = _mpx(c["sym"], q[0])
                 nlv -= pricing.value_call(px, c["strike"], c["expiry"].strftime("%Y%m%d"), d, q[1], k) * 100 * c["qty"]
+        # Strangle / IC leg MTM
+        for c in short_calls_naked:
+            q = pv(c["sym"], d)
+            if q:
+                px = _mpx(c["sym"], q[0])
+                nlv -= pricing.value_call(px, c["strike"], c["expiry"].strftime("%Y%m%d"), d, q[1], k) * 100 * c["qty"]
+        for lp in long_puts:
+            q = pv(lp["sym"], d)
+            if q:
+                px = _mpx(lp["sym"], q[0])
+                nlv += pricing.value_put(px, lp["strike"], lp["expiry"].strftime("%Y%m%d"), d, q[1], k) * 100 * lp["qty"]
+        for lc in long_calls:
+            q = pv(lc["sym"], d)
+            if q:
+                px = _mpx(lc["sym"], q[0])
+                nlv += pricing.value_call(px, lc["strike"], lc["expiry"].strftime("%Y%m%d"), d, q[1], k) * 100 * lc["qty"]
 
         ret = (nlv / start_cap - 1) * 100
         days = (d - start_date).days

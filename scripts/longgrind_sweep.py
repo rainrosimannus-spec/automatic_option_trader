@@ -38,21 +38,43 @@ CONFIGS: dict[str, dict] = {
     "+bear_dte":  {"bear_regime_enabled": True},
     "+vix_k":     {"k_vix_adaptive_enabled": True},
     "+stag":      {"stagnation_boost_enabled": True},
+    # Multi-leg short structures (PROTOTYPE 2026-05-28). MarsWalk-only.
+    "+strangle":  {"strangle_mode": "strangle"},
+    "+iron_cdr":  {"strangle_mode": "iron_condor"},
 }
 
 # Regimes the user flagged as long-grind underperformers (the targets to lift).
-LONG_GRIND_TARGETS = ["ai_crash", "oil_crash_2014"]
+LONG_GRIND_TARGETS = ["ai_crash", "oil_crash_2014", "stagflation_70s"]
 
 # Regimes that should NOT be hurt — bull/grind regimes carrying the wheel.
 BULL_TARGETS = ["bull_2021", "ai_2023", "grind_2024h1", "iran_war_2026"]
 
 
 def run_one(reg, universe, earnings, overrides: dict) -> dict:
+    """Run one regime + config. Applies all per-regime synthetic transforms
+    (halts/shocks/price_multiplier) and threads cash_yield_annual to engine —
+    so regimes added since the original sweep (blackout_3day / stacked_2x /
+    stagflation_70s) behave correctly."""
     market = load_market(reg, universe)
     if not market:
         return {"final_return_pct": None, "error": "no_data"}
+    # Apply synthetic transforms (mirrors src/marswalk/service.py)
+    if getattr(reg, "halts", None):
+        from marswalk.synthetic import apply_halts
+        market = apply_halts(market, reg.halts, gap_open_pct=getattr(reg, "gap_open_pct", 0.0) or 0.0)
+    if getattr(reg, "shocks", None):
+        from marswalk.synthetic import apply_shocks
+        market = apply_shocks(market, reg.shocks)
+    pm = getattr(reg, "price_multiplier", None)
+    if pm and pm != 1.0:
+        market = {sym: [(d, c * pm, iv) for (d, c, iv) in bars]
+                  for sym, bars in market.items()}
     p = Params(**overrides)
-    res = run_regime(reg.id, reg.name, reg.category, reg.rank, universe, market, p, earnings=earnings)
+    res = run_regime(
+        reg.id, reg.name, reg.category, reg.rank, universe, market, p,
+        earnings=earnings,
+        cash_yield_annual=getattr(reg, "cash_yield_annual", None),
+    )
     if not res:
         return {"final_return_pct": None, "error": "engine_returned_none"}
     return {
@@ -78,14 +100,10 @@ def main():
 
     # Grid header
     print()
-    print("Long-grind countermeasure sweep — 18 regimes × 4 configs")
-    print("=" * 90)
-    header = "regime".ljust(20) + "  ".join([
-        "baseline".rjust(10),
-        "+bear_dte".rjust(11),
-        "+vix_k".rjust(10),
-        "+stag".rjust(10),
-    ])
+    print(f"Long-grind countermeasure sweep — {len(regimes)} regimes × {len(CONFIGS)} configs")
+    print("=" * 120)
+    cfg_names = list(CONFIGS.keys())
+    header = "regime".ljust(20) + "  ".join(c.rjust(11) for c in cfg_names)
     print("  " + header)
     print("  " + "-" * (len(header) + 2))
 
@@ -99,25 +117,25 @@ def main():
             with out_path.open("a") as fh:
                 fh.write(json.dumps({"regime": reg.id, "config": cfg_name, **r}) + "\n")
             if r["final_return_pct"] is None:
-                cols.append("ERR".rjust(10))
+                cols.append("ERR".rjust(11))
             elif cfg_name == "baseline":
-                cols.append(format(r["final_return_pct"], "+.2f").rjust(10))
+                cols.append(format(r["final_return_pct"], "+.2f").rjust(11))
             else:
                 base = results[reg.id]["baseline"]["final_return_pct"]
                 if base is None:
-                    cols.append("ERR".rjust(10))
+                    cols.append("ERR".rjust(11))
                 else:
                     delta = r["final_return_pct"] - base
-                    cols.append(format(delta, "+.2f").rjust(10 if cfg_name != "+bear_dte" else 11))
-        print("  " + reg.id.ljust(20) + cols[0] + "  " + cols[1] + "  " + cols[2] + "  " + cols[3])
+                    cols.append(format(delta, "+.2f").rjust(11))
+        print("  " + reg.id.ljust(20) + "  ".join(cols))
 
     # Summary per candidate
     print()
-    print("=" * 90)
+    print("=" * 120)
     print("Summary: deltas to baseline (in pp), per candidate")
-    print("=" * 90)
+    print("=" * 120)
 
-    for cfg_name in ["+bear_dte", "+vix_k", "+stag"]:
+    for cfg_name in [c for c in cfg_names if c != "baseline"]:
         wins_long_grind = []
         hurts_bulls = []
         wins_3pp = []
@@ -138,7 +156,7 @@ def main():
                 hurts_2pp.append((rid, delta))
         print()
         print(f"  CANDIDATE {cfg_name}:")
-        print("    Long-grind targets (oil_crash_2014, ai_crash):")
+        print(f"    Long-grind targets ({', '.join(LONG_GRIND_TARGETS)}):")
         for rid, d in wins_long_grind:
             tag = "WIN" if d >= 3 else ("ok" if d > 0 else "FLAT/HURT")
             print(f"      {rid.ljust(20)}  {format(d, '+.2f').rjust(7)}pp  {tag}")
