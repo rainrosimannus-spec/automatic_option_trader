@@ -530,16 +530,20 @@ class RiskManager:
             log.debug("rolling_nlv_calc_failed", error=str(e))
             return None
 
-    def _get_recent_nlv_drawdown(self) -> float:
+    def _get_recent_nlv_drawdown(self, lookback_override: int | None = None) -> float:
         """
         Compute NLV drawdown over the lookback window.
         drawdown = (peak_of_prior_days - current) / peak_of_prior_days
         Positive value means we are below recent peak (= in drawdown).
         Returns 0.0 if insufficient data or no drawdown.
+
+        Optional lookback_override lets callers compute the 20d parallel
+        drawdown alongside the default 5d window (ported from MarsWalk
+        Params.drawdown_long_lookback_days, 2026-05-28).
         """
         try:
             from src.core.models import AccountSnapshot
-            lookback = self.cfg.drawdown_lookback_days
+            lookback = lookback_override if lookback_override is not None else self.cfg.drawdown_lookback_days
             with get_db() as db:
                 rows = (
                     db.query(AccountSnapshot)
@@ -562,6 +566,18 @@ class RiskManager:
         except Exception as e:
             log.debug("drawdown_calc_failed", error=str(e))
             return 0.0
+
+    def _drawdown_cap_multiplier_long(self, drawdown: float) -> float:
+        """20d-window variant of _drawdown_cap_multiplier — same shape, looser
+        thresholds (3% / 6% / 12% by default) to catch slow-grind bears.
+        Mirrors MarsWalk Params.drawdown_long_threshold_* defaults."""
+        if drawdown > self.cfg.drawdown_long_threshold_severe:
+            return 0.25
+        if drawdown > self.cfg.drawdown_long_threshold_mid:
+            return 0.50
+        if drawdown > self.cfg.drawdown_long_threshold_light:
+            return 0.75
+        return 1.0
 
     def _drawdown_cap_multiplier(self, drawdown: float) -> float:
         """Return multiplier on daily position cap based on drawdown size."""
@@ -596,9 +612,18 @@ class RiskManager:
             extra = int((net_liq - step) / step)
             size_limit = min(base + extra, cap)
 
-        # Drawdown scaling
+        # Drawdown scaling — 5d window AND optional parallel 20d window.
+        # Final multiplier = min(5d, 20d) so whichever sees the deeper trouble
+        # wins. 20d catches slow-grind bears (bear_2022-class) that 5d misses.
+        # Set drawdown_long_lookback_days=0 to disable the long window.
         drawdown = self._get_recent_nlv_drawdown()
         multiplier = self._drawdown_cap_multiplier(drawdown)
+        if self.cfg.drawdown_long_lookback_days > 0:
+            dd_long = self._get_recent_nlv_drawdown(
+                lookback_override=self.cfg.drawdown_long_lookback_days
+            )
+            mult_long = self._drawdown_cap_multiplier_long(dd_long)
+            multiplier = min(multiplier, mult_long)
         if multiplier < 1.0:
             scaled = max(int(size_limit * multiplier), self.cfg.drawdown_min_cap)
             log.info("drawdown_scaling_applied",
@@ -1703,6 +1728,99 @@ class RiskManager:
             )
         return RiskCheck(True)
 
+    # ── Daily circuit breaker (ported 2026-05-28 from MarsWalk engine.py:762-768) ──
+    # When yesterday's NLV dropped > daily_cb_pct vs day-before, halt new put
+    # writes for daily_cb_halt_days trading days. Catches gap-down scenarios
+    # that intraday-loss-halt and VIX gates miss. State persists across process
+    # restarts via SystemState (daily_cb_halt_remaining + last_check_date).
+    # See memory: live-marswalk-parity-rule.
+
+    def _load_daily_cb_state(self) -> tuple[int, str | None]:
+        """Return (halt_days_remaining, last_check_date_iso)."""
+        try:
+            with get_db() as db:
+                rows = {
+                    s.key: s.value for s in db.query(SystemState).filter(
+                        SystemState.key.in_([
+                            "daily_cb_halt_remaining", "daily_cb_last_check_date",
+                        ])
+                    ).all()
+                }
+            return (
+                int(rows.get("daily_cb_halt_remaining") or "0"),
+                rows.get("daily_cb_last_check_date") or None,
+            )
+        except Exception as e:
+            log.debug("daily_cb_state_load_failed", error=str(e))
+            return (0, None)
+
+    def _save_daily_cb_state(self, halt_remaining: int, last_check_date: str) -> None:
+        """Upsert the two daily-CB state keys."""
+        try:
+            with get_db() as db:
+                pairs = {
+                    "daily_cb_halt_remaining": str(halt_remaining),
+                    "daily_cb_last_check_date": last_check_date,
+                }
+                for key, value in pairs.items():
+                    row = db.query(SystemState).filter(SystemState.key == key).first()
+                    if row:
+                        row.value = value
+                    else:
+                        db.add(SystemState(key=key, value=value))
+                db.commit()
+        except Exception as e:
+            log.warning("daily_cb_state_save_failed", error=str(e))
+
+    def check_daily_circuit_breaker(self) -> RiskCheck:
+        """Halt new put writes when yesterday's NLV dropped > pct vs day-before.
+
+        Day-level idempotent: evaluates the trigger only once per business day
+        (first scan after midnight UTC). Subsequent scans the same day read
+        cached halt counter. Each new day decrements the counter by 1.
+        Fail-open on insufficient AccountSnapshot history (need ≥2 rows)."""
+        if self.cfg.daily_cb_pct <= 0:
+            return RiskCheck(True)
+        halt_remaining, last_check = self._load_daily_cb_state()
+        today = date.today().isoformat()
+
+        # Once-per-day evaluation: only update on a new business day.
+        if last_check != today:
+            try:
+                from src.core.models import AccountSnapshot
+                with get_db() as db:
+                    rows = (
+                        db.query(AccountSnapshot)
+                        .order_by(AccountSnapshot.date.desc())
+                        .limit(2)
+                        .all()
+                    )
+                if len(rows) >= 2 and rows[0].net_liquidation > 0 and rows[1].net_liquidation > 0:
+                    yesterday_nlv = rows[0].net_liquidation
+                    day_before_nlv = rows[1].net_liquidation
+                    day_change = (yesterday_nlv - day_before_nlv) / day_before_nlv
+                    if day_change < -self.cfg.daily_cb_pct and halt_remaining == 0:
+                        halt_remaining = self.cfg.daily_cb_halt_days
+                        log.warning(
+                            "daily_cb_triggered",
+                            day_change=round(day_change, 4),
+                            threshold=-self.cfg.daily_cb_pct,
+                            halt_days=halt_remaining,
+                        )
+                    elif halt_remaining > 0:
+                        halt_remaining -= 1  # decrement on new day
+            except Exception as e:
+                log.debug("daily_cb_check_failed", error=str(e))
+            self._save_daily_cb_state(halt_remaining, today)
+
+        if halt_remaining > 0:
+            return RiskCheck(
+                False,
+                f"Daily circuit breaker active — {halt_remaining} day(s) remaining "
+                f"(triggered by >{self.cfg.daily_cb_pct:.0%} NLV drop)",
+            )
+        return RiskCheck(True)
+
     def check_cash_carry_gate(self) -> RiskCheck:
         """Block new put entries while the high-vol-grind detector is active
         AND cash-and-carry is enabled. Existing positions settle naturally;
@@ -1732,6 +1850,7 @@ class RiskManager:
             self.check_duplicate_position(symbol),  # DB read — instant
             self.check_daily_limit(),          # DB read — instant
             self.check_vix_gate(),             # cached — instant
+            self.check_daily_circuit_breaker(),  # state cached after first call/day
             self.check_cash_carry_gate(),      # cached after first scan/day
             self.check_margin_usage(),
             self.check_daily_deployment(),

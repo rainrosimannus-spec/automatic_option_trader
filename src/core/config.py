@@ -239,6 +239,20 @@ class RiskConfig(BaseModel):
     drawdown_threshold_mid: float = 0.05     # drawdown > this -> 50% of base cap
     drawdown_threshold_severe: float = 0.10  # drawdown > this -> 25% of base cap
     drawdown_min_cap: int = 2                # floor - never scale below this many trades/day
+    # Parallel 20-day drawdown window — catches slow-grind bears (like bear_2022)
+    # that the 5d window misses. Final multiplier = min(5d_mult, 20d_mult).
+    # Set to 0 to disable. Ported 2026-05-28 from MarsWalk Params.drawdown_long_*.
+    # See memory: live-marswalk-parity-rule.
+    drawdown_long_lookback_days: int = 20
+    drawdown_long_threshold_light: float = 0.03    # 20d dd > 3% -> 75% cap
+    drawdown_long_threshold_mid: float = 0.06      # 20d dd > 6% -> 50% cap
+    drawdown_long_threshold_severe: float = 0.12   # 20d dd > 12% -> 25% cap
+    # Daily circuit breaker — when yesterday's NLV dropped > pct vs day-before,
+    # halt all new put writes for halt_days trading days. Catches gap-down
+    # scenarios that intraday-loss-halt and VIX gates miss. Ported 2026-05-28
+    # from MarsWalk Params.daily_cb_pct / daily_cb_halt_days.
+    daily_cb_pct: float = 0.05               # NLV drop > 5% day-over-day -> halt
+    daily_cb_halt_days: int = 5              # halt persists for N trading days
     # Wheel exit-ASAP mode (for stocks received via put assignment — prioritize exit over premium)
     wheel_exit_mode_enabled: bool = True          # master switch — when True, new wheel assignments flag as exit mode
     wheel_exit_delta_min: float = 0.35            # closer-to-money than normal 0.30
