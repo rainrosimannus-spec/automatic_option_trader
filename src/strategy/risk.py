@@ -1947,8 +1947,16 @@ class RiskManager:
         """Block new put entries while the high-vol-grind detector is active
         AND cash-and-carry is enabled. Existing positions settle naturally;
         idle cash gets rotated to the cash-carry ticker by the wheel
-        orchestrator (see strategy.wheel.maybe_rotate_cash_carry)."""
+        orchestrator (see strategy.wheel.maybe_rotate_cash_carry).
+
+        Precedence: strangle_when_grind takes priority over cash_carry_enabled.
+        If BOTH are enabled, this gate is suppressed — the wheel writes puts
+        + strangle adds the call leg (sweep showed strangle beats cash-carry).
+        """
         if not (self.cfg.cash_carry_enabled and self.cfg.cash_carry_detector_enabled):
+            return RiskCheck(True)
+        # Precedence: strangle wins. Don't halt the wheel — let strangle fire.
+        if self.cfg.strangle_when_grind:
             return RiskCheck(True)
         active, reason = self.evaluate_grind_detector()
         if active:
@@ -1964,8 +1972,15 @@ class RiskManager:
         but with the crash detector (opposite shape: high vol + sharp trend).
         MarsWalk sweep recommended strangle over halt for crashes — this gate
         is opt-in via YAML for users who prefer lower-DD over the strangle
-        alpha. Default OFF."""
+        alpha. Default OFF.
+
+        Precedence: crash_strangle_when_active wins. If BOTH are enabled,
+        this gate is suppressed — the wheel writes puts + strangle adds
+        the call leg (sweep showed crash-strangle beats crash-carry).
+        """
         if not self.cfg.crash_carry_when_active:
+            return RiskCheck(True)
+        if self.cfg.crash_strangle_when_active:
             return RiskCheck(True)
         active, reason = self.evaluate_crash_detector()
         if active:

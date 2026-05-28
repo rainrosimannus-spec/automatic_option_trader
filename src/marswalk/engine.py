@@ -1116,10 +1116,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             scan_universe = universe
         # Cash-and-carry gate: when high-vol-grind detector OR crash detector
         # is active AND the corresponding action mode is enabled, skip the
-        # put-selling pass entirely. Existing positions settle normally; idle
-        # cash accrues regime.cash_yield_annual.
-        if (hvg_active and params.cash_carry_when_grind) or (
-                crash_active and params.crash_carry_when_active):
+        # put-selling pass entirely. Precedence: strangle wins when both are
+        # set (sweep showed strangle dominates cash-carry in all high-vol
+        # regimes). Otherwise idle cash accrues regime.cash_yield_annual.
+        _hvg_halt = (hvg_active and params.cash_carry_when_grind
+                     and not params.strangle_when_grind)
+        _crash_halt = (crash_active and params.crash_carry_when_active
+                       and not params.crash_strangle_when_active)
+        if _hvg_halt or _crash_halt:
             slots = 0
         if slots > 0 and not halted:
             ranked = []
