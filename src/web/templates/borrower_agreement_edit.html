@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Edit Agreement (Loan {{ loan.id }}){% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500">
+            <a href="/borrower" class="hover:text-gray-300">Borrower</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <a href="/borrower/loans/{{ loan.id }}" class="hover:text-gray-300">{{ loan.contract_reference or 'Loan ' ~ loan.id }}</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <a href="/borrower/loans/{{ loan.id }}/agreement" class="hover:text-gray-300">Agreement</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <span class="text-gray-400">Edit</span>
+        </p>
+        <h1 class="text-3xl font-semibold mt-2">Edit agreement body</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            Edit the markdown directly. Saving re-renders the HTML + PDF as a new version (v{{ draft.version + 1 }}).
+            To rebuild fresh from the template and current loan data instead, use <span class="text-gray-300">Regenerate</span> on the agreement page.
+        </p>
+    </div>
+
+    <form method="POST" action="/borrower/loans/{{ loan.id }}/agreement/edit" class="space-y-4">
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <label class="block text-xs text-gray-400 mb-2">Agreement markdown</label>
+            <textarea name="markdown_body" rows="32" spellcheck="false"
+                      class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm font-mono leading-relaxed focus:border-amber-300/50 focus:outline-none">{{ draft.markdown_body }}</textarea>
+        </div>
+        <div class="flex justify-between items-center">
+            <a href="/borrower/loans/{{ loan.id }}/agreement" class="text-sm text-gray-400 hover:text-gray-300">&larr; Cancel</a>
+            <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-5 py-2 rounded text-sm">
+                Save &amp; re-render
+            </button>
+        </div>
+    </form>
+
+</div>
+{% endblock %}

@@ -181,6 +181,13 @@ class Counterparty(Base):
     # Merit Aktiva mapping (for quarterly reconciliation, see merit_balances)
     merit_account_id = Column(String(64), nullable=True)
 
+    # Authorized signatory — used to render the lender's signature block in a
+    # generated loan agreement (src/borrower/agreements.py). Required for
+    # COMPANY lenders before an agreement can be generated; individuals sign
+    # in their own name so these stay null.
+    represented_by = Column(String(255), nullable=True)
+    represented_by_title = Column(String(128), nullable=True)
+
     # Timestamps
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -533,6 +540,54 @@ class LoanDocument(Base):
     description = Column(Text, nullable=True)
     uploaded_by = Column(String(255), nullable=True)        # principal email at upload time
     uploaded_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    loan = relationship("Loan", foreign_keys=[loan_id])
+
+
+class AgreementDraftStatus(str, enum.Enum):
+    DRAFT = "draft"        # freshly generated from the template
+    EDITED = "edited"      # operator edited variables/body and regenerated
+    LOCKED = "locked"      # a signed PDF was uploaded (or e-sign completed) — no more edits
+
+
+class LoanAgreementDraft(Base):
+    """
+    A GENERATED (unsigned) loan agreement draft. Distinct from LoanDocument,
+    which holds the uploaded *signed* PDF that is the canonical legal artifact.
+
+    A draft is NOT a signed agreement and does NOT satisfy the DRAFT -> ACTIVE
+    activation gate (that still requires a LoanDocument of type AGREEMENT). It
+    is editable (variables / body) and re-renderable until it is LOCKED, which
+    happens when a signed agreement PDF is uploaded for the loan, or when an
+    e-sign envelope completes. See src/borrower/agreements.py.
+
+    Files live on disk at data/agreement_drafts/{loan_id}/v{n}.{md,html,pdf};
+    the row keeps the resolved variables (for re-render/edit) and the rendered
+    markdown body (editable).
+    """
+    __tablename__ = "loan_agreement_drafts"
+
+    id = Column(Integer, primary_key=True)
+    loan_id = Column(Integer, ForeignKey("loans.id"), nullable=False, index=True)
+
+    version = Column(Integer, nullable=False, default=1)   # bumps on each regenerate/edit
+    template_name = Column(String(128), nullable=False)
+    template_version = Column(String(32), nullable=False)
+
+    variables_json = Column(Text, nullable=True)           # resolved Jinja context (for re-render)
+    markdown_body = Column(Text, nullable=True)            # rendered markdown (editable)
+
+    html_path = Column(String(512), nullable=True)
+    pdf_path = Column(String(512), nullable=True)
+    sha256_hash = Column(String(64), nullable=True)        # of the PDF body
+
+    status = Column(SqlEnum(AgreementDraftStatus), nullable=False, default=AgreementDraftStatus.DRAFT)
+    locked_at = Column(DateTime, nullable=True)
+    locked_reason = Column(String(64), nullable=True)      # 'signed_upload' | 'esign_complete'
+
+    created_by = Column(String(255), nullable=True)        # principal email at generation time
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     loan = relationship("Loan", foreign_keys=[loan_id])
 

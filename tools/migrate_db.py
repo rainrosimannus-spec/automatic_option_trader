@@ -31,6 +31,9 @@ from src.borrower.models import DB_PATH  # noqa: E402
 COLUMN_ADDS = [
     ("loans",          "is_nlv_collateralized", "BOOLEAN NOT NULL DEFAULT 0"),
     ("counterparties", "merit_account_id",      "VARCHAR(64)"),
+    # Authorized signatory for generated loan agreements (agreements.py).
+    ("counterparties", "represented_by",        "VARCHAR(255)"),
+    ("counterparties", "represented_by_title",  "VARCHAR(128)"),
 ]
 
 

@@ -198,7 +198,7 @@ Covenant (b) — net worth definition needs to match Bruno's headroom math
 
 ## 10. Reporting and Information Rights
 
-10.1. The Borrower grants the Lender access to a dedicated lender portal (currently planned to be hosted at lenders.mesicap.com) where the Lender can view, as it relates to this Loan and the Borrower's overall financial position:
+10.1. The Borrower grants the Lender access to a dedicated lender portal (currently planned to be hosted at lender.mesicap.com) where the Lender can view, as it relates to this Loan and the Borrower's overall financial position:
  (a) current outstanding principal and accrued interest;
  (b) payment history;
  (c) the Borrower's aggregate debt-to-asset ratio;

@@ -121,6 +121,21 @@
                 </div>
 
                 <div>
+                    <label class="block text-xs text-gray-400 mb-1">Represented by (signatory)</label>
+                    <input type="text" name="represented_by" placeholder="Authorized signatory — required for company lenders"
+                           value="{{ cp.represented_by or '' if is_edit else '' }}"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                    <p class="text-xs text-gray-600 mt-1">Who signs the loan agreement for this lender. Required for company lenders before an agreement can be generated; leave blank for individuals (they sign in their own name).</p>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Signatory title</label>
+                    <input type="text" name="represented_by_title" placeholder="e.g., Director, Board Member"
+                           value="{{ cp.represented_by_title or '' if is_edit else '' }}"
+                           class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                </div>
+
+                <div>
                     <label class="block text-xs text-gray-400 mb-1">KYC status</label>
                     {% set current_kyc = (cp.kyc_status if is_edit and cp.kyc_status else 'not_required') %}
                     <select name="kyc_status" class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
