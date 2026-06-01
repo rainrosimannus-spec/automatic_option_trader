@@ -542,9 +542,40 @@ def refresh_portfolio_pending_orders_cache() -> None:
             ib.reqAllOpenOrders()
             ib.sleep(2)
             trades = ib.openTrades()
-        # Trades placed by other clients (e.g. TWS) don't always emit status
-        # updates we observe, so a filled order can linger in openTrades().
-        # Guard with explicit status + remaining checks.
+            # Orders that fill in TWS (or via another client) don't always emit
+            # a status event this wrapper observes, so a filled order lingers in
+            # openTrades() with a stale "Submitted" status forever. Reconcile
+            # against the authoritative completed-orders and executions lists.
+            try:
+                completed = ib.reqCompletedOrders(apiOnly=False)
+            except Exception:
+                completed = []
+            try:
+                fills = ib.reqExecutions()
+            except Exception:
+                fills = []
+        # permId is stable across clients; orderId is per-client. Match on both.
+        done_perm_ids = set()
+        done_order_ids = set()
+        for t in completed or []:
+            try:
+                if getattr(t.order, "permId", 0):
+                    done_perm_ids.add(t.order.permId)
+                if getattr(t.order, "orderId", 0):
+                    done_order_ids.add(t.order.orderId)
+            except Exception:
+                continue
+        # Sum executed quantity per order, so a fully-filled order is excluded
+        # even if it never appears in the completed-orders feed.
+        filled_qty_by_perm = {}
+        for f in fills or []:
+            try:
+                ex = f.execution
+                pid = getattr(ex, "permId", 0)
+                if pid:
+                    filled_qty_by_perm[pid] = filled_qty_by_perm.get(pid, 0.0) + float(ex.shares or 0)
+            except Exception:
+                continue
         DONE_STATES = {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
         new_cache = []
         for oo in trades:
@@ -553,9 +584,19 @@ def refresh_portfolio_pending_orders_cache() -> None:
                 filled = float(oo.orderStatus.filled or 0)
                 remaining = float(oo.orderStatus.remaining or 0)
                 total_qty = float(oo.order.totalQuantity or 0)
+                perm_id = getattr(oo.order, "permId", 0)
+                order_id = getattr(oo.order, "orderId", 0)
                 if status in DONE_STATES:
                     continue
                 if remaining <= 0 and filled >= total_qty > 0:
+                    continue
+                # Stale-status guards: order shows open locally but IBKR
+                # reports it completed / fully executed.
+                if perm_id and perm_id in done_perm_ids:
+                    continue
+                if order_id and order_id in done_order_ids:
+                    continue
+                if perm_id and filled_qty_by_perm.get(perm_id, 0.0) >= total_qty > 0:
                     continue
                 c = oo.contract
                 new_cache.append({
