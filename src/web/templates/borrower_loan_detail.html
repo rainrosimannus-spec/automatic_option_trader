@@ -356,8 +356,9 @@
                 </select>
             </div>
             <div>
-                <label class="block text-xs text-gray-400 mb-1">PDF file (≤ 10 MB)</label>
-                <input type="file" name="file" accept="application/pdf" required class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                <label class="block text-xs text-gray-400 mb-1">Signed file (≤ 10 MB)</label>
+                <input type="file" name="file" accept=".pdf,.asice,.sce,.bdoc,.ddoc,application/pdf" required class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                <p class="text-xs text-gray-600 mt-1">PDF or signed container (.asice / .bdoc / .ddoc).</p>
             </div>
             <div class="md:col-span-1 flex gap-2">
                 <input type="text" name="description" placeholder="Optional description"

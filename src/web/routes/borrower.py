@@ -1806,12 +1806,8 @@ async def borrower_document_upload(
             loan.agreement_document_path = stored.storage_path
             # Uploading the signed agreement locks any generated draft: the
             # draft is no longer editable once a signed copy exists.
-            from datetime import datetime as _dt
-            for d in session.query(LoanAgreementDraft).filter_by(loan_id=loan_id).all():
-                if d.status != AgreementDraftStatus.LOCKED:
-                    d.status = AgreementDraftStatus.LOCKED
-                    d.locked_at = _dt.utcnow()
-                    d.locked_reason = "signed_upload"
+            from src.borrower.agreements import lock_drafts
+            lock_drafts(session, loan_id, "signed_upload")
         session.commit()
         log.info(f"loan_document_uploaded loan_id={loan_id} doc_id={doc.id} type={document_type} size={stored.size_bytes}")
         return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
@@ -2076,6 +2072,50 @@ def borrower_agreement_regenerate(request: Request, loan_id: int):
         session.rollback()
         log.error(f"agreement_regenerate_error: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to regenerate agreement: {e}")
+    finally:
+        session.close()
+
+
+@router.post("/loans/{loan_id}/agreement/esign")
+def borrower_agreement_esign(request: Request, loan_id: int, provider: str = Form(...)):
+    """Send the generated draft to an e-sign provider (Dokobit / DocuSign).
+
+    Gated: on this dev codebase (bruno_run_integrations=False) this is a no-op
+    that explains e-sign runs on the production clone. On the clone it creates
+    the signing envelope; the signed artifact is later registered via
+    esign.register_signed_agreement (which locks the draft)."""
+    from src.borrower import esign
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+        draft = _latest_draft(session, loan_id)
+        if not draft:
+            raise HTTPException(status_code=404, detail="No agreement draft to send.")
+        if draft.status == AgreementDraftStatus.LOCKED:
+            raise HTTPException(status_code=409, detail="This agreement is locked (signed) — nothing to send.")
+        lender = session.query(Counterparty).filter_by(id=loan.lender_id).first()
+        signers = [{
+            "name": lender.represented_by or lender.name,
+            "email": lender.contact_email or "",
+            "phone": lender.contact_phone or "",
+        }]
+        try:
+            envelope = esign.send_for_signature(loan, draft, signers, provider)
+        except esign.ESignError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if envelope is None:
+            # Integrations disabled (dev). Tell the operator to use the external path.
+            raise HTTPException(
+                status_code=400,
+                detail=("E-sign runs only on the production clone (bruno_run_integrations). "
+                        "On this system, sign externally and upload the signed PDF/.asice via the Documents panel."),
+            )
+        log.info(f"agreement_esign_sent loan_id={loan_id} provider={provider} envelope={envelope.envelope_id}")
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}/agreement", status_code=303)
+    except HTTPException:
+        raise
     finally:
         session.close()
 

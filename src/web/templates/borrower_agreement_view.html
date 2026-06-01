@@ -47,6 +47,20 @@
         <a href="/borrower/loans/{{ loan.id }}" class="text-sm text-gray-400 hover:text-gray-300 ml-auto">&larr; Back to loan</a>
     </div>
 
+    {% if not is_locked %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-4">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-2">Send for e-signature</div>
+        <form method="post" action="/borrower/loans/{{ loan.id }}/agreement/esign" class="flex flex-wrap items-center gap-2">
+            <select name="provider" class="bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm">
+                <option value="dokobit">Dokobit — Estonian/Baltic eID (Smart-ID, Mobiil-ID, ID-card)</option>
+                <option value="docusign">DocuSign — international</option>
+            </select>
+            <button type="submit" class="border border-gray-700 hover:border-gray-500 text-gray-300 px-4 py-2 rounded text-sm">Send</button>
+            <span class="text-xs text-gray-600">Runs on the production clone. On this system, sign externally and upload below.</span>
+        </form>
+    </div>
+    {% endif %}
+
     <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
         <iframe src="/borrower/loans/{{ loan.id }}/agreement.html" class="w-full bg-white" style="height: 80vh; border: 0;"></iframe>
     </div>

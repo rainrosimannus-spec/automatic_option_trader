@@ -30,6 +30,8 @@ from typing import Optional
 from jinja2 import Environment, StrictUndefined
 from num2words import num2words
 
+from datetime import datetime
+
 from src.borrower.models import (
     CounterpartyType,
     InterestTreatment,
@@ -38,6 +40,8 @@ from src.borrower.models import (
     CounterpartyTier,
     Loan,
     LoanStatus,
+    LoanAgreementDraft,
+    AgreementDraftStatus,
 )
 
 DRAFTS_ROOT = Path("data/agreement_drafts")
@@ -334,6 +338,20 @@ def write_files(loan_id: int, version: int, rendered: RenderedDraft) -> dict:
     html_path.write_text(rendered.html, encoding="utf-8")
     pdf_path.write_bytes(rendered.pdf_bytes)
     return {"md": str(md_path), "html": str(html_path), "pdf": str(pdf_path)}
+
+
+def lock_drafts(session, loan_id: int, reason: str) -> int:
+    """Lock every non-locked agreement draft on a loan — called when a signed
+    agreement is registered (manual upload or e-sign completion). Returns the
+    number locked. Caller commits. reason: 'signed_upload' | 'esign_complete'."""
+    n = 0
+    for d in session.query(LoanAgreementDraft).filter_by(loan_id=loan_id).all():
+        if d.status != AgreementDraftStatus.LOCKED:
+            d.status = AgreementDraftStatus.LOCKED
+            d.locked_at = datetime.utcnow()
+            d.locked_reason = reason
+            n += 1
+    return n
 
 
 def read_pdf(pdf_path: str) -> Optional[Path]:
