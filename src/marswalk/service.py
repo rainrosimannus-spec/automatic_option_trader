@@ -20,6 +20,12 @@ log = get_logger("marswalk.service")
 # Simple single-flight status (one sweep at a time).
 _state = {"active": False, "msg": "idle", "done": 0, "total": 0}
 
+# Signature of the last config we auto-launched a sweep for. Guards the GET-side
+# "auto-run first time" so a config with no stored runs triggers exactly one sweep
+# per process-life — even if some regimes error out and never produce a matching
+# row, we don't re-launch on every page refresh. Manual "Run now" bypasses this.
+_last_autorun_sig: str | None = None
+
 
 def is_running() -> bool:
     return _state["active"]
@@ -27,6 +33,17 @@ def is_running() -> bool:
 
 def status() -> dict:
     return dict(_state)
+
+
+def should_autorun(sig: str) -> bool:
+    """Return True (and record `sig`) if we have NOT already auto-launched a sweep
+    for this config signature this process. Records atomically so concurrent
+    page-loads don't double-launch. Manual Run-now does not touch this guard."""
+    global _last_autorun_sig
+    if _last_autorun_sig == sig:
+        return False
+    _last_autorun_sig = sig
+    return True
 
 
 def _replace_prior(regime_id: str, params: Params):

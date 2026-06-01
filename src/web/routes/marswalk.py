@@ -6,6 +6,9 @@ launches a background sweep across all regimes (engine + shared selection cores)
 """
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
+
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -19,15 +22,151 @@ from src.marswalk import service
 router = APIRouter()
 
 
+def _build_params(form: dict) -> Params:
+    """Build engine Params from the dashboard form/account knobs PLUS overlay the
+    detector/strategy TRIGGER fields read from the user's effective live config
+    (get_settings().risk). This is the parity rule applied in the read direction:
+    RiskConfig mirrors every Params trigger field 1:1 (config.py:271-306), so the
+    backtest simulates exactly what the live trader would do under each regime —
+    triggering the strangle / crash / cash-carry responses per the user's config.
+
+    Used by BOTH the page-load matching path (GET, with the rendered defaults) and
+    the "Run now" path (POST, with submitted form values) so their param signatures
+    agree byte-for-byte. The account/DTE/delta knobs keep their existing sourcing
+    (form defaults from Pydantic class defaults — the deliberate octoserver-stale-
+    YAML workaround); only the trigger overlay reads get_settings().
+
+    One naming seam: live `cash_carry_*` detector fields map to engine
+    `high_vol_grind_*` (same detector, legacy engine name); the live
+    `cash_carry_enabled` master switch maps to the `cash_carry_when_grind` action.
+    """
+    g = form.get
+    r = get_settings().risk
+    return Params(
+        # ── account / DTE / delta knobs — from the form ──
+        dte_min=max(0, int(g("dte_min"))),
+        dte_max=max(int(g("dte_min")), int(g("dte_max"))),
+        delta_min=max(0.01, float(g("delta_min"))),
+        delta_max=max(float(g("delta_min")), float(g("delta_max"))),
+        put_min_premium=max(0.0, float(g("put_min_premium", 0.0) or 0.0)),
+        cc_dte_min=max(0, int(g("cc_dte_min"))),
+        cc_dte_max=max(int(g("cc_dte_min")), int(g("cc_dte_max"))),
+        cc_delta_min=max(0.01, float(g("cc_delta_min"))),
+        cc_delta_max=max(float(g("cc_delta_min")), float(g("cc_delta_max"))),
+        cc_min_premium=max(0.0, float(g("cc_min_premium", 0.0) or 0.0)),
+        start_capital=max(1000.0, float(g("start_nlv"))),
+        total_exposure_pct=max(0.01, float(g("collateral_cap_pct")) / 100.0),
+        short_dte_uplift_k=max(0.0, float(g("uplift_k", 1.0))),
+        gap_stress=min(0.9, max(0.0, float(g("gap_stress_pct", 0)) / 100.0)),
+        margin_on=bool(g("margin_on")),
+        margin_multiple=max(1.0, min(10.0, float(g("margin_multiple", 5.0)))),
+        max_positions=max(1, min(200, int(g("max_positions")))),
+        iv_rank_min=max(0.0, min(100.0, float(g("iv_rank_min")))),
+        vix_halt=max(10.0, min(100.0, float(g("vix_halt")))),
+        max_margin_usage=max(0.05, min(2.0, float(g("max_margin_usage_pct")) / 100.0)),
+        # ── triggers — from the user's live config (RiskConfig) ──
+        high_vol_grind_enabled=r.cash_carry_detector_enabled,
+        high_vol_grind_realized_vol_threshold=r.cash_carry_realized_vol_threshold,
+        high_vol_grind_trend_window_days=r.cash_carry_trend_window_days,
+        high_vol_grind_trend_max_abs_pct=r.cash_carry_trend_max_abs_pct,
+        high_vol_grind_detect_window_days=r.cash_carry_detect_window_days,
+        high_vol_grind_on_days_required=r.cash_carry_on_days_required,
+        high_vol_grind_off_days_required=r.cash_carry_off_days_required,
+        cash_carry_when_grind=r.cash_carry_enabled,
+        strangle_when_grind=r.strangle_when_grind,
+        strangle_call_delta_min=r.strangle_call_delta_min,
+        strangle_call_delta_max=r.strangle_call_delta_max,
+        crash_when_active_enabled=r.crash_when_active_enabled,
+        crash_realized_vol_threshold=r.crash_realized_vol_threshold,
+        crash_trend_abs_pct=r.crash_trend_abs_pct,
+        crash_detect_window_days=r.crash_detect_window_days,
+        crash_on_days_required=r.crash_on_days_required,
+        crash_off_days_required=r.crash_off_days_required,
+        crash_carry_when_active=r.crash_carry_when_active,
+        crash_strangle_when_active=r.crash_strangle_when_active,
+    )
+
+
+def _active_triggers() -> dict:
+    """Read-only snapshot of which detector/strategy triggers the live config has
+    enabled — surfaced in the UI so the user can see what the scenario cards
+    reflect. Keys map to human labels; values are bool ON/OFF."""
+    r = get_settings().risk
+    return {
+        "high-vol-grind detector": r.cash_carry_detector_enabled,
+        "strangle (on grind)": r.strangle_when_grind,
+        "cash-carry (on grind)": r.cash_carry_enabled,
+        "crash detector": r.crash_when_active_enabled,
+        "strangle (on crash)": r.crash_strangle_when_active,
+        "cash-carry (on crash)": r.crash_carry_when_active,
+    }
+
+
 @router.get("/marswalk", response_class=HTMLResponse)
 def marswalk_page(request: Request):
     from datetime import date
     today = date.today().isoformat()
     universe, regimes = load_config()
+
+    # "Run now as it is" — defaults mirror the LIVE aggressive son-mode config
+    # we committed in c522a8e + hybrid wheel 63d8ed8. Read from the Pydantic
+    # class defaults (committed Python intent) instead of get_settings(), so
+    # the UI shows the canonical aggressive setup even on hosts where
+    # settings.yaml still carries stale pre-aggressive overrides (octoserver
+    # YAML migration is task #48). No DB-driven last_params override — the
+    # form always starts at the canonical live config, never at stale prior
+    # runs. Put DTE is VIX-tiered in live; the US low/mid-VIX tier is 0-3.
+    s = StrategyConfig()
+    r = RiskConfig()
+    default_nlv = 4_000_000
+    # Derive collateral_cap_pct + max_positions from the live NLV ramp (mirrors
+    # risk._effective_total_exposure_pct + scheduler options-count ladder), not
+    # the pre-ramp base. At $4M this lifts cap from 20% → 40%, which is what
+    # the live trader would actually grant a $4M account. Otherwise the engine
+    # would silently bind notional at $4M × 20% × 5x = $4M and flatline.
+    ramp_cap_pct, ramp_max_pos = _nlv_ramp(default_nlv)
+    defaults = {
+        "dte_min": 0,
+        "dte_max": 3,
+        "delta_min": s.delta_min,
+        "delta_max": s.delta_max,
+        "put_min_premium": s.min_premium_put,
+        "cc_dte_min": s.cc_dte_min,
+        "cc_dte_max": s.cc_dte_max,
+        "cc_delta_min": s.cc_delta_min,
+        "cc_delta_max": s.cc_delta_max,
+        "cc_min_premium": s.min_premium,
+        # Account & deployment knobs — large-account stress test ($4M).
+        "start_nlv": default_nlv,
+        "collateral_cap_pct": ramp_cap_pct,
+        # Lowered 2026-05-26 from 4.95 -> 1.0 (see pricing.SHORT_DTE_K docstring).
+        "uplift_k": 1.0,
+        "gap_stress_pct": 0,
+        # Live trades with IBKR portfolio margin → on by default.
+        "margin_on": True,
+        "margin_multiple": 5.0,
+        "max_positions": ramp_max_pos,
+        # Risk gates — aggressive son-mode values.
+        "iv_rank_min": s.iv_rank_min,
+        "vix_halt": r.vix_pause_threshold,
+        # Son-mode 60% margin ceiling.
+        "max_margin_usage_pct": round(r.max_margin_usage * 100, 1),
+    }
+
+    # Canonical config signature: the engine Params the rendered defaults + the
+    # user's live triggers produce, serialized exactly as save_run does
+    # (engine.py: json.dumps(asdict(params))). Page-load shows ONLY runs matching
+    # this signature, so the cards reflect the current configured triggers and
+    # never the stale/experimental sweeps that share dte/delta but differ in the
+    # trigger flags.
+    canonical = _build_params(defaults)
+    canonical_json = json.dumps(asdict(canonical))
+
     cards = []
     with get_mw_db() as db:
         for reg in regimes:
             run = (db.query(Run).filter_by(regime_id=reg.id)
+                   .filter(Run.params_json == canonical_json)
                    .order_by(Run.created_at.desc()).first())
             chart = None
             if run:
@@ -87,55 +226,22 @@ def marswalk_page(request: Request):
                 "short_window": days < ANNUAL_MIN_DAYS,
             })
 
-    # "Run now as it is" — defaults mirror the LIVE aggressive son-mode config
-    # we committed in c522a8e + hybrid wheel 63d8ed8. Read from the Pydantic
-    # class defaults (committed Python intent) instead of get_settings(), so
-    # the UI shows the canonical aggressive setup even on hosts where
-    # settings.yaml still carries stale pre-aggressive overrides (octoserver
-    # YAML migration is task #48). No DB-driven last_params override — the
-    # form always starts at the canonical live config, never at stale prior
-    # runs. Put DTE is VIX-tiered in live; the US low/mid-VIX tier is 0-3.
-    s = StrategyConfig()
-    r = RiskConfig()
-    default_nlv = 4_000_000
-    # Derive collateral_cap_pct + max_positions from the live NLV ramp (mirrors
-    # risk._effective_total_exposure_pct + scheduler options-count ladder), not
-    # the pre-ramp base. At $4M this lifts cap from 20% → 40%, which is what
-    # the live trader would actually grant a $4M account. Otherwise the engine
-    # would silently bind notional at $4M × 20% × 5x = $4M and flatline.
-    ramp_cap_pct, ramp_max_pos = _nlv_ramp(default_nlv)
-    defaults = {
-        "dte_min": 0,
-        "dte_max": 3,
-        "delta_min": s.delta_min,
-        "delta_max": s.delta_max,
-        "put_min_premium": s.min_premium_put,
-        "cc_dte_min": s.cc_dte_min,
-        "cc_dte_max": s.cc_dte_max,
-        "cc_delta_min": s.cc_delta_min,
-        "cc_delta_max": s.cc_delta_max,
-        "cc_min_premium": s.min_premium,
-        # Account & deployment knobs — large-account stress test ($4M).
-        "start_nlv": default_nlv,
-        "collateral_cap_pct": ramp_cap_pct,
-        # Lowered 2026-05-26 from 4.95 -> 1.0 (see pricing.SHORT_DTE_K docstring).
-        "uplift_k": 1.0,
-        "gap_stress_pct": 0,
-        # Live trades with IBKR portfolio margin → on by default.
-        "margin_on": True,
-        "margin_multiple": 5.0,
-        "max_positions": ramp_max_pos,
-        # Risk gates — aggressive son-mode values.
-        "iv_rank_min": s.iv_rank_min,
-        "vix_halt": r.vix_pause_threshold,
-        # Son-mode 60% margin ceiling.
-        "max_margin_usage_pct": round(r.max_margin_usage * 100, 1),
-    }
+    # First time this config is opened, no run matches the canonical signature.
+    # Per the user's intent ("run it then first time"), auto-launch the sweep so
+    # the cards populate with the current configured triggers. Guarded so it
+    # fires once per signature (service.should_autorun) and never while a sweep
+    # is already running — the page's 8s auto-refresh + running banner surface
+    # progress, and matching rows appear as the sweep completes.
+    if (any(c["run"] is None for c in cards)
+            and not service.is_running()
+            and service.should_autorun(canonical_json)):
+        service.run_all_async(canonical, fetch=not _is_us_rth_now())
 
     return templates.TemplateResponse("marswalk.html", {
         "request": request,
         "cards": cards,
         "defaults": defaults,
+        "active_triggers": _active_triggers(),
         "universe": universe,
         "running": service.is_running(),
         "status": service.status(),
@@ -209,24 +315,23 @@ def marswalk_run(
     iv_rank_min: float = Form(20.0), vix_halt: float = Form(30.0),
     max_margin_usage_pct: float = Form(80.0),
 ):
-    params = Params(
-        dte_min=max(0, dte_min), dte_max=max(dte_min, dte_max),
-        delta_min=max(0.01, delta_min), delta_max=max(delta_min, delta_max),
-        put_min_premium=max(0.0, put_min_premium),
-        cc_dte_min=max(0, cc_dte_min), cc_dte_max=max(cc_dte_min, cc_dte_max),
-        cc_delta_min=max(0.01, cc_delta_min), cc_delta_max=max(cc_delta_min, cc_delta_max),
-        cc_min_premium=max(0.0, cc_min_premium),
-        start_capital=max(1000.0, start_nlv),
-        total_exposure_pct=max(0.01, collateral_cap_pct / 100.0),
-        short_dte_uplift_k=max(0.0, uplift_k),
-        gap_stress=min(0.9, max(0.0, gap_stress_pct / 100.0)),
-        margin_on=bool(margin_on),
-        margin_multiple=max(1.0, min(10.0, margin_multiple)),
-        max_positions=max(1, min(200, max_positions)),
-        iv_rank_min=max(0.0, min(100.0, iv_rank_min)),
-        vix_halt=max(10.0, min(100.0, vix_halt)),
-        max_margin_usage=max(0.05, min(2.0, max_margin_usage_pct / 100.0)),
-    )
+    # Account/DTE/delta knobs come from the submitted form; the detector/strategy
+    # triggers are overlaid from the live config inside _build_params (so a custom
+    # "Run now" still simulates the user's configured triggers).
+    params = _build_params({
+        "dte_min": dte_min, "dte_max": dte_max,
+        "delta_min": delta_min, "delta_max": delta_max,
+        "put_min_premium": put_min_premium,
+        "cc_dte_min": cc_dte_min, "cc_dte_max": cc_dte_max,
+        "cc_delta_min": cc_delta_min, "cc_delta_max": cc_delta_max,
+        "cc_min_premium": cc_min_premium,
+        "start_nlv": start_nlv, "collateral_cap_pct": collateral_cap_pct,
+        "uplift_k": uplift_k, "gap_stress_pct": gap_stress_pct,
+        "margin_on": margin_on, "margin_multiple": margin_multiple,
+        "max_positions": max_positions,
+        "iv_rank_min": iv_rank_min, "vix_halt": vix_halt,
+        "max_margin_usage_pct": max_margin_usage_pct,
+    })
     # Auto-skip IBKR fetch during US RTH — the live trader saturates the
     # portfolio lock and the marswalk fetch otherwise stalls (45s per call ×
     # missing symbols). Off-hours, do the fresh fetch.
