@@ -70,19 +70,47 @@ def _load_run_log() -> dict:
         return {}
 
 
-def _next_first_monday() -> str:
+def _first_monday_of(year: int, month: int):
     from datetime import date, timedelta
+    first = date(year, month, 1)
+    return first + timedelta(days=(7 - first.weekday()) % 7)
+
+
+def _parse_run_date(run_log: dict):
+    # writer format: datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    s = (run_log or {}).get("run_date")
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d %H:%M UTC").date()
+    except Exception:
+        return None
+
+
+def _next_scheduled_run(run_log: dict) -> dict:
+    """Returns {'date': 'June 01, 2026', 'overdue': bool}.
+
+    Shows THIS month's first Monday until a successful run this month;
+    only then rolls to next month's first Monday. An interrupted run (no
+    log written) or an errored run keeps showing this month as pending.
+    """
+    from datetime import date
     today = date.today()
-    for months_ahead in range(0, 3):
-        month = today.month + months_ahead
-        year = today.year + (month - 1) // 12
-        month = ((month - 1) % 12) + 1
-        first = date(year, month, 1)
-        days_until_monday = (7 - first.weekday()) % 7
-        first_monday = first + timedelta(days=days_until_monday)
-        if first_monday > today:
-            return first_monday.strftime("%B %d, %Y")
-    return "Unknown"
+    fm_this = _first_monday_of(today.year, today.month)
+
+    last = _parse_run_date(run_log)
+    completed_this_month = (
+        (run_log or {}).get("status") == "success"
+        and last is not None
+        and last >= fm_this
+    )
+
+    if not completed_this_month:
+        return {"date": fm_this.strftime("%B %d, %Y"), "overdue": today > fm_this}
+
+    ny, nm = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+    fm_next = _first_monday_of(ny, nm)
+    return {"date": fm_next.strftime("%B %d, %Y"), "overdue": False}
 
 
 def _load_universe_counts() -> dict:
@@ -103,7 +131,9 @@ def _load_universe_counts() -> dict:
 @router.get("/screener", response_class=HTMLResponse)
 async def screener_page(request: Request):
     run_log = _load_run_log()
-    next_run = _next_first_monday()
+    _nr = _next_scheduled_run(run_log)
+    next_run = _nr["date"]
+    next_run_overdue = _nr["overdue"]
     universe_counts = _load_universe_counts()
     options_count = 0
     if OPTIONS_UNIVERSE_PATH.exists():
@@ -118,6 +148,7 @@ async def screener_page(request: Request):
         "request": request,
         "run_log": run_log,
         "next_run": next_run,
+        "next_run_overdue": next_run_overdue,
         "universe_counts": universe_counts,
         "options_count": options_count,
         "universe_exists": SCREENED_UNIVERSE_PATH.exists(),
