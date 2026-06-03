@@ -549,6 +549,11 @@ class PortfolioBuyer:
                  drawdown_pct=round(dd * 100, 1), tranches=rstate.tranches_fired,
                  crash_active=crash_active, ranked=len(ranked))
 
+        # Always publish the ranking/signals to the dashboard — even with no deploy budget,
+        # so /watchlist reflects the current universe ranking & intended actions.
+        self._persist_compounder_signals(ranked, targets, held, open_put_syms,
+                                         rank_idx, crash_active, cc)
+
         if budget < cc.min_single_buy:
             log.info("compounder_no_budget_today", budget=round(budget))
             return bought
@@ -604,9 +609,18 @@ class PortfolioBuyer:
                     bought.append(f"{stock.symbol}(P)")
                     spent += brick   # throttle puts by the same daily budget (collateral intent)
 
-        # Persist the full per-name signal table for the Watchlist & Buy-Signals dashboard
+        self._store_state("compounder_last_spent", str(round(spent)))
+        log.info("compounder_scan_completed", actions=len(bought), spent=round(spent), bought=bought)
+        return bought
+
+    def _persist_compounder_signals(self, ranked, targets, held, open_put_syms,
+                                    rank_idx, crash_active, cc):
+        """Write the per-name ranking / targets / intended-action table to PortfolioState
+        for the /watchlist dashboard. Called every scan (even with no deploy budget) so the
+        dashboard always reflects the current universe ranking."""
         try:
             import json as _json
+            from src.portfolio import compounder as cmp
             signals = []
             for r in ranked:
                 tgt = targets.get(r.symbol, 0.0)
@@ -633,10 +647,6 @@ class PortfolioBuyer:
             self._store_state("compounder_signals", _json.dumps(signals))
         except Exception as e:
             log.warning("compounder_signals_persist_failed", error=str(e))
-
-        self._store_state("compounder_last_spent", str(round(spent)))
-        log.info("compounder_scan_completed", actions=len(bought), spent=round(spent), bought=bought)
-        return bought
 
     def _get_market_price(self, symbol: str = "SPY") -> float | None:
         """Latest price for a market gauge (SPY) via the shared IBKR data path."""
