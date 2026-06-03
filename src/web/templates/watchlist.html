@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Watchlist &amp; Buy Signals — Compounder{% endblock %}
+{% block nav_screener %}{% endblock %}
+{% block content %}
+<div class="max-w-[1500px]">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-3">
+        <div>
+            <h1 class="text-xl sm:text-2xl font-bold">🧭 Watchlist &amp; Buy Signals</h1>
+            <p class="text-sm text-gray-500 mt-1">Compounder ranking — 10x potential × momentum, conviction-weighted targets, fair-price accumulation</p>
+        </div>
+        {% if not is_compounder %}
+        <span class="px-3 py-1.5 rounded-full bg-amber-900/40 text-amber-300 text-sm">Strategy = "{{strategy}}" — run the compounder scan to populate signals</span>
+        {% endif %}
+    </div>
+
+    <!-- ═══ Reserve / deployment summary ═══ -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Investable</div>
+            <div class="text-2xl font-bold text-white mt-1">${{"{:,.0f}".format(reserve.investable)}}</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Deployed</div>
+            <div class="text-2xl font-bold text-emerald-400 mt-1">${{"{:,.0f}".format(reserve.deployed)}}</div>
+            <div class="text-xs text-gray-500 mt-1">of ${{"{:,.0f}".format(reserve.live_target)}} live target</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Today's Budget</div>
+            <div class="text-2xl font-bold text-sky-400 mt-1">${{"{:,.0f}".format(reserve.daily_budget)}}</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Mkt Drawdown</div>
+            <div class="text-2xl font-bold mt-1 {% if reserve.drawdown_pct >= 10 %}text-red-400{% else %}text-white{% endif %}">{{"{:.1f}".format(reserve.drawdown_pct)}}%</div>
+            <div class="text-xs text-gray-500 mt-1">from peak ${{"{:,.0f}".format(reserve.reserve_peak)}}</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Crash Reserve</div>
+            <div class="text-2xl font-bold mt-1 {% if reserve.tranches_fired > 0 %}text-amber-300{% else %}text-gray-300{% endif %}">{{reserve.tranches_fired}}/3 fired</div>
+            <div class="text-xs text-gray-500 mt-1">{{"{:.0f}".format(reserve.unlocked_pct)}}% unlocked</div>
+        </div>
+    </div>
+
+    <!-- ═══ Tier summary ═══ -->
+    <div class="grid grid-cols-3 gap-4 mb-6">
+        {% for tier in ["growth","breakthrough","dividend"] %}
+        {% set ts = tier_summary.get(tier) %}
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs uppercase tracking-wider
+                {% if tier=='growth' %}text-sky-400{% elif tier=='breakthrough' %}text-fuchsia-400{% else %}text-emerald-400{% endif %}">{{tier}}</div>
+            {% if ts %}
+            <div class="text-lg font-bold text-white mt-1">{{ts.count}} names</div>
+            <div class="text-xs text-gray-500 mt-1">target ${{"{:,.0f}".format(ts.target)}} · holding ${{"{:,.0f}".format(ts.deployed)}}</div>
+            {% else %}<div class="text-sm text-gray-600 mt-1">—</div>{% endif %}
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- ═══ Signals table ═══ -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+        <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <h2 class="font-semibold">Ranked Universe ({{signals|length}})</h2>
+            <input id="sigFilter" type="text" placeholder="filter symbol…" oninput="filterSig()"
+                   class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm w-40">
+        </div>
+        <div class="overflow-x-auto">
+        <table class="w-full text-sm" id="sigTable">
+            <thead class="text-xs text-gray-500 uppercase bg-gray-950/40">
+                <tr>
+                    <th class="px-3 py-2 text-left">#</th>
+                    <th class="px-3 py-2 text-left">Symbol</th>
+                    <th class="px-3 py-2 text-left">Tier</th>
+                    <th class="px-3 py-2 text-right">Rank</th>
+                    <th class="px-3 py-2 text-right">10x</th>
+                    <th class="px-3 py-2 text-right">Mom %ile</th>
+                    <th class="px-3 py-2 text-right">Price</th>
+                    <th class="px-3 py-2 text-right">Fair-price</th>
+                    <th class="px-3 py-2 text-right">Target</th>
+                    <th class="px-3 py-2 text-right">Holding</th>
+                    <th class="px-3 py-2 text-right">Underwt</th>
+                    <th class="px-3 py-2 text-center">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for s in signals %}
+                <tr class="border-t border-gray-800 hover:bg-gray-800/40 sigrow" data-sym="{{s.symbol|lower}}">
+                    <td class="px-3 py-2 text-gray-500">{{s.rank}}</td>
+                    <td class="px-3 py-2 font-semibold text-white">{{s.symbol}}</td>
+                    <td class="px-3 py-2">
+                        <span class="text-xs px-1.5 py-0.5 rounded
+                          {% if s.tier=='growth' %}bg-sky-900/50 text-sky-300{% elif s.tier=='breakthrough' %}bg-fuchsia-900/50 text-fuchsia-300{% else %}bg-emerald-900/50 text-emerald-300{% endif %}">{{s.tier}}</span>
+                    </td>
+                    <td class="px-3 py-2 text-right font-medium">{{"{:.1f}".format(s.rank_score)}}</td>
+                    <td class="px-3 py-2 text-right text-gray-300">{{"{:.0f}".format(s.s10x)}}</td>
+                    <td class="px-3 py-2 text-right text-gray-300">{{"{:.0f}".format(s.mom_pct)}}</td>
+                    <td class="px-3 py-2 text-right text-gray-300">${{"{:,.2f}".format(s.price)}}</td>
+                    <td class="px-3 py-2 text-right {% if s.attractiveness >= 0 %}text-emerald-400{% else %}text-amber-400{% endif %}">{{"{:+.3f}".format(s.attractiveness)}}</td>
+                    <td class="px-3 py-2 text-right text-gray-200">${{"{:,.0f}".format(s.target)}}</td>
+                    <td class="px-3 py-2 text-right text-gray-400">${{"{:,.0f}".format(s.current)}}</td>
+                    <td class="px-3 py-2 text-right text-gray-400">{{"{:.0f}".format(s.underweight_pct)}}%</td>
+                    <td class="px-3 py-2 text-center">
+                        {% if s.action == 'direct' %}<span class="text-xs px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300">direct buy</span>
+                        {% elif s.action == 'put' %}<span class="text-xs px-2 py-0.5 rounded bg-indigo-900/60 text-indigo-300">sell put</span>
+                        {% elif s.action == 'put_open' %}<span class="text-xs px-2 py-0.5 rounded bg-indigo-900/40 text-indigo-400">put open</span>
+                        {% elif s.action == 'hold' %}<span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400">hold (full)</span>
+                        {% else %}<span class="text-xs text-gray-600">—</span>{% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% if not signals %}
+        <div class="px-4 py-10 text-center text-gray-500">No signals yet — the compounder scan hasn't run, or strategy is "classic".</div>
+        {% endif %}
+    </div>
+    <p class="text-xs text-gray-600 mt-3">Fair-price = blend of distance below 200-day trend and pullback from 52-week high (higher = relatively cheaper). Direct buy fires on cheap/urgent/crash; sell-put when extended (get paid to wait). Targets are conviction-weighted (∝ rank) within the 60/25/15 growth/breakthrough/dividend budgets, capped per name.</p>
+</div>
+<script>
+function filterSig() {
+    const q = document.getElementById('sigFilter').value.toLowerCase();
+    document.querySelectorAll('.sigrow').forEach(r => {
+        r.style.display = r.dataset.sym.includes(q) ? '' : 'none';
+    });
+}
+</script>
+{% endblock %}

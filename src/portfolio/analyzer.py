@@ -85,6 +85,11 @@ class StockAnalysis:
         # Keep sma_200 for backward compatibility (dashboard, put entry)
         self.sma_200: float | None = None
 
+        # 12-1 month relative-strength momentum (return from ~252d ago to ~21d ago,
+        # skipping the last month). Used by the compounder strategy's ranking and the
+        # watchlist dashboard. None when there isn't ~1yr of history.
+        self.momentum_12_1: float | None = None
+
 
 class PortfolioAnalyzer:
     """Analyze stocks for buy opportunities with tier-aware multi-timeframe signals."""
@@ -187,6 +192,12 @@ class PortfolioAnalyzer:
 
             # ── RSI ──
             analysis.rsi_14 = self._calculate_rsi(closes, params["rsi_period"])
+
+            # ── 12-1 month momentum (relative strength) ──
+            # Return from ~252 trading days ago to ~21 days ago (skip the last month
+            # to avoid short-term reversal). Robust long-horizon winner signal.
+            if len(closes) >= 252 and closes[-252] > 0:
+                analysis.momentum_12_1 = closes[-22] / closes[-252] - 1.0
 
             # ── 52-week high/low ──
             recent_252 = min(252, len(bars))

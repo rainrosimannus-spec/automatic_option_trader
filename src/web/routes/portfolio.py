@@ -364,6 +364,18 @@ async def portfolio_page(request: Request):
         "position_cap": position_cap,
         "total_exposure_cap": total_exposure_cap,
         "daily_deployment_cap": daily_deployment_cap,
+        # Compounder strategy reserve state (cards shown only when active)
+        "is_compounder": (_get_state("strategy") == "compounder"),
+        "compounder": {
+            "deployed": float(_get_state("compounder_deployed") or 0),
+            "live_target": float(_get_state("compounder_live_target") or 0),
+            "investable": float(_get_state("compounder_investable") or 0),
+            "daily_budget": float(_get_state("compounder_daily_budget") or 0),
+            "drawdown_pct": float(_get_state("compounder_drawdown_pct") or 0),
+            "tranches_fired": int(float(_get_state("compounder_tranches_fired") or 0)),
+            "unlocked_pct": float(_get_state("compounder_reserve_unlocked_pct") or 0),
+            "reserve_peak": float(_get_state("compounder_reserve_peak") or 0),
+        },
     })
 
 

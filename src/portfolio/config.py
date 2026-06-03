@@ -34,8 +34,35 @@ class PutEntryConfig(BaseModel):
     auto_resell: bool = True
 
 
+class CompounderConfig(BaseModel):
+    """Knobs for the long-horizon 'compounder accumulation' strategy."""
+    # Ranking: 10x fundamental score blended with 12-1 momentum percentile
+    rank_fund_weight: float = 0.70
+    rank_mom_weight: float = 0.30
+    # Target weights
+    per_name_cap_pct: float = 0.06     # cap any single name at 6% of the portfolio
+    cash_buffer_pct: float = 0.03      # keep ~3% uninvested operational cash
+    # Base + crash reserve deployment
+    base_pct: float = 0.65             # deploy 65% as the steadily-DCA'd base
+    dca_horizon_days: int = 130        # base DCA pace ≈ 6 months of trading days
+    drawdown_tranches: list[float] = [0.10, 0.20, 0.30]  # reserve fires at these SPY drawdowns
+    backstop_start_days: int = 365     # if no crash within ~1yr, start bleeding the reserve in
+    backstop_bleed_days: int = 365     # ...fully deployed over the following ~1yr (never idle forever)
+    # Entry-mode intensity thresholds
+    direct_threshold: float = 0.0      # attractiveness >= this -> direct buy, else put-sell
+    urgent_underweight: float = 0.5    # if >=50% below target, buy directly regardless of price
+    put_target_discount_pct: float = 5.0  # CSP strike ~ this far below price when waiting
+    # Per-trade sizing
+    max_single_buy: float = 100000.0
+    min_single_buy: float = 5000.0
+
+
 class PortfolioConfig(BaseModel):
     enabled: bool = True
+
+    # Stock-formation strategy: "compounder" (10x accumulation) or "classic" (legacy dip-buyer)
+    strategy: str = "compounder"
+    compounder: CompounderConfig = CompounderConfig()
 
     # Safety mode: suggest trades instead of placing orders
     # When true, all trades go to Approve/Reject queue on dashboard
