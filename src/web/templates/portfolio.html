@@ -619,6 +619,7 @@ function syncInjections() {
                         <th class="px-3 py-2 text-right">Target</th>
                         <th class="px-3 py-2 text-right">Holding</th>
                         <th class="px-3 py-2">Action</th>
+                        <th class="px-3 py-2">Signal</th>
                         <th class="px-3 py-2">Risks</th>
                         <th class="px-3 py-2">Updated</th>
                     </tr>
@@ -640,7 +641,7 @@ function syncInjections() {
                         </td>
                         <td class="px-3 py-2 text-right font-medium text-white">{{"{:.1f}".format(s.rank_score)}}</td>
                         <td class="px-3 py-2 text-right text-gray-300">{{"{:.0f}".format(s.s10x)}}</td>
-                        <td class="px-3 py-2 text-right text-gray-300">{{"{:.0f}".format(s.mom_pct)}}</td>
+                        <td class="px-3 py-2 text-right text-gray-300">{% if s.mom_pct is not none %}{{"{:.0f}".format(s.mom_pct)}}{% else %}<span class="text-gray-600">—</span>{% endif %}</td>
                         <td class="px-3 py-2 text-right text-white">{{"{:.2f}".format(s.price)}}</td>
                         <td class="px-3 py-2 text-right {% if s.attractiveness >= 0 %}text-emerald-400{% else %}text-amber-400{% endif %}">{{"{:+.3f}".format(s.attractiveness)}}</td>
                         <td class="px-3 py-2 text-right text-gray-200">${{"{:,.0f}".format(s.target)}}</td>
@@ -651,6 +652,9 @@ function syncInjections() {
                             {% elif s.action == 'put_open' %}<span class="px-2 py-0.5 rounded text-xs bg-indigo-900/40 text-indigo-400">put open</span>
                             {% elif s.action == 'hold' %}<span class="px-2 py-0.5 rounded text-xs bg-gray-800 text-gray-400">hold</span>
                             {% else %}<span class="text-xs text-gray-600">—</span>{% endif %}
+                        </td>
+                        <td class="px-3 py-2">
+                            {% if w and w.signal_type %}<span class="text-xs text-gray-400">{{w.signal_type}}</span>{% else %}<span class="text-xs text-gray-600">—</span>{% endif %}
                         </td>
                         <td class="px-3 py-2">
                             {% set penalty = (w.risk_total_penalty if w else 0) or 0 %}

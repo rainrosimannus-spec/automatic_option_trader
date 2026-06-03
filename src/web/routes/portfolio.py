@@ -324,11 +324,25 @@ async def portfolio_page(request: Request):
     except Exception:
         pass
 
-    import json as _json
-    try:
-        _compounder_signals = _json.loads(_get_state("compounder_signals") or "[]")
-    except Exception:
-        _compounder_signals = []
+    # Compounder signal table — computed live from the (freshly-priced) watchlist rows so the
+    # full ranked universe always shows, independent of whether a trading scan ran.
+    _compounder_signals = []
+    if _get_state("strategy") == "compounder":
+        try:
+            from src.portfolio import compounder as _cmp
+            from src.core.config import get_settings as _gs
+            _pcfg = _gs().portfolio
+            _cc = _pcfg.compounder
+            _tier_alloc = {
+                "breakthrough": _pcfg.tier_allocation.breakthrough,
+                "dividend": _pcfg.tier_allocation.dividend,
+                "growth": _pcfg.tier_allocation.growth,
+            }
+            _held = {h.symbol: (h.market_value or h.total_invested or 0) for h in holdings}
+            _compounder_signals = _cmp.build_signals_from_watchlist(
+                watchlist, _held, portfolio_nlv or 0, _cc, _tier_alloc)
+        except Exception as _e:
+            log.warning("compounder_dashboard_signals_failed", error=str(_e))
 
     return templates.TemplateResponse("portfolio.html", {
         "request": request,

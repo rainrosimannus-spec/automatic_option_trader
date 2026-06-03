@@ -1,20 +1,18 @@
 """
 Watchlist & Buy-Signals route — the compounder strategy's live view.
 
-Reads the per-name signal table and reserve state that PortfolioBuyer.run_compounder_scan
-persists to PortfolioState (keys: compounder_signals, compounder_*). Pure read of the DB —
-no IBKR needed to render (it shows the last scan's ranking/targets/actions).
+Computes the ranked universe directly from the watchlist DB rows (fundamental scores +
+freshly-updated price/sma/high/momentum) via the real compounder functions, so the full
+universe always shows — independent of whether a trading scan has run. Pure DB read.
 """
 from __future__ import annotations
-
-import json
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from src.web.template_engine import templates
 from src.core.database import get_db
-from src.portfolio.models import PortfolioState
+from src.portfolio.models import PortfolioState, PortfolioWatchlist, PortfolioHolding
 from src.core.logger import get_logger
 
 log = get_logger(__name__)
@@ -40,16 +38,33 @@ def _num(key: str, default: float = 0.0) -> float:
 
 @router.get("/watchlist", response_class=HTMLResponse)
 async def watchlist_page(request: Request):
-    try:
-        signals = json.loads(_state("compounder_signals") or "[]")
-    except Exception:
-        signals = []
+    from src.portfolio import compounder as cmp
+    from src.core.config import get_settings
 
-    # Per-tier summary (count + intended target $)
+    pcfg = get_settings().portfolio
+    cc = pcfg.compounder
+    tier_alloc = {
+        "breakthrough": pcfg.tier_allocation.breakthrough,
+        "dividend": pcfg.tier_allocation.dividend,
+        "growth": pcfg.tier_allocation.growth,
+    }
+
+    signals, wl_map = [], {}
+    try:
+        with get_db() as db:
+            rows = db.query(PortfolioWatchlist).all()
+            holds = db.query(PortfolioHolding).filter(PortfolioHolding.shares > 0).all()
+        wl_map = {w.symbol: w for w in rows}
+        held = {h.symbol: (h.market_value or h.total_invested or 0) for h in holds}
+        inv = _num("compounder_investable")
+        nlv = inv / (1 - cc.cash_buffer_pct) if inv > 0 else (sum(held.values()) or 1.0)
+        signals = cmp.build_signals_from_watchlist(rows, held, nlv, cc, tier_alloc)
+    except Exception as e:
+        log.warning("watchlist_signals_failed", error=str(e))
+
     tier_summary: dict[str, dict] = {}
     for s in signals:
-        t = s.get("tier", "growth")
-        d = tier_summary.setdefault(t, {"count": 0, "target": 0.0, "deployed": 0.0})
+        d = tier_summary.setdefault(s.get("tier", "growth"), {"count": 0, "target": 0.0, "deployed": 0.0})
         d["count"] += 1
         d["target"] += s.get("target", 0) or 0
         d["deployed"] += s.get("current", 0) or 0
@@ -69,6 +84,7 @@ async def watchlist_page(request: Request):
     return templates.TemplateResponse("watchlist.html", {
         "request": request,
         "signals": signals,
+        "wl_map": wl_map,
         "tier_summary": tier_summary,
         "reserve": reserve,
         "strategy": strategy,

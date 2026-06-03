@@ -206,6 +206,59 @@ def choose_entry_mode(attractiveness: float, underweight_frac: float, crash_acti
 
 
 # ── 5. Daily deploy budget (base DCA + crash dump) ───────────
+def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: dict) -> list[dict]:
+    """Compute the dashboard signal table directly from watchlist DB rows (each with the
+    fundamental scores + freshly-updated current_price/sma_200/high_52w/momentum_12_1).
+    This makes the /watchlist + Portfolio views show the FULL ranked universe every page
+    load, independent of whether a trading scan has persisted signals. `held` = symbol→
+    current market value. `cc` = CompounderConfig; `tier_alloc` = {tier: budget fraction}."""
+    names = []
+    for w in rows:
+        price = getattr(w, "current_price", None)
+        if not price or price <= 0:
+            continue
+        tier = getattr(w, "tier", "growth") or "growth"
+        names.append(NameInput(
+            symbol=w.symbol, tier=(tier if tier in tier_alloc else "growth"),
+            growth=getattr(w, "growth_score", 0) or 0.0,
+            forward_growth=getattr(w, "forward_growth_score", 0) or 0.0,
+            quality=getattr(w, "quality_score", 0) or 0.0,
+            valuation=getattr(w, "valuation_score", 0) or 0.0,
+            dividend_total_return=getattr(w, "dividend_total_return_score", 0) or 0.0,
+            risk_penalty=getattr(w, "risk_total_penalty", 0) or 0.0,
+            price=price, sma200=getattr(w, "sma_200", None),
+            high_52w=getattr(w, "high_52w", None),
+            momentum_12_1=getattr(w, "momentum_12_1", None),
+        ))
+    mom_known = {getattr(w, "symbol", None) for w in rows
+                 if getattr(w, "momentum_12_1", None) is not None}
+    ranked = rank_universe(names, cc.rank_fund_weight, cc.rank_mom_weight)
+    rank_idx = {r.symbol: i + 1 for i, r in enumerate(ranked)}
+    investable = max(0.0, nlv) * (1 - cc.cash_buffer_pct)
+    targets = target_weights(ranked, tier_alloc, investable, cc.per_name_cap_pct)
+    out = []
+    for r in ranked:
+        tgt = targets.get(r.symbol, 0.0)
+        cur = held.get(r.symbol, 0.0)
+        att = fair_price_attractiveness(r.price, r.sma200, r.high_52w)
+        uw = (tgt - cur) / tgt if tgt > 0 else 0.0
+        if tgt <= 0:
+            action = "—"
+        elif cur >= tgt * 0.98:
+            action = "hold"
+        else:
+            action = choose_entry_mode(att, uw, False, cc.direct_threshold, cc.urgent_underweight)
+        out.append({
+            "symbol": r.symbol, "tier": r.tier, "rank": rank_idx[r.symbol],
+            "rank_score": round(r.rank_score, 1), "s10x": round(r.s10x, 1),
+            "mom_pct": (round(r.momentum_pct * 100, 0) if r.symbol in mom_known else None),
+            "price": round(r.price, 2), "target": round(tgt), "current": round(cur),
+            "underweight_pct": round(uw * 100, 0), "attractiveness": round(att, 3),
+            "action": action,
+        })
+    return out
+
+
 def daily_deploy_budget(investable: float, base_pct: float, dca_horizon_days: int,
                         unlocked_fraction: float, deployed: float, target_total: float,
                         crash_active: bool, free_cash: float) -> float:

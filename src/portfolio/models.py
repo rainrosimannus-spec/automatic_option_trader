@@ -117,6 +117,8 @@ class PortfolioWatchlist(Base):
     sma_200: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     discount_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     rsi_14: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    high_52w: Mapped[Optional[float]] = mapped_column(Float, nullable=True)            # for compounder fair-price (52w pullback)
+    momentum_12_1: Mapped[Optional[float]] = mapped_column(Float, nullable=True)       # 12-1 month relative strength
     buy_signal: Mapped[bool] = mapped_column(Boolean, default=False)
     signal_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 

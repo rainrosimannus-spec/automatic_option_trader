@@ -78,10 +78,14 @@
                     <th class="px-3 py-2 text-right">Holding</th>
                     <th class="px-3 py-2 text-right">Underwt</th>
                     <th class="px-3 py-2 text-center">Action</th>
+                    <th class="px-3 py-2">Signal</th>
+                    <th class="px-3 py-2">Risks</th>
+                    <th class="px-3 py-2">Updated</th>
                 </tr>
             </thead>
             <tbody>
             {% for s in signals %}
+                {% set w = wl_map.get(s.symbol) %}
                 <tr class="border-t border-gray-800 hover:bg-gray-800/40 sigrow" data-sym="{{s.symbol|lower}}">
                     <td class="px-3 py-2 text-gray-500">{{s.rank}}</td>
                     <td class="px-3 py-2 font-semibold text-white">{{s.symbol}}</td>
@@ -91,7 +95,7 @@
                     </td>
                     <td class="px-3 py-2 text-right font-medium">{{"{:.1f}".format(s.rank_score)}}</td>
                     <td class="px-3 py-2 text-right text-gray-300">{{"{:.0f}".format(s.s10x)}}</td>
-                    <td class="px-3 py-2 text-right text-gray-300">{{"{:.0f}".format(s.mom_pct)}}</td>
+                    <td class="px-3 py-2 text-right text-gray-300">{% if s.mom_pct is not none %}{{"{:.0f}".format(s.mom_pct)}}{% else %}<span class="text-gray-600">—</span>{% endif %}</td>
                     <td class="px-3 py-2 text-right text-gray-300">${{"{:,.2f}".format(s.price)}}</td>
                     <td class="px-3 py-2 text-right {% if s.attractiveness >= 0 %}text-emerald-400{% else %}text-amber-400{% endif %}">{{"{:+.3f}".format(s.attractiveness)}}</td>
                     <td class="px-3 py-2 text-right text-gray-200">${{"{:,.0f}".format(s.target)}}</td>
@@ -104,6 +108,13 @@
                         {% elif s.action == 'hold' %}<span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400">hold (full)</span>
                         {% else %}<span class="text-xs text-gray-600">—</span>{% endif %}
                     </td>
+                    <td class="px-3 py-2">{% if w and w.signal_type %}<span class="text-xs text-gray-400">{{w.signal_type}}</span>{% else %}<span class="text-xs text-gray-600">—</span>{% endif %}</td>
+                    <td class="px-3 py-2">
+                        {% set penalty = (w.risk_total_penalty if w else 0) or 0 %}
+                        {% if penalty > 0 %}<span class="text-xs {% if penalty >= 20 %}text-red-400{% elif penalty >= 10 %}text-yellow-400{% else %}text-gray-400{% endif %}">-{{penalty|int}}</span>
+                        {% else %}<span class="text-xs text-gray-700">—</span>{% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-xs text-gray-500">{{w.updated_at.strftime('%m-%d %H:%M') if w and w.updated_at else ''}}</td>
                 </tr>
             {% endfor %}
             </tbody>

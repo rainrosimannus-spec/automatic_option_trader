@@ -1551,6 +1551,8 @@ class PortfolioBuyer:
                 entry.sma_200 = analysis.sma_200
                 entry.discount_pct = analysis.discount_pct
                 entry.rsi_14 = analysis.rsi_14
+                entry.high_52w = analysis.high_52w
+                entry.momentum_12_1 = getattr(analysis, "momentum_12_1", None)
                 entry.buy_signal = analysis.buy_signal
                 entry.signal_type = analysis.signal_type if analysis.buy_signal else None
                 entry.raw_score = round(analysis.composite_score, 1)
