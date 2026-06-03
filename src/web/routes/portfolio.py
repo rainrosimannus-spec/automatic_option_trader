@@ -324,6 +324,12 @@ async def portfolio_page(request: Request):
     except Exception:
         pass
 
+    import json as _json
+    try:
+        _compounder_signals = _json.loads(_get_state("compounder_signals") or "[]")
+    except Exception:
+        _compounder_signals = []
+
     return templates.TemplateResponse("portfolio.html", {
         "request": request,
         "holdings": holdings,
@@ -376,6 +382,9 @@ async def portfolio_page(request: Request):
             "unlocked_pct": float(_get_state("compounder_reserve_unlocked_pct") or 0),
             "reserve_peak": float(_get_state("compounder_reserve_peak") or 0),
         },
+        "compounder_signals_list": _compounder_signals,
+        "wl_map": {w.symbol: w for w in watchlist},
+        "compounder_active_signals": sum(1 for s in _compounder_signals if s.get("action") in ("direct", "put")),
     })
 
 

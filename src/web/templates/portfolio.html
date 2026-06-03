@@ -599,10 +599,73 @@ function syncInjections() {
         <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">
             Watchlist & Buy Signals
             <span class="text-xs text-emerald-400 ml-2">
-                {{watchlist|selectattr('buy_signal')|list|length}} active signals
+                {% if is_compounder %}{{compounder_active_signals}} actionable · {{compounder_signals_list|length}} ranked{% else %}{{watchlist|selectattr('buy_signal')|list|length}} active signals{% endif %}
             </span>
+            <a href="/watchlist" class="text-xs text-indigo-400 ml-2 hover:text-indigo-300">full view →</a>
         </h2>
-        {% if watchlist %}
+        {% if is_compounder and compounder_signals_list %}
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+                <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
+                    <tr>
+                        <th class="px-3 py-2">#</th>
+                        <th class="px-3 py-2">Stock</th>
+                        <th class="px-3 py-2">Tier</th>
+                        <th class="px-3 py-2 text-right">Rank</th>
+                        <th class="px-3 py-2 text-right">10x</th>
+                        <th class="px-3 py-2 text-right">Mom %ile</th>
+                        <th class="px-3 py-2 text-right">Price</th>
+                        <th class="px-3 py-2 text-right">Fair-price</th>
+                        <th class="px-3 py-2 text-right">Target</th>
+                        <th class="px-3 py-2 text-right">Holding</th>
+                        <th class="px-3 py-2">Action</th>
+                        <th class="px-3 py-2">Risks</th>
+                        <th class="px-3 py-2">Updated</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-800/50">
+                    {% for s in compounder_signals_list %}
+                    {% set w = wl_map.get(s.symbol) %}
+                    <tr class="hover:bg-gray-800/50">
+                        <td class="px-3 py-2 text-gray-500">{{s.rank}}</td>
+                        <td class="px-3 py-2">
+                            <div class="font-medium text-white">{{s.symbol}}</div>
+                            {% if w %}<div class="text-xs text-gray-500">{{w.name[:24]}} · {{w.exchange}}</div>{% endif %}
+                        </td>
+                        <td class="px-3 py-2">
+                            <span class="px-1.5 py-0.5 rounded text-xs
+                                {% if s.tier == 'dividend' %}bg-blue-900/50 text-blue-300
+                                {% elif s.tier == 'breakthrough' %}bg-purple-900/50 text-purple-300
+                                {% else %}bg-emerald-900/50 text-emerald-300{% endif %}">{{s.tier}}</span>
+                        </td>
+                        <td class="px-3 py-2 text-right font-medium text-white">{{"{:.1f}".format(s.rank_score)}}</td>
+                        <td class="px-3 py-2 text-right text-gray-300">{{"{:.0f}".format(s.s10x)}}</td>
+                        <td class="px-3 py-2 text-right text-gray-300">{{"{:.0f}".format(s.mom_pct)}}</td>
+                        <td class="px-3 py-2 text-right text-white">{{"{:.2f}".format(s.price)}}</td>
+                        <td class="px-3 py-2 text-right {% if s.attractiveness >= 0 %}text-emerald-400{% else %}text-amber-400{% endif %}">{{"{:+.3f}".format(s.attractiveness)}}</td>
+                        <td class="px-3 py-2 text-right text-gray-200">${{"{:,.0f}".format(s.target)}}</td>
+                        <td class="px-3 py-2 text-right text-gray-400">${{"{:,.0f}".format(s.current)}}</td>
+                        <td class="px-3 py-2">
+                            {% if s.action == 'direct' %}<span class="px-2 py-0.5 rounded text-xs bg-emerald-900/60 text-emerald-300">direct buy</span>
+                            {% elif s.action == 'put' %}<span class="px-2 py-0.5 rounded text-xs bg-indigo-900/60 text-indigo-300">sell put</span>
+                            {% elif s.action == 'put_open' %}<span class="px-2 py-0.5 rounded text-xs bg-indigo-900/40 text-indigo-400">put open</span>
+                            {% elif s.action == 'hold' %}<span class="px-2 py-0.5 rounded text-xs bg-gray-800 text-gray-400">hold</span>
+                            {% else %}<span class="text-xs text-gray-600">—</span>{% endif %}
+                        </td>
+                        <td class="px-3 py-2">
+                            {% set penalty = (w.risk_total_penalty if w else 0) or 0 %}
+                            {% if penalty > 0 %}
+                            <span class="text-xs {% if penalty >= 20 %}text-red-400{% elif penalty >= 10 %}text-yellow-400{% else %}text-gray-400{% endif %}"
+                                  title="{% if w %}AI={{w.risk_ai_disruption}} Reg={{w.risk_regulatory}} Geo={{w.risk_geopolitical}} Prod={{w.risk_single_product}} Profit={{w.risk_profitability}}{% endif %} | -{{penalty}}">-{{penalty|int}}</span>
+                            {% else %}<span class="text-xs text-gray-700">—</span>{% endif %}
+                        </td>
+                        <td class="px-3 py-2 text-xs text-gray-500">{{w.updated_at.strftime('%m-%d %H:%M') if w and w.updated_at else ''}}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% elif watchlist %}
         <div class="overflow-x-auto">
             <table class="w-full text-left text-sm">
                 <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
