@@ -14,7 +14,15 @@
     </div>
 
     <!-- ═══ Reserve / deployment summary ═══ -->
-    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+    {% set slots_filled = slots_filled|default(0) %}
+    {% set slots_allowed = slots_allowed|default(0) %}
+    {% set slot_pct = (slots_filled / slots_allowed * 100) if slots_allowed > 0 else 0 %}
+    <div class="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Slots Filled</div>
+            <div class="text-2xl font-bold mt-1 {% if slot_pct >= 80 %}text-emerald-400{% elif slot_pct >= 40 %}text-sky-400{% else %}text-amber-300{% endif %}">{{slots_filled}}/{{slots_allowed}}</div>
+            <div class="text-xs text-gray-500 mt-1">{{"{:.0f}".format(slot_pct)}}% of target names held</div>
+        </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Investable</div>
             <div class="text-2xl font-bold text-white mt-1">${{"{:,.0f}".format(reserve.investable)}}</div>

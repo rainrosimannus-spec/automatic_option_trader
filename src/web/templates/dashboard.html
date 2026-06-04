@@ -283,6 +283,31 @@
         </div>
         <div class="text-xs text-gray-500">Max 10 new puts per day</div>
     </div>
+
+    <!-- Position Slots (NLV-scaled cap) -->
+    {% set slots_used = slots_used|default(0) %}
+    {% set slots_max = slots_max|default(0) %}
+    {% set slots_pct = (slots_used / slots_max * 100) if slots_max > 0 else 0 %}
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Position Slots</span>
+            <span class="text-xs px-2 py-0.5 rounded-full
+                {% if slots_used >= slots_max %}bg-red-900/60 text-red-300
+                {% elif slots_pct >= 80 %}bg-amber-900/60 text-amber-300
+                {% else %}bg-gray-800 text-gray-400{% endif %}">
+                {{ slots_used }} / {{ slots_max }}
+            </span>
+        </div>
+        <div class="w-full bg-gray-800 rounded-full h-3 mt-3 mb-2">
+            <div class="h-3 rounded-full transition-all duration-500
+                {% if slots_used >= slots_max %}bg-red-500
+                {% elif slots_pct >= 80 %}bg-amber-500
+                {% else %}bg-emerald-500{% endif %}"
+                style="width: {{ slots_pct if slots_pct <= 100 else 100 | int }}%">
+            </div>
+        </div>
+        <div class="text-xs text-gray-500">Short puts + stock · cap scales with NLV (${{ "{:,.0f}".format(net_liquidation) }})</div>
+    </div>
 </div>
 
 <!-- ═══ Stats Cards ═══ -->

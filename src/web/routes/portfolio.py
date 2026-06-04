@@ -399,6 +399,9 @@ async def portfolio_page(request: Request):
         "compounder_signals_list": _compounder_signals,
         "wl_map": {w.symbol: w for w in watchlist},
         "compounder_active_signals": sum(1 for s in _compounder_signals if s.get("action") in ("direct", "put")),
+        # Slots = target names already held / total target names (accumulation progress)
+        "compounder_slots_allowed": sum(1 for s in _compounder_signals if (s.get("target") or 0) > 0),
+        "compounder_slots_filled": sum(1 for s in _compounder_signals if (s.get("target") or 0) > 0 and (s.get("current") or 0) > 0),
     })
 
 

@@ -81,6 +81,9 @@ async def watchlist_page(request: Request):
     }
     strategy = _state("strategy") or "classic"
 
+    slots_allowed = sum(1 for s in signals if (s.get("target") or 0) > 0)
+    slots_filled = sum(1 for s in signals if (s.get("target") or 0) > 0 and (s.get("current") or 0) > 0)
+
     return templates.TemplateResponse("watchlist.html", {
         "request": request,
         "signals": signals,
@@ -89,4 +92,6 @@ async def watchlist_page(request: Request):
         "reserve": reserve,
         "strategy": strategy,
         "is_compounder": strategy == "compounder",
+        "slots_filled": slots_filled,
+        "slots_allowed": slots_allowed,
     })
