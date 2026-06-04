@@ -55,9 +55,9 @@ class CompounderConfig(BaseModel):
     tier_dividend: float = 0.05
     # Base + crash reserve deployment — deploy the bulk within ~1 trading month, keep a small
     # crash hedge that bleeds in fast if no drawdown materializes.
-    base_pct: float = 0.85             # deploy 85% as the fast-DCA'd base
+    base_pct: float = 0.80             # deploy 80% as the fast-DCA'd base
     dca_horizon_days: int = 21         # base fully deployed over ≈1 month of trading days
-    drawdown_tranches: list[float] = [0.10, 0.20, 0.30]  # 15% reserve fires at these SPY drawdowns
+    drawdown_tranches: list[float] = [0.10, 0.20, 0.30]  # 20% reserve fires at these SPY drawdowns
     backstop_start_days: int = 90      # if no crash within ~3mo, start bleeding the reserve in
     backstop_bleed_days: int = 180     # ...fully deployed over the following ~6mo (never idle long)
     # Entry-mode intensity thresholds
