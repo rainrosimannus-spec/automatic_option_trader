@@ -512,16 +512,20 @@ class PortfolioBuyer:
 
         ranked = cmp.rank_universe(names, cc.rank_fund_weight, cc.rank_mom_weight)
         rank_idx = {r.symbol: i + 1 for i, r in enumerate(ranked)}
+        leaders = cmp.leader_symbols(ranked, cc.leader_top_frac)
 
-        # Targets sized to base + currently-unlocked reserve (full base always live)
+        # Targets sized to base + currently-unlocked reserve (full base always live).
+        # Compounder uses its own tier budgets (cc.tier_*) so the universe screener / classic
+        # strategy aren't affected; leaders carry the higher cap.
         investable = nlv * (1 - cc.cash_buffer_pct)
         live_invest = investable * (cc.base_pct + (1 - cc.base_pct) * unlocked)
         tier_budgets = {
-            "breakthrough": self.cfg.tier_allocation.breakthrough,
-            "dividend": self.cfg.tier_allocation.dividend,
-            "growth": self.cfg.tier_allocation.growth,
+            "breakthrough": cc.tier_breakthrough,
+            "dividend": cc.tier_dividend,
+            "growth": cc.tier_growth,
         }
-        targets = cmp.target_weights(ranked, tier_budgets, live_invest, cc.per_name_cap_pct)
+        targets = cmp.target_weights(ranked, tier_budgets, live_invest, cc.per_name_cap_pct,
+                                     leader_syms=leaders, leader_cap_pct=cc.leader_cap_pct)
 
         held = self._get_holdings_map()           # symbol -> market value
         deployed = sum(held.values())
@@ -552,7 +556,7 @@ class PortfolioBuyer:
         # Always publish the ranking/signals to the dashboard — even with no deploy budget,
         # so /watchlist reflects the current universe ranking & intended actions.
         self._persist_compounder_signals(ranked, targets, held, open_put_syms,
-                                         rank_idx, crash_active, cc)
+                                         rank_idx, crash_active, cc, leaders)
 
         if budget < cc.min_single_buy:
             log.info("compounder_no_budget_today", budget=round(budget))
@@ -584,7 +588,8 @@ class PortfolioBuyer:
                 continue
             idx = rank_idx.get(r.symbol, 0)
             mode = cmp.choose_entry_mode(attractiveness, uw, crash_active,
-                                         cc.direct_threshold, cc.urgent_underweight)
+                                         cc.direct_threshold, cc.urgent_underweight,
+                                         is_leader=(r.symbol in leaders))
             a.signal_type = f"compounder_{mode}"
             if mode == "direct":
                 rat = (
@@ -592,6 +597,7 @@ class PortfolioBuyer:
                     f"rank {r.rank_score:.0f}). Direct buy ${brick:,.0f} toward target ${tgt:,.0f} "
                     f"(now ${cur:,.0f}, {uw * 100:.0f}% underweight). Price ${r.price:.2f} "
                     f"{'cheap' if attractiveness >= 0 else 'extended'} vs trend"
+                    f"{'; LEADER — always direct' if r.symbol in leaders else ''}"
                     f"{'; CRASH tranche active' if crash_active else ''}."
                 )
                 if self._execute_buy(stock, a, brick, rank=idx, rank_score=r.rank_score, rationale=rat):
@@ -614,13 +620,14 @@ class PortfolioBuyer:
         return bought
 
     def _persist_compounder_signals(self, ranked, targets, held, open_put_syms,
-                                    rank_idx, crash_active, cc):
+                                    rank_idx, crash_active, cc, leaders=None):
         """Write the per-name ranking / targets / intended-action table to PortfolioState
         for the /watchlist dashboard. Called every scan (even with no deploy budget) so the
         dashboard always reflects the current universe ranking."""
         try:
             import json as _json
             from src.portfolio import compounder as cmp
+            leaders = leaders or set()
             signals = []
             for r in ranked:
                 tgt = targets.get(r.symbol, 0.0)
@@ -635,7 +642,8 @@ class PortfolioBuyer:
                     action = "hold"
                 else:
                     action = cmp.choose_entry_mode(attractiveness, uw, crash_active,
-                                                   cc.direct_threshold, cc.urgent_underweight)
+                                                   cc.direct_threshold, cc.urgent_underweight,
+                                                   is_leader=(r.symbol in leaders))
                 signals.append({
                     "symbol": r.symbol, "tier": r.tier, "rank": rank_idx.get(r.symbol, 0),
                     "rank_score": round(r.rank_score, 1), "s10x": round(r.s10x, 1),

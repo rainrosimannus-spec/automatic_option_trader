@@ -40,14 +40,26 @@ class CompounderConfig(BaseModel):
     rank_fund_weight: float = 0.70
     rank_mom_weight: float = 0.30
     # Target weights
-    per_name_cap_pct: float = 0.06     # cap any single name at 6% of the portfolio
+    per_name_cap_pct: float = 0.06     # cap a normal name at 6% of the portfolio
     cash_buffer_pct: float = 0.03      # keep ~3% uninvested operational cash
-    # Base + crash reserve deployment
-    base_pct: float = 0.65             # deploy 65% as the steadily-DCA'd base
-    dca_horizon_days: int = 130        # base DCA pace ≈ 6 months of trading days
-    drawdown_tranches: list[float] = [0.10, 0.20, 0.30]  # reserve fires at these SPY drawdowns
-    backstop_start_days: int = 365     # if no crash within ~1yr, start bleeding the reserve in
-    backstop_bleed_days: int = 365     # ...fully deployed over the following ~1yr (never idle forever)
+    # Conviction: the top fraction of the ranked universe are "leaders" — they get a higher
+    # per-name cap AND are always bought directly (never routed to put-selling), so the engine
+    # never under-accumulates or caps the upside of the names most likely to deliver the 10x.
+    leader_top_frac: float = 0.20      # top 20% of the ranked universe = leaders
+    leader_cap_pct: float = 0.10       # leaders may start at up to 10% of the portfolio
+    # Tier budgets for the compounder (kept separate from the global TierAllocation so the
+    # universe screener / classic strategy are untouched). Trimmed dividend → growth/breakthrough
+    # to lean into the 10x engine; must sum to 1.0.
+    tier_growth: float = 0.65
+    tier_breakthrough: float = 0.30
+    tier_dividend: float = 0.05
+    # Base + crash reserve deployment — deploy the bulk within ~1 trading month, keep a small
+    # crash hedge that bleeds in fast if no drawdown materializes.
+    base_pct: float = 0.85             # deploy 85% as the fast-DCA'd base
+    dca_horizon_days: int = 21         # base fully deployed over ≈1 month of trading days
+    drawdown_tranches: list[float] = [0.10, 0.20, 0.30]  # 15% reserve fires at these SPY drawdowns
+    backstop_start_days: int = 90      # if no crash within ~3mo, start bleeding the reserve in
+    backstop_bleed_days: int = 180     # ...fully deployed over the following ~6mo (never idle long)
     # Entry-mode intensity thresholds
     direct_threshold: float = 0.0      # attractiveness >= this -> direct buy, else put-sell
     urgent_underweight: float = 0.5    # if >=50% below target, buy directly regardless of price

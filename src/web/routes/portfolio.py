@@ -334,9 +334,9 @@ async def portfolio_page(request: Request):
             _pcfg = _gs().portfolio
             _cc = _pcfg.compounder
             _tier_alloc = {
-                "breakthrough": _pcfg.tier_allocation.breakthrough,
-                "dividend": _pcfg.tier_allocation.dividend,
-                "growth": _pcfg.tier_allocation.growth,
+                "breakthrough": _cc.tier_breakthrough,
+                "dividend": _cc.tier_dividend,
+                "growth": _cc.tier_growth,
             }
             _held = {h.symbol: (h.market_value or h.total_invested or 0) for h in holdings}
             _compounder_signals = _cmp.build_signals_from_watchlist(

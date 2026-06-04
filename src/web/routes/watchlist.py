@@ -44,9 +44,9 @@ async def watchlist_page(request: Request):
     pcfg = get_settings().portfolio
     cc = pcfg.compounder
     tier_alloc = {
-        "breakthrough": pcfg.tier_allocation.breakthrough,
-        "dividend": pcfg.tier_allocation.dividend,
-        "growth": pcfg.tier_allocation.growth,
+        "breakthrough": cc.tier_breakthrough,
+        "dividend": cc.tier_dividend,
+        "growth": cc.tier_growth,
     }
 
     signals, wl_map = [], {}
