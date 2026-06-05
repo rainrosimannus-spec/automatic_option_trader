@@ -67,6 +67,19 @@ class CompounderConfig(BaseModel):
     # Per-trade sizing
     max_single_buy: float = 100000.0
     min_single_buy: float = 5000.0
+    # Conviction-scaled DAY limit-ladder entries. Replaces the flat 0.2% under-bid in _execute_buy.
+    # Core rung bids near market for HIGH-urgency names (underweight/leader/crash) so the position
+    # actually fills; LOW-urgency names bid deeper to lower cost (OK to miss). Leaders also get extra
+    # additive dip-adder rungs below the core, funded from the crash reserve. DAY tif → rungs expire
+    # at the close and are re-evaluated next day (no GTC/cancellation; portfolio conn can't cancel).
+    # In suggestion_mode the ladder collapses to a single core-rung suggestion card.
+    ladder_enabled: bool = True
+    entry_base_discount_pct: float = 0.2    # core-rung bid below last price for HIGH-urgency names
+    entry_max_discount_pct: float = 1.5     # core-rung bid for LOW-urgency names (fill cap)
+    ladder_rungs: int = 2                   # extra dip-adder rungs below the core (0 = single order)
+    ladder_step_pct: float = 1.0            # spacing between dip rungs, % of price
+    ladder_rung_frac: float = 0.25          # each dip rung sized at frac x core brick
+    ladder_leader_only_dips: bool = True    # only leaders get dip rungs; others get core only
 
 
 class PortfolioConfig(BaseModel):
