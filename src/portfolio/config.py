@@ -42,6 +42,11 @@ class CompounderConfig(BaseModel):
     # Target weights
     per_name_cap_pct: float = 0.06     # cap a normal name at 6% of the portfolio
     cash_buffer_pct: float = 0.03      # keep ~3% uninvested operational cash
+    # Conviction steepness for target sizing: within a tier, weight ∝ rank_score ** conviction_power.
+    # 1.0 = near-flat (effective ~100 names); >1 concentrates dollars in the top-ranked names up to
+    # the per-name caps (which remain the hard ceiling, so it self-limits). We trust the ranking's
+    # ordering, so lean the book a little more toward the top names it surfaces.
+    conviction_power: float = 1.75
     # Conviction: the top fraction of the ranked universe are "leaders" — they get a higher
     # per-name cap AND are always bought directly (never routed to put-selling), so the engine
     # never under-accumulates or caps the upside of the names most likely to deliver the 10x.

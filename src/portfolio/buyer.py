@@ -525,7 +525,8 @@ class PortfolioBuyer:
             "growth": cc.tier_growth,
         }
         targets = cmp.target_weights(ranked, tier_budgets, live_invest, cc.per_name_cap_pct,
-                                     leader_syms=leaders, leader_cap_pct=cc.leader_cap_pct)
+                                     leader_syms=leaders, leader_cap_pct=cc.leader_cap_pct,
+                                     conviction_power=cc.conviction_power)
 
         held = self._get_holdings_map()           # symbol -> FILLED market value (sync truth)
         deployed = sum(held.values())
