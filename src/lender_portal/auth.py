@@ -220,8 +220,14 @@ def current_user(request: Request) -> Optional[AuthedUser]:
         )
         cp_ids = tuple(sorted({p.counterparty_id for p in peers}))
         snap = AuthedUser(id=user.id, email=user.email, counterparty_ids=cp_ids)
-        ps.last_seen_at = datetime.utcnow()
-        session.commit()
+        # Throttle the last_seen_at write: it fires on every authenticated
+        # request, and bruno.db is shared with the admin process — an
+        # unconditional write per request was a needless source of write
+        # contention. Touch at most once per minute.
+        now = datetime.utcnow()
+        if ps.last_seen_at is None or (now - ps.last_seen_at) > timedelta(seconds=60):
+            ps.last_seen_at = now
+            session.commit()
         return snap
     finally:
         session.close()

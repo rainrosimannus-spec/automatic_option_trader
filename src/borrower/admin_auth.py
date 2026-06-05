@@ -157,8 +157,14 @@ def current_principal(request: Request) -> Optional[AuthedPrincipal]:
         if user is None or user.locked_at is not None:
             return None
         snap = AuthedPrincipal(id=user.id, email=user.email, name=user.name)
-        ps.last_seen_at = datetime.utcnow()
-        session.commit()
+        # Throttle the last_seen_at write: it fires on every authenticated
+        # request, and bruno.db is shared with the lender-portal process —
+        # an unconditional write per request was a needless source of write
+        # contention. Touch at most once per minute.
+        now = datetime.utcnow()
+        if ps.last_seen_at is None or (now - ps.last_seen_at) > timedelta(seconds=60):
+            ps.last_seen_at = now
+            session.commit()
         return snap
     finally:
         session.close()

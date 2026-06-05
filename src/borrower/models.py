@@ -33,6 +33,7 @@ from sqlalchemy import (
     ForeignKey,
     Enum as SqlEnum,
     create_engine,
+    event,
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 import enum
@@ -774,8 +775,30 @@ DB_URL = f"sqlite:///{DB_PATH}"
 
 
 def get_engine(db_url: str = DB_URL):
-    """Get a SQLAlchemy engine for the Bruno database."""
-    return create_engine(db_url, echo=False, future=True)
+    """Get a SQLAlchemy engine for the Bruno database.
+
+    WAL journal + a 30s busy timeout so the trading-dashboard admin process
+    and the standalone lender-portal process can share data/bruno.db without
+    hitting "database is locked" (see src/lender_portal/standalone_app.py
+    header — it assumes WAL, which is enabled here). WAL allows concurrent
+    readers alongside one writer; busy_timeout makes a writer wait for a
+    momentary lock instead of erroring immediately. check_same_thread=False
+    is required because the FastAPI server is multi-threaded.
+    """
+    engine = create_engine(
+        db_url, echo=False, future=True,
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_conn, _record):  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")    # concurrent readers + 1 writer
+        cur.execute("PRAGMA busy_timeout=30000")  # wait up to 30s for a lock, don't error
+        cur.execute("PRAGMA synchronous=NORMAL")  # safe + fast under WAL
+        cur.close()
+
+    return engine
 
 
 def get_session_factory(engine=None):
