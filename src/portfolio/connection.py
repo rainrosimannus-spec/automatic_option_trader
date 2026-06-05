@@ -157,7 +157,7 @@ def _connect(max_retries: int = 3) -> IB:
                 port=cfg.ibkr_port,
                 clientId=cfg.ibkr_client_id,
                 timeout=30,
-                readonly=True,
+                readonly=cfg.readonly,
                 account=cfg.ibkr_account or "",
             )
             ib.RequestTimeout = 15

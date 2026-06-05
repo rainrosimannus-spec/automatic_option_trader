@@ -527,14 +527,24 @@ class PortfolioBuyer:
         targets = cmp.target_weights(ranked, tier_budgets, live_invest, cc.per_name_cap_pct,
                                      leader_syms=leaders, leader_cap_pct=cc.leader_cap_pct)
 
-        held = self._get_holdings_map()           # symbol -> market value
+        held = self._get_holdings_map()           # symbol -> FILLED market value (sync truth)
         deployed = sum(held.values())
+        # Net resting DAY-limit BUY orders (from earlier scans/days) into both the budget gate and
+        # the per-name underweight check, so we don't re-ladder a working name or deploy today's
+        # budget twice intraday. Holdings reflect only fills; the orders below are still working.
+        from src.portfolio.connection import refresh_portfolio_pending_orders_cache
+        try:
+            refresh_portfolio_pending_orders_cache()
+        except Exception:
+            pass
+        open_buy = self._open_buy_map()           # symbol -> notional of resting BUY orders
+        deployed_eff = deployed + sum(open_buy.values())
         target_total = sum(targets.values())
         open_put_syms = self._open_put_symbols()
         free_cash = max(0.0, cash - nlv * cc.cash_buffer_pct)
         budget = cmp.daily_deploy_budget(
             investable, cc.base_pct, cc.dca_horizon_days, unlocked,
-            deployed, target_total, crash_active, free_cash)
+            deployed_eff, target_total, crash_active, free_cash)
 
         # Persist state for the dashboard cards
         self._store_state("strategy", "compounder")
@@ -562,15 +572,17 @@ class PortfolioBuyer:
             log.info("compounder_no_budget_today", budget=round(budget))
             return bought
 
-        # Underweight buy queue, ordered by fair-price attractiveness (cheapest first)
+        # Underweight buy queue, ordered by fair-price attractiveness (cheapest first).
+        # `cur` is FILLED holdings + resting BUY notional so a name with working DAY rungs isn't
+        # re-laddered and isn't double-counted toward its target.
         queue = []
         for r in ranked:
             tgt = targets.get(r.symbol, 0.0)
             if tgt <= 0:
                 continue
-            cur = held.get(r.symbol, 0.0)
+            cur = held.get(r.symbol, 0.0) + open_buy.get(r.symbol, 0.0)
             if cur >= tgt * 0.98:
-                continue                          # already at target — hold
+                continue                          # already at/working toward target — hold
             if r.symbol in open_put_syms:
                 continue                          # one open put per name at a time
             attractiveness = cmp.fair_price_attractiveness(r.price, r.sma200, r.high_52w)
@@ -579,6 +591,7 @@ class PortfolioBuyer:
         queue.sort(key=lambda x: -x[0])
 
         spent = 0.0
+        cash_room = free_cash          # bounds total resting notional placed this scan (no margin)
         for attractiveness, uw, r, tgt, cur in queue:
             if spent >= budget:
                 break
@@ -587,22 +600,30 @@ class PortfolioBuyer:
             if brick < cc.min_single_buy:
                 continue
             idx = rank_idx.get(r.symbol, 0)
+            is_leader = r.symbol in leaders
             mode = cmp.choose_entry_mode(attractiveness, uw, crash_active,
                                          cc.direct_threshold, cc.urgent_underweight,
-                                         is_leader=(r.symbol in leaders))
+                                         is_leader=is_leader)
             a.signal_type = f"compounder_{mode}"
             if mode == "direct":
+                # Conviction: underweight names, leaders, and crash tranches bid near market so the
+                # position actually fills (Rain is stagnation-averse); patient names bid deeper.
+                urgency = max(uw, 1.0 if is_leader else 0.0, 1.0 if crash_active else 0.0)
                 rat = (
                     f"Compounder #{idx} {stock.tier} (10x {r.s10x:.0f}, mom p{r.momentum_pct * 100:.0f}, "
                     f"rank {r.rank_score:.0f}). Direct buy ${brick:,.0f} toward target ${tgt:,.0f} "
                     f"(now ${cur:,.0f}, {uw * 100:.0f}% underweight). Price ${r.price:.2f} "
                     f"{'cheap' if attractiveness >= 0 else 'extended'} vs trend"
-                    f"{'; LEADER — always direct' if r.symbol in leaders else ''}"
+                    f"{'; LEADER — always direct + dip rungs' if is_leader else ''}"
                     f"{'; CRASH tranche active' if crash_active else ''}."
                 )
-                if self._execute_buy(stock, a, brick, rank=idx, rank_score=r.rank_score, rationale=rat):
+                core_placed, total_placed = self._execute_compounder_buy(
+                    stock, a, brick, urgency, is_leader, cash_room,
+                    rank=idx, rank_score=r.rank_score, rationale=rat)
+                if total_placed > 0:
                     bought.append(stock.symbol)
-                    spent += brick
+                    spent += core_placed        # throttle base pace by the core rung only
+                    cash_room -= total_placed    # dips draw extra cash/reserve, not the base budget
             else:
                 rat = (
                     f"Compounder #{idx} {stock.tier} (10x {r.s10x:.0f}, rank {r.rank_score:.0f}). "
@@ -758,6 +779,30 @@ class PortfolioBuyer:
                 h.symbol: (h.market_value or h.total_invested or 0)
                 for h in holdings
             }
+
+    def _open_buy_map(self) -> dict[str, float]:
+        """symbol → notional ($) of currently-RESTING stock BUY orders at IBKR.
+
+        Holdings reflect only FILLED shares (sync truth), so resting DAY-limit rungs from an
+        earlier scan/day are invisible to _get_holdings_map. Netting this into both the per-name
+        underweight check and the daily-budget gate prevents (a) re-laddering a name that already
+        has working orders and (b) deploying today's budget twice intraday. Reads the pending-order
+        cache; caller should refresh it first so the snapshot is current.
+        """
+        from src.portfolio.connection import get_cached_portfolio_pending_orders
+        out: dict[str, float] = {}
+        for o in get_cached_portfolio_pending_orders() or []:
+            try:
+                if o.get("sec_type") != "STK" or o.get("action") != "BUY":
+                    continue
+                rem = float(o.get("remaining") or 0)
+                px = float(o.get("limit_price") or 0)
+                if rem <= 0 or px <= 0:
+                    continue
+                out[o["symbol"]] = out.get(o["symbol"], 0.0) + rem * px
+            except Exception:
+                continue
+        return out
 
     def _get_tier_values(self) -> dict[str, float]:
         """Get total value per tier."""
@@ -1424,6 +1469,121 @@ class PortfolioBuyer:
         except Exception as e:
             log.error("portfolio_buy_error", symbol=stock.symbol, error=str(e))
             return False
+
+    # ── Compounder direct buy: conviction-scaled DAY limit ladder ──────────
+    def _execute_compounder_buy(
+        self,
+        stock: PortfolioWatchlist,
+        analysis: StockAnalysis,
+        core_amount: float,
+        urgency: float,
+        is_leader: bool,
+        cash_room: float,
+        rank: int = 0,
+        rank_score: float = 0.0,
+        rationale: str | None = None,
+    ) -> tuple[float, float]:
+        """Place a conviction-scaled DAY limit ladder (live) or one core-rung suggestion card
+        (suggestion mode). Returns (core_placed_notional, total_placed_notional).
+
+        Unlike the legacy _execute_buy, this does NOT optimistically touch holdings or record a
+        buy transaction — resting DAY limits may not fill, so sync_ibkr_holdings() is the single
+        source of truth for fills (run_compounder_scan nets resting orders via _open_buy_map so a
+        working name isn't re-laddered). `cash_room` caps total resting notional placed this call
+        to keep the account out of unintended margin; the core rung has priority over dip rungs.
+        """
+        _ensure_event_loop()
+        px = analysis.current_price
+        if not px or px <= 0 or core_amount <= 0:
+            return (0.0, 0.0)
+
+        from src.portfolio import compounder as cmp
+        cc = self.cfg.compounder
+        plan = cmp.ladder_plan(px, urgency, is_leader, cc)
+        if not plan:
+            return (0.0, 0.0)
+
+        # Resolve rungs to (price, shares); core sized from core_amount, dips as frac of it.
+        rungs: list[tuple[float, int]] = []
+        for i, (price, frac) in enumerate(plan):
+            if price <= 0:
+                continue
+            shares = int((core_amount * frac) / price)
+            notional = shares * price
+            # Core rung must clear min_single_buy; dip rungs just need to be non-trivial.
+            floor = cc.min_single_buy if i == 0 else 1000.0
+            if shares <= 0 or notional < floor:
+                continue
+            rungs.append((price, shares))
+        if not rungs or rungs[0][1] <= 0:
+            return (0.0, 0.0)
+
+        core_price, core_shares = rungs[0]
+
+        # Suggestion mode — one card at the core-rung price (no dip cards; keep the queue clean).
+        if self.cfg.suggestion_mode:
+            from src.core.suggestions import create_suggestion
+            create_suggestion(
+                symbol=stock.symbol, action="buy_stock", quantity=core_shares,
+                limit_price=core_price, order_type="LMT", source="portfolio",
+                tier=stock.tier, signal=analysis.signal_type,
+                rationale=rationale, current_price=px,
+                sma_200=analysis.sma_200, rsi_14=analysis.rsi_14,
+                est_cost=round(core_shares * core_price, 2),
+                rank=rank, rank_score=rank_score, funding_source="cash",
+            )
+            log.info("compounder_suggestion_created", symbol=stock.symbol,
+                     shares=core_shares, price=core_price, urgency=round(urgency, 2),
+                     leader=is_leader, signal=analysis.signal_type)
+            est = round(core_shares * core_price, 2)
+            return (est, est)
+
+        # Live mode — place each rung as a DAY limit, core first, bounded by cash_room.
+        # A broker error on one symbol must not abort the whole scan — return whatever filled.
+        core_placed = 0.0
+        total_placed = 0.0
+        try:
+            contract = Stock(stock.symbol, stock.exchange, stock.currency)
+            with get_portfolio_lock():
+                self.ib.qualifyContracts(contract)
+
+            room = cash_room
+            for i, (price, shares) in enumerate(rungs):
+                notional = shares * price
+                if notional > room:
+                    continue                      # can't afford this rung — skip (core has priority)
+                order = LimitOrder("BUY", shares, price)
+                order.tif = "DAY"
+                order.outsideRth = True
+                with get_portfolio_lock():
+                    self.ib.placeOrder(contract, order)
+                    self.ib.sleep(1)
+                room -= notional
+                total_placed += notional
+                if i == 0:
+                    core_placed = notional
+                log.info("compounder_rung_placed", symbol=stock.symbol, rung=i,
+                         shares=shares, price=price, notional=round(notional),
+                         leader=is_leader)
+        except Exception as e:
+            log.error("compounder_buy_error", symbol=stock.symbol, error=str(e),
+                      placed=round(total_placed))
+            return (core_placed, total_placed)
+
+        if total_placed <= 0:
+            return (0.0, 0.0)
+
+        # Refresh dashboard cache so the new working orders appear immediately.
+        try:
+            from src.portfolio.connection import refresh_portfolio_pending_orders_cache
+            refresh_portfolio_pending_orders_cache()
+        except Exception:
+            pass
+
+        log.info("compounder_ladder_placed", symbol=stock.symbol, tier=stock.tier,
+                 rungs=len(rungs), core=round(core_placed), total=round(total_placed),
+                 urgency=round(urgency, 2), leader=is_leader, signal=analysis.signal_type)
+        return (core_placed, total_placed)
 
     # ── Cash management ──────────────────────────────────────
     def _park_cash(self):

@@ -302,3 +302,42 @@ def daily_deploy_budget(investable: float, base_pct: float, dca_horizon_days: in
         base_pace = investable * base_pct / max(1, dca_horizon_days)
         budget = min(remaining_gap, base_pace)
     return max(0.0, min(budget, free_cash))
+
+
+def ladder_plan(core_price: float, urgency: float, is_leader: bool,
+                cc) -> list[tuple[float, float]]:
+    """Conviction-scaled DAY limit-ladder for one direct buy (pure).
+
+    Returns a list of (limit_price, size_frac) rungs whose size_frac sum to the total
+    bricks to deploy for this name:
+      - The core rung is bid below the last price by a discount that scales INVERSELY with
+        urgency: high-urgency names (underweight / leader / crash, urgency→1) bid near market
+        so the position actually fills; low-urgency names (urgency→0) bid up to the max
+        discount to lower cost (it is fine to miss). Core size_frac is 1.0.
+      - Leaders (or, if ladder_leader_only_dips is False, every name) additionally get
+        `ladder_rungs` dip-adder rungs stepped `ladder_step_pct` apart below the core, each
+        sized `ladder_rung_frac` of the brick. These are *additive* — they raise the total
+        deployed for the name above the core brick, and the caller funds them from reserve.
+
+    urgency is clamped to [0, 1]. If ladder is disabled, returns a single rung at the base
+    discount (preserving the legacy flat-under-bid behavior).
+    """
+    if core_price <= 0:
+        return []
+    u = max(0.0, min(1.0, urgency))
+    base = cc.entry_base_discount_pct
+    if not getattr(cc, "ladder_enabled", True):
+        return [(round(core_price * (1 - base / 100.0), 2), 1.0)]
+
+    span = max(0.0, cc.entry_max_discount_pct - base)
+    core_disc = base + span * (1.0 - u)                       # high urgency → shallow
+    core = round(core_price * (1 - core_disc / 100.0), 2)
+    rungs: list[tuple[float, float]] = [(core, 1.0)]
+
+    wants_dips = is_leader or not getattr(cc, "ladder_leader_only_dips", True)
+    if wants_dips and cc.ladder_rungs > 0 and cc.ladder_rung_frac > 0:
+        for k in range(1, cc.ladder_rungs + 1):
+            price = round(core * (1 - k * cc.ladder_step_pct / 100.0), 2)
+            if price > 0:
+                rungs.append((price, cc.ladder_rung_frac))
+    return rungs
