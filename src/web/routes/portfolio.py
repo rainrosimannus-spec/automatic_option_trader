@@ -324,6 +324,26 @@ async def portfolio_page(request: Request):
     except Exception:
         pass
 
+    # Compounder signal table — computed live from the (freshly-priced) watchlist rows so the
+    # full ranked universe always shows, independent of whether a trading scan ran.
+    _compounder_signals = []
+    if _get_state("strategy") == "compounder":
+        try:
+            from src.portfolio import compounder as _cmp
+            from src.core.config import get_settings as _gs
+            _pcfg = _gs().portfolio
+            _cc = _pcfg.compounder
+            _tier_alloc = {
+                "breakthrough": _cc.tier_breakthrough,
+                "dividend": _cc.tier_dividend,
+                "growth": _cc.tier_growth,
+            }
+            _held = {h.symbol: (h.market_value or h.total_invested or 0) for h in holdings}
+            _compounder_signals = _cmp.build_signals_from_watchlist(
+                watchlist, _held, portfolio_nlv or 0, _cc, _tier_alloc)
+        except Exception as _e:
+            log.warning("compounder_dashboard_signals_failed", error=str(_e))
+
     return templates.TemplateResponse("portfolio.html", {
         "request": request,
         "holdings": holdings,
@@ -364,6 +384,24 @@ async def portfolio_page(request: Request):
         "position_cap": position_cap,
         "total_exposure_cap": total_exposure_cap,
         "daily_deployment_cap": daily_deployment_cap,
+        # Compounder strategy reserve state (cards shown only when active)
+        "is_compounder": (_get_state("strategy") == "compounder"),
+        "compounder": {
+            "deployed": float(_get_state("compounder_deployed") or 0),
+            "live_target": float(_get_state("compounder_live_target") or 0),
+            "investable": float(_get_state("compounder_investable") or 0),
+            "daily_budget": float(_get_state("compounder_daily_budget") or 0),
+            "drawdown_pct": float(_get_state("compounder_drawdown_pct") or 0),
+            "tranches_fired": int(float(_get_state("compounder_tranches_fired") or 0)),
+            "unlocked_pct": float(_get_state("compounder_reserve_unlocked_pct") or 0),
+            "reserve_peak": float(_get_state("compounder_reserve_peak") or 0),
+        },
+        "compounder_signals_list": _compounder_signals,
+        "wl_map": {w.symbol: w for w in watchlist},
+        "compounder_active_signals": sum(1 for s in _compounder_signals if s.get("action") in ("direct", "put")),
+        # Slots = target names already held / total target names (accumulation progress)
+        "compounder_slots_allowed": sum(1 for s in _compounder_signals if (s.get("target") or 0) > 0),
+        "compounder_slots_filled": sum(1 for s in _compounder_signals if (s.get("target") or 0) > 0 and (s.get("current") or 0) > 0),
     })
 
 

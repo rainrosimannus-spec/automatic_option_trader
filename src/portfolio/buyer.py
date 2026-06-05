@@ -84,6 +84,10 @@ class PortfolioBuyer:
         except Exception as e:
             log.warning("portfolio_halt_check_failed", error=str(e))
 
+        # ── Strategy branch: long-horizon compounder accumulation ──
+        if getattr(self.cfg, "strategy", "classic") == "compounder":
+            return self.run_compounder_scan()
+
         # Step 1: Detect market regime
         regime = self._detect_regime()
         self._store_state("market_regime", regime.regime_name)
@@ -424,6 +428,277 @@ class PortfolioBuyer:
 
     # ── Tier-specific criteria ───────────────────────────────
     # ── Market regime detection ─────────────────────────────────
+    # ── Compounder accumulation strategy ─────────────────────
+    def run_compounder_scan(self) -> list[str]:
+        """
+        Long-horizon 10x compounder accumulation (see src/portfolio/compounder.py):
+        rank the universe by quality/growth + momentum, build conviction-weighted capped
+        targets to the 25/15/60 tier proportions, deploy a base tranche steadily plus a
+        crash reserve that fires on market drawdowns, choosing direct-buy vs put-sell by
+        price intensity. Hold; never trim winners.
+        """
+        _ensure_event_loop()
+        from src.portfolio import compounder as cmp
+        cc = self.cfg.compounder
+        log.info("compounder_scan_started")
+        bought: list[str] = []
+
+        cash = self._get_available_cash()
+        if cash is None:
+            log.warning("compounder_cannot_get_cash"); return bought
+        nlv = self._get_net_liquidation() or cash
+        if not nlv or nlv <= 0:
+            log.warning("compounder_zero_nlv"); return bought
+
+        # Resolve expiring/assigned put-entries first
+        self._check_put_entries()
+
+        # Market drawdown gauge (SPY) -> crash-reserve tranche state
+        spy = self._get_market_price("SPY")
+        rstate = self._load_reserve_state()
+        dd = 0.0
+        if spy and spy > 0:
+            rstate, dd = cmp.reserve_update(rstate, spy, tuple(cc.drawdown_tranches))
+            self._save_reserve_state(rstate)
+        unlocked_dd = cmp.reserve_unlocked_fraction(rstate.tranches_fired, len(cc.drawdown_tranches))
+        # Crash dump only on a real drawdown tranche
+        crash_active = unlocked_dd > 0 and dd >= (cc.drawdown_tranches[0] if cc.drawdown_tranches else 1.0)
+        # Time-based backstop bleed: if no crash within backstop_start_days, deploy the reserve
+        # slowly anyway so we're never permanently under-invested in a melt-up.
+        import datetime as _dt
+        start_str = self._get_state_value("compounder_start_date")
+        if not start_str:
+            start_str = _dt.date.today().isoformat()
+            self._store_state("compounder_start_date", start_str)
+        try:
+            days_since = (_dt.date.today() - _dt.date.fromisoformat(start_str)).days
+        except Exception:
+            days_since = 0
+        backstop = cmp.backstop_unlocked_fraction(days_since, cc.backstop_start_days, cc.backstop_bleed_days)
+        unlocked = max(unlocked_dd, backstop)
+
+        # Build ranked universe from live technicals + refreshed fundamental scores
+        watch = self._get_watchlist()
+        if not watch:
+            log.warning("compounder_empty_watchlist"); return bought
+        names: list[cmp.NameInput] = []
+        analyses: dict[str, tuple] = {}
+        skipped_exch: set[str] = set()
+        for s in watch:
+            if s.exchange in skipped_exch:
+                continue
+            if not self._is_market_open(s.currency):
+                continue
+            try:
+                a = self.analyzer.analyze_stock(s.symbol, s.exchange, s.currency, tier=s.tier)
+            except Exception as e:
+                log.warning("compounder_analyze_error", symbol=s.symbol, error=str(e))
+                a = None
+            if not a or not a.current_price or a.current_price <= 0:
+                continue
+            self._update_watchlist_metrics(s, a)
+            analyses[s.symbol] = (s, a)
+            names.append(cmp.NameInput(
+                symbol=s.symbol, tier=(s.tier or "growth"),
+                growth=s.growth_score or 0.0, forward_growth=s.forward_growth_score or 0.0,
+                quality=s.quality_score or 0.0, valuation=s.valuation_score or 0.0,
+                dividend_total_return=s.dividend_total_return_score or 0.0,
+                risk_penalty=s.risk_total_penalty or 0.0,
+                price=a.current_price, sma200=a.sma_200, high_52w=a.high_52w,
+                momentum_12_1=getattr(a, "momentum_12_1", None),
+            ))
+        if not names:
+            log.info("compounder_no_priceable_names"); return bought
+
+        ranked = cmp.rank_universe(names, cc.rank_fund_weight, cc.rank_mom_weight)
+        rank_idx = {r.symbol: i + 1 for i, r in enumerate(ranked)}
+        leaders = cmp.leader_symbols(ranked, cc.leader_top_frac)
+
+        # Targets sized to base + currently-unlocked reserve (full base always live).
+        # Compounder uses its own tier budgets (cc.tier_*) so the universe screener / classic
+        # strategy aren't affected; leaders carry the higher cap.
+        investable = nlv * (1 - cc.cash_buffer_pct)
+        live_invest = investable * (cc.base_pct + (1 - cc.base_pct) * unlocked)
+        tier_budgets = {
+            "breakthrough": cc.tier_breakthrough,
+            "dividend": cc.tier_dividend,
+            "growth": cc.tier_growth,
+        }
+        targets = cmp.target_weights(ranked, tier_budgets, live_invest, cc.per_name_cap_pct,
+                                     leader_syms=leaders, leader_cap_pct=cc.leader_cap_pct)
+
+        held = self._get_holdings_map()           # symbol -> market value
+        deployed = sum(held.values())
+        target_total = sum(targets.values())
+        open_put_syms = self._open_put_symbols()
+        free_cash = max(0.0, cash - nlv * cc.cash_buffer_pct)
+        budget = cmp.daily_deploy_budget(
+            investable, cc.base_pct, cc.dca_horizon_days, unlocked,
+            deployed, target_total, crash_active, free_cash)
+
+        # Persist state for the dashboard cards
+        self._store_state("strategy", "compounder")
+        self._store_state("compounder_reserve_peak", str(round(rstate.peak, 2)))
+        self._store_state("compounder_drawdown_pct", str(round(dd * 100, 1)))
+        self._store_state("compounder_tranches_fired", str(rstate.tranches_fired))
+        self._store_state("compounder_reserve_unlocked_pct", str(round(unlocked * 100, 1)))
+        self._store_state("compounder_backstop_pct", str(round(backstop * 100, 1)))
+        self._store_state("compounder_investable", str(round(investable)))
+        self._store_state("compounder_live_target", str(round(target_total)))
+        self._store_state("compounder_deployed", str(round(deployed)))
+        self._store_state("compounder_daily_budget", str(round(budget)))
+
+        log.info("compounder_state", nlv=round(nlv), cash=round(cash), deployed=round(deployed),
+                 target_total=round(target_total), budget=round(budget),
+                 drawdown_pct=round(dd * 100, 1), tranches=rstate.tranches_fired,
+                 crash_active=crash_active, ranked=len(ranked))
+
+        # Always publish the ranking/signals to the dashboard — even with no deploy budget,
+        # so /watchlist reflects the current universe ranking & intended actions.
+        self._persist_compounder_signals(ranked, targets, held, open_put_syms,
+                                         rank_idx, crash_active, cc, leaders)
+
+        if budget < cc.min_single_buy:
+            log.info("compounder_no_budget_today", budget=round(budget))
+            return bought
+
+        # Underweight buy queue, ordered by fair-price attractiveness (cheapest first)
+        queue = []
+        for r in ranked:
+            tgt = targets.get(r.symbol, 0.0)
+            if tgt <= 0:
+                continue
+            cur = held.get(r.symbol, 0.0)
+            if cur >= tgt * 0.98:
+                continue                          # already at target — hold
+            if r.symbol in open_put_syms:
+                continue                          # one open put per name at a time
+            attractiveness = cmp.fair_price_attractiveness(r.price, r.sma200, r.high_52w)
+            uw = (tgt - cur) / tgt if tgt > 0 else 0.0
+            queue.append((attractiveness, uw, r, tgt, cur))
+        queue.sort(key=lambda x: -x[0])
+
+        spent = 0.0
+        for attractiveness, uw, r, tgt, cur in queue:
+            if spent >= budget:
+                break
+            stock, a = analyses[r.symbol]
+            brick = min(cc.max_single_buy, tgt - cur, budget - spent)
+            if brick < cc.min_single_buy:
+                continue
+            idx = rank_idx.get(r.symbol, 0)
+            mode = cmp.choose_entry_mode(attractiveness, uw, crash_active,
+                                         cc.direct_threshold, cc.urgent_underweight,
+                                         is_leader=(r.symbol in leaders))
+            a.signal_type = f"compounder_{mode}"
+            if mode == "direct":
+                rat = (
+                    f"Compounder #{idx} {stock.tier} (10x {r.s10x:.0f}, mom p{r.momentum_pct * 100:.0f}, "
+                    f"rank {r.rank_score:.0f}). Direct buy ${brick:,.0f} toward target ${tgt:,.0f} "
+                    f"(now ${cur:,.0f}, {uw * 100:.0f}% underweight). Price ${r.price:.2f} "
+                    f"{'cheap' if attractiveness >= 0 else 'extended'} vs trend"
+                    f"{'; LEADER — always direct' if r.symbol in leaders else ''}"
+                    f"{'; CRASH tranche active' if crash_active else ''}."
+                )
+                if self._execute_buy(stock, a, brick, rank=idx, rank_score=r.rank_score, rationale=rat):
+                    bought.append(stock.symbol)
+                    spent += brick
+            else:
+                rat = (
+                    f"Compounder #{idx} {stock.tier} (10x {r.s10x:.0f}, rank {r.rank_score:.0f}). "
+                    f"Extended vs fair price — sell CSP ~{cc.put_target_discount_pct:.0f}% below "
+                    f"to get paid while waiting for a better entry. Target ${tgt:,.0f}, now ${cur:,.0f}."
+                )
+                if self._execute_put_entry(stock, a, rank=idx, rank_score=r.rank_score,
+                                           rationale=rat,
+                                           target_discount_override=cc.put_target_discount_pct):
+                    bought.append(f"{stock.symbol}(P)")
+                    spent += brick   # throttle puts by the same daily budget (collateral intent)
+
+        self._store_state("compounder_last_spent", str(round(spent)))
+        log.info("compounder_scan_completed", actions=len(bought), spent=round(spent), bought=bought)
+        return bought
+
+    def _persist_compounder_signals(self, ranked, targets, held, open_put_syms,
+                                    rank_idx, crash_active, cc, leaders=None):
+        """Write the per-name ranking / targets / intended-action table to PortfolioState
+        for the /watchlist dashboard. Called every scan (even with no deploy budget) so the
+        dashboard always reflects the current universe ranking."""
+        try:
+            import json as _json
+            from src.portfolio import compounder as cmp
+            leaders = leaders or set()
+            signals = []
+            for r in ranked:
+                tgt = targets.get(r.symbol, 0.0)
+                cur = held.get(r.symbol, 0.0)
+                attractiveness = cmp.fair_price_attractiveness(r.price, r.sma200, r.high_52w)
+                uw = (tgt - cur) / tgt if tgt > 0 else 0.0
+                if r.symbol in open_put_syms:
+                    action = "put_open"
+                elif tgt <= 0:
+                    action = "—"
+                elif cur >= tgt * 0.98:
+                    action = "hold"
+                else:
+                    action = cmp.choose_entry_mode(attractiveness, uw, crash_active,
+                                                   cc.direct_threshold, cc.urgent_underweight,
+                                                   is_leader=(r.symbol in leaders))
+                signals.append({
+                    "symbol": r.symbol, "tier": r.tier, "rank": rank_idx.get(r.symbol, 0),
+                    "rank_score": round(r.rank_score, 1), "s10x": round(r.s10x, 1),
+                    "mom_pct": round(r.momentum_pct * 100, 0), "price": round(r.price, 2),
+                    "target": round(tgt), "current": round(cur),
+                    "underweight_pct": round(uw * 100, 0),
+                    "attractiveness": round(attractiveness, 3), "action": action,
+                })
+            self._store_state("compounder_signals", _json.dumps(signals))
+        except Exception as e:
+            log.warning("compounder_signals_persist_failed", error=str(e))
+
+    def _get_market_price(self, symbol: str = "SPY") -> float | None:
+        """Latest price for a market gauge (SPY) via the shared IBKR data path."""
+        try:
+            from src.broker.market_data import get_stock_price
+            return get_stock_price(symbol, exchange="SMART", currency="USD")
+        except Exception as e:
+            log.warning("compounder_market_price_failed", symbol=symbol, error=str(e))
+            return None
+
+    def _get_state_value(self, key: str) -> str | None:
+        with get_db() as db:
+            s = db.query(PortfolioState).filter(PortfolioState.key == key).first()
+            return s.value if s else None
+
+    def _open_put_symbols(self) -> set[str]:
+        with get_db() as db:
+            rows = db.query(PortfolioPutEntry).filter(
+                PortfolioPutEntry.status == "open"
+            ).all()
+            return {r.symbol for r in rows}
+
+    def _load_reserve_state(self):
+        import json
+        from src.portfolio.compounder import ReserveState
+        with get_db() as db:
+            st = db.query(PortfolioState).filter(
+                PortfolioState.key == "compounder_reserve_state"
+            ).first()
+            if st and st.value:
+                try:
+                    d = json.loads(st.value)
+                    return ReserveState(float(d.get("peak", 0.0)), int(d.get("tranches_fired", 0)))
+                except Exception:
+                    pass
+        return ReserveState(0.0, 0)
+
+    def _save_reserve_state(self, state):
+        import json
+        self._store_state(
+            "compounder_reserve_state",
+            json.dumps({"peak": state.peak, "tranches_fired": state.tranches_fired}),
+        )
+
     def _detect_regime(self) -> MarketRegime:
         """Gather SPY + VIX data to determine market regime."""
         _ensure_event_loop()
@@ -567,7 +842,9 @@ class PortfolioBuyer:
     # ── Put-entry execution ──────────────────────────────────
     def _execute_put_entry(self, stock: PortfolioWatchlist, analysis: StockAnalysis,
                            rank: int = 0, rank_score: float = 0.0,
-                           funding_source: str = "cash") -> bool:
+                           funding_source: str = "cash",
+                           rationale: str | None = None,
+                           target_discount_override: float | None = None) -> bool:
         """
         Sell a cash-secured put at the target buy price.
         Strike = current price * (1 - target_discount_pct/100)
@@ -578,8 +855,12 @@ class PortfolioBuyer:
             return False
 
         try:
-            # Calculate target strike
-            target_discount = self.cfg.put_entry.target_discount_pct / 100
+            # Calculate target strike (compounder can pass a deeper discount for
+            # extended names via target_discount_override)
+            target_discount = (
+                target_discount_override if target_discount_override is not None
+                else self.cfg.put_entry.target_discount_pct
+            ) / 100
             target_strike = analysis.current_price * (1 - target_discount)
 
             # Find available option chain
@@ -664,7 +945,7 @@ class PortfolioBuyer:
                     source="portfolio",
                     tier=stock.tier,
                     signal=f"put_entry_{analysis.signal_type}",
-                    rationale=(
+                    rationale=rationale or (
                         f"Rank #{rank} (score {rank_score:.0f}). "
                         f"Sell CSP to enter {stock.symbol} at effective ${effective_cost:.2f}. "
                         f"Strike ${best_strike}, premium ${sell_price:.2f}, "
@@ -1039,6 +1320,7 @@ class PortfolioBuyer:
         funding_source: str = "cash",
         rank: int = 0,
         rank_score: float = 0.0,
+        rationale: str | None = None,
     ) -> bool:
         """Place a limit buy order or create a suggestion if in suggestion_mode."""
         _ensure_event_loop()
@@ -1070,7 +1352,7 @@ class PortfolioBuyer:
                     source="portfolio",
                     tier=stock.tier,
                     signal=analysis.signal_type,
-                    rationale=(
+                    rationale=rationale or (
                         f"Rank #{rank} (score {rank_score:.0f}). "
                         f"{analysis.signal_type}: price ${analysis.current_price:.2f} "
                         f"vs SMA ${analysis.sma_200:.2f} "
@@ -1277,6 +1559,8 @@ class PortfolioBuyer:
                 entry.sma_200 = analysis.sma_200
                 entry.discount_pct = analysis.discount_pct
                 entry.rsi_14 = analysis.rsi_14
+                entry.high_52w = analysis.high_52w
+                entry.momentum_12_1 = getattr(analysis, "momentum_12_1", None)
                 entry.buy_signal = analysis.buy_signal
                 entry.signal_type = analysis.signal_type if analysis.buy_signal else None
                 entry.raw_score = round(analysis.composite_score, 1)

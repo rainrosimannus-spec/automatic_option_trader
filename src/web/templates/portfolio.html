@@ -40,6 +40,56 @@ function syncInjections() {
         </div>
     </div>
 
+    {% if is_compounder %}
+    <!-- ═══ Compounder: Cash Reserve & Deployment ═══ -->
+    <div class="bg-gradient-to-r from-gray-900 to-gray-900/60 border border-indigo-900/50 rounded-lg p-4 mb-6">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold text-indigo-300">🧭 Compounder — Cash Reserve &amp; Deployment</h2>
+            <a href="/watchlist" class="text-xs text-indigo-400 hover:text-indigo-300">View buy signals →</a>
+        </div>
+        {% set dep_pct = (compounder.deployed / compounder.live_target * 100) if compounder.live_target > 0 else 0 %}
+        {% set dry = (compounder.investable - compounder.deployed) %}
+        {% set slots_filled = compounder_slots_filled|default(0) %}
+        {% set slots_allowed = compounder_slots_allowed|default(0) %}
+        {% set slot_pct = (slots_filled / slots_allowed * 100) if slots_allowed > 0 else 0 %}
+        <div class="grid grid-cols-2 md:grid-cols-6 gap-4">
+            <div>
+                <div class="text-xs text-gray-500 uppercase tracking-wider">Slots Filled</div>
+                <div class="text-xl font-bold mt-1 {% if slot_pct >= 80 %}text-emerald-400{% elif slot_pct >= 40 %}text-sky-400{% else %}text-amber-300{% endif %}">{{slots_filled}}/{{slots_allowed}}</div>
+                <div class="text-xs text-gray-500">{{"{:.0f}".format(slot_pct)}}% of target names held</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500 uppercase tracking-wider">Deployed</div>
+                <div class="text-xl font-bold text-emerald-400 mt-1">${{"{:,.0f}".format(compounder.deployed)}}</div>
+                <div class="text-xs text-gray-500">{{"{:.0f}".format(dep_pct)}}% of live target</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500 uppercase tracking-wider">Dry Powder</div>
+                <div class="text-xl font-bold text-sky-400 mt-1">${{"{:,.0f}".format(dry if dry > 0 else 0)}}</div>
+                <div class="text-xs text-gray-500">incl. 35% crash reserve</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500 uppercase tracking-wider">Today's Budget</div>
+                <div class="text-xl font-bold text-white mt-1">${{"{:,.0f}".format(compounder.daily_budget)}}</div>
+                <div class="text-xs text-gray-500">DCA pace</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500 uppercase tracking-wider">Mkt Drawdown</div>
+                <div class="text-xl font-bold mt-1 {% if compounder.drawdown_pct >= 10 %}text-red-400{% else %}text-white{% endif %}">{{"{:.1f}".format(compounder.drawdown_pct)}}%</div>
+                <div class="text-xs text-gray-500">from peak ${{"{:,.0f}".format(compounder.reserve_peak)}}</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500 uppercase tracking-wider">Crash Reserve</div>
+                <div class="text-xl font-bold mt-1 {% if compounder.tranches_fired > 0 %}text-amber-300{% else %}text-gray-300{% endif %}">{{compounder.tranches_fired}}/3 fired</div>
+                <div class="text-xs text-gray-500">{{"{:.0f}".format(compounder.unlocked_pct)}}% unlocked</div>
+            </div>
+        </div>
+        <div class="mt-3 w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+            <div class="bg-emerald-500 h-2" style="width: {{ dep_pct if dep_pct <= 100 else 100 }}%"></div>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- ═══ Summary Cards ═══ -->
     <div class="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
@@ -549,95 +599,6 @@ function syncInjections() {
         </div>
         {% else %}
         <div class="text-gray-500 text-center py-6 text-sm">No pending orders.</div>
-        {% endif %}
-    </div>
-
-    <!-- ═══ Buy Signals (Watchlist) ═══ -->
-    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
-        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">
-            Watchlist & Buy Signals
-            <span class="text-xs text-emerald-400 ml-2">
-                {{watchlist|selectattr('buy_signal')|list|length}} active signals
-            </span>
-        </h2>
-        {% if watchlist %}
-        <div class="overflow-x-auto">
-            <table class="w-full text-left text-sm">
-                <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
-                    <tr>
-                        <th class="px-3 py-2">Stock</th>
-                        <th class="px-3 py-2">Tier</th>
-                        <th class="px-3 py-2">Score</th>
-                        <th class="px-3 py-2 text-right">Price</th>
-                        <th class="px-3 py-2 text-right">200 SMA</th>
-                        <th class="px-3 py-2 text-right">Discount</th>
-                        <th class="px-3 py-2 text-right">RSI(14)</th>
-                        <th class="px-3 py-2">Signal</th>
-                        <th class="px-3 py-2">Risks</th>
-                        <th class="px-3 py-2">Updated</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-800/50">
-                    {% for w in watchlist %}
-                    <tr class="hover:bg-gray-800/50 {% if w.buy_signal %}bg-emerald-950/20 border-l-2 border-emerald-500{% else %}border-l-2 border-transparent{% endif %}">
-                        <td class="px-3 py-2">
-                            <div class="font-medium text-white">
-                                {{w.symbol}}{% if w.metrics_stale %} <span class="text-yellow-400 text-xs" title="Metrics stale — last successful update >24h ago">⏱</span>{% endif %}{% if w.fundamentals_complete == False %} <span class="text-orange-400 text-xs" title="Fundamentals not verified — FMP and IBKR both lack data. Scores defaulted to 50/50/50.">⚠</span>{% endif %}
-                            </div>
-                            <div class="text-xs text-gray-500">{{w.name[:25]}} · {{w.exchange}}</div>
-                        </td>
-                        <td class="px-3 py-2">
-                            <span class="px-1.5 py-0.5 rounded text-xs
-                                {% if w.tier == 'dividend' %}bg-blue-900/50 text-blue-300
-                                {% elif w.tier == 'breakthrough' %}bg-purple-900/50 text-purple-300
-                                {% elif w.category == 'existing_holding' %}bg-gray-700 text-gray-300
-                                {% else %}bg-emerald-900/50 text-emerald-300{% endif %}">
-                                {{w.tier or w.category or '—'}}
-                            </span>
-                        </td>
-                        <td class="px-3 py-2 text-emerald-400 font-medium">{{"{:.0f}".format(w.composite_score)}}</td>
-                        <td class="px-3 py-2 text-right text-white">{{"{:.2f}".format(w.current_price or 0)}}</td>
-                        <td class="px-3 py-2 text-right text-gray-400">{{"{:.2f}".format(w.sma_200 or 0)}}</td>
-                        <td class="px-3 py-2 text-right {% if (w.discount_pct or 0) > 5 %}text-emerald-400{% elif (w.discount_pct or 0) > 0 %}text-gray-300{% else %}text-red-400{% endif %}">
-                            {{"{:.1f}".format(w.discount_pct or 0)}}%
-                        </td>
-                        <td class="px-3 py-2 text-right {% if (w.rsi_14 or 50) < 30 %}text-emerald-400{% elif (w.rsi_14 or 50) > 70 %}text-red-400{% else %}text-gray-300{% endif %}">
-                            {{"{:.0f}".format(w.rsi_14 or 0)}}
-                        </td>
-                        <td class="px-3 py-2">
-                            {% if w.buy_signal %}
-                            <span class="px-2 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-300">
-                                {{w.signal_type or 'buy'}}
-                            </span>
-                            {% else %}
-                            <span class="text-xs text-gray-600">—</span>
-                            {% endif %}
-                        </td>
-                        <td class="px-3 py-2">
-                            {% set penalty = w.risk_total_penalty or 0 %}
-                            {% if penalty > 0 %}
-                            <span class="text-xs {% if penalty >= 20 %}text-red-400{% elif penalty >= 10 %}text-yellow-400{% else %}text-gray-400{% endif %}" title="AI={{w.risk_ai_disruption or 'none'}} Reg={{w.risk_regulatory or 'none'}} Geo={{w.risk_geopolitical or 'none'}} Prod={{w.risk_single_product or 'none'}} Profit={{w.risk_profitability or 'none'}} | Penalty: -{{penalty}}">
-                                {% if w.risk_ai_disruption and w.risk_ai_disruption != 'none' %}🤖{% endif %}
-                                {% if w.risk_regulatory and w.risk_regulatory != 'none' %}⚖️{% endif %}
-                                {% if w.risk_geopolitical and w.risk_geopolitical != 'none' %}🌍{% endif %}
-                                {% if w.risk_single_product and w.risk_single_product != 'none' %}📦{% endif %}
-                                {% if w.risk_profitability and w.risk_profitability != 'none' %}💸{% endif %}
-                                <span class="text-[10px] opacity-70">-{{penalty|int}}</span>
-                            </span>
-                            {% else %}
-                            <span class="text-xs text-gray-700">—</span>
-                            {% endif %}
-                        </td>
-                        <td class="px-3 py-2 text-xs text-gray-500">
-                            {{w.updated_at.strftime('%m-%d %H:%M') if w.updated_at else ''}}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="text-gray-500 text-center py-8">No watchlist loaded. Run the annual rescreen to populate.</div>
         {% endif %}
     </div>
 

@@ -14,6 +14,7 @@ from src.core.database import get_db
 from src.core.models import Position, Trade, PositionStatus, SystemState, TradeType, OrderStatus
 from src.broker.connection import is_connected
 from src.portfolio.capital_injections import get_total_invested_usd
+from src.strategy.risk import adaptive_max_positions
 
 router = APIRouter()
 
@@ -426,6 +427,10 @@ def dashboard(request: Request):
         "open_puts": len(open_puts),
         "open_stock": len(open_stock),
         "open_calls": len(open_calls),
+        # Position slots (NLV-tiered cap; counts only slot-consuming short_put + stock,
+        # matching the live check_position_limit gate)
+        "slots_used": len(open_puts) + len(open_stock),
+        "slots_max": adaptive_max_positions(account["net_liquidation"] or 0),
         "total_open": len(open_positions),
         "total_closed": len(closed_positions),
         "total_realized": total_realized,

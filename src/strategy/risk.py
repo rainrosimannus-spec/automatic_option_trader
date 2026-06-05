@@ -39,6 +39,27 @@ def _convert_to_usd(price: float, currency: str) -> float:
     return price * rate
 
 
+def adaptive_max_positions(net_liq: float) -> int:
+    """Max open slot-consuming positions (short_put + stock), scaled by NLV.
+    Single source of truth for both the live position-limit gate and the dashboard
+    'Slots' card so they can never drift apart."""
+    if net_liq < 25_000:
+        return 4
+    elif net_liq < 50_000:
+        return 6
+    elif net_liq < 100_000:
+        return 8
+    elif net_liq < 200_000:
+        return 10
+    elif net_liq < 500_000:
+        return 15
+    elif net_liq < 2_000_000:
+        return 30
+    elif net_liq < 5_000_000:
+        return 50
+    return 75
+
+
 @dataclass
 class RiskCheck:
     allowed: bool
@@ -809,22 +830,7 @@ class RiskManager:
         if net_liq <= 0:
             return RiskCheck(True)
 
-        if net_liq < 25_000:
-            max_pos = 4
-        elif net_liq < 50_000:
-            max_pos = 6
-        elif net_liq < 100_000:
-            max_pos = 8
-        elif net_liq < 200_000:
-            max_pos = 10
-        elif net_liq < 500_000:
-            max_pos = 15
-        elif net_liq < 2_000_000:
-            max_pos = 30
-        elif net_liq < 5_000_000:
-            max_pos = 50
-        else:
-            max_pos = 75
+        max_pos = adaptive_max_positions(net_liq)
 
         # Count only "slot-consuming" positions: short_put (cash committed) and
         # stock (capital deployed). Covered calls don't consume an additional slot

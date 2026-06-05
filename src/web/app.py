@@ -10,6 +10,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.web.routes import dashboard, positions, trades, controls, api, screener, suggestions
+from src.web.routes import watchlist as watchlist_route
 from src.web.routes import portfolio as portfolio_route
 from src.web.routes import consigliere as consigliere_route
 from src.web.routes import marswalk as marswalk_route
@@ -96,6 +97,7 @@ def create_app() -> FastAPI:
     app.include_router(screener.router)
     app.include_router(suggestions.router, prefix="/suggestions")
     app.include_router(portfolio_route.router)
+    app.include_router(watchlist_route.router)
     app.include_router(consigliere_route.router)
     app.include_router(marswalk_route.router)
     app.include_router(ipo_route.router, prefix="/ipo")
