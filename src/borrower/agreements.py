@@ -92,7 +92,7 @@ OPERATOR_FIELDS = [
                   help="Expands on the loan's purpose, e.g. 'general corporate purposes and trading working capital'."),
     OperatorField("default_cure_days", "Default cure period (business days)", True, "15"),
     OperatorField("minimum_net_worth", "Minimum net-worth covenant", True,
-                  "two times (2.0x) the outstanding Loan principal"),
+                  "one and a half times (1.5x) the outstanding Loan principal"),
 ]
 
 

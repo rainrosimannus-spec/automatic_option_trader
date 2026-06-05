@@ -67,7 +67,7 @@ Place of signing: {{ place_of_signing }}
 2.2. Disbursement is conditioned on:
  (a) execution of this Agreement by both Parties;
  (b) the Lender having provided the source-of-funds and beneficial-ownership documentation required under Section 12;
- (c) no material adverse change in the Borrower's circumstances between signing and disbursement.
+ (c) no material adverse change in the Borrower's circumstances between signing and disbursement. Material adverse change means a change that materially impairs the Borrower's ability to perform its payment obligations under this Agreement.
 
 2.3. Failure to disburse by {{ origination_date }} entitles the Borrower to terminate this Agreement without penalty.
 
@@ -165,8 +165,7 @@ and "material" definitions should be aligned with statutory defaults. -->
 
 8.1. Upon an Event of Default that is continuing:
  (a) the Lender may, by written notice to the Borrower, declare the entire outstanding principal and accrued interest immediately due and payable;
- (b) the Lender may exercise any other rights and remedies available under this Agreement, Estonian law, or in equity;
- (c) interest accrues on the accelerated amount at the default rate of {{ "%.2f" | format(interest_rate_pct + 5) }}% per annum from the date of acceleration until paid.
+ (b) the Lender may exercise any other rights and remedies available under this Agreement, Estonian law, or in equity.
 
 8.2. The Lender's remedies are cumulative and non-exclusive. Exercising one remedy does not preclude any other.
 
@@ -181,14 +180,13 @@ Obligations Act §§ on contractual termination and damages. -->
  (a) maintain its corporate existence in good standing;
  (b) comply in all material respects with all applicable laws, including Estonian commercial, tax, and AML laws;
  (c) maintain accurate books and records of its financial position;
- (d) provide the Lender with quarterly financial summaries within 45 days of each quarter end, covering: outstanding loan obligations to all lenders, current net asset value, and material changes in the Borrower's circumstances;
+ (d) provide the Lender with quarterly financial summaries within sixty (60) days after the end of each calendar quarter, covering: (i) outstanding loan obligations to all lenders; (ii) current net asset value; and (iii) any material changes in the Borrower's circumstances. The Borrower shall not be required to prepare audited financial statements or disclose confidential commercial information, proprietary trading strategies, customer-specific information, employee compensation information, or other commercially sensitive information for the purposes of this Section;
  (e) promptly notify the Lender of any Event of Default or any circumstance reasonably expected to result in an Event of Default.
 
 9.2. While any amount remains outstanding, the Borrower shall not, without the Lender's prior written consent:
  (a) incur new senior secured debt that ranks ahead of this Loan;
- (b) make distributions, dividends, or share repurchases that would cause the Borrower's net worth to fall below {{ minimum_net_worth | default("two times (2.0x) the outstanding Loan principal") }};
- (c) sell or dispose of substantially all of its assets;
- (d) merge with or be acquired by another entity (other than a wholly-owned subsidiary structure).
+ (b) make distributions, dividends, or share repurchases that would cause the Borrower's net worth to fall below {{ minimum_net_worth | default("one and a half times (1.5x) the outstanding Loan principal") }};
+ (c) merge with or be acquired by another entity (other than a wholly-owned subsidiary structure).
 
 <!-- LAWYER REVIEW: covenant (a) "senior secured debt" — define precisely.
 Covenant (b) — net worth definition needs to match Bruno's headroom math
@@ -301,6 +299,12 @@ Email: {{ borrower.notice_email }}
 15.6. **Language.** This Agreement is executed in both Estonian and English. **In case of any discrepancy, the Estonian version controls.**
 
 15.7. **Confidentiality.** Each Party shall keep the terms of this Agreement confidential, except as required by law, regulation, or court order, or with the other Party's written consent. The Lender may disclose the existence and basic terms of the Loan to its tax advisors, auditors, and beneficial owners on a need-to-know basis.
+
+15.8. **Force Majeure.** No Party shall be deemed in breach of this Agreement or in default of any obligation (other than payment obligations already due and payable) to the extent performance is prevented, delayed, or made impracticable by circumstances beyond its reasonable control, including natural disasters, war, civil unrest, governmental actions, sanctions, failures of banking or payment systems, telecommunications outages, cyber incidents, or similar events. Any affected deadline shall be automatically extended for the duration of such event, and the affected Party shall notify the other Party as soon as reasonably practicable.
+
+15.9. In no event shall either Party be liable for indirect, consequential, special, or punitive damages arising from this Agreement.
+
+15.10. **"Net Worth"** means the Borrower's total assets minus total liabilities, calculated on a non-consolidated basis in accordance with the Borrower's ordinary accounting practices consistently applied, as reflected in the most recent management accounts.
 
 ---
 
