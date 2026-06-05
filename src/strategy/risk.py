@@ -48,7 +48,7 @@ def adaptive_max_positions(net_liq: float) -> int:
     elif net_liq < 50_000:
         return 6
     elif net_liq < 100_000:
-        return 8
+        return 10
     elif net_liq < 200_000:
         return 10
     elif net_liq < 500_000:
@@ -812,7 +812,9 @@ class RiskManager:
         Tiers:
           NLV < $25K   → 4 positions
           NLV < $50K   → 6 positions
-          NLV < $100K  → 8 positions
+          NLV < $100K  → 10 positions   # 2026-06-03: was 8 — count cap was pinning
+                                         # well-funded $50-100K accounts below the
+                                         # delta/margin gates; hand throttle to those.
           NLV < $200K  → 10 positions
           NLV < $500K  → 15 positions
           NLV < $2M    → 30 positions   # was 20 — lift so big accounts can use the
