@@ -21,3 +21,24 @@ def canonical_symbol(symbol: str | None) -> str | None:
     if not symbol:
         return symbol
     return SYMBOL_ALIASES.get(symbol.upper().strip(), symbol)
+
+
+# canonical ticker -> the alias tickers that collapse into it (e.g. GOOG -> ["GOOGL"])
+_REVERSE_ALIASES: dict[str, list[str]] = {}
+for _alias, _canon in SYMBOL_ALIASES.items():
+    _REVERSE_ALIASES.setdefault(_canon, []).append(_alias)
+
+
+def alias_expand(symbols) -> set[str]:
+    """Expand a set of tickers to also include every known share-class sibling. Used to
+    build a 'do not propose' exclusion list that covers all classes of a held name, so the
+    LLM augmentation can't dodge an excluded ticker by naming its other share class."""
+    out: set[str] = set()
+    for s in symbols:
+        if not s:
+            continue
+        canon = canonical_symbol(s)
+        out.add(s)
+        out.add(canon)
+        out.update(_REVERSE_ALIASES.get(canon, []))
+    return out

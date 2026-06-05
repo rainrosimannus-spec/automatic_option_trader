@@ -44,10 +44,13 @@ except Exception:  # pragma: no cover
     log = logging.getLogger("screener")
 
 try:
-    from src.portfolio.symbols import canonical_symbol
+    from src.portfolio.symbols import canonical_symbol, alias_expand
 except Exception:  # pragma: no cover — standalone run from an unusual cwd
     def canonical_symbol(s):  # type: ignore
         return s
+
+    def alias_expand(symbols):  # type: ignore
+        return set(symbols)
 
 
 def _reject_category(reason: str) -> str:
@@ -682,6 +685,11 @@ def _get_breakthrough_candidates() -> list[dict]:
             if text.startswith("json"):
                 text = text[4:]
         candidates = json.loads(text.strip())
+        # Collapse share-class aliases (e.g. GOOGL -> GOOG) so a megacap can't slip back in
+        # under a second ticker.
+        for c in candidates:
+            if isinstance(c, dict) and c.get("symbol"):
+                c["symbol"] = canonical_symbol(c["symbol"])
         print(f"  ✅ Claude returned {len(candidates)} breakthrough candidates")
         return candidates
     except Exception as e:
@@ -732,7 +740,8 @@ def _build_growth_augmentation_prompt(
     exclusion_set: set,
 ) -> str:
     """Build the augmentation prompt for growth tier."""
-    excluded_str = ", ".join(sorted(exclusion_set)) if exclusion_set else "(none)"
+    excluded_full = alias_expand(exclusion_set)
+    excluded_str = ", ".join(sorted(excluded_full)) if excluded_full else "(none)"
 
     return f"""You're evaluating long-term compounder candidates for a curated watchlist.
 
@@ -814,7 +823,8 @@ def _build_dividend_augmentation_prompt(
 ) -> str:
     """Build the augmentation prompt for dividend tier.
     Different rubric — dividend uses dividend_total_return_score, not forward_growth_score."""
-    excluded_str = ", ".join(sorted(exclusion_set)) if exclusion_set else "(none)"
+    excluded_full = alias_expand(exclusion_set)
+    excluded_str = ", ".join(sorted(excluded_full)) if excluded_full else "(none)"
 
     def fmt_div(scores, max_rows):
         lines = ["  rank symbol     div_score  yield  cagr  payout"]
@@ -934,6 +944,12 @@ def _call_claude_for_swaps(prompt: str, label: str) -> list[dict]:
         if not isinstance(proposals, list):
             print(f"  ❌ {label} swap proposals: response was not a JSON array")
             return []
+        # Collapse share-class aliases (e.g. GOOGL -> GOOG) at the moment Claude's names enter
+        # the pipeline, so the augmentation can't reintroduce a duplicate of a name we already
+        # hold under a different ticker. Downstream dedup then drops it as already-present.
+        for p in proposals:
+            if isinstance(p, dict) and p.get("symbol"):
+                p["symbol"] = canonical_symbol(p["symbol"])
         print(f"  ✅ Claude returned {len(proposals)} {label} swap proposals")
         return proposals
     except Exception as e:
