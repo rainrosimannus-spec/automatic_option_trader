@@ -43,7 +43,7 @@ _SECTORS = {
     "CDNS": "Technology", "FSLR": "Technology", "KLAC": "Technology", "LRCX": "Technology",
     "MPWR": "Technology", "PLTR": "Technology", "VEEV": "Technology",
     # Communication
-    "GOOGL": "Communication", "META": "Communication", "NFLX": "Communication",
+    "GOOG": "Communication", "META": "Communication", "NFLX": "Communication",
     "DIS": "Communication", "CMCSA": "Communication", "T": "Communication",
     "VZ": "Communication", "TMUS": "Communication",
     # Consumer Discretionary
