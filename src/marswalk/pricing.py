@@ -58,7 +58,7 @@ def strike_grid(spot: float, lo_pct: float = 0.70, hi_pct: float = 1.30) -> list
 # simulation. ASX names would expire Thursday but the marswalk universe is
 # US-only (regimes.yaml drops 3690/ABF/XRO), so we don't emit Thursdays.
 MWF_EXPIRY_SYMBOLS = frozenset({
-    "AAPL", "MSFT", "GOOGL", "META", "AMZN", "NVDA", "TSLA", "AMD", "AVGO",
+    "AAPL", "MSFT", "GOOG", "META", "AMZN", "NVDA", "TSLA", "AMD", "AVGO",
 })
 
 
