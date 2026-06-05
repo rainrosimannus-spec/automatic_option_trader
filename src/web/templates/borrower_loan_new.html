@@ -66,15 +66,19 @@
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                     <label class="block text-xs text-gray-400 mb-1">Lender <span class="text-red-400">*</span></label>
-                    <select name="lender_id" required class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                    <select name="lender_id" id="lender_select" required class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
                         <option value="">Select a lender...</option>
                         {% for cp in counterparties %}
                             {% if cp.name != "MesiCap Technologies OÜ" %}
-                            <option value="{{ cp.id }}">{{ cp.name }}{% if cp.related_principal %} ({{ cp.related_principal }}){% endif %}</option>
+                            <option value="{{ cp.id }}" data-ready="{{ '1' if lender_ready.get(cp.id) else '0' }}" data-name="{{ cp.name }}">{{ cp.name }}{% if cp.related_principal %} ({{ cp.related_principal }}){% endif %}</option>
                             {% endif %}
                         {% endfor %}
                     </select>
                     <p class="text-xs text-gray-600 mt-1">Counterparty must already exist. <a href="/borrower/counterparties-new" class="text-amber-300/90 hover:text-amber-300">+ Add new counterparty</a></p>
+                    <p id="lender_warning" class="text-xs text-amber-300 mt-1 hidden">
+                        This company lender has no authorized signatory on file. Set "Represented by" on the
+                        <a id="lender_edit_link" href="#" class="underline hover:text-amber-200">counterparty record</a> before you can generate the agreement.
+                    </p>
                 </div>
 
                 <div>
@@ -296,6 +300,39 @@
             </div>
         </div>
 
+        <div class="bg-gray-900 border border-amber-700/40 rounded p-5">
+            <div class="flex items-center justify-between mb-1">
+                <div class="text-[10px] uppercase tracking-widest text-amber-300/80">Agreement — signatories &amp; terms</div>
+                <div class="text-[10px] uppercase tracking-widest text-gray-600">required to generate the contract</div>
+            </div>
+            <p class="text-xs text-gray-500 mb-4">
+                Creating the loan auto-generates a draft loan agreement (PDF + HTML) from these values.
+                All fields below are required — the <span class="text-gray-300">Create Loan</span> button stays disabled until they're filled.
+                The draft is editable afterwards and is <span class="text-gray-300">not</span> the signed contract.
+            </p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {% for f in operator_fields %}
+                <div class="{% if f.name in ['purpose_description', 'minimum_net_worth'] %}md:col-span-2{% endif %}">
+                    <label class="block text-xs text-gray-400 mb-1">{{ f.label }}{% if f.required %} <span class="text-red-400">*</span>{% endif %}</label>
+                    {% if f.name == 'purpose_description' or f.name == 'minimum_net_worth' %}
+                    <textarea name="{{ f.name }}" rows="2" data-agreement-required="{{ '1' if f.required else '0' }}"
+                              class="agreement-field w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">{{ f.default }}</textarea>
+                    {% elif f.name == 'default_cure_days' %}
+                    <input type="number" name="{{ f.name }}" min="0" value="{{ f.default }}" data-agreement-required="{{ '1' if f.required else '0' }}"
+                           class="agreement-field w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm tabular-nums focus:border-amber-300/50 focus:outline-none">
+                    {% else %}
+                    <input type="text" name="{{ f.name }}" value="{{ f.default }}" data-agreement-required="{{ '1' if f.required else '0' }}"
+                           class="agreement-field w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                    {% endif %}
+                    {% if f.help %}<p class="text-xs text-gray-600 mt-1">{{ f.help }}</p>{% endif %}
+                </div>
+                {% endfor %}
+            </div>
+            <p class="text-xs text-amber-300/70 mt-4">
+                Note: the v1 template is not yet reviewed by Estonian counsel — every generated draft carries a DRAFT watermark. Review/sign externally, then upload the signed PDF to activate.
+            </p>
+        </div>
+
         {% if gate_report and gate_report.new_loan_status == 'BLOCK' %}
         <div class="bg-red-950/40 border border-red-700/50 rounded p-4">
             <div class="text-sm text-red-300 mb-2 font-semibold">
@@ -312,11 +349,65 @@
 
         <div class="flex justify-between items-center pt-2">
             <a href="/borrower/loans" class="text-sm text-gray-400 hover:text-gray-300">&larr; Cancel</a>
-            <button type="submit" class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-5 py-2 rounded text-sm">
+            <button type="submit" id="create_loan_btn" disabled
+                    class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-5 py-2 rounded text-sm disabled:opacity-40 disabled:cursor-not-allowed">
                 Create Loan
             </button>
         </div>
+        <p id="create_blocked_hint" class="text-right text-xs text-gray-600 mt-1">Fill every required field (incl. the agreement section) to enable.</p>
 
     </form>
 </div>
+
+<script>
+(function () {
+    const form = document.querySelector('form[action="/borrower/loans-new"]');
+    const btn = document.getElementById('create_loan_btn');
+    const hint = document.getElementById('create_blocked_hint');
+    const lenderSel = document.getElementById('lender_select');
+    const lenderWarn = document.getElementById('lender_warning');
+    const lenderEditLink = document.getElementById('lender_edit_link');
+    if (!form || !btn) return;
+
+    // All natively-required fields + the agreement fields must be non-empty,
+    // and the selected lender must be agreement-ready (mirrors
+    // agreements.required_variables on the server).
+    function lenderReady() {
+        const opt = lenderSel ? lenderSel.options[lenderSel.selectedIndex] : null;
+        if (!opt || !opt.value) return false;
+        return opt.getAttribute('data-ready') === '1';
+    }
+
+    function refresh() {
+        let ok = true;
+        // native required fields
+        form.querySelectorAll('[required]').forEach(function (el) {
+            if (el.type === 'checkbox') return;
+            if (!String(el.value || '').trim()) ok = false;
+        });
+        // agreement fields explicitly flagged required
+        form.querySelectorAll('.agreement-field[data-agreement-required="1"]').forEach(function (el) {
+            if (!String(el.value || '').trim()) ok = false;
+        });
+        // lender signatory readiness
+        const opt = lenderSel ? lenderSel.options[lenderSel.selectedIndex] : null;
+        const hasLender = opt && opt.value;
+        if (hasLender && !lenderReady()) {
+            ok = false;
+            if (lenderWarn) {
+                lenderWarn.classList.remove('hidden');
+                if (lenderEditLink) lenderEditLink.href = '/borrower/counterparties/' + opt.value + '/edit';
+            }
+        } else if (lenderWarn) {
+            lenderWarn.classList.add('hidden');
+        }
+        btn.disabled = !ok;
+        if (hint) hint.style.display = ok ? 'none' : '';
+    }
+
+    form.addEventListener('input', refresh);
+    form.addEventListener('change', refresh);
+    refresh();
+})();
+</script>
 {% endblock %}

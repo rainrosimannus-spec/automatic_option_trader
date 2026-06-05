@@ -27,6 +27,7 @@ from src.borrower.models import (
     RepaymentStructure, LoanType, InterestRateType, DayCountConvention,
     InterestTreatment, PaymentFrequency, LoanPurpose, Counterparty,
     DocumentType, LoanDocument, PortalUser, get_session_factory,
+    LoanAgreementDraft, AgreementDraftStatus,
 )
 
 router = APIRouter()
@@ -309,6 +310,8 @@ def borrower_loan_detail(request: Request, loan_id: int):
             reverse=True,
         )
         has_agreement = any(d.document_type == DocumentType.AGREEMENT for d in documents_sorted)
+        agreement_draft = session.query(LoanAgreementDraft).filter_by(loan_id=loan.id).order_by(
+            LoanAgreementDraft.version.desc()).first()
         # Access quorum state for this loan (governance.md §3.3)
         from src.borrower.quorum import quorum_state
         qstate = quorum_state(loan, session=session)
@@ -338,6 +341,7 @@ def borrower_loan_detail(request: Request, loan_id: int):
             "documents": documents_sorted,
             "document_types": [t.value for t in DocumentType],
             "has_agreement": has_agreement,
+            "agreement_draft": agreement_draft,
             "qstate": qstate,
             "principal_has_approved": principal_has_approved,
             "current_principal": principal_now,
@@ -1221,10 +1225,19 @@ def borrower_portal_user_unlock(request: Request, pu_id: int):
 def borrower_loan_new_form(request: Request):
     """Show the New Loan form."""
     from src.borrower.loan_gates import compute_loan_gates
+    from src.borrower.agreements import OPERATOR_FIELDS
+    from src.borrower.models import CounterpartyType
     session = BrunoSession()
     try:
         counterparties = session.query(Counterparty).order_by(Counterparty.name).all()
         gate_report = compute_loan_gates()
+        # Agreement-readiness per lender, for the client-side Create-Loan gate:
+        # a COMPANY lender needs an authorized signatory before an agreement
+        # can be generated (mirrors agreements.required_variables server-side).
+        lender_ready = {
+            cp.id: not (cp.type == CounterpartyType.COMPANY and not (cp.represented_by or "").strip())
+            for cp in counterparties
+        }
         return templates.TemplateResponse("borrower_loan_new.html", {
             "request": request,
             "counterparties": counterparties,
@@ -1236,6 +1249,8 @@ def borrower_loan_new_form(request: Request):
             "interest_treatments": [t.value for t in InterestTreatment],
             "payment_frequencies": [f.value for f in PaymentFrequency],
             "currencies": ["EUR", "USD", "AUD", "GBP"],
+            "operator_fields": OPERATOR_FIELDS,
+            "lender_ready": lender_ready,
             "form_data": {},
             "errors": {},
             "gate_report": gate_report,
@@ -1274,10 +1289,23 @@ def borrower_loan_new_submit(
     notes: str = Form(""),
     initial_status: str = Form("draft"),
     override_loan_gate: bool = Form(False),
+    # Agreement operator inputs (see src/borrower/agreements.OPERATOR_FIELDS).
+    # Required to generate the agreement; the Create-Loan gate enforces them.
+    borrower_represented_by: str = Form(""),
+    borrower_title: str = Form(""),
+    borrower_notice_email: str = Form(""),
+    place_of_signing: str = Form(""),
+    purpose_description: str = Form(""),
+    default_cure_days: str = Form(""),
+    minimum_net_worth: str = Form(""),
 ):
-    """Process the New Loan form submission."""
+    """Process the New Loan form submission. Creates the loan and, in the same
+    transaction, generates the (unsigned) agreement draft. The agreement
+    operator inputs must all be present — Create Loan is gated on them."""
     from datetime import datetime
     from src.borrower.loan_gates import compute_loan_gates
+    from src.borrower import agreements
+    import json
     # Server-side gate check — recompute, do not trust client-supplied state.
     # BLOCK iff trailing trading return < 24% with sufficient history. Admin
     # can bypass by checking 'override_loan_gate'. See src/borrower/loan_gates.py.
@@ -1290,8 +1318,28 @@ def borrower_loan_new_submit(
                 "checked to acknowledge and proceed."
             ),
         )
+    operator_inputs = {
+        "borrower_represented_by": borrower_represented_by,
+        "borrower_title": borrower_title,
+        "borrower_notice_email": borrower_notice_email,
+        "place_of_signing": place_of_signing,
+        "purpose_description": purpose_description,
+        "default_cure_days": default_cure_days,
+        "minimum_net_worth": minimum_net_worth,
+    }
     session = BrunoSession()
     try:
+        lender = session.query(Counterparty).filter_by(id=lender_id).first()
+        if lender is None:
+            raise HTTPException(status_code=400, detail=f"Lender {lender_id} not found.")
+        # Gate: every required agreement variable must be present before we
+        # create the loan and generate its agreement. (loan arg unused here.)
+        missing = agreements.required_variables(None, lender, operator_inputs)
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=("Cannot create loan — the agreement needs: " + "; ".join(missing)),
+            )
         parse = lambda s: datetime.strptime(s, "%Y-%m-%d").date()
         loan = Loan(
             lender_id=lender_id,
@@ -1326,9 +1374,41 @@ def borrower_loan_new_submit(
         session.flush()
         write_audit(session, action="create", entity_type="Loan", entity_id=loan.id,
                     after=snapshot(loan), request=request)
+
+        # Generate the (unsigned) agreement draft from the template, in the
+        # same transaction. This does NOT satisfy the DRAFT -> ACTIVE gate;
+        # that still requires an uploaded signed PDF (loan_documents).
+        rendered = agreements.render_all(loan, lender, operator_inputs, session)
+        paths = agreements.write_files(loan.id, 1, rendered)
+        principal = current_principal(request)
+        draft = LoanAgreementDraft(
+            loan_id=loan.id,
+            version=1,
+            template_name=agreements.TEMPLATE_NAME,
+            template_version=agreements.TEMPLATE_VERSION,
+            variables_json=json.dumps(rendered.variables, default=str),
+            markdown_body=rendered.markdown_body,
+            html_path=paths["html"],
+            pdf_path=paths["pdf"],
+            sha256_hash=rendered.sha256,
+            status=AgreementDraftStatus.DRAFT,
+            created_by=(principal.email if principal else None),
+        )
+        session.add(draft)
+        session.flush()
+        write_audit(session, action="create", entity_type="LoanAgreementDraft",
+                    entity_id=draft.id, after=snapshot(draft), request=request)
+
         session.commit()
         session.refresh(loan)
+        log.info(f"loan_created_with_agreement loan_id={loan.id} draft_id={draft.id}")
         return RedirectResponse(url=f"/borrower/loans/{loan.id}", status_code=303)
+    except agreements.AgreementError as e:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        session.rollback()
+        raise
     except Exception as e:
         session.rollback()
         log.error(f"loan_create_error: {e}")
@@ -1485,6 +1565,8 @@ def borrower_counterparty_new_submit(
     contact_email: str = Form(""),
     contact_phone: str = Form(""),
     merit_account_id: str = Form(""),
+    represented_by: str = Form(""),
+    represented_by_title: str = Form(""),
     kyc_status: str = Form("not_required"),
     notes: str = Form(""),
 ):
@@ -1506,6 +1588,8 @@ def borrower_counterparty_new_submit(
             contact_email=contact_email.strip() or None,
             contact_phone=contact_phone.strip() or None,
             merit_account_id=merit_account_id.strip() or None,
+            represented_by=represented_by.strip() or None,
+            represented_by_title=represented_by_title.strip() or None,
             kyc_status=kyc_status.strip() or "not_required",
             notes=notes.strip() or None,
         )
@@ -1560,6 +1644,8 @@ def borrower_counterparty_edit_submit(
     contact_email: str = Form(""),
     contact_phone: str = Form(""),
     merit_account_id: str = Form(""),
+    represented_by: str = Form(""),
+    represented_by_title: str = Form(""),
     kyc_status: str = Form("not_required"),
     notes: str = Form(""),
 ):
@@ -1584,6 +1670,8 @@ def borrower_counterparty_edit_submit(
         cp.contact_email = contact_email.strip() or None
         cp.contact_phone = contact_phone.strip() or None
         cp.merit_account_id = merit_account_id.strip() or None
+        cp.represented_by = represented_by.strip() or None
+        cp.represented_by_title = represented_by_title.strip() or None
         cp.kyc_status = kyc_status.strip() or "not_required"
         cp.notes = notes.strip() or None
         write_audit(session, action="update", entity_type="Counterparty", entity_id=cp.id,
@@ -1716,6 +1804,10 @@ async def borrower_document_upload(
         # quick lookups; if multiple agreements are attached, the latest wins.
         if dtype == DocumentType.AGREEMENT:
             loan.agreement_document_path = stored.storage_path
+            # Uploading the signed agreement locks any generated draft: the
+            # draft is no longer editable once a signed copy exists.
+            from src.borrower.agreements import lock_drafts
+            lock_drafts(session, loan_id, "signed_upload")
         session.commit()
         log.info(f"loan_document_uploaded loan_id={loan_id} doc_id={doc.id} type={document_type} size={stored.size_bytes}")
         return RedirectResponse(url=f"/borrower/loans/{loan_id}", status_code=303)
@@ -1784,6 +1876,246 @@ def borrower_document_delete(request: Request, loan_id: int, doc_id: int):
         session.rollback()
         log.error(f"loan_document_delete_error: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to delete: {e}")
+    finally:
+        session.close()
+
+
+# =============================================================================
+# Generated agreement drafts (src/borrower/agreements.py). The draft is the
+# UNSIGNED, editable document generated from the template at loan creation.
+# It is NOT the signed legal artifact and does not satisfy the activation gate.
+# =============================================================================
+
+def _latest_draft(session, loan_id: int):
+    return session.query(LoanAgreementDraft).filter_by(loan_id=loan_id).order_by(
+        LoanAgreementDraft.version.desc()).first()
+
+
+@router.get("/loans/{loan_id}/agreement", response_class=HTMLResponse)
+def borrower_agreement_view(request: Request, loan_id: int):
+    """Admin view of the generated agreement draft: metadata + embedded HTML
+    + download / edit / regenerate controls."""
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+        draft = _latest_draft(session, loan_id)
+        if not draft:
+            raise HTTPException(status_code=404, detail="No agreement draft for this loan.")
+        return templates.TemplateResponse("borrower_agreement_view.html", {
+            "request": request,
+            "loan": loan,
+            "draft": draft,
+            "is_locked": draft.status == AgreementDraftStatus.LOCKED,
+        })
+    finally:
+        session.close()
+
+
+@router.get("/loans/{loan_id}/agreement.pdf")
+def borrower_agreement_pdf(request: Request, loan_id: int):
+    """Stream the generated draft PDF."""
+    from src.borrower.agreements import read_pdf
+    session = BrunoSession()
+    try:
+        draft = _latest_draft(session, loan_id)
+        if not draft or not draft.pdf_path:
+            raise HTTPException(status_code=404, detail="No agreement draft PDF.")
+        path = read_pdf(draft.pdf_path)
+        if path is None:
+            raise HTTPException(status_code=404, detail="Draft PDF missing on disk.")
+        fname = f"DRAFT-agreement-loan-{loan_id}-v{draft.version}.pdf"
+        return FileResponse(str(path), media_type="application/pdf", filename=fname)
+    finally:
+        session.close()
+
+
+@router.get("/loans/{loan_id}/agreement.html", response_class=HTMLResponse)
+def borrower_agreement_html(request: Request, loan_id: int):
+    """Serve the rendered draft HTML (used by the view page's iframe and the
+    'open in new tab' link)."""
+    from pathlib import Path as _P
+    session = BrunoSession()
+    try:
+        draft = _latest_draft(session, loan_id)
+        if not draft or not draft.html_path or not _P(draft.html_path).exists():
+            raise HTTPException(status_code=404, detail="No agreement draft HTML.")
+        return HTMLResponse(_P(draft.html_path).read_text(encoding="utf-8"))
+    finally:
+        session.close()
+
+
+@router.get("/loans/{loan_id}/agreement/edit", response_class=HTMLResponse)
+def borrower_agreement_edit_form(request: Request, loan_id: int):
+    """Edit the draft's markdown body. Refused once the draft is LOCKED."""
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+        draft = _latest_draft(session, loan_id)
+        if not draft:
+            raise HTTPException(status_code=404, detail="No agreement draft for this loan.")
+        if draft.status == AgreementDraftStatus.LOCKED:
+            raise HTTPException(status_code=409, detail="This agreement is locked (signed) and cannot be edited.")
+        return templates.TemplateResponse("borrower_agreement_edit.html", {
+            "request": request,
+            "loan": loan,
+            "draft": draft,
+        })
+    finally:
+        session.close()
+
+
+@router.post("/loans/{loan_id}/agreement/edit")
+def borrower_agreement_edit_submit(request: Request, loan_id: int, markdown_body: str = Form(...)):
+    """Save edited markdown, re-render HTML+PDF as a new version. Refused once
+    the draft is LOCKED."""
+    from src.borrower import agreements
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+        draft = _latest_draft(session, loan_id)
+        if not draft:
+            raise HTTPException(status_code=404, detail="No agreement draft for this loan.")
+        if draft.status == AgreementDraftStatus.LOCKED:
+            raise HTTPException(status_code=409, detail="This agreement is locked (signed) and cannot be edited.")
+
+        import hashlib
+        html = agreements.render_html(markdown_body, title=loan.contract_reference or f"Loan {loan.id}")
+        pdf = agreements.render_pdf(html)
+        rendered = agreements.RenderedDraft(
+            markdown_body=markdown_body, html=html, pdf_bytes=pdf,
+            sha256=hashlib.sha256(pdf).hexdigest(), variables={},
+        )
+        new_version = draft.version + 1
+        paths = agreements.write_files(loan_id, new_version, rendered)
+        before = snapshot(draft)
+        draft.version = new_version
+        draft.markdown_body = markdown_body
+        draft.html_path = paths["html"]
+        draft.pdf_path = paths["pdf"]
+        draft.sha256_hash = rendered.sha256
+        draft.status = AgreementDraftStatus.EDITED
+        write_audit(session, action="update", entity_type="LoanAgreementDraft",
+                    entity_id=draft.id, before=before, after=snapshot(draft), request=request)
+        session.commit()
+        log.info(f"agreement_draft_edited loan_id={loan_id} version={new_version}")
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}/agreement", status_code=303)
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"agreement_edit_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to save agreement: {e}")
+    finally:
+        session.close()
+
+
+@router.post("/loans/{loan_id}/agreement/regenerate")
+def borrower_agreement_regenerate(request: Request, loan_id: int):
+    """Discard manual edits and re-render fresh from the template using the
+    loan's current data + the operator inputs stored on the draft. Refused
+    once LOCKED."""
+    from src.borrower import agreements
+    import json
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+        draft = _latest_draft(session, loan_id)
+        if not draft:
+            raise HTTPException(status_code=404, detail="No agreement draft for this loan.")
+        if draft.status == AgreementDraftStatus.LOCKED:
+            raise HTTPException(status_code=409, detail="This agreement is locked (signed) and cannot be regenerated.")
+        lender = session.query(Counterparty).filter_by(id=loan.lender_id).first()
+        # Reconstruct operator inputs from the stored variables of the first draft.
+        prior = json.loads(draft.variables_json) if draft.variables_json else {}
+        b = prior.get("borrower", {})
+        operator_inputs = {
+            "borrower_represented_by": b.get("represented_by", ""),
+            "borrower_title": b.get("title", ""),
+            "borrower_notice_email": b.get("notice_email", ""),
+            "place_of_signing": prior.get("place_of_signing", ""),
+            "purpose_description": prior.get("purpose_description", ""),
+            "default_cure_days": str(prior.get("default_cure_days", "15")),
+            "minimum_net_worth": prior.get("minimum_net_worth", ""),
+        }
+        rendered = agreements.render_all(loan, lender, operator_inputs, session)
+        new_version = draft.version + 1
+        paths = agreements.write_files(loan_id, new_version, rendered)
+        before = snapshot(draft)
+        draft.version = new_version
+        draft.variables_json = json.dumps(rendered.variables, default=str)
+        draft.markdown_body = rendered.markdown_body
+        draft.html_path = paths["html"]
+        draft.pdf_path = paths["pdf"]
+        draft.sha256_hash = rendered.sha256
+        draft.status = AgreementDraftStatus.DRAFT
+        write_audit(session, action="update", entity_type="LoanAgreementDraft",
+                    entity_id=draft.id, before=before, after=snapshot(draft), request=request)
+        session.commit()
+        log.info(f"agreement_draft_regenerated loan_id={loan_id} version={new_version}")
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}/agreement", status_code=303)
+    except agreements.AgreementError as e:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception as e:
+        session.rollback()
+        log.error(f"agreement_regenerate_error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to regenerate agreement: {e}")
+    finally:
+        session.close()
+
+
+@router.post("/loans/{loan_id}/agreement/esign")
+def borrower_agreement_esign(request: Request, loan_id: int, provider: str = Form(...)):
+    """Send the generated draft to an e-sign provider (Dokobit / DocuSign).
+
+    Gated: on this dev codebase (bruno_run_integrations=False) this is a no-op
+    that explains e-sign runs on the production clone. On the clone it creates
+    the signing envelope; the signed artifact is later registered via
+    esign.register_signed_agreement (which locks the draft)."""
+    from src.borrower import esign
+    session = BrunoSession()
+    try:
+        loan = session.query(Loan).filter_by(id=loan_id).first()
+        if not loan:
+            raise HTTPException(status_code=404, detail=f"Loan {loan_id} not found")
+        draft = _latest_draft(session, loan_id)
+        if not draft:
+            raise HTTPException(status_code=404, detail="No agreement draft to send.")
+        if draft.status == AgreementDraftStatus.LOCKED:
+            raise HTTPException(status_code=409, detail="This agreement is locked (signed) — nothing to send.")
+        lender = session.query(Counterparty).filter_by(id=loan.lender_id).first()
+        signers = [{
+            "name": lender.represented_by or lender.name,
+            "email": lender.contact_email or "",
+            "phone": lender.contact_phone or "",
+        }]
+        try:
+            envelope = esign.send_for_signature(loan, draft, signers, provider)
+        except esign.ESignError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if envelope is None:
+            # Integrations disabled (dev). Tell the operator to use the external path.
+            raise HTTPException(
+                status_code=400,
+                detail=("E-sign runs only on the production clone (bruno_run_integrations). "
+                        "On this system, sign externally and upload the signed PDF/.asice via the Documents panel."),
+            )
+        log.info(f"agreement_esign_sent loan_id={loan_id} provider={provider} envelope={envelope.envelope_id}")
+        return RedirectResponse(url=f"/borrower/loans/{loan_id}/agreement", status_code=303)
+    except HTTPException:
+        raise
     finally:
         session.close()
 

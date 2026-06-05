@@ -257,6 +257,43 @@
     </div>
     {% endif %}
 
+    {# Generated (unsigned) agreement draft — distinct from the uploaded signed PDF below. #}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
+        <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Generated agreement (draft)</div>
+            {% if agreement_draft %}
+            <span class="text-xs">
+                {% if agreement_draft.status.value == 'locked' %}
+                <span class="text-gray-400">🔒 locked — {{ agreement_draft.locked_reason or 'signed' }}</span>
+                {% elif agreement_draft.status.value == 'edited' %}
+                <span class="text-blue-400">edited · v{{ agreement_draft.version }}</span>
+                {% else %}
+                <span class="text-amber-300">draft · v{{ agreement_draft.version }}</span>
+                {% endif %}
+            </span>
+            {% endif %}
+        </div>
+        {% if agreement_draft %}
+        <div class="flex flex-wrap items-center gap-3 text-sm">
+            <a href="/borrower/loans/{{ loan.id }}/agreement" class="text-amber-300/90 hover:text-amber-300">View</a>
+            <a href="/borrower/loans/{{ loan.id }}/agreement.pdf" class="text-amber-300/90 hover:text-amber-300">Download PDF</a>
+            <a href="/borrower/loans/{{ loan.id }}/agreement.html" target="_blank" class="text-gray-400 hover:text-gray-300">Open HTML</a>
+            {% if agreement_draft.status.value != 'locked' %}
+            <a href="/borrower/loans/{{ loan.id }}/agreement/edit" class="text-gray-400 hover:text-gray-300">Edit</a>
+            <form method="post" action="/borrower/loans/{{ loan.id }}/agreement/regenerate" class="inline">
+                <button type="submit" class="text-gray-400 hover:text-gray-300" onclick="return confirm('Regenerate from the template? This discards manual edits.');">Regenerate</button>
+            </form>
+            {% endif %}
+        </div>
+        <p class="text-xs text-gray-600 mt-2">
+            DRAFT — not reviewed by counsel, not the signed contract. Review/sign externally, then upload the signed PDF below to activate the loan.
+            {% if agreement_draft.status.value == 'locked' %} This draft is locked because a signed agreement is on file.{% endif %}
+        </p>
+        {% else %}
+        <p class="text-sm text-gray-500 italic">No generated draft on this loan (created before agreement generation existed).</p>
+        {% endif %}
+    </div>
+
     <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-6">
         <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
             <div class="text-[10px] uppercase tracking-widest text-gray-500">Documents ({{ documents | length }})</div>
@@ -319,8 +356,9 @@
                 </select>
             </div>
             <div>
-                <label class="block text-xs text-gray-400 mb-1">PDF file (≤ 10 MB)</label>
-                <input type="file" name="file" accept="application/pdf" required class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                <label class="block text-xs text-gray-400 mb-1">Signed file (≤ 10 MB)</label>
+                <input type="file" name="file" accept=".pdf,.asice,.sce,.bdoc,.ddoc,application/pdf" required class="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                <p class="text-xs text-gray-600 mt-1">PDF or signed container (.asice / .bdoc / .ddoc).</p>
             </div>
             <div class="md:col-span-1 flex gap-2">
                 <input type="text" name="description" placeholder="Optional description"

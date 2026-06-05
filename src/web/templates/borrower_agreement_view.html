@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}Borrower — Agreement Draft (Loan {{ loan.id }}){% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto px-4 py-6">
+
+    <div class="mb-6">
+        <p class="text-sm text-gray-500">
+            <a href="/borrower" class="hover:text-gray-300">Borrower</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <a href="/borrower/loans" class="hover:text-gray-300">Loans</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <a href="/borrower/loans/{{ loan.id }}" class="hover:text-gray-300">{{ loan.contract_reference or 'Loan ' ~ loan.id }}</a>
+            <span class="text-gray-700 mx-2">/</span>
+            <span class="text-gray-400">Agreement</span>
+        </p>
+        <h1 class="text-3xl font-semibold mt-2">Generated agreement <span class="text-gray-500 text-xl">v{{ draft.version }}</span></h1>
+    </div>
+
+    <div class="bg-amber-950/30 border border-amber-700/40 rounded p-4 mb-6">
+        <p class="text-sm text-amber-200/90 font-medium">DRAFT — not reviewed by Estonian counsel · not the signed contract</p>
+        <p class="text-xs text-gray-400 mt-1">
+            This is generated from template <code>{{ draft.template_version }}</code>. It is informational and editable until a signed
+            PDF is uploaded. To activate the loan (DRAFT → ACTIVE), upload the externally-signed agreement via the Documents panel on the
+            <a href="/borrower/loans/{{ loan.id }}" class="underline hover:text-amber-200">loan page</a>.
+        </p>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-3 mb-4">
+        <a href="/borrower/loans/{{ loan.id }}/agreement.pdf"
+           class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium px-4 py-2 rounded text-sm">Download PDF</a>
+        <a href="/borrower/loans/{{ loan.id }}/agreement.html" target="_blank"
+           class="border border-gray-700 hover:border-gray-500 text-gray-300 px-4 py-2 rounded text-sm">Open HTML in new tab</a>
+        {% if not is_locked %}
+        <a href="/borrower/loans/{{ loan.id }}/agreement/edit"
+           class="border border-gray-700 hover:border-gray-500 text-gray-300 px-4 py-2 rounded text-sm">Edit</a>
+        <form method="post" action="/borrower/loans/{{ loan.id }}/agreement/regenerate" class="inline">
+            <button type="submit" class="border border-gray-700 hover:border-gray-500 text-gray-300 px-4 py-2 rounded text-sm"
+                    onclick="return confirm('Regenerate from the template? This discards manual edits and rebuilds from current loan data.');">
+                Regenerate from template
+            </button>
+        </form>
+        {% else %}
+        <span class="text-sm text-gray-500">🔒 Locked ({{ draft.locked_reason or 'signed' }}) — editing disabled.</span>
+        {% endif %}
+        <a href="/borrower/loans/{{ loan.id }}" class="text-sm text-gray-400 hover:text-gray-300 ml-auto">&larr; Back to loan</a>
+    </div>
+
+    {% if not is_locked %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-4">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-2">Send for e-signature</div>
+        <form method="post" action="/borrower/loans/{{ loan.id }}/agreement/esign" class="flex flex-wrap items-center gap-2">
+            <select name="provider" class="bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm">
+                <option value="dokobit">Dokobit — Estonian/Baltic eID (Smart-ID, Mobiil-ID, ID-card)</option>
+                <option value="docusign">DocuSign — international</option>
+            </select>
+            <button type="submit" class="border border-gray-700 hover:border-gray-500 text-gray-300 px-4 py-2 rounded text-sm">Send</button>
+            <span class="text-xs text-gray-600">Runs on the production clone. On this system, sign externally and upload below.</span>
+        </form>
+    </div>
+    {% endif %}
+
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
+        <iframe src="/borrower/loans/{{ loan.id }}/agreement.html" class="w-full bg-white" style="height: 80vh; border: 0;"></iframe>
+    </div>
+
+</div>
+{% endblock %}
