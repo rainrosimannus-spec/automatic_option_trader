@@ -142,10 +142,13 @@ def target_weights(ranked: list[RankedName], tier_budgets: dict[str, float],
                    investable: float, per_name_cap_pct: float = 0.06,
                    max_names: dict[str, int] | None = None,
                    leader_syms: set[str] | None = None,
-                   leader_cap_pct: float | None = None) -> dict[str, float]:
-    """Target dollars per name. Within each tier, target ∝ rank_score, normalized to the
-    tier's capital budget, capped per name. Leaders (in `leader_syms`) carry the higher
-    `leader_cap_pct`; everyone else is capped at `per_name_cap_pct`."""
+                   leader_cap_pct: float | None = None,
+                   conviction_power: float = 1.0) -> dict[str, float]:
+    """Target dollars per name. Within each tier, target ∝ rank_score ** conviction_power,
+    normalized to the tier's capital budget, capped per name. `conviction_power` > 1 concentrates
+    the budget into the top-ranked names (up to the caps); 1.0 = the original near-flat weighting.
+    Leaders (in `leader_syms`) carry the higher `leader_cap_pct`; everyone else is capped at
+    `per_name_cap_pct`."""
     base_cap = per_name_cap_pct * investable
     lead_cap = (leader_cap_pct if leader_cap_pct is not None else per_name_cap_pct) * investable
     leaders = leader_syms or set()
@@ -160,7 +163,7 @@ def target_weights(ranked: list[RankedName], tier_budgets: dict[str, float],
             members = members[:max_names[tier]]
         if not members:
             continue
-        weights = {r.symbol: max(0.0, r.rank_score) for r in members}
+        weights = {r.symbol: max(0.0, r.rank_score) ** conviction_power for r in members}
         caps = {r.symbol: (lead_cap if r.symbol in leaders else base_cap) for r in members}
         alloc = _cap_redistribute(weights, budget_frac * investable, caps)
         targets.update(alloc)
@@ -260,7 +263,8 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
     investable = max(0.0, nlv) * (1 - cc.cash_buffer_pct)
     targets = target_weights(ranked, tier_alloc, investable, cc.per_name_cap_pct,
                              leader_syms=leaders,
-                             leader_cap_pct=getattr(cc, "leader_cap_pct", None))
+                             leader_cap_pct=getattr(cc, "leader_cap_pct", None),
+                             conviction_power=getattr(cc, "conviction_power", 1.0))
     out = []
     for r in ranked:
         tgt = targets.get(r.symbol, 0.0)

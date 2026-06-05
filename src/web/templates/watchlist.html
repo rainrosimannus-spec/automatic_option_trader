@@ -78,7 +78,7 @@
                     <th class="px-3 py-2 text-left">Symbol</th>
                     <th class="px-3 py-2 text-left">Tier</th>
                     <th class="px-3 py-2 text-right">Rank</th>
-                    <th class="px-3 py-2 text-right">10x</th>
+                    <th class="px-3 py-2 text-right">Quality</th>
                     <th class="px-3 py-2 text-right">Mom %ile</th>
                     <th class="px-3 py-2 text-right">Price</th>
                     <th class="px-3 py-2 text-right">Fair-price</th>
@@ -132,7 +132,7 @@
         <div class="px-4 py-10 text-center text-gray-500">No signals yet — the compounder scan hasn't run, or strategy is "classic".</div>
         {% endif %}
     </div>
-    <p class="text-xs text-gray-600 mt-3">Fair-price = blend of distance below 200-day trend and pullback from 52-week high (higher = relatively cheaper). Direct buy fires on cheap/urgent/crash; sell-put when extended (get paid to wait). Targets are conviction-weighted (∝ rank) within the 60/25/15 growth/breakthrough/dividend budgets, capped per name.</p>
+    <p class="text-xs text-gray-600 mt-3">Quality = composite fundamental score (0–100): a tier-weighted blend of quality / growth / forward-growth / valuation (dividend-total-return for the dividend tier), less risk penalties — the fundamental half of Rank, which adds momentum. Fair-price = blend of distance below 200-day trend and pullback from 52-week high (higher = relatively cheaper). Direct buy fires on cheap/urgent/crash; sell-put when extended (get paid to wait). Targets are conviction-weighted (∝ rank^power) within the 60/25/15 growth/breakthrough/dividend budgets, capped per name.</p>
 </div>
 <script>
 function filterSig() {
