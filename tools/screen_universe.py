@@ -43,6 +43,12 @@ except Exception:  # pragma: no cover
     import logging
     log = logging.getLogger("screener")
 
+try:
+    from src.portfolio.symbols import canonical_symbol
+except Exception:  # pragma: no cover — standalone run from an unusual cwd
+    def canonical_symbol(s):  # type: ignore
+        return s
+
 
 def _reject_category(reason: str) -> str:
     """Map a free-form rejection reason to a stable category for the run summary."""
@@ -153,6 +159,22 @@ def _get_growth_universe() -> dict:
         if sym not in merged[region]["symbols"]:
             merged[region]["symbols"].append(sym)
 
+    return _canonicalize_universe(merged)
+
+
+def _canonicalize_universe(merged: dict) -> dict:
+    """Collapse share-class aliases (e.g. GOOGL -> GOOG) and drop the resulting
+    duplicates, preserving order. Keeps the same company from entering the universe
+    twice under two tickers."""
+    for region in merged.values():
+        seen: set[str] = set()
+        out: list[str] = []
+        for s in region.get("symbols", []):
+            c = canonical_symbol(s)
+            if c not in seen:
+                seen.add(c)
+                out.append(c)
+        region["symbols"] = out
     return merged
 
 
@@ -187,7 +209,7 @@ def _get_dividend_universe() -> dict:
         if sym not in merged[region]["symbols"]:
             merged[region]["symbols"].append(sym)
 
-    return merged
+    return _canonicalize_universe(merged)
 
 
 DIVIDEND_CANDIDATES = {
@@ -251,7 +273,7 @@ CANDIDATE_POOLS = {
         "exchange": "SMART",
         "currency": "USD",
         "symbols": [
-            "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO",
+            "AAPL", "MSFT", "NVDA", "GOOG", "AMZN", "META", "TSLA", "AVGO",
             "CRM", "AMD", "NFLX", "ADBE", "NOW", "UBER", "PLTR", "PANW",
             "CRWD", "SHOP", "COIN", "MELI", "ANET", "DDOG", "TTD", "NET",
             "ARM", "SNOW", "ABNB", "SQ", "RIVN", "SOFI", "RBLX", "DASH",
@@ -547,7 +569,7 @@ consensus is underweighting (where the actual 10-baggers historically hide).
 
 1. The top 20 companies globally by market cap as of today. Specifically
    reject these names if considered: Apple (AAPL), Microsoft (MSFT),
-   Nvidia (NVDA), Alphabet (GOOGL), Amazon (AMZN), Meta (META), Tesla
+   Nvidia (NVDA), Alphabet (GOOG), Amazon (AMZN), Meta (META), Tesla
    (TSLA), Eli Lilly (LLY), Berkshire Hathaway (BRK.B), Saudi Aramco (2222),
    JPMorgan (JPM), Walmart (WMT), Visa (V), Mastercard (MA), TSMC (TSM),
    Broadcom (AVGO), ExxonMobil (XOM), Costco (COST), UnitedHealth (UNH),

@@ -16,6 +16,7 @@ from ib_insync import IB
 from src.core.logger import get_logger
 from src.portfolio.config import PortfolioConfig
 from src.portfolio.buyer import PortfolioBuyer
+from src.portfolio.symbols import canonical_symbol
 from src.portfolio.connection import (
     get_portfolio_ib,
     get_portfolio_lock,
@@ -422,7 +423,9 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
 
                 # Add new stocks from screener
                 for score in portfolio_universe:
-                    sym = score.symbol
+                    # Collapse share-class aliases (GOOGL -> GOOG) at the DB boundary so the
+                    # same company can never get a second watchlist row under another ticker.
+                    sym = canonical_symbol(score.symbol)
                     # breakthrough stored as tier="breakthrough", category="growth"
                     # (category only has growth/dividend for legacy compat)
                     new_category = "dividend" if score.tier == "dividend" else "growth"

@@ -45,7 +45,7 @@ growth:
     sector: Consumer Discretionary
     exchange: SMART
     currency: USD
-  - symbol: GOOGL
+  - symbol: GOOG
     name: Alphabet Inc.
     sector: Technology
     exchange: SMART

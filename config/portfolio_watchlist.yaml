@@ -601,7 +601,7 @@ growth:
     sector: Lithium/Materials
     rationale: "Lithium leader, critical EV supply chain"
 
-  - symbol: GOOGL
+  - symbol: GOOG
     name: Alphabet
     exchange: SMART
     currency: USD
