@@ -34,7 +34,7 @@ universe:
   - DECK
   - DXCM
   - FSLR
-  - GOOGL
+  - GOOG
   - HWM
   - IDXX
   - ISRG
@@ -230,14 +230,14 @@ regimes:
     category: crash
     start: "2000-03-10"
     end: "2002-10-09"
-    why: "Same 31-month window as dotcom_2000, but today's AI-era megacaps are remapped onto real dot-com bubble victims (NVDA←CSCO, META←AKAM, GOOGL←AMZN, ANET←JNPR, AVGO/ASML←AMAT, NOW/CRM/PLTR/VEEV←ORCL, BKNG/NFLX/ABNB←AMZN, MPWR/FSLR←MU, etc.). Healthcare and consumer staples (LLY, COST, MCD, IDXX, SYK, MTD, VRTX, ROL, SPGI, AZN, AAPL, ADBE, ADSK, AMD, CDNS, KLAC, LRCX, MSFT, ORCL, QCOM) keep their real 2000-02 bars — they ran flat-to-up through the bust, anchoring a realistic 'tech bubble bursts, defensives hold' regime. The engine sees today's 47-name universe with today's sectors and today's gates; only the price/IV inputs are remapped. This is the resilience answer to: 'what happens to the wheel if today's AI megacaps crash like their dot-com peers did?'"
+    why: "Same 31-month window as dotcom_2000, but today's AI-era megacaps are remapped onto real dot-com bubble victims (NVDA←CSCO, META←AKAM, GOOG←AMZN, ANET←JNPR, AVGO/ASML←AMAT, NOW/CRM/PLTR/VEEV←ORCL, BKNG/NFLX/ABNB←AMZN, MPWR/FSLR←MU, etc.). Healthcare and consumer staples (LLY, COST, MCD, IDXX, SYK, MTD, VRTX, ROL, SPGI, AZN, AAPL, ADBE, ADSK, AMD, CDNS, KLAC, LRCX, MSFT, ORCL, QCOM) keep their real 2000-02 bars — they ran flat-to-up through the bust, anchoring a realistic 'tech bubble bursts, defensives hold' regime. The engine sees today's 47-name universe with today's sectors and today's gates; only the price/IV inputs are remapped. This is the resilience answer to: 'what happens to the wheel if today's AI megacaps crash like their dot-com peers did?'"
     proxy_universe:
       # AI-era megacaps → canonical dot-com bubble victims (all SURVIVOR tickers
       # still on Yahoo today; YHOO/AOL/PCLN/JDSU/ITWO etc. are delisted)
       NVDA: CSCO     # networking king of the bubble (-89%)
       AVGO: AMAT     # semi-cap equipment (-78%)
       META: AKAM     # internet darling, -99% trough
-      GOOGL: AMZN    # consumer internet (-94%)
+      GOOG: AMZN    # consumer internet (-94%)
       ANET: CIEN     # optical networking (-95% — JNPR was the first choice but Yahoo 404s it post-HPE delisting 2025)
       ARM: INTC      # chip designer (-82%)
       BKNG: AMZN     # online-consumer
@@ -345,7 +345,7 @@ regimes:
       NVDA: INTC
       QCOM: INTC
       # Communication → T / DIS
-      GOOGL: T
+      GOOG: T
       META: DIS
       NFLX: DIS
       # Consumer Discretionary
