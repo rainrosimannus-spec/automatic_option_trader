@@ -74,6 +74,8 @@ Bruno can generate draft agreements from templates (Path 3 commitment), but **ev
 
 After 5-10 lenders have used the same template, lawyer review may become optional for standard cases — but the template itself must be lawyer-drafted and lawyer-approved before first use.
 
+**Template review status (record):** On 2026-06-06, principal Rain Rosimannus confirmed the external-lender loan-agreement template has been reviewed by Estonian counsel. It was promoted from `v1-draft` to the reviewed production template `loan_agreement_external_v2.md` (`TEMPLATE_VERSION = "v2"`). Bruno consequently renders it **without** the DRAFT banner/watermark (gated on `agreements.TEMPLATE_REVIEWED`), producing a clean, signable PDF. Each new external lender's first contract still follows the sign-externally-then-upload flow; the per-lender first-contract review in the list above remains good practice. Any future un-reviewed template must carry a `-draft` version suffix, which re-engages the watermark guard automatically.
+
 ## Contract template requirements (when Bruno generates them)
 
 Each generated contract must include:

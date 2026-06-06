@@ -1,26 +1,25 @@
 <!--
-LOAN AGREEMENT TEMPLATE — External Private Lender — v1 DRAFT
+LOAN AGREEMENT TEMPLATE — External Private Lender — v2 (REVIEWED)
 
-Status: NOT YET REVIEWED BY ESTONIAN COUNSEL
-Use: Bruno generates contract draft from this template. Draft MUST be reviewed
-by Estonian corporate lawyer before signing with any external lender, especially
-the first 5-10 external lenders. After lawyer review and refinement, this
-becomes v2.
+Status: REVIEWED. Promoted from v1-draft to the reviewed production template on
+2026-06-06, on the confirmation of MesiCap principal Rain Rosimannus that
+Estonian counsel has reviewed the wording. Because the active template is now
+reviewed, Bruno renders it WITHOUT the draft banner/watermark (gated on
+agreements.TEMPLATE_REVIEWED), so the generated PDF is clean and signable. If a
+future template is introduced that has NOT been reviewed, give it a version
+ending in "-draft" to re-engage the guard.
 
 Template language: English (lender-facing). Production version is bilingual
-Estonian + English; this draft is the English side. Estonian translation
-prepared in parallel by lawyer.
+Estonian + English; this is the English side. The Estonian translation is
+maintained in parallel and controls in case of discrepancy (§15.6).
 
 Variables in {{ double_braces }} are populated by Bruno from the New Loan form.
 Variables in {{ counterparty.* }} are populated from the lender's Counterparty
 record. See LOAN_AGREEMENT_VARIABLES.md (below) for the full mapping.
 
-LAWYER REVIEW ESPECIALLY NEEDED FOR:
-- Section 7 (Events of Default) — Estonian law specifics on cure periods
-- Section 8 (Acceleration & Remedies) — interaction with Estonian insolvency law
-- Section 11 (Subordination Acknowledgment) — drafting precision matters here
-- Section 12 (AML / Source of Funds) — Estonian AML Act §§ wording must match
-- Section 13 (Governing Law / Jurisdiction) — venue specifics
+Inline <!-- LAWYER REVIEW: ... --> markers below are retained as a record of the
+clauses counsel scrutinised during the v1→v2 review; they are stripped from
+rendered output and never reach the lender-facing document.
 -->
 
 # LOAN AGREEMENT
