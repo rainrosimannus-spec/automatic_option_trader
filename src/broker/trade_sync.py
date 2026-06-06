@@ -544,19 +544,8 @@ def sync_ibkr_positions() -> int:
                              symbol=pos.symbol, strike=pos.strike, expiry=pos.expiry)
                     tracked_keys.add(key)
                     continue
-                # Short put assignment: put vanishes, stock appears. Defer so the
-                # wheel can transition put → stock + covered-call. Calls don't get
-                # "secretly assigned" via stock — covered calls always have stock
-                # behind them, so stock-presence isn't evidence the call is open.
-                if pos.position_type == "short_put" and \
-                   ibkr_stock_positions.get(pos.symbol, 0) >= 100 * pos.quantity:
-                    log.info("position_sync_skipped_assignment",
-                             symbol=pos.symbol, strike=pos.strike,
-                             stock_qty=ibkr_stock_positions.get(pos.symbol, 0))
-                    tracked_keys.add(key)
-                    continue
-
-                # Decide CLOSED vs EXPIRED vs defer from authoritative signals:
+                # Decide CLOSED vs EXPIRED vs assignment vs defer from
+                # authoritative IBKR signals:
                 #   - closing fill (BUY_*) present  → CLOSED at fill time
                 #   - past expiry                   → EXPIRED
                 #   - neither yet                   → defer one cycle (sync race)
@@ -576,6 +565,22 @@ def sync_ibkr_positions() -> int:
                     .first()
                 )
                 expiry_passed = bool(pos.expiry) and pos.expiry < _date.today().strftime("%Y%m%d")
+
+                # Short put assignment: put vanishes, stock appears. Defer so the
+                # wheel can transition put → stock + covered-call. But ONLY when
+                # IBKR did NOT book a buy-to-close: a worthless expiry IS booked
+                # as a BUY_PUT (~$0), so a closing fill rules out assignment.
+                # Stock presence alone isn't evidence — a covered call on the same
+                # symbol always has stock behind it (this caused worthless-expired
+                # puts to be misread as assigned). Calls don't get "secretly
+                # assigned" via stock for the same reason.
+                if pos.position_type == "short_put" and not closing_fill and \
+                   ibkr_stock_positions.get(pos.symbol, 0) >= 100 * pos.quantity:
+                    log.info("position_sync_skipped_assignment",
+                             symbol=pos.symbol, strike=pos.strike,
+                             stock_qty=ibkr_stock_positions.get(pos.symbol, 0))
+                    tracked_keys.add(key)
+                    continue
 
                 if closing_fill:
                     pos.status = PositionStatus.CLOSED

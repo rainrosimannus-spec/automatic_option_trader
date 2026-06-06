@@ -88,13 +88,40 @@ class WheelManager:
             today = datetime.now().strftime("%Y%m%d")
 
             for put_pos in expired_puts:
-                # Check if expiry has passed
-                if put_pos.expiry and put_pos.expiry <= today:
+                # Only act once the expiry day has fully PASSED (strict <).
+                # Comparing <= today fires at 00:00 ET on expiry day, before the
+                # option has actually expired — premature. Matches trade_sync.
+                if put_pos.expiry and put_pos.expiry < today:
                     symbol = put_pos.symbol
-                    shares = stock_positions.get(symbol, 0)
 
+                    # IBKR is the source of truth. A worthless expiry is booked
+                    # by IBKR as a buy-to-close (BUY_PUT, ~$0). If such a closing
+                    # fill exists, the put was NOT assigned — let trade_sync mark
+                    # it EXPIRED/CLOSED. Stock presence alone is NOT evidence of
+                    # assignment: a covered call on the same symbol always has
+                    # stock behind it, which previously caused worthless-expired
+                    # puts to be misread as assigned.
+                    closing_fill = (
+                        db.query(Trade)
+                        .filter(
+                            Trade.symbol == symbol,
+                            Trade.strike == put_pos.strike,
+                            Trade.expiry == put_pos.expiry,
+                            Trade.trade_type == TradeType.BUY_PUT,
+                            Trade.order_status == OrderStatus.FILLED,
+                            Trade.created_at >= put_pos.opened_at,
+                        )
+                        .first()
+                    )
+                    if closing_fill:
+                        log.info("put_expiry_worthless_ibkr_confirmed",
+                                 symbol=symbol, strike=put_pos.strike,
+                                 expiry=put_pos.expiry)
+                        continue
+
+                    shares = stock_positions.get(symbol, 0)
                     if shares >= 100 * put_pos.quantity:
-                        # Assignment detected — IBKR confirms stock appeared
+                        # No buy-to-close + shares delivered → genuine assignment.
                         self._handle_assignment(db, put_pos, symbol)
                         assigned_symbols.append(symbol)
                     else:
@@ -134,20 +161,31 @@ class WheelManager:
         put_pos.status = PositionStatus.ASSIGNED
         put_pos.closed_at = datetime.utcnow()
 
-        # Record assignment trade
-        trade = Trade(
-            position_id=put_pos.id,
-            symbol=symbol,
-            trade_type=TradeType.ASSIGNMENT,
-            strike=put_pos.strike or 0,
-            expiry=put_pos.expiry or "",
-            premium=0,
-            quantity=put_pos.quantity,
-            fill_price=put_pos.strike or 0,
-            order_status=OrderStatus.FILLED,
-            notes="Put assigned — received 100 shares",
+        # Record assignment trade — but only once. Previously this inserted a
+        # fresh ASSIGNMENT row on every check_assignments cycle (the put kept
+        # being reopened by trade_sync while still live in IBKR), producing
+        # dozens of duplicates. Dedupe on (position_id, ASSIGNMENT).
+        existing_assignment = (
+            db.query(Trade)
+            .filter(
+                Trade.position_id == put_pos.id,
+                Trade.trade_type == TradeType.ASSIGNMENT,
+            )
+            .first()
         )
-        db.add(trade)
+        if not existing_assignment:
+            db.add(Trade(
+                position_id=put_pos.id,
+                symbol=symbol,
+                trade_type=TradeType.ASSIGNMENT,
+                strike=put_pos.strike or 0,
+                expiry=put_pos.expiry or "",
+                premium=0,
+                quantity=put_pos.quantity,
+                fill_price=put_pos.strike or 0,
+                order_status=OrderStatus.FILLED,
+                notes="Put assigned — received 100 shares",
+            ))
 
         # Idempotency guard: skip stock Position creation if one already exists
         # for this symbol with the expected quantity. Defensive against race
