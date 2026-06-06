@@ -46,3 +46,18 @@ def to_eur(amount: Optional[float], currency: Optional[str]) -> Optional[float]:
         # will notice the threshold is checked at face value
         return float(amount)
     return float(amount) * rate
+
+
+def from_eur(amount: Optional[float], currency: Optional[str]) -> Optional[float]:
+    """Best-effort conversion of an EUR `amount` into `currency` — the inverse
+    of `to_eur`. Reuses `to_eur`'s rate (incl. env override) so a round-trip is
+    consistent. Returns None on missing amount; identity on unknown currency."""
+    if amount is None:
+        return None
+    code = (currency or "EUR").upper()
+    if code == "EUR":
+        return float(amount)
+    rate = to_eur(1.0, code)        # EUR per 1 unit of `currency`
+    if not rate:
+        return float(amount)
+    return float(amount) / rate

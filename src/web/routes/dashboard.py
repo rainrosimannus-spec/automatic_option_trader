@@ -403,6 +403,33 @@ def dashboard(request: Request):
     except Exception:
         pass
 
+    # IBKR NLV ignores MesiCap's external borrowings. Surface true net equity by
+    # subtracting the full Bruno loan book (principal + accrued interest, all
+    # active loans incl. shareholder/subordinated). Bruno is a separate, optional
+    # DB (data/bruno.db) — fail soft so a hiccup there never breaks the dashboard;
+    # the card just disappears. Account base currency is USD, so convert EUR->USD.
+    debt_card = None
+    try:
+        from src.borrower.models import get_session_factory
+        from src.borrower.headroom import total_obligations
+        from src.borrower.fx import from_eur
+        bruno = get_session_factory()()
+        try:
+            obl = total_obligations(bruno)
+        finally:
+            bruno.close()
+        total_debt_usd = from_eur(obl["total_owed_eur"], "USD") or 0.0
+        nlv_usd = account["net_liquidation"] or 0.0
+        debt_card = {
+            "total_debt": total_debt_usd,
+            "net_of_debt": nlv_usd - total_debt_usd,
+            "loan_count": obl["loan_count"],
+            "accrued": from_eur(obl["accrued_interest_eur"], "USD") or 0.0,
+        }
+    except Exception as e:
+        from src.core.logger import get_logger
+        get_logger(__name__).warning("nlv_net_of_debt_card_error", error=str(e))
+
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "connected": is_connected(),
@@ -451,6 +478,7 @@ def dashboard(request: Request):
         "unrealized_pnl": account["unrealized_pnl"],
         "margin_used_pct": account["margin_used_pct"],
         "maintenance_margin": account["maintenance_margin"],
+        "debt_card": debt_card,
         # Performance chart
         "perf_labels": performance["labels"],
         "perf_actual": performance["actual"],

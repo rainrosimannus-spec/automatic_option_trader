@@ -51,6 +51,8 @@ from src.borrower.models import (
     Counterparty, CounterpartyTier, HeadroomInputs, Loan, LoanStatus,
     MovementType, Payment, PaymentStatus, get_session_factory,
 )
+from src.borrower.accrual import compute_accrual
+from src.borrower.fx import to_eur
 
 
 # === Thresholds (governance.md / CLAUDE.md) ===
@@ -171,6 +173,32 @@ def aggregate_debt(session, as_of: Optional[date] = None) -> dict:
         "subordinated_debt_eur": sub,
         "cash_debt_service_12m_eur": cash_service,
         "total_debt_eur": external + sub,
+    }
+
+
+def total_obligations(session, as_of: Optional[date] = None) -> dict:
+    """Total amount owed across all ACTIVE loans = outstanding principal +
+    accrued interest, FX-converted to EUR. Includes BOTH external lenders and
+    shareholder/subordinated loans — every real liability MesiCap carries.
+
+    Unlike `aggregate_debt` (principal-only, face-value), this reuses
+    `compute_accrual` so capitalized/accrued interest is included, and converts
+    each loan via `to_eur` so multi-currency loans sum correctly. Intended for
+    the trading dashboard's "NLV net of debt" card."""
+    as_of = as_of or date.today()
+    principal_eur = 0.0
+    interest_eur = 0.0
+    loans = session.query(Loan).filter(Loan.status == LoanStatus.ACTIVE).all()
+    for loan in loans:
+        acc = compute_accrual(loan, as_of)
+        principal_eur += to_eur(acc.principal_at_date, loan.currency) or 0.0
+        interest_eur += to_eur(acc.accrued_interest, loan.currency) or 0.0
+    return {
+        "as_of": as_of,
+        "loan_count": len(loans),
+        "principal_eur": principal_eur,
+        "accrued_interest_eur": interest_eur,
+        "total_owed_eur": principal_eur + interest_eur,
     }
 
 
