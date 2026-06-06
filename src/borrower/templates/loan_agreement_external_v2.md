@@ -54,7 +54,7 @@ Place of signing: {{ place_of_signing }}
 
 1.1. The Lender agrees to make available to the Borrower a loan in the principal amount of **{{ principal_max | currency_words }} ({{ "{:,.2f}".format(principal_max) }} {{ currency }})** (the "Loan").
 
-1.2. The Loan is for the purpose of {{ purpose_description }}. The Borrower may use the proceeds for general corporate purposes consistent with this purpose, including but not limited to working capital, investment activities, and operational expenses.
+1.2. The Loan is provided for the purpose of {{ purpose_description }}. The Loan is structured as a {{ terms_summary }}. The Borrower may use the proceeds for general corporate purposes consistent with this purpose, including but not limited to working capital, investment activities, and operational expenses.
 
 1.3. The Loan is **non-transferable**. The Lender may not assign, sell, pledge, or otherwise transfer this Loan or any rights hereunder to any third party without the prior written consent of the Borrower. Any purported transfer without such consent is void.
 

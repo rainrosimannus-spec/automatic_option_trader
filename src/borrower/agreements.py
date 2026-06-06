@@ -176,6 +176,33 @@ def resolve_variables(loan, counterparty, operator_inputs: dict, session) -> dic
 
     sh_total, sh_count = _shareholder_totals(session, exclude_loan_id=loan.id)
 
+    # Plain-language economic summary for clause 1.2, generated from the
+    # structured fields. States the rate as ANNUAL and the cadence as payments
+    # so a reader can never parse the headline as "7% per month".
+    _months = _months_between(loan.origination_date, loan.maturity_date)
+    if _months and _months % 12 == 0:
+        _term = f"{_months // 12}-year"
+    elif _months:
+        _term = f"{_months}-month"
+    else:
+        _term = ""
+    _structure_word = {
+        "bullet": "bullet loan",
+        "amortizing": "amortizing loan",
+        "revolving": "revolving facility",
+    }.get(loan.repayment_structure.value, f"{loan.repayment_structure.value.replace('_', ' ')} loan")
+    _rate_label = f"{(loan.interest_rate_annual or 0.0) * 100.0:g}% annual interest"
+    _freq_word = freq.value.replace("_", " ")
+    _treat = loan.interest_treatment.value
+    if _treat == "capitalizing":
+        _pay_label = "interest capitalized and paid at maturity"
+    elif _treat == "amortizing":
+        _pay_label = f"{_freq_word} amortizing installments"
+    else:
+        _pay_label = f"{_freq_word} interest payments"
+    terms_summary = " ".join(p for p in [_term, _structure_word] if p) + \
+        f" at {_rate_label}, with {_pay_label}"
+
     def _int_or(v, fallback):
         try:
             return int(str(v).strip())
@@ -226,6 +253,7 @@ def resolve_variables(loan, counterparty, operator_inputs: dict, session) -> dic
         # Operator inputs
         "place_of_signing": (operator_inputs.get("place_of_signing") or "").strip(),
         "purpose_description": (operator_inputs.get("purpose_description") or "").strip(),
+        "terms_summary": terms_summary,
         "default_cure_days": _int_or(operator_inputs.get("default_cure_days"), 15),
         "minimum_net_worth": (operator_inputs.get("minimum_net_worth") or "").strip(),
         # Subordination disclosure (computed)
