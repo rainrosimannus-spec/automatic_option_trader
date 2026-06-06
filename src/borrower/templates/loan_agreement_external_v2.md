@@ -17,9 +17,10 @@ Variables in {{ double_braces }} are populated by Bruno from the New Loan form.
 Variables in {{ counterparty.* }} are populated from the lender's Counterparty
 record. See LOAN_AGREEMENT_VARIABLES.md (below) for the full mapping.
 
-Inline <!-- LAWYER REVIEW: ... --> markers below are retained as a record of the
-clauses counsel scrutinised during the v1→v2 review; they are stripped from
-rendered output and never reach the lender-facing document.
+Inline "LAWYER REVIEW:" markers below are retained as a record of the clauses
+counsel scrutinised during the v1→v2 review; they are stripped from rendered
+output and never reach the lender-facing document. (This sentence must not
+contain literal comment delimiters, or it would close this block early.)
 -->
 
 # LOAN AGREEMENT
