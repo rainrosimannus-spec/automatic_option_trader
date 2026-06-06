@@ -47,12 +47,17 @@
         </div>
     </div>
     {% if debt_card %}
-    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4" title="IBKR NLV minus all external loan obligations (principal + accrued interest), converted to USD. Indicative — FX is approximate.">
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4" title="IBKR NLV minus loan obligations (principal + accrued interest), converted to USD. 'all debt' = every active loan incl. shareholder; 'outside only' = non-shareholder lenders. Indicative — FX is approximate.">
         <div class="text-xs text-gray-500 mb-1">NLV net of debt</div>
-        <div class="text-xl font-bold font-mono {{ 'text-gray-100' if debt_card.net_of_debt >= 0 else 'text-red-400' }}">
-            ${{ "{:,.0f}".format(debt_card.net_of_debt) }}
+        <div class="flex justify-between items-baseline">
+            <span class="text-xs text-gray-500">all debt</span>
+            <span class="text-base font-bold font-mono {{ 'text-gray-100' if debt_card.net_all >= 0 else 'text-red-400' }}">${{ "{:,.0f}".format(debt_card.net_all) }}</span>
         </div>
-        <div class="text-xs text-gray-600 mt-0.5">− ${{ "{:,.0f}".format(debt_card.total_debt) }} debt · {{ debt_card.loan_count }} loans</div>
+        <div class="flex justify-between items-baseline mt-0.5">
+            <span class="text-xs text-gray-500">outside only</span>
+            <span class="text-base font-bold font-mono {{ 'text-gray-100' if debt_card.net_outside >= 0 else 'text-red-400' }}">${{ "{:,.0f}".format(debt_card.net_outside) }}</span>
+        </div>
+        <div class="text-xs text-gray-600 mt-0.5">debt − ${{ "{:,.0f}".format(debt_card.total_debt) }} all · ${{ "{:,.0f}".format(debt_card.external_debt) }} outside</div>
     </div>
     {% endif %}
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">

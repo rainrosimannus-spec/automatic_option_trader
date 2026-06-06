@@ -419,12 +419,17 @@ def dashboard(request: Request):
         finally:
             bruno.close()
         total_debt_usd = from_eur(obl["total_owed_eur"], "USD") or 0.0
+        external_debt_usd = from_eur(obl["external_owed_eur"], "USD") or 0.0
         nlv_usd = account["net_liquidation"] or 0.0
         debt_card = {
+            # Two net-equity figures: NLV net of ALL debt, and net of OUTSIDE
+            # (non-shareholder) lender debt only. external is $0 until Phase 3.
+            "net_all": nlv_usd - total_debt_usd,
+            "net_outside": nlv_usd - external_debt_usd,
             "total_debt": total_debt_usd,
-            "net_of_debt": nlv_usd - total_debt_usd,
+            "external_debt": external_debt_usd,
             "loan_count": obl["loan_count"],
-            "accrued": from_eur(obl["accrued_interest_eur"], "USD") or 0.0,
+            "external_loan_count": obl["external_loan_count"],
         }
     except Exception as e:
         from src.core.logger import get_logger

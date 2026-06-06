@@ -183,22 +183,34 @@ def total_obligations(session, as_of: Optional[date] = None) -> dict:
 
     Unlike `aggregate_debt` (principal-only, face-value), this reuses
     `compute_accrual` so capitalized/accrued interest is included, and converts
-    each loan via `to_eur` so multi-currency loans sum correctly. Intended for
-    the trading dashboard's "NLV net of debt" card."""
+    each loan via `to_eur` so multi-currency loans sum correctly. Also returns
+    the outside-lender (non-shareholder) subtotal (`external_owed_eur`) so the
+    dashboard can show net-of-all-debt and net-of-outside-debt side by side.
+    Intended for the trading dashboard's "NLV net of debt" card."""
     as_of = as_of or date.today()
     principal_eur = 0.0
     interest_eur = 0.0
+    external_owed_eur = 0.0      # outside (non-shareholder) lenders only
+    external_loan_count = 0
     loans = session.query(Loan).filter(Loan.status == LoanStatus.ACTIVE).all()
     for loan in loans:
         acc = compute_accrual(loan, as_of)
+        owed = (to_eur(acc.principal_at_date, loan.currency) or 0.0) \
+            + (to_eur(acc.accrued_interest, loan.currency) or 0.0)
         principal_eur += to_eur(acc.principal_at_date, loan.currency) or 0.0
         interest_eur += to_eur(acc.accrued_interest, loan.currency) or 0.0
+        lender = loan.lender
+        if lender is not None and lender.tier != CounterpartyTier.SHAREHOLDER:
+            external_owed_eur += owed
+            external_loan_count += 1
     return {
         "as_of": as_of,
         "loan_count": len(loans),
         "principal_eur": principal_eur,
         "accrued_interest_eur": interest_eur,
         "total_owed_eur": principal_eur + interest_eur,
+        "external_owed_eur": external_owed_eur,
+        "external_loan_count": external_loan_count,
     }
 
 
