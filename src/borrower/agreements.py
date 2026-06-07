@@ -14,12 +14,23 @@ DRAFT -> ACTIVE activation gate. They live in their own table
 (LoanAgreementDraft) and on disk under data/agreement_drafts/{loan_id}/, kept
 separate from the uploaded-PDF store in documents.py (data/contracts/).
 
-LEGAL GUARD (review-gated): the draft banner + watermark exist to stop an
-un-reviewed template being mistaken for a signable contract. They are emitted
-ONLY while the active template is unreviewed. The current template is the
-counsel-reviewed v2 (TEMPLATE_REVIEWED == True), so it renders clean and
-signable. Re-engaging the guard for a future un-reviewed template is a
-one-liner: give it a TEMPLATE_VERSION ending in "-draft". See LEGAL_CONTEXT.md.
+BILINGUAL: the agreement is maintained in Estonian and English (§15.6 — the
+Estonian version controls in case of discrepancy). There is one template file
+per language with identical Jinja variable names; resolve_variables() localises
+the prose fields so a single context renders either side. The language is
+chosen per loan, defaulting to the lender's jurisdiction (default_language_for:
+Estonian for an Estonian lender, English otherwise). The chosen template's
+filename is recorded on the draft, so regenerate/edit re-render in the same
+language (language_for_template()).
+
+LEGAL GUARD (review-gated, per language): the draft banner + watermark exist to
+stop an un-reviewed template being mistaken for a signable contract. They are
+emitted ONLY while the active template is unreviewed (is_template_reviewed()).
+The English v2 is counsel-reviewed and renders clean/signable; the Estonian
+translation is freshly authored and carries a "-draft" version, so it renders
+with the guard until counsel signs off (then drop the "-draft" suffix in
+TEMPLATE_VERSIONS, exactly as was done for English on 2026-06-06). See
+LEGAL_CONTEXT.md.
 """
 from __future__ import annotations
 
@@ -49,14 +60,79 @@ from src.borrower.models import (
 
 DRAFTS_ROOT = Path("data/agreement_drafts")
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
-TEMPLATE_NAME = "loan_agreement_external_v2.md"
-TEMPLATE_VERSION = "v2"
 
-# The draft banner + watermark are a guard against an *un-reviewed* template
-# being mistaken for a signable contract. They render only while the active
-# template is unreviewed. Derive that from the version string so the guard
-# auto-engages for any future "-draft" template without touching render code.
-TEMPLATE_REVIEWED = not TEMPLATE_VERSION.endswith("-draft")
+# Bilingual production: the agreement is maintained in Estonian and English
+# (§15.6 — the Estonian version controls in case of discrepancy). One template
+# file per language; same Jinja variable names, so a single resolved context
+# renders either side. Language is chosen per loan (operator picks, defaulting
+# to the lender's jurisdiction — see default_language_for()).
+DEFAULT_LANGUAGE = "en"
+LANGUAGES = ("et", "en")
+LANGUAGE_LABELS = {"et": "Estonian (eesti keel)", "en": "English"}
+TEMPLATE_NAMES = {
+    "en": "loan_agreement_external_v2.md",
+    "et": "loan_agreement_external_v2_et.md",
+}
+# Per-language version string. A version ending in "-draft" marks an UN-reviewed
+# template and auto-engages the draft banner/watermark guard (see below). The
+# English v2 was promoted to reviewed on 2026-06-06; the Estonian translation is
+# freshly authored and NOT yet counsel-reviewed, so it carries "-draft" and
+# renders with the guard until counsel signs off (then drop the "-draft" suffix,
+# exactly as was done for English).
+TEMPLATE_VERSIONS = {"en": "v2", "et": "v2-et-draft"}
+
+# Back-compat module-level defaults (English). Existing callers that reference
+# the singular constants keep working; language-aware callers use the helpers.
+TEMPLATE_NAME = TEMPLATE_NAMES[DEFAULT_LANGUAGE]
+TEMPLATE_VERSION = TEMPLATE_VERSIONS[DEFAULT_LANGUAGE]
+
+
+def _norm_lang(language: Optional[str]) -> str:
+    lang = (language or DEFAULT_LANGUAGE).strip().lower()
+    return lang if lang in TEMPLATE_NAMES else DEFAULT_LANGUAGE
+
+
+def template_name_for(language: Optional[str]) -> str:
+    return TEMPLATE_NAMES[_norm_lang(language)]
+
+
+def template_version_for(language: Optional[str]) -> str:
+    return TEMPLATE_VERSIONS[_norm_lang(language)]
+
+
+def language_for_template(template_name: Optional[str]) -> str:
+    """Reverse-map a stored template filename to its language. Used by
+    regenerate/edit so a draft re-renders in the language it was created in."""
+    for lang, name in TEMPLATE_NAMES.items():
+        if name == template_name:
+            return lang
+    return DEFAULT_LANGUAGE
+
+
+def is_template_reviewed(language: Optional[str]) -> bool:
+    """The draft banner + watermark are a guard against an *un-reviewed* template
+    being mistaken for a signable contract. They render only while the active
+    template is unreviewed. Derive that from the version string so the guard
+    auto-engages for any "-draft" template without touching render code."""
+    return not template_version_for(language).endswith("-draft")
+
+
+_ESTONIA_HINTS = ("estonia", "eesti")
+
+
+def default_language_for(counterparty) -> str:
+    """Default agreement language for a lender: Estonian when the lender is in
+    Estonia, English otherwise. Prefers the structured `country` field (ISO-2,
+    defaults to 'EE'); falls back to scanning the free-text address."""
+    country = (getattr(counterparty, "country", "") or "").strip().upper()
+    if country:
+        return "et" if country == "EE" else "en"
+    address = (getattr(counterparty, "address", "") or "").lower()
+    return "et" if any(h in address for h in _ESTONIA_HINTS) else "en"
+
+
+# Back-compat: True iff the default-language (English) template is reviewed.
+TEMPLATE_REVIEWED = is_template_reviewed(DEFAULT_LANGUAGE)
 
 # Map PaymentFrequency -> (period in months, singular unit word for the prose).
 # AT_MATURITY has no recurring period.
@@ -76,6 +152,84 @@ _FREQ_UNIT = {
 }
 
 _CURRENCY_WORD = {"EUR": "euro", "USD": "US dollars", "GBP": "pounds sterling", "AUD": "Australian dollars"}
+
+# ---------------------------------------------------------------------------
+# Estonian localisation. num2words has no Estonian support, and the prose words
+# below ("monthly", "fixed", "bullet loan", …) are English in the EN template;
+# the Estonian template needs them in Estonian. Same Jinja variable names — the
+# VALUES are localised here so one context dict renders either template.
+# ---------------------------------------------------------------------------
+_RATE_TYPE_ET = {"fixed": "fikseeritud", "floating": "ujuv", "zero": "null"}
+_FREQ_ADVERB_ET = {
+    "monthly": "igakuiselt",
+    "quarterly": "kord kvartalis",
+    "semiannual": "kord poolaastas",
+    "annual": "kord aastas",
+    "at_maturity": "lõpptähtajal",
+}
+_FREQ_UNIT_ET = {
+    PaymentFrequency.MONTHLY: "kuu",
+    PaymentFrequency.QUARTERLY: "kvartali",
+    PaymentFrequency.SEMIANNUAL: "poolaasta",
+    PaymentFrequency.ANNUAL: "aasta",
+    PaymentFrequency.AT_MATURITY: "perioodi",
+}
+_STRUCTURE_WORD_ET = {
+    "bullet": "ühekordse lõppmaksega laen",
+    "amortizing": "amortiseeruv laen",
+    "revolving": "uuenev krediidiliin",
+}
+# Currency unit in the Estonian partitive (the case numbers take when counting):
+# "kaks eurot", "üheksakümmend senti".
+_CURRENCY_WORD_ET = {
+    "EUR": ("eurot", "senti"),
+    "USD": ("USA dollarit", "senti"),
+    "GBP": ("naelsterlingit", "penni"),
+    "AUD": ("Austraalia dollarit", "senti"),
+}
+
+_ET_ONES = ["null", "üks", "kaks", "kolm", "neli", "viis", "kuus", "seitse", "kaheksa", "üheksa"]
+_ET_TEENS = ["kümme", "üksteist", "kaksteist", "kolmteist", "neliteist", "viisteist",
+             "kuusteist", "seitseteist", "kaheksateist", "üheksateist"]
+_ET_TENS = {2: "kakskümmend", 3: "kolmkümmend", 4: "nelikümmend", 5: "viiskümmend",
+            6: "kuuskümmend", 7: "seitsekümmend", 8: "kaheksakümmend", 9: "üheksakümmend"}
+
+
+def _et_below_1000(n: int) -> str:
+    parts = []
+    h, rem = divmod(n, 100)
+    if h:
+        parts.append("sada" if h == 1 else _ET_ONES[h] + "sada")
+    if rem:
+        if rem < 10:
+            parts.append(_ET_ONES[rem])
+        elif rem < 20:
+            parts.append(_ET_TEENS[rem - 10])
+        else:
+            t, o = divmod(rem, 10)
+            parts.append(_ET_TENS[t])
+            if o:
+                parts.append(_ET_ONES[o])
+    return " ".join(parts)
+
+
+def _et_integer(n: int) -> str:
+    """Cardinal number in Estonian words. Correct for 0 .. billions."""
+    if n == 0:
+        return "null"
+    parts = []
+    billions, rem = divmod(n, 1_000_000_000)
+    millions, rem = divmod(rem, 1_000_000)
+    thousands, rest = divmod(rem, 1000)
+    if billions:
+        parts.append(_et_below_1000(billions) + (" miljard" if billions == 1 else " miljardit"))
+    if millions:
+        parts.append(_et_below_1000(millions) + (" miljon" if millions == 1 else " miljonit"))
+    if thousands:
+        parts.append("tuhat" if thousands == 1 else _et_below_1000(thousands) + " tuhat")
+    if rest:
+        parts.append(_et_below_1000(rest))
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -160,9 +314,62 @@ def _shareholder_totals(session, exclude_loan_id: Optional[int]) -> tuple[float,
     return total, count
 
 
-def resolve_variables(loan, counterparty, operator_inputs: dict, session) -> dict:
+def _build_terms_summary(loan, freq, language: str) -> str:
+    """Plain-language economic summary for clause 1.2, generated from the
+    structured fields. States the rate as ANNUAL and the cadence as payments so
+    a reader can never parse the headline as "7% per month". Localised."""
+    months = _months_between(loan.origination_date, loan.maturity_date)
+    pct = (loan.interest_rate_annual or 0.0) * 100.0
+    struct = loan.repayment_structure.value
+    treat = loan.interest_treatment.value
+    if language == "et":
+        if months and months % 12 == 0:
+            term = f"{months // 12}-aastane"
+        elif months:
+            term = f"{months}-kuune"
+        else:
+            term = ""
+        structure = _STRUCTURE_WORD_ET.get(struct, f"{struct.replace('_', ' ')} laen")
+        rate = f"{('%g' % pct).replace('.', ',')}% aastane intressimäär"
+        freq_word = _FREQ_ADVERB_ET.get(freq.value, freq.value)
+        if treat == "capitalizing":
+            pay = "intress kapitaliseeritakse ja makstakse lõpptähtajal"
+        elif treat == "amortizing":
+            pay = f"{freq_word} tasutavate amortiseeruvate osamaksetena"
+        else:
+            pay = f"{freq_word} tasutavate intressimaksetega"
+        head = " ".join(p for p in [term, structure] if p)
+        return f"{head}, {rate}, {pay}"
+    # English (default)
+    if months and months % 12 == 0:
+        term = f"{months // 12}-year"
+    elif months:
+        term = f"{months}-month"
+    else:
+        term = ""
+    structure = {
+        "bullet": "bullet loan",
+        "amortizing": "amortizing loan",
+        "revolving": "revolving facility",
+    }.get(struct, f"{struct.replace('_', ' ')} loan")
+    rate = f"{pct:g}% annual interest"
+    freq_word = freq.value.replace("_", " ")
+    if treat == "capitalizing":
+        pay = "interest capitalized and paid at maturity"
+    elif treat == "amortizing":
+        pay = f"{freq_word} amortizing installments"
+    else:
+        pay = f"{freq_word} interest payments"
+    return " ".join(p for p in [term, structure] if p) + f" at {rate}, with {pay}"
+
+
+def resolve_variables(loan, counterparty, operator_inputs: dict, session,
+                      language: str = DEFAULT_LANGUAGE) -> dict:
     """Build the full Jinja context for the template from the loan record, the
-    lender's counterparty record, operator inputs, and computed fields."""
+    lender's counterparty record, operator inputs, and computed fields. Prose
+    fields (rate type, payment cadence, terms summary, amount-in-words) are
+    rendered in `language`; the same variable names serve both templates."""
+    language = _norm_lang(language)
     freq = loan.payment_frequency
     period_months = _FREQ_MONTHS.get(freq)
     first_payment = (
@@ -176,32 +383,28 @@ def resolve_variables(loan, counterparty, operator_inputs: dict, session) -> dic
 
     sh_total, sh_count = _shareholder_totals(session, exclude_loan_id=loan.id)
 
-    # Plain-language economic summary for clause 1.2, generated from the
-    # structured fields. States the rate as ANNUAL and the cadence as payments
-    # so a reader can never parse the headline as "7% per month".
-    _months = _months_between(loan.origination_date, loan.maturity_date)
-    if _months and _months % 12 == 0:
-        _term = f"{_months // 12}-year"
-    elif _months:
-        _term = f"{_months}-month"
+    terms_summary = _build_terms_summary(loan, freq, language)
+
+    def _fmt_amount(value) -> str:
+        s = f"{(value or 0.0):,.2f}"          # 30,000.00 (en grouping)
+        if language == "et":                  # 30 000,00 (space group, comma decimal)
+            s = s.replace(",", " ").replace(".", ",")
+        return s
+
+    def _fmt_pct(value) -> str:
+        s = f"{(value or 0.0):.2f}"            # 11.55
+        return s.replace(".", ",") if language == "et" else s
+
+    # Localised labels for prose fields the template interpolates as-is.
+    if language == "et":
+        interest_rate_type_label = _RATE_TYPE_ET.get(
+            loan.interest_rate_type.value, loan.interest_rate_type.value)
+        payment_frequency_label = _FREQ_ADVERB_ET.get(freq.value, freq.value)
+        payment_frequency_unit_label = _FREQ_UNIT_ET.get(freq, "perioodi")
     else:
-        _term = ""
-    _structure_word = {
-        "bullet": "bullet loan",
-        "amortizing": "amortizing loan",
-        "revolving": "revolving facility",
-    }.get(loan.repayment_structure.value, f"{loan.repayment_structure.value.replace('_', ' ')} loan")
-    _rate_label = f"{(loan.interest_rate_annual or 0.0) * 100.0:g}% annual interest"
-    _freq_word = freq.value.replace("_", " ")
-    _treat = loan.interest_treatment.value
-    if _treat == "capitalizing":
-        _pay_label = "interest capitalized and paid at maturity"
-    elif _treat == "amortizing":
-        _pay_label = f"{_freq_word} amortizing installments"
-    else:
-        _pay_label = f"{_freq_word} interest payments"
-    terms_summary = " ".join(p for p in [_term, _structure_word] if p) + \
-        f" at {_rate_label}, with {_pay_label}"
+        interest_rate_type_label = loan.interest_rate_type.value.replace("_", " ")
+        payment_frequency_label = freq.value.replace("_", " ")
+        payment_frequency_unit_label = _FREQ_UNIT.get(freq, "period")
 
     def _int_or(v, fallback):
         try:
@@ -210,6 +413,7 @@ def resolve_variables(loan, counterparty, operator_inputs: dict, session) -> dic
             return fallback
 
     return {
+        "language": language,
         # Borrower (operator input)
         "borrower": {
             "represented_by": (operator_inputs.get("borrower_represented_by") or "").strip(),
@@ -230,14 +434,18 @@ def resolve_variables(loan, counterparty, operator_inputs: dict, session) -> dic
         },
         # Economic terms (loan record)
         "principal_max": loan.principal_max,
+        "principal_formatted": _fmt_amount(loan.principal_max),
+        "installment_formatted": _fmt_amount(loan.installment_amount or 0.0),
         "currency": loan.currency,
         "interest_rate_pct": (loan.interest_rate_annual or 0.0) * 100.0,
-        "interest_rate_type": loan.interest_rate_type.value.replace("_", " "),
+        "interest_rate_pct_formatted": _fmt_pct((loan.interest_rate_annual or 0.0) * 100.0),
+        "default_rate_pct_formatted": _fmt_pct((loan.interest_rate_annual or 0.0) * 100.0 + 2),
+        "interest_rate_type": interest_rate_type_label,
         "day_count_convention": loan.day_count_convention.value.replace("_", "/"),
         "interest_treatment": loan.interest_treatment.value,
         "repayment_structure": loan.repayment_structure.value,
-        "payment_frequency": freq.value.replace("_", " "),
-        "payment_frequency_unit": _FREQ_UNIT.get(freq, "period"),
+        "payment_frequency": payment_frequency_label,
+        "payment_frequency_unit": payment_frequency_unit_label,
         "payment_day_of_month": loan.payment_day_of_month or "",
         "installment_amount": loan.installment_amount or 0.0,
         "installment_count": installment_count if installment_count is not None else "",
@@ -293,32 +501,61 @@ def _to_words(amount: float, currency: str) -> str:
         return f"{num2words(whole, lang='en')} {_CURRENCY_WORD.get(cur, cur)}"
 
 
-def render_markdown(context: dict) -> str:
-    """Fill the template with the context. Strips the developer/lawyer-note
-    HTML comments first so they never reach the lender-facing document."""
-    raw = (TEMPLATE_DIR / TEMPLATE_NAME).read_text(encoding="utf-8")
+def _to_words_et(amount: float, currency: str) -> str:
+    """Amount in Estonian words, e.g. 8682.90 EUR ->
+    'kaheksa tuhat kuussada kaheksakümmend kaks eurot ja üheksakümmend senti'.
+    num2words has no Estonian support, so this is hand-rolled (see _et_integer)."""
+    cur = (currency or "EUR").upper()
+    whole = int(amount)
+    cents = int(round((amount - whole) * 100))
+    if cents == 100:                       # rounding carry
+        whole += 1
+        cents = 0
+    unit, cent_unit = _CURRENCY_WORD_ET.get(cur, (cur, "senti"))
+    return f"{_et_integer(whole)} {unit} ja {_et_integer(cents)} {cent_unit}"
+
+
+def render_markdown(context: dict, language: Optional[str] = None) -> str:
+    """Fill the language's template with the context. Strips the developer/
+    lawyer-note HTML comments first so they never reach the lender-facing
+    document. `language` defaults to context['language'] (set by
+    resolve_variables), then to the module default."""
+    language = _norm_lang(language or context.get("language"))
+    raw = (TEMPLATE_DIR / template_name_for(language)).read_text(encoding="utf-8")
     cleaned = _COMMENT_RE.sub("", raw).lstrip("\n")
     env = Environment(undefined=StrictUndefined, autoescape=False)
-    env.filters["currency_words"] = lambda amt: _to_words(amt, context.get("currency", "EUR"))
+    speller = _to_words_et if language == "et" else _to_words
+    env.filters["currency_words"] = lambda amt: speller(amt, context.get("currency", "EUR"))
     return env.from_string(cleaned).render(**context)
 
 
-# Draft chrome — emitted only for an un-reviewed template (see TEMPLATE_REVIEWED).
-_BANNER_HTML = (
-    '<div class="draft-banner">DRAFT — generated by Bruno from template '
-    "{tmpl}. NOT reviewed by Estonian counsel. Not a signed agreement. "
-    "Review and sign externally; upload the signed PDF to activate the loan.</div>"
-)
-_DRAFT_WATERMARK_CSS = (
-    'body::before { content: "DRAFT"; position: fixed; top: 42%; left: 18%; '
-    "font-size: 130pt; color: rgba(180,83,9,0.07); transform: rotate(-35deg); z-index: -1; }"
-)
-_DRAFT_PAGE_FOOTER = '"DRAFT — not legal advice — page " counter(page)'
-_CLEAN_PAGE_FOOTER = '"page " counter(page)'
+# Draft chrome — emitted only for an un-reviewed template (see is_template_reviewed).
+# Localised so an Estonian draft carries an Estonian warning.
+_BANNER_HTML = {
+    "en": (
+        '<div class="draft-banner">DRAFT — generated by Bruno from template '
+        "{tmpl}. NOT reviewed by Estonian counsel. Not a signed agreement. "
+        "Review and sign externally; upload the signed PDF to activate the loan.</div>"
+    ),
+    "et": (
+        '<div class="draft-banner">MUSTAND — Bruno poolt koostatud mallist '
+        "{tmpl}. EI OLE läbinud Eesti õigusnõustaja kontrolli. Ei ole "
+        "allkirjastatud leping. Vaadake üle ja allkirjastage väljaspool süsteemi; "
+        "laenu aktiveerimiseks laadige üles allkirjastatud PDF.</div>"
+    ),
+}
+_WATERMARK_TEXT = {"en": "DRAFT", "et": "MUSTAND"}
+_DRAFT_PAGE_FOOTER = {
+    "en": '"DRAFT — not legal advice — page " counter(page)',
+    "et": '"MUSTAND — ei ole õigusnõu — lk " counter(page)',
+}
+_CLEAN_PAGE_FOOTER = {"en": '"page " counter(page)', "et": '"lk " counter(page)'}
+_TITLE = {"en": "Loan Agreement", "et": "Laenuleping"}
+_DRAFT_SUFFIX = {"en": " (DRAFT)", "et": " (MUSTAND)"}
 
 _HTML_SHELL = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<title>Loan Agreement — {title}{title_suffix}</title>
+<html lang="{lang}"><head><meta charset="utf-8">
+<title>{doc_title} — {title}{title_suffix}</title>
 <style>
   @page {{ size: A4; margin: 22mm 20mm; @bottom-center {{ content: {page_footer}; font-size: 8pt; color: #999; }} }}
   body {{ font-family: "DejaVu Serif", Georgia, serif; font-size: 10.5pt; line-height: 1.5; color: #111; max-width: 760px; margin: 0 auto; padding: 16px; }}
@@ -331,25 +568,38 @@ _HTML_SHELL = """<!DOCTYPE html>
 <body>{banner}{body}</body></html>"""
 
 
-def render_html(markdown_body: str, title: str) -> str:
+def _watermark_css(language: str) -> str:
+    return (
+        'body::before { content: "' + _WATERMARK_TEXT[language] + '"; position: fixed; '
+        "top: 42%; left: 18%; font-size: 130pt; color: rgba(180,83,9,0.07); "
+        "transform: rotate(-35deg); z-index: -1; }"
+    )
+
+
+def render_html(markdown_body: str, title: str, language: str = DEFAULT_LANGUAGE) -> str:
     import markdown as _md
+    language = _norm_lang(language)
     body_html = _md.markdown(markdown_body, extensions=["extra", "sane_lists"])
-    if TEMPLATE_REVIEWED:
+    if is_template_reviewed(language):
         # Reviewed production template: clean, signable — no draft chrome.
         return _HTML_SHELL.format(
+            lang=language,
+            doc_title=_TITLE[language],
             title=title,
             title_suffix="",
-            page_footer=_CLEAN_PAGE_FOOTER,
+            page_footer=_CLEAN_PAGE_FOOTER[language],
             watermark_css="",
             banner="",
             body=body_html,
         )
     return _HTML_SHELL.format(
+        lang=language,
+        doc_title=_TITLE[language],
         title=title,
-        title_suffix=" (DRAFT)",
-        page_footer=_DRAFT_PAGE_FOOTER,
-        watermark_css=_DRAFT_WATERMARK_CSS,
-        banner=_BANNER_HTML.format(tmpl=TEMPLATE_VERSION),
+        title_suffix=_DRAFT_SUFFIX[language],
+        page_footer=_DRAFT_PAGE_FOOTER[language],
+        watermark_css=_watermark_css(language),
+        banner=_BANNER_HTML[language].format(tmpl=template_version_for(language)),
         body=body_html,
     )
 
@@ -359,17 +609,20 @@ def render_pdf(html: str) -> bytes:
     return HTML(string=html).write_pdf()
 
 
-def render_all(loan, counterparty, operator_inputs: dict, session) -> RenderedDraft:
-    """Resolve variables and render markdown + HTML + PDF in one shot.
-    Raises AgreementError if required inputs are missing."""
+def render_all(loan, counterparty, operator_inputs: dict, session,
+               language: str = DEFAULT_LANGUAGE) -> RenderedDraft:
+    """Resolve variables and render markdown + HTML + PDF in one shot, in
+    `language` ('et' or 'en'). Raises AgreementError if required inputs are
+    missing."""
+    language = _norm_lang(language)
     missing = required_variables(loan, counterparty, operator_inputs)
     if missing:
         raise AgreementError(
             "Cannot generate the agreement — missing: " + "; ".join(missing)
         )
-    variables = resolve_variables(loan, counterparty, operator_inputs, session)
-    md = render_markdown(variables)
-    html = render_html(md, title=loan.contract_reference or f"Loan {loan.id}")
+    variables = resolve_variables(loan, counterparty, operator_inputs, session, language)
+    md = render_markdown(variables, language)
+    html = render_html(md, title=loan.contract_reference or f"Loan {loan.id}", language=language)
     pdf = render_pdf(html)
     return RenderedDraft(
         markdown_body=md,

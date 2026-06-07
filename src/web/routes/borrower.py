@@ -1225,6 +1225,7 @@ def borrower_portal_user_unlock(request: Request, pu_id: int):
 def borrower_loan_new_form(request: Request):
     """Show the New Loan form."""
     from src.borrower.loan_gates import compute_loan_gates
+    from src.borrower import agreements
     from src.borrower.agreements import OPERATOR_FIELDS
     from src.borrower.models import CounterpartyType
     session = BrunoSession()
@@ -1238,6 +1239,10 @@ def borrower_loan_new_form(request: Request):
             cp.id: not (cp.type == CounterpartyType.COMPANY and not (cp.represented_by or "").strip())
             for cp in counterparties
         }
+        # Default agreement language per lender (Estonian for EE lenders, else
+        # English). The form pre-selects this when the lender is chosen; the
+        # operator can override. Server re-derives if left on "auto".
+        lender_default_lang = {cp.id: agreements.default_language_for(cp) for cp in counterparties}
         return templates.TemplateResponse("borrower_loan_new.html", {
             "request": request,
             "counterparties": counterparties,
@@ -1251,6 +1256,8 @@ def borrower_loan_new_form(request: Request):
             "currencies": ["EUR", "USD", "AUD", "GBP"],
             "operator_fields": OPERATOR_FIELDS,
             "lender_ready": lender_ready,
+            "lender_default_lang": lender_default_lang,
+            "agreement_languages": [(c, agreements.LANGUAGE_LABELS[c]) for c in agreements.LANGUAGES],
             "form_data": {},
             "errors": {},
             "gate_report": gate_report,
@@ -1298,6 +1305,8 @@ def borrower_loan_new_submit(
     purpose_description: str = Form(""),
     default_cure_days: str = Form(""),
     minimum_net_worth: str = Form(""),
+    # Agreement language: "et" | "en" | "" (=> auto by lender jurisdiction).
+    agreement_language: str = Form(""),
 ):
     """Process the New Loan form submission. Creates the loan and, in the same
     transaction, generates the (unsigned) agreement draft. The agreement
@@ -1378,14 +1387,17 @@ def borrower_loan_new_submit(
         # Generate the (unsigned) agreement draft from the template, in the
         # same transaction. This does NOT satisfy the DRAFT -> ACTIVE gate;
         # that still requires an uploaded signed PDF (loan_documents).
-        rendered = agreements.render_all(loan, lender, operator_inputs, session)
+        # Language: operator's choice, else default to the lender's jurisdiction.
+        language = (agreement_language or "").strip().lower() \
+            or agreements.default_language_for(lender)
+        rendered = agreements.render_all(loan, lender, operator_inputs, session, language)
         paths = agreements.write_files(loan.id, 1, rendered)
         principal = current_principal(request)
         draft = LoanAgreementDraft(
             loan_id=loan.id,
             version=1,
-            template_name=agreements.TEMPLATE_NAME,
-            template_version=agreements.TEMPLATE_VERSION,
+            template_name=agreements.template_name_for(language),
+            template_version=agreements.template_version_for(language),
             variables_json=json.dumps(rendered.variables, default=str),
             markdown_body=rendered.markdown_body,
             html_path=paths["html"],
@@ -1903,11 +1915,17 @@ def borrower_agreement_view(request: Request, loan_id: int):
         draft = _latest_draft(session, loan_id)
         if not draft:
             raise HTTPException(status_code=404, detail="No agreement draft for this loan.")
+        from src.borrower import agreements
+        language = agreements.language_for_template(draft.template_name)
         return templates.TemplateResponse("borrower_agreement_view.html", {
             "request": request,
             "loan": loan,
             "draft": draft,
             "is_locked": draft.status == AgreementDraftStatus.LOCKED,
+            "is_reviewed": agreements.is_template_reviewed(language),
+            "language": language,
+            "language_label": agreements.LANGUAGE_LABELS.get(language, language),
+            "agreement_languages": [(c, agreements.LANGUAGE_LABELS[c]) for c in agreements.LANGUAGES],
         })
     finally:
         session.close()
@@ -1985,7 +2003,9 @@ def borrower_agreement_edit_submit(request: Request, loan_id: int, markdown_body
             raise HTTPException(status_code=409, detail="This agreement is locked (signed) and cannot be edited.")
 
         import hashlib
-        html = agreements.render_html(markdown_body, title=loan.contract_reference or f"Loan {loan.id}")
+        language = agreements.language_for_template(draft.template_name)
+        html = agreements.render_html(
+            markdown_body, title=loan.contract_reference or f"Loan {loan.id}", language=language)
         pdf = agreements.render_pdf(html)
         rendered = agreements.RenderedDraft(
             markdown_body=markdown_body, html=html, pdf_bytes=pdf,
@@ -2017,10 +2037,11 @@ def borrower_agreement_edit_submit(request: Request, loan_id: int, markdown_body
 
 
 @router.post("/loans/{loan_id}/agreement/regenerate")
-def borrower_agreement_regenerate(request: Request, loan_id: int):
+def borrower_agreement_regenerate(request: Request, loan_id: int, language: str = Form("")):
     """Discard manual edits and re-render fresh from the template using the
     loan's current data + the operator inputs stored on the draft. Refused
-    once LOCKED."""
+    once LOCKED. An optional `language` switches the draft to the other
+    language's template (Estonian/English); empty keeps the current one."""
     from src.borrower import agreements
     import json
     session = BrunoSession()
@@ -2046,11 +2067,20 @@ def borrower_agreement_regenerate(request: Request, loan_id: int):
             "default_cure_days": str(prior.get("default_cure_days", "15")),
             "minimum_net_worth": prior.get("minimum_net_worth", ""),
         }
-        rendered = agreements.render_all(loan, lender, operator_inputs, session)
+        # Re-render in the requested language, else the language the draft was
+        # created in (recorded on the draft's template_name) — so a plain
+        # regenerate never silently switches language, but the operator can
+        # deliberately switch it via the language control.
+        chosen = (language or "").strip().lower()
+        render_lang = chosen if chosen in agreements.LANGUAGES \
+            else agreements.language_for_template(draft.template_name)
+        rendered = agreements.render_all(loan, lender, operator_inputs, session, render_lang)
         new_version = draft.version + 1
         paths = agreements.write_files(loan_id, new_version, rendered)
         before = snapshot(draft)
         draft.version = new_version
+        draft.template_name = agreements.template_name_for(render_lang)
+        draft.template_version = agreements.template_version_for(render_lang)
         draft.variables_json = json.dumps(rendered.variables, default=str)
         draft.markdown_body = rendered.markdown_body
         draft.html_path = paths["html"]

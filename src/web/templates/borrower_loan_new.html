@@ -70,7 +70,7 @@
                         <option value="">Select a lender...</option>
                         {% for cp in counterparties %}
                             {% if cp.name != "MesiCap Technologies OÜ" %}
-                            <option value="{{ cp.id }}" data-ready="{{ '1' if lender_ready.get(cp.id) else '0' }}" data-name="{{ cp.name }}">{{ cp.name }}{% if cp.related_principal %} ({{ cp.related_principal }}){% endif %}</option>
+                            <option value="{{ cp.id }}" data-ready="{{ '1' if lender_ready.get(cp.id) else '0' }}" data-name="{{ cp.name }}" data-lang="{{ lender_default_lang.get(cp.id, 'en') }}">{{ cp.name }}{% if cp.related_principal %} ({{ cp.related_principal }}){% endif %}</option>
                             {% endif %}
                         {% endfor %}
                     </select>
@@ -310,6 +310,20 @@
                 All fields below are required — the <span class="text-gray-300">Create Loan</span> button stays disabled until they're filled.
                 The draft is editable afterwards and is <span class="text-gray-300">not</span> the signed contract.
             </p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Agreement language</label>
+                    <select name="agreement_language" id="agreement_language"
+                            class="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm focus:border-amber-300/50 focus:outline-none">
+                        {% for code, label in agreement_languages %}
+                        <option value="{{ code }}"{% if code == 'en' %} selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                    <p id="lang_hint" class="text-xs text-gray-600 mt-1">
+                        Defaults to the lender's jurisdiction (Estonian for Estonia, English otherwise). The Estonian and English versions are equivalent; the Estonian version controls in case of discrepancy (§15.6).
+                    </p>
+                </div>
+            </div>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {% for f in operator_fields %}
                 <div class="{% if f.name in ['purpose_description', 'minimum_net_worth'] %}md:col-span-2{% endif %}">
@@ -329,7 +343,8 @@
                 {% endfor %}
             </div>
             <p class="text-xs text-amber-300/70 mt-4">
-                Note: the generated agreement comes from the reviewed template (v2) and renders clean — it is not itself the signed contract. Sign externally, then upload the signed PDF to activate.
+                Note: the generated agreement is not itself the signed contract — sign externally, then upload the signed PDF to activate.
+                The English template (v2) is counsel-reviewed and renders clean; the Estonian translation is pending counsel review and renders as a watermarked DRAFT until approved.
             </p>
         </div>
 
@@ -367,7 +382,26 @@
     const lenderSel = document.getElementById('lender_select');
     const lenderWarn = document.getElementById('lender_warning');
     const lenderEditLink = document.getElementById('lender_edit_link');
+    const langSel = document.getElementById('agreement_language');
+    const langHint = document.getElementById('lang_hint');
     if (!form || !btn) return;
+
+    // Pre-select the agreement language from the chosen lender's jurisdiction
+    // (data-lang on the option), unless the operator has manually overridden it.
+    let langTouched = false;
+    if (langSel) langSel.addEventListener('change', function () { langTouched = true; });
+    const LANG_NAMES = {et: 'Estonian', en: 'English'};
+    function syncLanguage() {
+        if (!langSel || !lenderSel) return;
+        const opt = lenderSel.options[lenderSel.selectedIndex];
+        const def = opt ? opt.getAttribute('data-lang') : null;
+        if (def && !langTouched) langSel.value = def;
+        if (langHint && opt && opt.value && def) {
+            langHint.textContent = 'Default for this lender: ' + (LANG_NAMES[def] || def)
+                + '. The Estonian version controls in case of discrepancy (§15.6).';
+        }
+    }
+    if (lenderSel) lenderSel.addEventListener('change', syncLanguage);
 
     // All natively-required fields + the agreement fields must be non-empty,
     // and the selected lender must be agreement-ready (mirrors
@@ -407,6 +441,7 @@
 
     form.addEventListener('input', refresh);
     form.addEventListener('change', refresh);
+    syncLanguage();
     refresh();
 })();
 </script>
