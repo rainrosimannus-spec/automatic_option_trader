@@ -2,8 +2,12 @@
 Access quorum for loan activation (docs/governance.md §3.3).
 
 Any loan with `principal_max` ≥ `QUORUM_THRESHOLD_EUR` requires approval from
-two DISTINCT principals before it can transition DRAFT → ACTIVE. Below the
+ALL THREE board members before it can transition DRAFT → ACTIVE. The board can
+only resolve matters unanimously, so quorum is 3-of-3, not a majority. Below the
 threshold, single-principal action suffices (audit-logged as today).
+
+Each board member has exactly one principal account, so approvals are counted by
+distinct account id.
 
 The threshold is currency-aware in spirit but currency-naive in v1:
 principal_max is compared directly to the threshold regardless of currency.
@@ -28,7 +32,7 @@ from src.borrower.models import (
 # Set per governance.md §3.3 proposal; can be raised via env override.
 import os
 QUORUM_THRESHOLD_EUR = float(os.environ.get("QUORUM_THRESHOLD_EUR", "25000.0"))
-QUORUM_REQUIRED_APPROVERS = 2   # 2 of 3 principals
+QUORUM_REQUIRED_APPROVERS = 3   # unanimous: all 3 board members must approve
 
 
 @dataclass(frozen=True)

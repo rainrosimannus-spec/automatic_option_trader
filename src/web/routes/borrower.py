@@ -386,8 +386,8 @@ def borrower_loan_change_status(
                             "Upload the signed PDF via the Documents panel on the loan detail page first."),
                 )
 
-            # Access quorum (governance.md §3.3): loans ≥ threshold need 2-of-N
-            # principal approvals before activation.
+            # Access quorum (governance.md §3.3): loans ≥ threshold need
+            # unanimous (3-of-3) board approval before activation.
             from src.borrower.quorum import quorum_state, QUORUM_THRESHOLD_EUR
             qs = quorum_state(loan, session=session)
             if qs.required and not qs.can_activate:

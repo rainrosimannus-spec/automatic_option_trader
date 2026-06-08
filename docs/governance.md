@@ -167,10 +167,11 @@ has no meaning.**
 
 ### 3.3 Access quorum (Bruno code, blocked on auth)
 
-Once auth exists, loans above a threshold require approval from two
-principals before transitioning `DRAFT → ACTIVE`. Implementation: an
-`approvals` table; the second principal sees a pending loan in their queue
-and clicks "approve."
+Once auth exists, loans above a threshold require approval from ALL THREE
+board members (unanimous) before transitioning `DRAFT → ACTIVE` — the board
+can only resolve matters together, so quorum is 3-of-3, not a majority.
+Implementation: an `approvals` table; each remaining board member sees a
+pending loan in their queue and clicks "approve."
 
 Threshold proposal: any new loan ≥ €25,000 in face value, or any movement
 ≥ €10,000. Below those, single-principal approval (audit-logged) suffices.
