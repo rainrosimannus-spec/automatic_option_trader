@@ -138,6 +138,7 @@ class Params:
     # ── Margin model ──
     margin_on: bool = True            # live runs with IBKR portfolio margin
     margin_multiple: float = 5.0      # IBKR portfolio-margin proxy (~5x typical OTM put)
+    max_single_name_notional_pct: float = 0.25  # per-name assignment-notional cap as % of NLV (mirrors live RiskConfig)
     # ── Live-system defenses (ports from src.strategy.risk) ──
     # 0 = use the live config default (so the backtest mirrors production); >0 overrides.
     dynamic_delta_enabled: bool = True   # VIX-tiered delta range (mirrors risk.dynamic_delta_range)
@@ -374,6 +375,23 @@ def _exposure_ramp(nlv: float) -> float:
     if nlv >= 2_000_000:
         return 0.60
     return 0.40
+
+
+def _commitment_multiple(nlv: float) -> float:
+    """Max total equity commitment (put collateral + assigned stock value) as a
+    MULTIPLE of NLV, scaled by account size. Mirrors live
+    risk.adaptive_commitment_multiple(). At >=$2M this returns 4.0 = the old flat
+    growth cap (max_margin_usage 0.80 x margin_multiple 5.0), so this engine's
+    $4M start-capital backtests are UNCHANGED; only small NLVs tighten — the fix
+    for the correlated-assignment cash-lockout that 4x leverage allowed on a small
+    account."""
+    if nlv < 100_000:
+        return 2.0
+    elif nlv < 500_000:
+        return 2.5
+    elif nlv < 2_000_000:
+        return 3.0
+    return 4.0
 
 
 def run_regime(regime_id, regime_name, category, rank, universe, market, params: Params,
@@ -896,7 +914,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             vix_margin_factor = 0.95
         else:
             vix_margin_factor = 1.0
-        if prev_nlv > 0 and (put_collateral + stock_value) / prev_nlv > max_margin_pct * margin_cap_factor * vix_margin_factor:
+        # NLV-scaled commitment cap (2026-06-08): tighten the flat growth cap
+        # (max_margin_pct x margin_cap_factor = 4.0x at 80%/5x) for small accounts so
+        # a correlated mass-assignment can't lever a small book to ~3.8x NLV and drain
+        # it negative. min() preserves any param override while adding the small-NLV
+        # floor. At >=$2M _commitment_multiple is 4.0 → identical to the prior cap, so
+        # $4M backtests are unchanged. Mirrors live risk.check_total_exposure.
+        commitment_cap_mult = min(max_margin_pct * margin_cap_factor, _commitment_multiple(prev_nlv))
+        if prev_nlv > 0 and (put_collateral + stock_value) / prev_nlv > commitment_cap_mult * vix_margin_factor:
             halted = True
         if halted:
             n_halt_days += 1  # counts VIX- and margin-halted deployment days
@@ -1278,6 +1303,12 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     contracts = max(1, int(round(contracts * params.bear_market_size_multiplier)))
                 reserved = sum(p["strike"] * 100 * p["qty"] for p in short_puts)
                 need = top.strike * 100 * contracts
+                # Per-name assignment-notional cap (2026-06-08): this single name's
+                # notional can't exceed max_single_name_notional_pct of NLV. Steers
+                # small books off lumpy high-priced names; non-binding at large NLV.
+                # Mirrors live risk.check_position_size Layer 3.
+                if prev_nlv > 0 and need > params.max_single_name_notional_pct * prev_nlv:
+                    continue
                 if params.margin_on:
                     # Margin mode: the % NLV cap admits notional up to NLV*cap*multiple
                     # (per-put margin requirement = notional/multiple). No cash check —

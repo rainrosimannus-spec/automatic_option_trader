@@ -22,6 +22,12 @@ class AccountSummary:
     unrealized_pnl: float
     realized_pnl: float
     maintenance_margin: float
+    # Solvency buffer (IBKR ExcessLiquidity / AvailableFunds). Unlike cash_balance,
+    # excess_liquidity does NOT go negative just because cash converted to marginable
+    # stock on assignment — it's the true "can I take more risk" number. Default 0.0
+    # so the empty/error fallbacks below remain valid without listing every field.
+    excess_liquidity: float = 0.0
+    available_funds: float = 0.0
 
 
 def get_account_summary() -> AccountSummary:
@@ -85,6 +91,8 @@ def get_account_summary() -> AccountSummary:
         unrealized_pnl=_val("UnrealizedPnL"),
         realized_pnl=_val("RealizedPnL"),
         maintenance_margin=_val("MaintMarginReq"),
+        excess_liquidity=_val("ExcessLiquidity"),
+        available_funds=_val("AvailableFunds"),
     )
 
 

@@ -60,6 +60,32 @@ def adaptive_max_positions(net_liq: float) -> int:
     return 75
 
 
+def adaptive_commitment_multiple(net_liq: float) -> float:
+    """Max total equity commitment (open short-put assignment liability + assigned
+    stock value) as a MULTIPLE of NLV, scaled by account size.
+
+    Small accounts get a tight cap: when a handful of correlated puts all assign at
+    once (the exact failure that drove an account to negative cash), the assigned
+    stock becomes a leveraged long that a single gap-down can wipe out. Large,
+    diversified accounts are allowed full growth-mode leverage — they can spread the
+    same multiple across many uncorrelated names and carry the margin liquidity.
+
+    Tiers (mirror src/marswalk/engine.py _commitment_multiple):
+      NLV < $100K   → 2.0x   # tight — avoid correlated-assignment wipeout
+      NLV < $500K   → 2.5x
+      NLV < $2M     → 3.0x
+      NLV >= $2M    → 4.0x   # = growth-mode max_margin_usage(0.80) x margin_multiple(5)
+                             # so Rain's $4M backtested behavior is unchanged.
+    """
+    if net_liq < 100_000:
+        return 2.0
+    elif net_liq < 500_000:
+        return 2.5
+    elif net_liq < 2_000_000:
+        return 3.0
+    return 4.0
+
+
 @dataclass
 class RiskCheck:
     allowed: bool
@@ -924,6 +950,26 @@ class RiskManager:
                 f"ceiling ${self.cfg.max_position_dollars:,.0f})",
             )
 
+        # Layer 3 — per-name ASSIGNMENT-NOTIONAL cap (added 2026-06-08). Layers 1-2 cap
+        # MARGIN; this caps the cash you'd owe if this name's put assigns, as % of NLV.
+        # Steers small accounts off lumpy high-priced names (a $375 stock is one ~$75k
+        # assignment ≈ a whole $120k account) without a hard price band, so it stays
+        # correct at $4M too. Estimates with the base order size (contracts_per_stock).
+        try:
+            contracts_per_stock = get_settings().strategy.contracts_per_stock
+        except Exception:
+            contracts_per_stock = 1
+        name_notional = price * 100 * max(1, contracts_per_stock)
+        name_notional_cap = net_liq * self.cfg.max_single_name_notional_pct
+        if name_notional > name_notional_cap:
+            return RiskCheck(
+                False,
+                f"{symbol} assignment notional ${name_notional:,.0f} "
+                f"({max(1, contracts_per_stock)}x contracts) exceeds "
+                f"{self.cfg.max_single_name_notional_pct:.0%} of NLV (${name_notional_cap:,.0f}) "
+                f"— too lumpy at NLV ${net_liq:,.0f}",
+            )
+
         return RiskCheck(True)
 
     def _get_adaptive_position_limit(self, net_liq: float) -> float:
@@ -1199,12 +1245,21 @@ class RiskManager:
                 f"Buying power usage {used_pct:.0%} >= {self.cfg.max_buying_power_usage:.0%} limit",
             )
 
-        effective_reserve = max(self.cfg.min_cash_reserve, summary.net_liquidation * 0.15)
-        if summary.cash_balance < effective_reserve:
+        # Reserve gate (2026-06-08): test EXCESS LIQUIDITY, not raw cash. A margin
+        # wheel's cash_balance goes negative the moment a put assigns (cash converts
+        # to marginable stock), which would lock out put-selling indefinitely even
+        # with huge buying power. Excess liquidity is the true solvency buffer and
+        # only drops when the account is genuinely stressed. Fall back to cash_balance
+        # if the broker didn't report ExcessLiquidity (older sessions / empty values).
+        effective_reserve = max(self.cfg.min_cash_reserve,
+                                summary.net_liquidation * self.cfg.cash_reserve_pct)
+        liquidity = summary.excess_liquidity if summary.excess_liquidity else summary.cash_balance
+        if liquidity < effective_reserve:
             return RiskCheck(
                 False,
-                f"Cash ${summary.cash_balance:,.0f} < ${effective_reserve:,.0f} reserve "
-                f"(max of ${self.cfg.min_cash_reserve:,.0f} floor or 15% of NLV)",
+                f"Excess liquidity ${liquidity:,.0f} < ${effective_reserve:,.0f} reserve "
+                f"(max of ${self.cfg.min_cash_reserve:,.0f} floor or "
+                f"{self.cfg.cash_reserve_pct:.0%} of NLV)",
             )
         return RiskCheck(True)
 
@@ -1707,10 +1762,80 @@ class RiskManager:
     # ── Scaling safeguards ─────────────────────────────────
     def check_total_exposure(self) -> RiskCheck:
         """
-        Collateral cap is disabled (son-mode). The margin-usage gate
-        (max_margin_usage) is now the binding aggregate constraint; this
-        method remains as a no-op so legacy callers keep working.
+        Aggregate commitment cap (re-enabled 2026-06-08). Bounds total equity
+        commitment — open short-put assignment liability (strike x 100 x qty) PLUS
+        already-assigned stock (cost_basis x shares) — as an NLV-scaled multiple
+        (adaptive_commitment_multiple), tightened further by the VIX factor for
+        parity with MarsWalk's (put_collateral + stock_value)/NLV margin gate.
+
+        WHY this exists separately from check_margin_usage: short-put maintenance
+        margin is only ~20-30% of notional, so the maintenance-margin gate alone
+        admits ~3-5x the notional MarsWalk admits. That gap let an account stack
+        ~3.8x-NLV of correlated puts that all assigned over one week, draining cash
+        negative. This gate is the missing brake. Including assigned STOCK is
+        essential: once a put assigns it becomes stock, invisible to a put-only sum
+        — the exact reason fresh puts kept clearing onto an already-committed book.
+
+        Pure DB read (stored strike / cost_basis, no IBKR price calls) so it stays
+        a cheap, instant blocker. Checks EXISTING commitment vs cap; combined with
+        the per-name notional cap in check_position_size it stops the correlated
+        cascade after at most one more entry rather than four.
         """
+        try:
+            summary = get_account_summary()
+            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+        except Exception:
+            return RiskCheck(True)
+
+        if net_liq <= 0:
+            return RiskCheck(True)
+
+        # VIX factor mirrors dynamic_margin_ceiling / MarsWalk: tighten 5% at >=20, 10% at >=30.
+        try:
+            vix = get_vix()
+            if vix is None:
+                vix_factor = 1.0
+            elif vix >= 30:
+                vix_factor = 0.90
+            elif vix >= 20:
+                vix_factor = 0.95
+            else:
+                vix_factor = 1.0
+        except Exception:
+            vix_factor = 1.0
+
+        cap = min(
+            net_liq * adaptive_commitment_multiple(net_liq) * vix_factor,
+            self.cfg.max_total_exposure,
+        )
+
+        with get_db() as db:
+            positions = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type.in_(["short_put", "stock"]),
+                )
+                .all()
+            )
+
+        put_liability = 0.0
+        stock_value = 0.0
+        for pos in positions:
+            if pos.position_type == "short_put":
+                put_liability += (pos.strike or 0) * 100 * (pos.quantity or 0)
+            else:  # stock — quantity is shares (100 x contracts), cost_basis is per-share
+                stock_value += (pos.cost_basis or 0) * (pos.quantity or 0)
+
+        commitment = put_liability + stock_value
+        if commitment >= cap:
+            return RiskCheck(
+                False,
+                f"Total commitment ${commitment:,.0f} (puts ${put_liability:,.0f} + "
+                f"stock ${stock_value:,.0f}) >= cap ${cap:,.0f} "
+                f"(NLV ${net_liq:,.0f} x {adaptive_commitment_multiple(net_liq):.1f} "
+                f"x VIX {vix_factor:.2f})",
+            )
         return RiskCheck(True)
 
     def _check_total_exposure_legacy(self) -> RiskCheck:

@@ -165,6 +165,16 @@ class RiskConfig(BaseModel):
     min_position_dollars: float = 25000.0    # floor — small accounts unaffected below this
     total_exposure_pct: float = 0.20         # total open collateral cap as % of NLV
     max_total_exposure: float = 20000000.0   # hard ceiling — margin-cap is now the binding constraint
+    # Aggregate commitment cap (re-enabled 2026-06-08). Bounds total equity commitment
+    # — open short-put assignment liability PLUS already-assigned stock — as a multiple
+    # of NLV, scaled by adaptive_commitment_multiple(). Prevents the correlated-assignment
+    # cash-lockout (maintenance-margin gate alone admits ~3-5x notional). Mirrored in
+    # MarsWalk _commitment_multiple(). cash_reserve_pct gates check_buying_power on
+    # excess liquidity, not raw cash. max_single_name_notional_pct caps any single
+    # underlying's assignment notional as % of NLV (steers small accounts off lumpy
+    # high-priced names; non-binding at large NLV).
+    cash_reserve_pct: float = 0.15           # reserve floor = max(min_cash_reserve, this * NLV), tested vs excess liquidity
+    max_single_name_notional_pct: float = 0.25  # per-name assignment notional cap as % of NLV
     daily_deployment_pct: float = 0.03       # max new collateral per day as % of NLV
     max_daily_deployment: float = 500000.0   # hard ceiling new collateral per day
     intraday_loss_halt_pct: float = 0.025    # halt if unrealized loss > 2.5% of NLV (Option C: max of pct or floor)
