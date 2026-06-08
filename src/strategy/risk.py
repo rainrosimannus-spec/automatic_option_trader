@@ -1227,7 +1227,7 @@ class RiskManager:
         base_ceiling = max(0.60, 0.90 - (open_position_count * 0.03))
 
         try:
-            vix = self._get_vix()
+            vix = get_vix()
             if vix is None:
                 vix_factor = 1.0
             elif vix >= 30:

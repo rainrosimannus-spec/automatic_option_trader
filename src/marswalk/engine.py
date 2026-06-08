@@ -885,7 +885,18 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         # (the live cap presumes ~1x notional; portfolio margin allows ~5x).
         margin_cap_factor = params.margin_multiple if params.margin_on else 1.0
         max_margin_pct = params.max_margin_usage if params.max_margin_usage > 0 else rcfg.max_margin_usage
-        if prev_nlv > 0 and (put_collateral + stock_value) / prev_nlv > max_margin_pct * margin_cap_factor:
+        # VIX margin tightening — mirrors risk.dynamic_margin_ceiling()'s VIX factor:
+        # tighten the cap 5% at VIX>=20 and 10% at VIX>=30. Live gates on the
+        # maintenance-margin ceiling; the engine's analogous governor is this
+        # collateral/exposure cap. Parity restored alongside the live fix for the
+        # swallowed self._get_vix() AttributeError that had silently disabled it.
+        if vix_now is not None and vix_now >= 30:
+            vix_margin_factor = 0.90
+        elif vix_now is not None and vix_now >= 20:
+            vix_margin_factor = 0.95
+        else:
+            vix_margin_factor = 1.0
+        if prev_nlv > 0 and (put_collateral + stock_value) / prev_nlv > max_margin_pct * margin_cap_factor * vix_margin_factor:
             halted = True
         if halted:
             n_halt_days += 1  # counts VIX- and margin-halted deployment days
