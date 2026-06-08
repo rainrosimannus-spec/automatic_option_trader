@@ -320,7 +320,7 @@
                         {% endfor %}
                     </select>
                     <p id="lang_hint" class="text-xs text-gray-600 mt-1">
-                        Defaults to the lender's jurisdiction (Estonian for Estonia, English otherwise). The Estonian and English versions are equivalent; the Estonian version controls in case of discrepancy (§15.6).
+                        Defaults to the lender's jurisdiction (Estonian for Estonia, English otherwise). The agreement is generated and signed in this single language; §15.6 names it as the governing language.
                     </p>
                 </div>
             </div>
@@ -398,7 +398,7 @@
         if (def && !langTouched) langSel.value = def;
         if (langHint && opt && opt.value && def) {
             langHint.textContent = 'Default for this lender: ' + (LANG_NAMES[def] || def)
-                + '. The Estonian version controls in case of discrepancy (§15.6).';
+                + '. The agreement is generated and signed in this single language (§15.6).';
         }
     }
     if (lenderSel) lenderSel.addEventListener('change', syncLanguage);

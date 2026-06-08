@@ -9,9 +9,12 @@ agreements.TEMPLATE_REVIEWED), so the generated PDF is clean and signable. If a
 future template is introduced that has NOT been reviewed, give it a version
 ending in "-draft" to re-engage the guard.
 
-Template language: English (lender-facing). Production version is bilingual
-Estonian + English; this is the English side. The Estonian translation is
-maintained in parallel and controls in case of discrepancy (§15.6).
+Template language: English (lender-facing). Each generated agreement is in a
+SINGLE language — this is the English edition. A parallel Estonian edition is
+maintained (loan_agreement_external_v2_et.md); the operator picks one language
+per loan and only that single-language document is executed. §15.6 names the
+chosen language as the governing language; there is no bilingual/prevalence
+clause because no agreement is rendered in two languages.
 
 Variables in {{ double_braces }} are populated by Bruno from the New Loan form.
 Variables in {{ counterparty.* }} are populated from the lender's Counterparty
@@ -296,7 +299,7 @@ Email: {{ borrower.notice_email }}
 
 15.5. **Counterparts.** This Agreement may be signed in counterparts (including electronic counterparts), each of which is an original.
 
-15.6. **Language.** This Agreement is executed in both Estonian and English. **In case of any discrepancy, the Estonian version controls.**
+15.6. **Language.** This Agreement is executed in the English language, which is the governing language of this Agreement.
 
 15.7. **Confidentiality.** Each Party shall keep the terms of this Agreement confidential, except as required by law, regulation, or court order, or with the other Party's written consent. The Lender may disclose the existence and basic terms of the Loan to its tax advisors, auditors, and beneficial owners on a need-to-know basis.
 

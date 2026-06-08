@@ -9,10 +9,12 @@ lõpeb "-draft", ja Bruno renderdab selle MUSTANDI bänneri/vesimärgiga
 vaadanud, eemaldage TEMPLATE_VERSIONS["et"] väärtusest "-draft" järelliide,
 täpselt nagu tehti ingliskeelse versiooniga 2026-06-06.
 
-Malli keel: eesti keel (laenuandjale esitatav). Toodanguversioon on kakskeelne
-eesti + inglise; see on eestikeelne pool. Ingliskeelne tõlge on paralleelselt
-hooldatav (loan_agreement_external_v2.md). Lahknevuse korral kehtib eestikeelne
-versioon (§15.6).
+Malli keel: eesti keel (laenuandjale esitatav). Iga koostatud leping on ÜHES
+keeles — see on eestikeelne väljaanne. Paralleelselt hooldatakse ingliskeelset
+väljaannet (loan_agreement_external_v2.md); operaator valib iga laenu jaoks ühe
+keele ja sõlmitakse ainult see ühekeelne dokument. §15.6 nimetab valitud keele
+Lepingu juriidiliselt siduvaks keeleks; kakskeelsuse/ülimuslikkuse klauslit ei
+ole, sest ühtki lepingut ei renderdata kahes keeles.
 
 Muutujad {{ kahekordsetes sulgudes }} täidab Bruno uue laenu vormilt. Muutujad
 {{ counterparty.* }} täidetakse laenuandja vastaspoole kirjest. Muutujate nimed
@@ -298,7 +300,7 @@ E-post: {{ borrower.notice_email }}
 
 15.5. **Eksemplarid.** Käesoleva Lepingu võib allkirjastada eksemplarides (sealhulgas elektroonilistes eksemplarides), millest igaüks on originaal.
 
-15.6. **Keel.** Käesolev Leping on koostatud nii eesti kui ka inglise keeles. **Lahknevuse korral kehtib eestikeelne versioon.**
+15.6. **Keel.** Käesolev Leping on koostatud eesti keeles, mis on Lepingu juriidiliselt siduv keel.
 
 15.7. **Konfidentsiaalsus.** Kumbki Pool hoiab käesoleva Lepingu tingimusi konfidentsiaalsena, välja arvatud juhul, kui seadus, määrus või kohtumäärus seda nõuab, või teise Poole kirjalikul nõusolekul. Laenuandja võib avaldada Laenu olemasolu ja põhitingimusi oma maksunõustajatele, audiitoritele ja tegelikele kasusaajatele teadmisvajaduse alusel.
 
