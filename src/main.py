@@ -545,10 +545,18 @@ def main():
         from sqlalchemy import text
         engine = get_engine()
         with engine.connect() as conn:
-            # Remove duplicate positions (keep lowest id per symbol+strike+expiry+type)
+            # Remove duplicate OPEN positions only (keep newest id per symbol+strike+expiry+type).
+            # CRITICAL: scope to status='OPEN' (stored as the uppercase enum NAME) so a
+            # CLOSED/ASSIGNED/EXPIRED history row can NEVER win the dedup and delete a live lot.
+            # Stock rows carry NULL strike/expiry, so the old status-blind GROUP BY collapsed an
+            # OPEN stock lot with its CLOSED predecessors for the same symbol and deleted the live
+            # shares — unrecoverable, since trade_sync never re-creates stock rows (it only closes
+            # them), leaving covered calls DB-naked. Keep MAX(id) to retain the freshest write
+            # among genuine race-created duplicates.
             conn.execute(text(
-                "DELETE FROM positions WHERE id NOT IN "
-                "(SELECT MIN(id) FROM positions GROUP BY symbol, strike, expiry, position_type)"
+                "DELETE FROM positions WHERE status = 'OPEN' AND id NOT IN "
+                "(SELECT MAX(id) FROM positions WHERE status = 'OPEN' "
+                "GROUP BY symbol, strike, expiry, position_type)"
             ))
             # Remove all suggestion-source trades — IBKR fills are the single source of truth
             conn.execute(text("DELETE FROM trades WHERE source = 'suggestion'"))
