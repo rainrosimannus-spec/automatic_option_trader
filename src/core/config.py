@@ -23,6 +23,10 @@ class IBKRConfig(BaseModel):
     timeout: int = 30
     readonly: bool = False
     account: str = ""
+    # Flex Web Service creds for the options account — stored for a future
+    # options-side deposit/dividend feature; no consumer wired yet.
+    flex_token: str = ""
+    flex_query_id: str = ""
 
 
 class DteTierLow(BaseModel):
@@ -337,6 +341,12 @@ class AppConfig(BaseModel):
     suggestion_mode: bool = False    # true = suggest trades with Approve/Reject
     log_level: str = "INFO"
     db_path: str = "data/trades.db"
+    # Option trader's own ledger DB (positions + trades). Routed there via SQLAlchemy
+    # binds so the option trader's books are physically separate from the portfolio's,
+    # even though both run in one process sharing the overview dashboard. Everything
+    # else (portfolio tables, system_state, account_snapshots, suggestions, earnings,
+    # ipo_watchlist) stays in db_path.
+    options_db_path: str = "data/options.db"
     bruno_run_integrations: bool = False  # gated: True on MesiCap clone, False on Rain dev
 
 
@@ -376,6 +386,10 @@ def _apply_env_overrides(settings: Settings) -> Settings:
         settings.ibkr.client_id = int(v)
     if v := env.get("IBKR_ACCOUNT"):
         settings.ibkr.account = v
+    if v := env.get("IBKR_FLEX_TOKEN"):
+        settings.ibkr.flex_token = v
+    if v := env.get("IBKR_FLEX_QUERY_ID"):
+        settings.ibkr.flex_query_id = v
     if v := env.get("TRADING_MODE"):
         settings.app.mode = v  # type: ignore[assignment]
     if v := env.get("WEB_HOST"):

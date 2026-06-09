@@ -18,10 +18,14 @@ import src.ipo.models  # noqa: F401 — registers IPO tables with Base
 
 
 _engine = None
+_options_engine = None
 _SessionLocal = None
 
 
 def get_engine():
+    """Main DB engine (data/trades.db) — portfolio tables + shared infra
+    (system_state, account_snapshots, trade_suggestions, earnings_cache,
+    ipo_watchlist) and the frozen legacy positions/trades."""
     global _engine
     if _engine is None:
         settings = get_settings()
@@ -35,13 +39,48 @@ def get_engine():
     return _engine
 
 
-def init_db() -> None:
-    """Create all tables if they don't exist, and migrate new columns."""
-    engine = get_engine()
-    Base.metadata.create_all(engine)
+def get_options_engine():
+    """Option-trader ledger engine (data/options.db) — holds ONLY the live
+    `positions` and `trades` tables. Sessions route those two models here via
+    `binds`; everything else uses the main engine. This keeps the option
+    trader's books physically separate from the portfolio's while both run in
+    one process behind the shared overview dashboard."""
+    global _options_engine
+    if _options_engine is None:
+        settings = get_settings()
+        opt_path = Path(settings.app.options_db_path)
+        opt_path.parent.mkdir(parents=True, exist_ok=True)
+        _options_engine = create_engine(
+            f"sqlite:///{opt_path}",
+            echo=False,
+            connect_args={"check_same_thread": False},
+        )
+    return _options_engine
 
-    # Migrate: add columns that may be missing on existing DBs
+
+def _ledger_tables():
+    """The option-ledger tables that live in the options DB."""
+    from src.core.models import Position, Trade
+    return [Position.__table__, Trade.__table__]
+
+
+def init_db() -> None:
+    """Create all tables if they don't exist, and migrate new columns.
+
+    The options engine gets ONLY the option-ledger tables (positions, trades);
+    the main engine gets everything (the legacy positions/trades tables stay
+    physically present there but are no longer read — sessions route those two
+    models to the options engine via binds)."""
+    engine = get_engine()
+    opt_engine = get_options_engine()
+
+    Base.metadata.create_all(engine)
+    Base.metadata.create_all(opt_engine, tables=_ledger_tables())
+
+    # Migrate new columns on both DBs (idempotent; ALTERs no-op when the column
+    # already exists or the table is absent).
     _migrate_columns(engine)
+    _migrate_columns(opt_engine)
 
 
 def _migrate_columns(engine):
@@ -121,7 +160,15 @@ def _migrate_columns(engine):
 def get_session_factory() -> sessionmaker[Session]:
     global _SessionLocal
     if _SessionLocal is None:
-        _SessionLocal = sessionmaker(bind=get_engine(), expire_on_commit=False)
+        from src.core.models import Position, Trade
+        # Route the option-ledger models to the options DB; default everything
+        # else to the main DB. A session can span both engines because no single
+        # SQL statement joins these two models against any other table.
+        _SessionLocal = sessionmaker(
+            bind=get_engine(),
+            binds={Position: get_options_engine(), Trade: get_options_engine()},
+            expire_on_commit=False,
+        )
     return _SessionLocal
 
 

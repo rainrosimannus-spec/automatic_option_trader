@@ -541,10 +541,12 @@ def main():
 
     # ── Startup database cleanup ──
     try:
-        from src.core.database import get_engine
+        from src.core.database import get_engine, get_options_engine
         from sqlalchemy import text
-        engine = get_engine()
-        with engine.connect() as conn:
+        # The option ledger (positions/trades) lives in the options DB — dedup
+        # there, NOT in the main DB (whose legacy positions/trades are frozen and
+        # must not be touched). On a fresh options.db these are no-ops.
+        with get_options_engine().connect() as conn:
             # Remove duplicate OPEN positions only (keep newest id per symbol+strike+expiry+type).
             # CRITICAL: scope to status='OPEN' (stored as the uppercase enum NAME) so a
             # CLOSED/ASSIGNED/EXPIRED history row can NEVER win the dedup and delete a live lot.
@@ -565,33 +567,17 @@ def main():
                 "DELETE FROM trades WHERE ibkr_exec_id IS NOT NULL AND id NOT IN "
                 "(SELECT MIN(id) FROM trades WHERE ibkr_exec_id IS NOT NULL GROUP BY ibkr_exec_id)"
             ))
+            conn.commit()
+        # account_snapshots lives in the main DB.
+        with get_engine().connect() as conn:
             # Remove snapshots with wrong NLV (portfolio NLV leaked)
             conn.execute(text(
                 "DELETE FROM account_snapshots WHERE net_liquidation > 100000 OR net_liquidation = 0.0"
             ))
-
-            # Seed historical trades from IBKR if missing
-            # These are the actual IBKR trades for this account
-            ibkr_history = [
-                ("AVGO", "SELL_PUT", 327.5, "20260223", 1.70, 1, 4.00, "2026-02-20 16:57:32", "ibkr_sync"),
-                ("BHP",  "SELL_PUT", 52.01, "20260226", 0.055, 1, 6.00, "2026-02-23 02:00:17", "ibkr_sync"),
-                ("AVGO", "BUY_PUT",  327.5, "20260223", 0.00, 1, 0.00, "2026-02-24 04:35:54", "ibkr_sync"),
-                ("DDOG", "SELL_PUT", 98.0,  "20260227", 2.33, 1, 4.00, "2026-02-24 16:30:01", "ibkr_sync"),
-                ("TTD",  "SELL_PUT", 23.0,  "20260227", 1.13, 1, 4.00, "2026-02-24 16:30:01", "ibkr_sync"),
-                ("AVGO", "SELL_PUT", 310.0, "20260227", 3.32, 1, 4.00, "2026-02-24 22:07:45", "ibkr_sync"),
-            ]
-            for symbol, ttype, strike, expiry, price, qty, comm, ts, src in ibkr_history:
-                exists = conn.execute(text(
-                    "SELECT 1 FROM trades WHERE symbol = :s AND strike = :k AND expiry = :e AND trade_type = :t LIMIT 1"
-                ), {"s": symbol, "k": strike, "e": expiry, "t": ttype}).fetchone()
-                if not exists:
-                    conn.execute(text(
-                        "INSERT INTO trades (symbol, trade_type, strike, expiry, premium, quantity, "
-                        "fill_price, commission, order_status, notes, source, created_at) "
-                        "VALUES (:s, :t, :k, :e, :p, :q, :p, :c, 'FILLED', 'Seeded from IBKR history', :src, :ts)"
-                    ), {"s": symbol, "t": ttype, "k": strike, "e": expiry, "p": price, "q": qty, "c": comm, "src": src, "ts": ts})
-
             conn.commit()
+        # NOTE: the old hardcoded U23886415 historical-trade seeding was removed —
+        # the option trader starts fresh on its own account/DB; trade_sync populates
+        # the live ledger from real fills.
         log.info("startup_cleanup_complete")
     except Exception as e:
         log.warning("startup_cleanup_failed", error=str(e))

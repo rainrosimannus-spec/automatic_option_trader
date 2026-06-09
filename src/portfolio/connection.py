@@ -69,56 +69,12 @@ def get_portfolio_ib() -> IB:
     raise ConnectionError("Portfolio IBKR not connected — waiting for health check to reconnect")
 
 
-# ── MERGE-ONLY: cross-strategy lock supervision ──────────────────────
-# When Maggy and Winston point at the same gateway+account, we have to
-# serialize across BOTH strategies, not just within Winston. This block
-# auto-detects that condition and acquires Maggy's lock first (always
-# in the same order to prevent deadlocks: ib_lock → portfolio_lock).
-#
-# When the accounts split again, the detection naturally returns False
-# and the supervisor becomes a no-op without any code change here.
-# To remove this block entirely on permanent re-split:
-#   1. Delete the MERGE-ONLY section below
-#   2. Restore the simple get_portfolio_lock() that just returns _portfolio_lock
-# ─────────────────────────────────────────────────────────────────────
-from contextlib import contextmanager
-
-def _detect_merged_with_options() -> bool:
-    """True if Winston and Maggy share gateway+account. Called once at import."""
-    try:
-        from src.core.config import get_settings
-        s = get_settings()
-        same_host = s.ibkr.host == s.portfolio.ibkr_host
-        same_port = s.ibkr.port == s.portfolio.ibkr_port
-        same_account = (s.ibkr.account or "") == (s.portfolio.ibkr_account or "")
-        return same_host and same_port and same_account
-    except Exception as _e:
-        log.warning("merge_detection_failed_assuming_split", error=str(_e))
-        return False
-
-_is_merged_with_options = _detect_merged_with_options()
-log.info("portfolio_lock_mode",
-         merged=_is_merged_with_options,
-         note="acquires ib_lock+portfolio_lock" if _is_merged_with_options else "portfolio_lock only")
-
-
-@contextmanager
-def _portfolio_lock_supervisor():
-    """Acquires Maggy's ib_lock first, then Winston's _portfolio_lock.
-    Order matters — must match Maggy-side ordering everywhere both are held."""
-    from src.broker.connection import get_ib_lock
-    with get_ib_lock():
-        with _portfolio_lock:
-            yield
-
-
 def get_portfolio_lock():
-    """Return a context manager guarding Winston's IBKR calls.
-    When merged with Maggy on the same gateway, also holds Maggy's ib_lock
-    to serialize across strategies and prevent asyncio event-loop collisions.
+    """Return the lock guarding Winston's IBKR calls.
+
+    Winston (portfolio) and Maggy (options) run on separate gateways/accounts
+    since the 2026-06-09 split, so each strategy serializes only within itself.
     Always usable as: `with get_portfolio_lock(): ...`"""
-    if _is_merged_with_options:
-        return _portfolio_lock_supervisor()
     return _portfolio_lock
 
 
