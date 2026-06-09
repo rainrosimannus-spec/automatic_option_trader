@@ -39,7 +39,7 @@
 </div>
 
 <!-- ═══ Account Overview ═══ -->
-<div class="grid grid-cols-2 lg:grid-cols-7 gap-3 mb-6">
+<div class="grid grid-cols-2 lg:grid-cols-8 gap-3 mb-6">
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="text-xs text-gray-500 mb-1">Net Liquidation</div>
         <div class="text-xl font-bold font-mono text-gray-100">
@@ -70,6 +70,13 @@
         <div class="text-xs text-gray-500 mb-1">Buying Power</div>
         <div class="text-xl font-bold font-mono text-blue-400">
             ${{ "{:,.0f}".format(buying_power) }}
+        </div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4" title="IBKR ExcessLiquidity — the true solvency buffer the cash-reserve gate uses (must stay ≥ 15% of NLV to keep selling puts). Unlike cash, it doesn't go negative when an assignment converts cash into marginable stock.">
+        <div class="text-xs text-gray-500 mb-1">Excess Liquidity</div>
+        <div class="text-xl font-bold font-mono
+            {% if net_liquidation > 0 and excess_liquidity < 0.15 * net_liquidation %}text-red-400{% else %}text-blue-400{% endif %}">
+            ${{ "{:,.0f}".format(excess_liquidity) }}
         </div>
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">

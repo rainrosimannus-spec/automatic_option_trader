@@ -32,6 +32,7 @@ def _get_account_data() -> dict:
         return {
             "net_liquidation": summary.net_liquidation,
             "buying_power": summary.buying_power,
+            "excess_liquidity": summary.excess_liquidity,
             "cash_balance": summary.cash_balance,
             "unrealized_pnl": summary.unrealized_pnl,
             "realized_pnl": summary.realized_pnl,
@@ -43,7 +44,7 @@ def _get_account_data() -> dict:
         }
     except Exception:
         return {
-            "net_liquidation": 0, "buying_power": 0, "cash_balance": 0,
+            "net_liquidation": 0, "buying_power": 0, "excess_liquidity": 0, "cash_balance": 0,
             "unrealized_pnl": 0, "realized_pnl": 0, "maintenance_margin": 0,
             "margin_used_pct": 0,
         }
@@ -479,6 +480,7 @@ def dashboard(request: Request):
         # Account
         "net_liquidation": account["net_liquidation"],
         "buying_power": account["buying_power"],
+        "excess_liquidity": account["excess_liquidity"],
         "cash_balance": account["cash_balance"],
         "unrealized_pnl": account["unrealized_pnl"],
         "margin_used_pct": account["margin_used_pct"],
