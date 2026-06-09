@@ -425,9 +425,22 @@ def job_execute_queued():
                     except Exception as e:
                         log.warning("execute_queued_whatif_failed", symbol=s.symbol, error=str(e))
 
-                # This one fits — select it
-                s.status = "executing"
+                # This one fits — claim it atomically. A conditional UPDATE that
+                # only flips queued/pending → executing guarantees a row can be
+                # claimed by exactly one runner even if a future trigger overlaps
+                # this job (defense beyond max_instances=1). rowcount==0 means
+                # someone else already took it — skip to the next candidate.
+                from sqlalchemy import update as _sa_update
+                claimed = db.execute(
+                    _sa_update(TradeSuggestion)
+                    .where(TradeSuggestion.id == s.id,
+                           TradeSuggestion.status.in_(["queued", "pending"]))
+                    .values(status="executing")
+                )
                 db.commit()
+                if claimed.rowcount != 1:
+                    log.info("execute_queued_claim_lost", id=s.id, symbol=s.symbol)
+                    continue
                 selected = s
                 break
 

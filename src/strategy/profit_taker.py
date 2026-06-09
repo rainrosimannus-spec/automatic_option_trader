@@ -339,7 +339,21 @@ class ProfitTaker:
         """
         After closing profitable positions, immediately re-scan those symbols
         for new put entries. This redeploys the freed capital.
+
+        IMPORTANT: in suggestion/auto-execute mode this MUST NOT redeploy via the
+        live path. `_process_symbol` calls `sell_put` inline (put_seller.py), which
+        bypasses the suggestion→queue→executor route — the single, budget-gated
+        chokepoint. Two paths placing puts (this roll + the queue executor) is how
+        the same contract got filled twice. In auto mode we no-op here and let the
+        next scan redeploy the freed symbols through the one gated path.
         """
+        from src.core.config import get_settings
+        if get_settings().app.suggestion_mode:
+            log.info("roll_skipped_suggestion_mode", symbols=symbols,
+                     msg="auto mode: freed symbols redeploy via the next scan's "
+                         "queued+budget-gated path, not the live roll")
+            return
+
         from src.strategy.risk import RiskManager
         from src.strategy.put_seller import PutSeller
 

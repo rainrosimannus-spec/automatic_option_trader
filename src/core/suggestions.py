@@ -220,7 +220,8 @@ def create_suggestion(
             TradeSuggestion.action == action,
             TradeSuggestion.strike == strike,
             TradeSuggestion.expiry == expiry,
-            TradeSuggestion.status.in_(["pending", "queued", "submitted", "approved"]),
+            TradeSuggestion.status.in_(
+                ["pending", "queued", "submitted", "approved", "executing"]),
         ).first()
         if existing:
             log.debug("suggestion_dedup_blocked",
@@ -458,6 +459,7 @@ def _execute_approved_order_inner(suggestion_id: int):
 
         # SAFEGUARD: Check IBKR open orders before placing new ones
         # Prevents overselling when duplicate suggestions slip through
+        open_orders = []
         try:
             from src.broker.orders import get_open_orders
             open_orders = get_open_orders()
@@ -496,6 +498,38 @@ def _execute_approved_order_inner(suggestion_id: int):
                     return
         except Exception as e:
             log.debug("safeguard_check_failed", error=str(e))
+
+        # BUDGET RE-CHECK (execution-time, counts in-flight working orders).
+        # can_open_put runs once per symbol at SCAN time, against the pre-wave DB
+        # snapshot — so a batch of queued suggestions all pass the same empty state
+        # and then drain here, overshooting every aggregate cap (the 16/10-slots
+        # blowup; nothing braked it until a manual halt). Re-run the cheap slot /
+        # daily / per-name-dup / commitment / sector gates now, counting the
+        # working SELL-put orders we already fetched above, so the wave binds
+        # against the real running total. Puts only — covered calls are covered by
+        # held stock and don't consume a new slot.
+        if s.action == "sell_put":
+            try:
+                from src.strategy.risk import RiskManager
+                from src.strategy.universe import UniverseManager
+                rm = RiskManager(UniverseManager())
+                budget = rm.can_open_put_budget_recheck(s.symbol, open_orders)
+                if not budget.allowed:
+                    s.status = "expired"
+                    s.review_note = f"{budget.reason}"
+                    log.warning("execute_queued_budget_blocked",
+                                id=suggestion_id, symbol=s.symbol,
+                                reason=budget.reason)
+                    return
+            except Exception as e:
+                # Fail closed: a budget re-check that errors must not let an
+                # unbounded wave through. Expire (not leave "executing", which
+                # would orphan the row); the next scan re-creates the suggestion.
+                log.warning("execute_queued_budget_recheck_failed",
+                            id=suggestion_id, symbol=s.symbol, error=str(e))
+                s.status = "expired"
+                s.review_note = "Budget re-check errored — blocked for safety"
+                return
 
         # Look up exchange/currency — prefer stored options exchange, fall back to watchlist
         from src.core.config import get_watchlist

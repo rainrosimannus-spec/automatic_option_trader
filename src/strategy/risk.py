@@ -1135,8 +1135,15 @@ class RiskManager:
 
         return RiskCheck(True)
 
-    def check_sector_exposure(self, symbol: str) -> RiskCheck:
-        """Ensure no single sector exceeds adaptive allocation."""
+    def check_sector_exposure(self, symbol: str,
+                              extra_open_symbols: list[str] | None = None) -> RiskCheck:
+        """Ensure no single sector exceeds adaptive allocation.
+
+        extra_open_symbols: in-flight names not yet persisted as Positions (e.g.
+        working SELL-put orders at IBKR during a draining suggestion wave). They
+        augment both the sector and total counts so the concentration limit binds
+        against the wave being built, not just the pre-wave book.
+        """
         sector = self.universe.get_sector(symbol)
         if not sector:
             return RiskCheck(True)
@@ -1172,6 +1179,12 @@ class RiskManager:
                 .filter(Position.status == PositionStatus.OPEN)
                 .count()
             )
+
+        # Augment with in-flight working-order symbols (not yet Positions).
+        if extra_open_symbols:
+            extra_in_sector = sum(1 for s in extra_open_symbols if s in sector_symbols)
+            sector_positions += extra_in_sector
+            total_positions += len(extra_open_symbols)
 
         if total_positions == 0:
             return RiskCheck(True)
@@ -2121,6 +2134,122 @@ class RiskManager:
                 False,
                 f"Crash-carry mode active — new puts paused. {reason}",
             )
+        return RiskCheck(True)
+
+    # ── Execution-time budget re-check (queue chokepoint) ────
+    def can_open_put_budget_recheck(self, symbol: str, open_orders: list | None = None) -> RiskCheck:
+        """Cheap budget re-check run AT EXECUTION (not scan time).
+
+        `can_open_put` runs once per symbol during the scan, against the DB
+        snapshot taken BEFORE any of that wave's puts exist as Positions — so a
+        batch of queued suggestions all pass the same empty-batch state and then
+        drain through the executor, overshooting every aggregate cap (the 16/10
+        slots blowup). This re-check runs at the moment of execution and counts
+        IN-FLIGHT working SELL-put orders at IBKR alongside committed positions,
+        so the wave binds against the real running total.
+
+        Cheap gates only — no FMP/IBKR network beyond `open_orders`, which the
+        caller already fetched. `check_correlation` stays scan-time (FMP cost /
+        fails open); the cheap sector gate covers correlated-cluster risk here.
+        """
+        try:
+            summary = get_account_summary()
+            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+        except Exception:
+            net_liq = 0
+        if net_liq <= 0:
+            # Can't size NLV-scaled budgets — let the downstream margin gate decide.
+            return RiskCheck(True)
+
+        # Classify working SELL-put orders from the already-fetched open_orders.
+        # "Working" = anything not in a terminal state; Filled orders are excluded
+        # because they're already counted as committed Positions (no double-count).
+        _TERMINAL = {"Filled", "Cancelled", "ApiCancelled", "Inactive", "PendingCancel"}
+        working_put_syms: list[str] = []
+        for oo in (open_orders or []):
+            try:
+                c = oo.contract
+                o = oo.order
+                st = oo.orderStatus.status
+                if (getattr(o, "action", "") == "SELL"
+                        and getattr(c, "right", "") == "P"
+                        and st not in _TERMINAL):
+                    working_put_syms.append(getattr(c, "symbol", ""))
+            except Exception:
+                continue
+        working_put_count = len(working_put_syms)
+
+        # 1. Slot budget: OPEN(short_put+stock) + in-flight working sell-puts.
+        with get_db() as db:
+            open_slots = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type.in_(["short_put", "stock"]),
+                )
+                .count()
+            )
+        max_slots = adaptive_max_positions(net_liq)
+        if open_slots + working_put_count >= max_slots:
+            return RiskCheck(
+                False,
+                f"slot budget reached at execution: {open_slots} open + "
+                f"{working_put_count} working >= {max_slots} (NLV ${net_liq:,.0f})",
+            )
+
+        # 2. Daily budget: short_puts opened today + in-flight working put orders
+        # (a working order was necessarily placed today).
+        today_start = datetime.combine(date.today(), datetime.min.time())
+        with get_db() as db:
+            opened_today = (
+                db.query(Position)
+                .filter(
+                    Position.opened_at >= today_start,
+                    Position.position_type == "short_put",
+                )
+                .count()
+            )
+        daily_limit = self._get_dynamic_daily_limit()
+        if opened_today + working_put_count >= daily_limit:
+            return RiskCheck(
+                False,
+                f"daily budget reached at execution: {opened_today} today + "
+                f"{working_put_count} working >= {daily_limit}",
+            )
+
+        # 3. Per-name / cross-wave dup: an OPEN short put OR a working put order
+        # for this symbol (any strike/expiry) — broader than the exact-contract
+        # safeguard the caller already ran.
+        with get_db() as db:
+            existing_name = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.symbol == symbol,
+                    Position.position_type == "short_put",
+                )
+                .count()
+            )
+        if existing_name > 0 or symbol in working_put_syms:
+            return RiskCheck(
+                False,
+                f"per-name dup at execution: {symbol} already has an open or working short put",
+            )
+
+        # 4. Commitment + per-name notional against committed state (these read
+        # the DB; today's already-FILLED puts + assigned stock are now visible).
+        chk = self.check_total_exposure()
+        if not chk.allowed:
+            return chk
+        chk = self.check_position_size(symbol)
+        if not chk.allowed:
+            return chk
+
+        # 5. Sector concentration, augmented with in-flight working-order symbols.
+        chk = self.check_sector_exposure(symbol, extra_open_symbols=working_put_syms)
+        if not chk.allowed:
+            return chk
+
         return RiskCheck(True)
 
     # ── Master check ────────────────────────────────────────
