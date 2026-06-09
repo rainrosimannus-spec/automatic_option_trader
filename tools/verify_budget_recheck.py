@@ -103,13 +103,8 @@ check("C2 per-name dup blocks on a working order for the same symbol",
       (not r.allowed) and "per-name dup" in r.reason)
 
 # ── Test D: sector augmentation — working orders push sector over the limit ──
-# Seed a realistic LOW anchor so the adaptive sector limit floors at 30% (as it
-# does for the son's grown account, anchored at its small first-trade NLV).
-with get_db() as db:
-    db.query(SystemState).filter(
-        SystemState.key == "sector_limit_anchor_dollars").delete()
-    db.add(SystemState(key="sector_limit_anchor_dollars", value="35000.0"))
-    db.commit()
+# Sector limit is NLV-tiered now (no anchor): at NLV $117,824 (>=$100K) it returns
+# max_sector_pct = 30% directly, so this exercises the 30% cap + the in-flight aug.
 reset_positions()
 # 4 TECH + 6 non-TECH-ish (use ENERGY 'XOM' duplicated names won't work; emulate via stock in TECH and many totals)
 for i in range(2):

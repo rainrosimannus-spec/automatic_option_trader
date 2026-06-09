@@ -394,6 +394,24 @@ def _commitment_multiple(nlv: float) -> float:
     return 4.0
 
 
+def _sector_cap(nlv: float, target: float) -> float:
+    """Max fraction of the book any one sector may hold, scaled by NLV. Mirrors
+    live risk._get_adaptive_sector_limit(): permissive for tiny accounts that
+    can't diversify, tightening to `target` (max_sector_pct, 30%) at scale. At
+    >=$100K this returns `target`, so this engine's at-scale backtests are
+    UNCHANGED from the prior flat max_sector_pct gate; only sub-$100K NLVs loosen,
+    matching live."""
+    if target <= 0:
+        return 1.0
+    if nlv < 25_000:
+        return 1.0
+    if nlv < 50_000:
+        return max(0.50, target)
+    if nlv < 100_000:
+        return max(0.40, target)
+    return target
+
+
 def run_regime(regime_id, regime_name, category, rank, universe, market, params: Params,
                earnings=None, cash_yield_annual: float | None = None):
     """
@@ -1328,7 +1346,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     sec = _SECTORS.get(sym, "Other")
                     sec_committed = sum(p["strike"] * 100 * p["qty"] for p in short_puts
                                         if _SECTORS.get(p["sym"], "Other") == sec)
-                    if (sec_committed + need) / (reserved + need) > rcfg.max_sector_pct:
+                    if (sec_committed + need) / (reserved + need) > _sector_cap(prev_nlv, rcfg.max_sector_pct):
                         continue
                 # Portfolio delta cap: block new entries once total delta is at
                 # or above the NLV-tier max (mirrors live, src/strategy/risk.py:744).

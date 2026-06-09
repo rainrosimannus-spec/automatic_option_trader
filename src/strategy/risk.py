@@ -1198,42 +1198,38 @@ class RiskManager:
         return RiskCheck(True)
 
     def _get_adaptive_sector_limit(self, net_liq: float) -> float:
-        """
-        Adaptive sector concentration limit — same pattern as position limit.
+        """Max fraction of the book any one sector may hold, scaled by NLV.
 
-        Anchored at first trade, tightens as NLV grows toward 30% target.
+        Permissive for genuinely small accounts that can't diversify (with a
+        handful of positions any single-sector % is lumpy), tightening to the
+        max_sector_pct target (30%) once the account is large enough to spread
+        across sectors.
 
-        Example with $13,767 NLV:
-          anchor = $13,767 * 100% = $13,767 (100% = fully permissive)
-          At $13,767 NLV → $13,767 / $13,767 = 100% (no sector limit)
-          At $25,000 NLV → $13,767 / $25,000 = 55%
-          At $50,000 NLV → $13,767 / $50,000 = 28% → target 30% takes over
-          At $100,000+ NLV → 30% (fully diversified)
+        NLV-TIERED, not anchored to a stored first-trade NLV (2026-06-09). The old
+        anchor scheme silently DISABLED the gate (effective ~100%) for an account
+        funded large from the start, or if the `sector_limit_anchor_dollars`
+        SystemState row was ever lost — a $4M account could end up with no sector
+        cap at all. Tiers guarantee a large account always gets the 30% cap and
+        keep live in parity with MarsWalk's flat max_sector_pct gate
+        (src/marswalk/engine.py `_sector_cap`) at scale. The vestigial anchor row
+        is simply ignored now.
+
+        Tiers:
+          NLV < $25K   → 100%  # <=4 slots, can't diversify — gate off
+          NLV < $50K   → 50%
+          NLV < $100K  → 40%
+          NLV >= $100K → max_sector_pct (30% target, fully diversified)
         """
         target_pct = self.cfg.max_sector_pct  # 0.30 = 30% final target
         if target_pct <= 0:
-            return 1.0  # disabled
-
-        start_pct = 1.0  # 100% = no sector limit when small
-
-        with get_db() as db:
-            anchor_row = db.query(SystemState).filter(
-                SystemState.key == "sector_limit_anchor_dollars"
-            ).first()
-
-            if anchor_row:
-                anchor_dollars = float(anchor_row.value)
-            else:
-                anchor_dollars = net_liq * start_pct
-                db.add(SystemState(key="sector_limit_anchor_dollars",
-                                   value=str(round(anchor_dollars, 2))))
-                log.info("sector_limit_anchor_set",
-                         nlv=net_liq, anchor_dollars=round(anchor_dollars, 2))
-
-        effective = anchor_dollars / max(net_liq, 1)
-        effective = max(effective, target_pct)  # floor at target (30%)
-
-        return effective
+            return 1.0  # disabled via config
+        if net_liq < 25_000:
+            return 1.0
+        if net_liq < 50_000:
+            return max(0.50, target_pct)
+        if net_liq < 100_000:
+            return max(0.40, target_pct)
+        return target_pct
 
     def check_buying_power(self, required_margin: float = 0) -> RiskCheck:
         """Ensure sufficient buying power remains.
