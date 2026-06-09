@@ -588,7 +588,13 @@ class ProfitTaker:
                     # _roll_call_up function remains in the file but is no longer invoked.
                     if dte > 3:
                         profit_pct = (entry_premium - live_ask) / entry_premium
-                        threshold = self.cfg.wheel_cc_profit_threshold
+                        # wheel_cc_profit_threshold lives on RiskConfig, not StrategyConfig
+                        # (self.cfg). Reading it off self.cfg raised AttributeError that the
+                        # broad except below swallowed as cc_check_error — so this 80%-profit
+                        # CC auto-close never actually ran. It was masked by the unlocked
+                        # get_option_live_price race ("no live ask" continued out above before
+                        # ever reaching here); fixed in the same change.
+                        threshold = get_settings().risk.wheel_cc_profit_threshold
                         if profit_pct >= threshold:
                             log.info("cc_profit_target_hit",
                                      symbol=pos.symbol, dte=dte,

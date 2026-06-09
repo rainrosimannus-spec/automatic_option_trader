@@ -341,19 +341,23 @@ def get_option_greeks(contracts: list[Option]) -> dict:
     Fetch market data including greeks for a list of option contracts.
     Returns {conId: ticker} dict.
     """
-    _ensure_market_data_type()
-    ib = get_ib()
-    tickers = {}
-    for contract in contracts:
-        ticker = ib.reqMktData(contract, "100", False, False)
-        tickers[contract.conId] = ticker
+    # Serialize all IB calls through get_ib_lock() like every other fetcher here.
+    # Unlocked, this raced the shared event loop against concurrent reqMktData and
+    # produced empty tickers ("no live ask").
+    with get_ib_lock():
+        _ensure_market_data_type()
+        ib = get_ib()
+        tickers = {}
+        for contract in contracts:
+            ticker = ib.reqMktData(contract, "100", False, False)
+            tickers[contract.conId] = ticker
 
-    ib.sleep(3)
+        ib.sleep(3)
 
-    for contract in contracts:
-        ib.cancelMktData(contract)
+        for contract in contracts:
+            ib.cancelMktData(contract)
 
-    return tickers
+        return tickers
 
 
 def get_call_contracts(
@@ -956,24 +960,29 @@ def get_option_live_price(
     Returns (bid, ask) tuple, or (None, None) if unavailable.
     """
     try:
-        _ensure_market_data_type()
-        ib = get_ib()
-        contract = Option(symbol, expiry, strike, right, exchange, currency=currency)
-        qualified = ib.qualifyContracts(contract)
-        if not qualified:
-            log.debug("option_live_price_qualify_failed", symbol=symbol, strike=strike)
-            return None, None
+        # Serialize all IB calls through get_ib_lock() like every other fetcher here.
+        # Unlocked, this raced the shared event loop against concurrent reqMktData and
+        # returned an empty ask, which the CC profit-take check logged as
+        # "cc_check_no_live_price" (7/cycle) and skipped.
+        with get_ib_lock():
+            _ensure_market_data_type()
+            ib = get_ib()
+            contract = Option(symbol, expiry, strike, right, exchange, currency=currency)
+            qualified = ib.qualifyContracts(contract)
+            if not qualified:
+                log.debug("option_live_price_qualify_failed", symbol=symbol, strike=strike)
+                return None, None
 
-        ticker = ib.reqMktData(contract, "", False, False)
-        ib.sleep(3)
-        ib.cancelMktData(contract)
+            ticker = ib.reqMktData(contract, "", False, False)
+            ib.sleep(3)
+            ib.cancelMktData(contract)
 
-        bid = ticker.bid if ticker.bid and ticker.bid > 0 else None
-        ask = ticker.ask if ticker.ask and ticker.ask > 0 else None
+            bid = ticker.bid if ticker.bid and ticker.bid > 0 else None
+            ask = ticker.ask if ticker.ask and ticker.ask > 0 else None
 
-        log.debug("option_live_price_fetched", symbol=symbol, strike=strike,
-                  expiry=expiry, bid=bid, ask=ask)
-        return bid, ask
+            log.debug("option_live_price_fetched", symbol=symbol, strike=strike,
+                      expiry=expiry, bid=bid, ask=ask)
+            return bid, ask
 
     except Exception as e:
         log.debug("option_live_price_error", symbol=symbol, strike=strike, error=str(e))
