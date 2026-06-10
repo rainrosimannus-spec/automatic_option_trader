@@ -13,7 +13,6 @@ from src.web.template_engine import templates
 from src.core.database import get_db
 from src.core.models import Position, Trade, PositionStatus, SystemState, TradeType, OrderStatus
 from src.broker.connection import is_connected
-from src.portfolio.capital_injections import get_total_invested_usd
 from src.strategy.risk import adaptive_max_positions
 
 router = APIRouter()
@@ -50,40 +49,77 @@ def _get_account_data() -> dict:
         }
 
 
+def _get_options_start_date() -> str:
+    """Inception date for the option-trader performance chart.
+
+    Auto-anchors to *today* the first time the configured options account differs
+    from the one the chart was last anchored to — i.e. the 2026-06 split onto the
+    dedicated account (U25878705). This makes the graph begin at separation, from
+    0%, instead of inheriting the merged account's history (Feb 2026). After that
+    first boot the date is stable in SystemState; edit that row to override.
+    """
+    from src.core.models import SystemState
+    from src.core.config import get_settings
+    from datetime import datetime
+
+    acct = get_settings().ibkr.account or ""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    with get_db() as db:
+        acct_row = db.query(SystemState).filter(
+            SystemState.key == "options_perf_account"
+        ).first()
+        start_row = db.query(SystemState).filter(
+            SystemState.key == "options_start_date"
+        ).first()
+
+        # First run under a new trading account → (re)anchor inception to today.
+        if acct_row is None or acct_row.value != acct:
+            if start_row:
+                start_row.value = today
+            else:
+                db.add(SystemState(key="options_start_date", value=today))
+            if acct_row:
+                acct_row.value = acct
+            else:
+                db.add(SystemState(key="options_perf_account", value=acct))
+            return today
+
+        if start_row:
+            return start_row.value
+        db.add(SystemState(key="options_start_date", value=today))
+        return today
+
+
 def _get_performance_data() -> dict:
     """
     Build performance chart as % return using daily account snapshots.
-    - "actual" line: options premium earned as % of starting NLV (deposit-proof)
+    - "actual" line: NLV return vs invested capital, anchored to 0% at inception
     - "target" line: 24% annualized return % over same period
 
-    Uses AccountSnapshot table. Falls back to trade-based calc if no snapshots yet.
+    Capital deposits are deposit-proof: each snapshot's return divides NLV by the
+    cumulative deposits *as of that date*, so fresh cash lifts NLV and invested
+    capital together and the return dilutes instead of spiking. Falls back to
+    trade-based calc if no snapshots yet.
     """
     from src.core.models import AccountSnapshot, Trade, TradeType
+    from src.core.config import get_settings
     from datetime import datetime
+
+    # ── Inception (separation day) — also filters out pre-split snapshots ──
+    start_date_str = _get_options_start_date()
+    start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+    daily_target_rate = (1.24 ** (1 / 365)) - 1
+
+    options_account = get_settings().ibkr.account
 
     with get_db() as db:
         snapshots = (
             db.query(AccountSnapshot)
+            .filter(AccountSnapshot.date >= start_date_str)
             .order_by(AccountSnapshot.date.asc())
             .all()
         )
-
-    # ── Get or set the permanent start date ──
-    from src.core.models import SystemState
-    INCEPTION_DATE = "2026-02-20"  # system went live
-
-    with get_db() as db:
-        start_row = db.query(SystemState).filter(
-            SystemState.key == "options_start_date"
-        ).first()
-        if start_row:
-            start_date_str = start_row.value
-        else:
-            start_date_str = INCEPTION_DATE
-            db.add(SystemState(key="options_start_date", value=start_date_str))
-
-    start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
-    daily_target_rate = (1.24 ** (1 / 365)) - 1
 
     # ── Snapshot-based chart (preferred, handles deposits correctly) ──
     if len(snapshots) >= 1:
@@ -91,19 +127,32 @@ def _get_performance_data() -> dict:
         actual_line = []
         target_line = []
 
-        # Capital-aware return: (NLV / total_invested - 1) × 100, anchored to 0%
-        # Mirrors _build_portfolio_performance() in routes/portfolio.py — when capital
-        # is injected, total_invested grows in lockstep, so the curve doesn't jump.
-        from src.core.config import get_settings
-        options_account = get_settings().ibkr.account
-        total_invested = get_total_invested_usd(account_id=options_account)
-        if total_invested <= 0:
-            total_invested = snapshots[0].net_liquidation or 1
+        # Time-aware invested capital: cumulative deposits (USD) as of each date.
+        # A deposit raises both NLV and the divisor, so the return % dilutes rather
+        # than jumping — fresh cash hasn't earned anything yet.
+        from src.portfolio.models import PortfolioCapitalInjection
+        with get_db() as db:
+            inj_rows = (
+                db.query(PortfolioCapitalInjection)
+                .filter(PortfolioCapitalInjection.account_id == options_account)
+                .order_by(PortfolioCapitalInjection.date.asc())
+                .all()
+            )
+        injections = [(r.date, r.amount_usd or 0.0) for r in inj_rows]
+
+        first_nlv = snapshots[0].net_liquidation or 1
+
+        def _invested_as_of(date_str: str) -> float:
+            # Cumulative deposits recorded on/before this snapshot date; falls back
+            # to the first snapshot's NLV before any deposit row exists.
+            total = sum(amt for d, amt in injections if d <= date_str)
+            return total if total > 0 else first_nlv
 
         # Compute raw returns, then anchor first point to 0%
         raw_returns = []
         for snap in snapshots:
-            nlv_return = (snap.net_liquidation / total_invested - 1) * 100
+            invested = _invested_as_of(snap.date)
+            nlv_return = (snap.net_liquidation / invested - 1) * 100
             raw_returns.append(nlv_return)
         anchor = raw_returns[0] if raw_returns else 0
 

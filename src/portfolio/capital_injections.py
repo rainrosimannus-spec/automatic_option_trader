@@ -151,18 +151,28 @@ def _get_fx_rate_to_usd(currency: str, date_str: str) -> float:
     return 1.0
 
 
-def sync_injections_from_ibkr(account_id: str | None = None) -> int:
+def sync_injections_from_ibkr(
+    account_id: str | None = None,
+    flex_token: str | None = None,
+    flex_query_id: str | None = None,
+) -> int:
     """
     Pull deposit history from IBKR Flex, convert to USD, upsert into DB.
     Returns count of new rows added.
+
+    With no args this syncs the PORTFOLIO account from its Flex creds (unchanged
+    behaviour). The option-trader account passes its own account + Flex creds via
+    `sync_options_injections_from_ibkr()`.
     """
     from src.core.config import get_settings
 
     cfg = get_settings().portfolio
     if account_id is None:
         account_id = getattr(cfg, "ibkr_account", "") or None
-    flex_token = getattr(cfg, "flex_token", None)
-    flex_query_id = getattr(cfg, "flex_query_id", None)
+    if flex_token is None:
+        flex_token = getattr(cfg, "flex_token", None)
+    if flex_query_id is None:
+        flex_query_id = getattr(cfg, "flex_query_id", None)
 
     if not flex_token or not flex_query_id:
         raise ValueError(
@@ -181,6 +191,7 @@ def sync_injections_from_ibkr(account_id: str | None = None) -> int:
                 PortfolioCapitalInjection.date == dep["date"],
                 PortfolioCapitalInjection.currency == dep["currency"],
                 PortfolioCapitalInjection.amount_original == dep["amount_original"],
+                PortfolioCapitalInjection.account_id == account_id,
             ).first()
             if existing:
                 continue
@@ -217,6 +228,36 @@ def sync_injections_from_ibkr(account_id: str | None = None) -> int:
 
     log.info("injections_synced", added=added, account_id=account_id)
     return added
+
+
+def sync_options_injections_from_ibkr() -> int:
+    """
+    Sync the OPTION-TRADER account's deposit history from its own Flex query.
+
+    Reads `ibkr.flex_token` / `ibkr.flex_query_id` / `ibkr.account` (the dedicated
+    options account, U25878705 after the 2026-06 split) and records each deposit as
+    a PortfolioCapitalInjection tagged with that account_id. The performance chart
+    then divides NLV by the cumulative deposits as of each date, so a fresh deposit
+    raises NLV and invested capital together — the return % dilutes instead of
+    spiking. Each new deposit also bumps the cash-bridge benchmark (via the shared
+    sync path) so deposits never fire a fake NLV-doubling sweep.
+
+    No-op (returns 0) until the options Flex creds are set in settings.yaml.
+    """
+    from src.core.config import get_settings
+
+    ibkr = get_settings().ibkr
+    token = getattr(ibkr, "flex_token", "") or ""
+    query_id = getattr(ibkr, "flex_query_id", "") or ""
+    if not token or not query_id:
+        log.info("options_injection_sync_skipped", reason="flex creds unset")
+        return 0
+
+    return sync_injections_from_ibkr(
+        account_id=ibkr.account or None,
+        flex_token=token,
+        flex_query_id=query_id,
+    )
 
 
 def get_total_invested_usd(account_id: str | None = None) -> float:

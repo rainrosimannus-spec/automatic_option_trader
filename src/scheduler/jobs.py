@@ -1768,6 +1768,27 @@ def create_scheduler() -> BackgroundScheduler:
         except Exception as e:
             log.error("account_snapshot_error", error=str(e))
 
+    def _job_options_injection_sync():
+        """Pull the option-trader account's deposit history from IBKR Flex and
+        record it as capital injections, so the performance chart dilutes (not
+        spikes) when fresh cash arrives. No-op until the options Flex creds are set."""
+        _ensure_event_loop()
+        try:
+            from src.portfolio.capital_injections import sync_options_injections_from_ibkr
+            added = sync_options_injections_from_ibkr()
+            if added:
+                log.info("options_injections_synced", added=added)
+        except Exception as e:
+            log.error("options_injection_sync_error", error=str(e))
+
+    scheduler.add_job(
+        _job_options_injection_sync,
+        CronTrigger(hour=16, minute=0, timezone=us_tz),  # before the close snapshot
+        id="options_injection_sync",
+        name="Options Deposit Sync (Flex)",
+        max_instances=1,
+    )
+
     # Snapshot at market open and market close (to catch both)
     scheduler.add_job(
         _job_account_snapshot,
