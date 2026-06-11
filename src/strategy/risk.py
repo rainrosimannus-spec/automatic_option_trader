@@ -86,6 +86,47 @@ def adaptive_commitment_multiple(net_liq: float) -> float:
     return 4.0
 
 
+def adaptive_name_notional_pct(net_liq: float) -> float:
+    """Per-name assignment-notional cap as a fraction of NLV, scaled by account size.
+
+    Below $100K the 25% anti-lumpiness cap is LOOSENED to 50% (Rain 2026-06-11):
+    on a small account the 25% cap (e.g. $5K on a $20K book) prices the account
+    out of essentially every name, so 1 lot of anything over ~$50/share is
+    rejected. 50% doubles the affordable universe (≤ ~$100/share at $20K) while
+    still keeping a real per-name concentration guard — you can never commit more
+    than half the book's assignment liability to a single name. This partially
+    reverses bc2439e's small-account tightening on purpose; the guard is loosened,
+    not removed (see memory: assignment-cash-lockout-prevention).
+
+    At/above $100K the tighter target (max_single_name_notional_pct, 25%) applies.
+    Mirrors MarsWalk engine's per-name cap (src/marswalk/engine.py)."""
+    if net_liq < 100_000:
+        return 0.50
+    return get_settings().risk.max_single_name_notional_pct
+
+
+def affordable_base_contracts(net_liq: float, strike_price: float) -> int:
+    """Base put-contract count BEFORE the IV-rank / breadth multipliers, scaled by NLV.
+
+    The flat `contracts_per_stock` base (growth-mode 2) only applies once the
+    account is large enough that 2 lots on one name aren't lumpy — at/above
+    $500K. BELOW $500K the flat base is account-size-blind: it over-commits a
+    small book onto a single name and trips the per-name notional gate on every
+    candidate (the bug that blocked all put-selling on the split ~$20K account,
+    and seeded the same mess on the son's fork). So below $500K we DERIVE the
+    count from what fits the per-name assignment-notional cap instead — as many
+    whole lots as fit under adaptive_name_notional_pct(net_liq) × NLV, floored at
+    1. This right-sizes the position to the account rather than rejecting the name
+    (Rain 2026-06-11). Mirrors MarsWalk engine's contract sizing."""
+    base = max(1, get_settings().strategy.contracts_per_stock)
+    if net_liq >= 500_000:
+        return base
+    if strike_price <= 0:
+        return 1
+    cap_dollars = net_liq * adaptive_name_notional_pct(net_liq)
+    return max(1, int(cap_dollars / (strike_price * 100)))
+
+
 @dataclass
 class RiskCheck:
     allowed: bool
@@ -950,23 +991,25 @@ class RiskManager:
                 f"ceiling ${self.cfg.max_position_dollars:,.0f})",
             )
 
-        # Layer 3 — per-name ASSIGNMENT-NOTIONAL cap (added 2026-06-08). Layers 1-2 cap
-        # MARGIN; this caps the cash you'd owe if this name's put assigns, as % of NLV.
-        # Steers small accounts off lumpy high-priced names (a $375 stock is one ~$75k
-        # assignment ≈ a whole $120k account) without a hard price band, so it stays
-        # correct at $4M too. Estimates with the base order size (contracts_per_stock).
-        try:
-            contracts_per_stock = get_settings().strategy.contracts_per_stock
-        except Exception:
-            contracts_per_stock = 1
-        name_notional = price * 100 * max(1, contracts_per_stock)
-        name_notional_cap = net_liq * self.cfg.max_single_name_notional_pct
+        # Layer 3 — per-name ASSIGNMENT-NOTIONAL cap (added 2026-06-08, made
+        # account-size-aware 2026-06-11). Layers 1-2 cap MARGIN; this caps the cash
+        # you'd owe if this name's put assigns, as % of NLV. The cap itself is now
+        # NLV-tiered (adaptive_name_notional_pct: 50% below $100K, 25% at/above) and
+        # we estimate with the AFFORDABILITY-derived order size, not the flat
+        # contracts_per_stock base — so the gate only rejects names where even a
+        # single lot blows the cap, instead of rejecting because a small account's
+        # flat 2-lot base was over-sized. Stays correct at $4M (affordable count
+        # there == contracts_per_stock).
+        base_contracts = affordable_base_contracts(net_liq, price)
+        name_notional = price * 100 * base_contracts
+        name_notional_pct = adaptive_name_notional_pct(net_liq)
+        name_notional_cap = net_liq * name_notional_pct
         if name_notional > name_notional_cap:
             return RiskCheck(
                 False,
                 f"{symbol} assignment notional ${name_notional:,.0f} "
-                f"({max(1, contracts_per_stock)}x contracts) exceeds "
-                f"{self.cfg.max_single_name_notional_pct:.0%} of NLV (${name_notional_cap:,.0f}) "
+                f"({base_contracts}x contracts) exceeds "
+                f"{name_notional_pct:.0%} of NLV (${name_notional_cap:,.0f}) "
                 f"— too lumpy at NLV ${net_liq:,.0f}",
             )
 

@@ -1302,7 +1302,18 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 # existing 10× hard ceiling.
                 if stagnation_active:
                     qty_mult = min(int(round(qty_mult * params.stagnation_multiplier)), ivr_cap)
-                contracts = params.contracts * qty_mult
+                # Account-size-aware sizing (2026-06-11, mirrors live
+                # risk.affordable_base_contracts): the flat params.contracts base
+                # only applies at/above $500K NLV. Below it, derive the lot count
+                # from what fits the per-name notional cap (50% below $100K, else
+                # max_single_name_notional_pct) so a small book is right-sized
+                # instead of over-committed by a flat base. IV-rank up-scaling is
+                # skipped below $500K (affordability is the governor there).
+                _name_pct = 0.50 if prev_nlv < 100_000 else params.max_single_name_notional_pct
+                if 0 < prev_nlv < 500_000 and top.strike > 0:
+                    contracts = max(1, int((prev_nlv * _name_pct) / (top.strike * 100)))
+                else:
+                    contracts = params.contracts * qty_mult
                 # Mode E (breadth_gradual): halve contracts when in HALVE regime
                 # (off_threshold <= breadth < full_threshold) AND name is below
                 # its own MA200. Off and skip branches were handled above.
@@ -1321,11 +1332,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     contracts = max(1, int(round(contracts * params.bear_market_size_multiplier)))
                 reserved = sum(p["strike"] * 100 * p["qty"] for p in short_puts)
                 need = top.strike * 100 * contracts
-                # Per-name assignment-notional cap (2026-06-08): this single name's
-                # notional can't exceed max_single_name_notional_pct of NLV. Steers
-                # small books off lumpy high-priced names; non-binding at large NLV.
-                # Mirrors live risk.check_position_size Layer 3.
-                if prev_nlv > 0 and need > params.max_single_name_notional_pct * prev_nlv:
+                # Per-name assignment-notional cap (2026-06-08, NLV-tiered 2026-06-11):
+                # this single name's notional can't exceed the per-name cap of NLV
+                # (50% below $100K, else max_single_name_notional_pct). Steers small
+                # books off lumpy high-priced names; non-binding at large NLV. Since
+                # `contracts` above is already sized to fit the cap below $500K, this
+                # only skips a name where even one lot blows the cap. Mirrors live
+                # risk.check_position_size Layer 3 + adaptive_name_notional_pct.
+                if prev_nlv > 0 and need > _name_pct * prev_nlv:
                     continue
                 if params.margin_on:
                     # Margin mode: the % NLV cap admits notional up to NLV*cap*multiple

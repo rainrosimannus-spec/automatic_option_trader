@@ -14,7 +14,7 @@ from src.core.models import Trade, Position, TradeType, PositionStatus, OrderSta
 from src.core.logger import get_logger
 from src.strategy.universe import UniverseManager
 from src.strategy.screener import screen_puts
-from src.strategy.risk import RiskManager
+from src.strategy.risk import RiskManager, affordable_base_contracts
 
 log = get_logger(__name__)
 
@@ -26,6 +26,18 @@ class PutSeller:
         self.universe = universe
         self.risk = risk
         self.cfg = get_settings().strategy
+
+    def _net_liq(self) -> float | None:
+        """Current account NLV for account-size-aware sizing, or None if unavailable
+        (cached by the broker layer; risk gates fetch it the same way each scan)."""
+        try:
+            from src.broker.account import get_account_summary
+            acct = get_account_summary()
+            if acct and acct.net_liquidation > 0:
+                return acct.net_liquidation
+        except Exception as e:
+            log.warning("net_liq_fetch_failed", error=str(e))
+        return None
 
     def run_scan(self, market: str | None = None) -> list[str]:
         """
@@ -217,10 +229,19 @@ class PutSeller:
         from datetime import datetime as _dt
         premium = round(candidate.bid, 2)
 
-        # #3 IV-rank-scaled sizing: more contracts when premium is rich.
+        # Sizing. At/above $500K NLV: flat contracts_per_stock base scaled UP by
+        # IV-rank (#3 rich-premium sizing). Below $500K: account-size-aware — the
+        # contract count is DERIVED from what fits the per-name notional cap
+        # (affordable_base_contracts), so a small account is right-sized onto a
+        # name instead of over-committed by the flat base. IV-rank up-scaling is
+        # intentionally skipped below $500K so affordability stays the governor.
         iv_rank = self.risk.get_iv_rank_value(symbol)
         size_mult = self.risk.iv_rank_size_multiplier(iv_rank)
-        quantity = self.cfg.contracts_per_stock * size_mult
+        net_liq = self._net_liq()
+        if net_liq is not None and net_liq < 500_000:
+            quantity = affordable_base_contracts(net_liq, candidate.strike)
+        else:
+            quantity = self.cfg.contracts_per_stock * size_mult
         # Breadth-gated MA200 halve: when risk has flagged halve regime + name
         # below own MA200, scale contracts down. Order: IV-rank first, then halve.
         if risk_check.size_multiplier < 1.0:
@@ -321,12 +342,17 @@ class PutSeller:
         if not candidate:
             return False
 
-        # #3 IV-rank-scaled sizing: more contracts when premium is rich. The
+        # Sizing — see _evaluate_symbol. At/above $500K: flat base × IV-rank (the
         # whatif-margin check below runs on this scaled quantity, so an oversized
-        # multiple is blocked by the per-position cap rather than placed.
+        # multiple is blocked by the per-position cap rather than placed). Below
+        # $500K: account-size-aware affordability-derived count.
         iv_rank = self.risk.get_iv_rank_value(symbol)
         size_mult = self.risk.iv_rank_size_multiplier(iv_rank)
-        quantity = self.cfg.contracts_per_stock * size_mult
+        net_liq = self._net_liq()
+        if net_liq is not None and net_liq < 500_000:
+            quantity = affordable_base_contracts(net_liq, candidate.strike)
+        else:
+            quantity = self.cfg.contracts_per_stock * size_mult
         # Breadth-gated MA200 halve (see can_open_put). Apply AFTER IV-rank
         # so the halve scales down what the rich-premium sizing already chose.
         if risk_check.size_multiplier < 1.0:
