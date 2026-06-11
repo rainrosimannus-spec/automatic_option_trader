@@ -453,37 +453,15 @@ def dashboard(request: Request):
     except Exception:
         pass
 
-    # IBKR NLV ignores MesiCap's external borrowings. Surface true net equity by
-    # subtracting the full Bruno loan book (principal + accrued interest, all
-    # active loans incl. shareholder/subordinated). Bruno is a separate, optional
-    # DB (data/bruno.db) — fail soft so a hiccup there never breaks the dashboard;
-    # the card just disappears. Account base currency is USD, so convert EUR->USD.
+    # NLV-net-of-debt card intentionally DISABLED on the options dashboard.
+    # After the 2026-06 account split this page shows the dedicated options
+    # account (U25878705), which carries no external/shareholder borrowings —
+    # its NLV needs no debt correction. The Bruno loan book (data/bruno.db) is
+    # the LENDER PORTAL's data, operated separately (and is the son's), so
+    # netting it against the options NLV showed the wrong party's debt. The
+    # borrower loan book stays accessible under /borrower/*; it just no longer
+    # bleeds into the options NLV here. Template hides the card when None.
     debt_card = None
-    try:
-        from src.borrower.models import get_session_factory
-        from src.borrower.headroom import total_obligations
-        from src.borrower.fx import from_eur
-        bruno = get_session_factory()()
-        try:
-            obl = total_obligations(bruno)
-        finally:
-            bruno.close()
-        total_debt_usd = from_eur(obl["total_owed_eur"], "USD") or 0.0
-        external_debt_usd = from_eur(obl["external_owed_eur"], "USD") or 0.0
-        nlv_usd = account["net_liquidation"] or 0.0
-        debt_card = {
-            # Two net-equity figures: NLV net of ALL debt, and net of OUTSIDE
-            # (non-shareholder) lender debt only. external is $0 until Phase 3.
-            "net_all": nlv_usd - total_debt_usd,
-            "net_outside": nlv_usd - external_debt_usd,
-            "total_debt": total_debt_usd,
-            "external_debt": external_debt_usd,
-            "loan_count": obl["loan_count"],
-            "external_loan_count": obl["external_loan_count"],
-        }
-    except Exception as e:
-        from src.core.logger import get_logger
-        get_logger(__name__).warning("nlv_net_of_debt_card_error", error=str(e))
 
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
