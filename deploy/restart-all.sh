@@ -26,18 +26,18 @@ if [ "$remaining" -gt 0 ]; then
 fi
 
 echo ""
-echo "=== SPLIT MODE: portfolio gateway :7496 + options gateway :4001 ==="
+echo "=== SPLIT MODE: portfolio gateway :7496 (auto) + options gateway :4002 (manual) ==="
 echo ""
 echo "=== Starting portfolio gateway (pohja359 / U17562704) ==="
 echo ">>> APPROVE IB KEY ON YOUR PHONE for pohja359 <<<"
 tmux new-session -d -s portfolio '~/start-gateway-portfolio.sh'
 sleep 35
 
+# NOTE: the OPTIONS gateway (skxholdco / U25878705) is started MANUALLY on port 4002.
+# Do NOT launch /opt/ibc/config-options.ini here — that is the SON's gateway
+# (mesic2707 / port 4001) run by the nexbit user. Never touch it.
 echo ""
-echo "=== Starting options gateway (mesic2707 / U25878705) ==="
-echo ">>> APPROVE IB KEY ON YOUR PHONE for mesic2707 <<<"
-tmux new-session -d -s options '~/start-gateway-options.sh'
-sleep 35
+echo "=== Options gateway (skxholdco / U25878705 / :4002): start it manually before/after this ==="
 
 echo ""
 echo "=== Starting trader ==="
