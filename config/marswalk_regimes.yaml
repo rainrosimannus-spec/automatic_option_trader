@@ -402,3 +402,11 @@ regimes:
       - start: "2024-04-15"
         end: "2024-04-17"
     gap_open_pct: -0.30
+
+  - id: live_replay_2020
+    rank: 0
+    name: "Full 6-year live replay (Jun 2020 → today)"
+    category: lifecycle
+    start: "2020-06-13"
+    end: "2026-06-12"
+    why: "Not a single stress window — the WHOLE ride. Runs the live option trader with current settings on real historical data continuously from 2020-06-13 (post-COVID-crash recovery) through today, ~6 unbroken years. Unlike the other regimes (each a surgically-cut crisis), this is the end-to-end compounding question: starting from $4M, would the strategy as configured TODAY have survived and grown across the 2020 melt-up, the 2021 reflation bull, the 2022 rate-hike bear, the 2023 SVB shock + AI breakout, the 2024 grind + yen-carry unwind, the 2025 tariff shock, and the 2026 Iran war — back-to-back, with assignments rolling forward and capital actually at risk the whole time? The 24% target line compounds to ~3.6x over 6y (~$4M → ~$14.5M); the actual curve shows the real path-dependent outcome incl. max drawdown across every regime stacked in sequence. Start capital is the run-level start_nlv (default $4M), not pinned here. Universe is the live screener set: names that IPO mid-window (PLTR 2020-09, ABNB 2020-12, ARM 2023-09) are auto-skipped by the data layer until their listing date, then join the book — realistic, not survivorship-curated. No cash_yield_annual: matches live behavior (the trader doesn't sweep idle cash to T-bills) and keeps parity with the other multi-year real regimes (oil_crash_2014, bull_2021). Bump `end` to keep it tracking 'today'."
