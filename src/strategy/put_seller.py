@@ -118,15 +118,30 @@ class PutSeller:
                         candidates.append(result)
                         consecutive_failures = 0
                     else:
-                        # If a symbol took >10 seconds and returned None,
-                        # it's likely a timeout/connection issue
-                        if _time.time() - sym_start > 25:
+                        # A clean None (no_put_contracts / no_qualifying_puts) is a
+                        # NORMAL outcome, not a connection failure — even when slow.
+                        # Only count it against the abort budget if the connection
+                        # is actually dead. Timing alone was misfiring: a slow-but-
+                        # healthy qualifyContracts on monthly-only names aborted the
+                        # scan after 3 names, before it ever reached the affordable
+                        # short-DTE names (random.shuffle + 43/49 monthly-only).
+                        from src.broker.connection import is_connected
+                        if _time.time() - sym_start > 25 and not is_connected():
                             consecutive_failures += 1
                         else:
                             consecutive_failures = 0
                 except Exception as e:
                     log.error("put_scan_error", symbol=symbol, error=str(e))
-                    consecutive_failures += 1
+                    # Only a genuinely dead connection should abort the whole scan.
+                    # Transient per-symbol errors (e.g. "This event loop is already
+                    # running" from loop reentry, a one-off qualifyContracts timeout)
+                    # must NOT abort — they'd otherwise kill the scan after 3 names and
+                    # starve it of put-sells. Probe the real connection state instead.
+                    from src.broker.connection import is_connected
+                    if not is_connected():
+                        consecutive_failures += 1
+                    else:
+                        consecutive_failures = 0
 
                 if consecutive_failures >= 3:
                     log.warning("scan_aborted_connection_dead",

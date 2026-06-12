@@ -5,6 +5,15 @@ Starts the IBKR connection, scheduler, and web dashboard.
 """
 from __future__ import annotations
 
+# NOTE on nest_asyncio: do NOT add `import nest_asyncio; nest_asyncio.apply()` here.
+# It was the historical fix (76be77d) for "This event loop is already running",
+# but it monkeypatches asyncio.run() WITHOUT a loop_factory kwarg, and the current
+# uvicorn calls asyncio.run(serve(), loop_factory=...). That raises TypeError, kills
+# the uvicorn daemon thread instantly, web_thread.join() returns, and the whole
+# process exits silently right after "Scheduler started" (a ~60s restart flap).
+# The event-loop reentry must be solved by serializing ib_insync access through
+# get_ib_lock(), not by globally patching asyncio. See connection.py.
+
 import signal
 import sys
 import threading
