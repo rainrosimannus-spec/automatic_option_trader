@@ -297,6 +297,19 @@ def dashboard(request: Request):
             .filter(Position.status == PositionStatus.OPEN)
             .all()
         )
+        # Hide expired-but-still-OPEN options: once expiry has passed (strict <,
+        # matching the reconciler), the option is gone from IBKR (assigned or
+        # expired worthless) and only lingers as OPEN until the background sync
+        # catches up. Dropping it here removes the display lag in both the Open
+        # Positions table and the Short-puts card without waiting for that sync.
+        _today = date.today().strftime("%Y%m%d")
+        open_positions = [
+            p for p in open_positions
+            if not (
+                p.position_type in ("short_put", "short_call", "covered_call")
+                and p.expiry and p.expiry < _today
+            )
+        ]
         closed_positions = (
             db.query(Position)
             .filter(Position.status.in_([PositionStatus.CLOSED, PositionStatus.EXPIRED]))
