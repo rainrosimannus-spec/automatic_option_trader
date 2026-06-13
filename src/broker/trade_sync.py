@@ -9,6 +9,7 @@ Both manual trades and system-placed trades appear in one unified history.
 """
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta
 
 from src.broker.connection import get_ib, get_ib_lock, is_connected
@@ -17,6 +18,33 @@ from src.core.models import Trade, TradeType, OrderStatus, Position, PositionSta
 from src.core.logger import get_logger
 
 log = get_logger(__name__)
+
+# Non-blocking cache of IBKR's real positions, published every time
+# sync_ibkr_positions() runs (every 15 min). Read by the dashboard/positions
+# views to hide phantom OPEN option positions that IBKR no longer holds (e.g. a
+# put that was assigned but not yet reconciled in the DB). Mirrors the open-orders
+# cache pattern in src/broker/orders.py.
+_cached_ibkr_positions: dict | None = None
+_ibkr_pos_cache_lock = threading.Lock()
+
+
+def get_cached_ibkr_positions() -> dict | None:
+    """Return the cached IBKR positions snapshot (non-blocking, for display).
+
+    Shape: {"option_keys": set[(symbol, strike, expiry, right)],
+            "stock_symbols": set[str], "captured_at": datetime} or None if the
+    cache was never populated or we are disconnected (fail-safe: callers then
+    show DB rows as-is rather than hiding anything).
+    """
+    with _ibkr_pos_cache_lock:
+        if _cached_ibkr_positions is None:
+            return None
+        # Shallow copy so callers can't mutate cache internals.
+        return {
+            "option_keys": set(_cached_ibkr_positions["option_keys"]),
+            "stock_symbols": set(_cached_ibkr_positions["stock_symbols"]),
+            "captured_at": _cached_ibkr_positions["captured_at"],
+        }
 
 
 def _classify_trade(fill) -> TradeType | None:
@@ -463,6 +491,11 @@ def sync_ibkr_positions() -> int:
     """
     if not is_connected():
         log.warning("position_sync_not_connected")
+        # Clear the display cache so the dashboard fails safe (shows DB as-is)
+        # rather than filtering against a stale snapshot while disconnected.
+        global _cached_ibkr_positions
+        with _ibkr_pos_cache_lock:
+            _cached_ibkr_positions = None
         return 0
 
     ib = get_ib()
@@ -516,6 +549,22 @@ def sync_ibkr_positions() -> int:
             symbol = contract.symbol
             qty = int(item.position)
             ibkr_stock_positions[symbol] = qty
+
+    # Publish the authoritative IBKR snapshot to the non-blocking display cache.
+    # Normalize keys the same way the display filter does so the two key
+    # constructions cannot drift. captured_at is UTC-naive to match
+    # Position.opened_at (datetime.utcnow()).
+    with _ibkr_pos_cache_lock:
+        _cached_ibkr_positions = {
+            "option_keys": {
+                (str(k[0]), float(k[1]), str(k[2]), str(k[3]))
+                for k in ibkr_positions.keys()
+            },
+            "stock_symbols": {
+                sym for sym, qty in ibkr_stock_positions.items() if qty != 0
+            },
+            "captured_at": datetime.utcnow(),
+        }
 
     with get_db() as db:
         open_positions = db.query(Position).filter(

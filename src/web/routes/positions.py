@@ -22,6 +22,18 @@ def list_positions(request: Request):
             .order_by(Position.opened_at.desc())
             .all()
         )
+        # Show only positions IBKR actually holds — hides phantom OPEN options
+        # (e.g. an assigned-but-not-yet-reconciled put). See dashboard helper.
+        from src.web.routes.dashboard import filter_open_positions_to_ibkr_truth
+        from src.broker.trade_sync import get_cached_ibkr_positions
+        try:
+            from src.broker.orders import get_cached_open_orders
+            _cached_oo = get_cached_open_orders()
+        except Exception:
+            _cached_oo = []
+        positions = filter_open_positions_to_ibkr_truth(
+            positions, get_cached_ibkr_positions(), _cached_oo
+        )
     return templates.TemplateResponse("positions.html", {
         "request": request,
         "positions": positions,

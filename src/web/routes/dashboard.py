@@ -23,6 +23,73 @@ def _get_state_val(db, key: str) -> str | None:
     return state.value if state else None
 
 
+def filter_open_positions_to_ibkr_truth(positions, ibkr_snapshot, open_orders):
+    """Hide phantom OPEN option positions that IBKR no longer holds.
+
+    After a put is assigned (or any option closes), the local Position row stays
+    OPEN until a background reconciler catches up — a window of up to hours during
+    which the dashboard would show a position IBKR no longer has. This filters the
+    displayed list against IBKR's real positions (a non-blocking snapshot from
+    trade_sync) so the view reflects the account's true state.
+
+    Conservative: only HIDE an option position when we are certain it is a phantom.
+    Stock and any non-option types pass through untouched.
+
+    Keep an OPEN short_put / short_call / covered_call if ANY of:
+      (a) snapshot is None/unavailable           -> fail-safe, show DB as-is
+      (b) its (symbol, strike, expiry, right) IS in snapshot option_keys
+      (c) it has a live cached open order (symbol+strike+expiry match)
+      (d) it was opened AFTER snapshot captured_at (fresh-fill lag guard)
+    Otherwise HIDE it (phantom IBKR no longer holds).
+    """
+    # (a) fail-safe: no usable snapshot -> never hide anything.
+    if not ibkr_snapshot or ibkr_snapshot.get("option_keys") is None:
+        return list(positions)
+
+    option_keys = ibkr_snapshot["option_keys"]
+    captured_at = ibkr_snapshot.get("captured_at")
+    open_orders = open_orders or []
+
+    kept = []
+    for p in positions:
+        if p.position_type not in ("short_put", "short_call", "covered_call"):
+            kept.append(p)            # stock / anything else: untouched
+            continue
+
+        right = "P" if "put" in p.position_type else "C"
+        try:
+            key = (str(p.symbol), float(p.strike), str(p.expiry), right)
+        except (TypeError, ValueError):
+            kept.append(p)            # can't normalize -> fail-safe keep
+            continue
+
+        # (b) present in IBKR snapshot
+        if key in option_keys:
+            kept.append(p)
+            continue
+
+        # (c) has a live open order at IBKR (same loose match trade_sync uses)
+        has_open_order = any(
+            o.get("symbol") == p.symbol
+            and o.get("strike") == p.strike
+            and o.get("expiry") == p.expiry
+            for o in open_orders
+        )
+        if has_open_order:
+            kept.append(p)
+            continue
+
+        # (d) opened after the snapshot was captured (fresh-fill lag)
+        if captured_at is not None and p.opened_at is not None and p.opened_at > captured_at:
+            kept.append(p)
+            continue
+
+        # snapshot fresh, key absent, no open order, not freshly opened -> phantom
+        # (intentionally dropped)
+
+    return kept
+
+
 def _get_account_data() -> dict:
     """Safely fetch account data — returns zeros if unavailable."""
     try:
@@ -296,6 +363,20 @@ def dashboard(request: Request):
             db.query(Position)
             .filter(Position.status == PositionStatus.OPEN)
             .all()
+        )
+        # Reconcile against IBKR's real state (non-blocking caches) so a put that
+        # was assigned but not yet reconciled in the DB doesn't show as a phantom
+        # OPEN put. This single filter point corrects every downstream card
+        # (open_puts/stock/calls, slots, theta) and the Open Positions table.
+        from src.broker.trade_sync import get_cached_ibkr_positions
+        _ibkr_snapshot = get_cached_ibkr_positions()
+        try:
+            from src.broker.orders import get_cached_open_orders
+            _cached_oo = get_cached_open_orders()
+        except Exception:
+            _cached_oo = []
+        open_positions = filter_open_positions_to_ibkr_truth(
+            open_positions, _ibkr_snapshot, _cached_oo
         )
         closed_positions = (
             db.query(Position)
