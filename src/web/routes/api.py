@@ -12,27 +12,6 @@ from src.broker.connection import is_connected
 router = APIRouter()
 
 
-def _open_positions_ibkr_truth(db):
-    """Load OPEN positions filtered to IBKR's real state (hides phantom options
-    such as an assigned-but-not-yet-reconciled put). See dashboard helper."""
-    from src.web.routes.dashboard import filter_open_positions_to_ibkr_truth
-    from src.broker.trade_sync import get_cached_ibkr_positions
-    positions = (
-        db.query(Position)
-        .filter(Position.status == PositionStatus.OPEN)
-        .order_by(Position.opened_at.desc())
-        .all()
-    )
-    try:
-        from src.broker.orders import get_cached_open_orders
-        cached_oo = get_cached_open_orders()
-    except Exception:
-        cached_oo = []
-    return filter_open_positions_to_ibkr_truth(
-        positions, get_cached_ibkr_positions(), cached_oo
-    )
-
-
 @router.get("/status")
 def system_status():
     with get_db() as db:
@@ -41,7 +20,9 @@ def system_status():
         spy_bullish = db.query(SystemState).filter(SystemState.key == "spy_bullish").first()
         spy_fast_ma = db.query(SystemState).filter(SystemState.key == "spy_fast_ma").first()
         spy_slow_ma = db.query(SystemState).filter(SystemState.key == "spy_slow_ma").first()
-        open_count = len(_open_positions_ibkr_truth(db))
+        open_count = (
+            db.query(Position).filter(Position.status == PositionStatus.OPEN).count()
+        )
         from datetime import datetime, date
         today_start = datetime.combine(date.today(), datetime.min.time())
         daily_count = (
@@ -65,7 +46,12 @@ def system_status():
 @router.get("/positions")
 def api_positions():
     with get_db() as db:
-        positions = _open_positions_ibkr_truth(db)
+        positions = (
+            db.query(Position)
+            .filter(Position.status == PositionStatus.OPEN)
+            .order_by(Position.opened_at.desc())
+            .all()
+        )
     return [
         {
             "id": p.id,
