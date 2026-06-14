@@ -1305,11 +1305,12 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 # Account-size-aware sizing (2026-06-11, mirrors live
                 # risk.affordable_base_contracts): the flat params.contracts base
                 # only applies at/above $500K NLV. Below it, derive the lot count
-                # from what fits the per-name notional cap (50% below $100K, else
-                # max_single_name_notional_pct) so a small book is right-sized
+                # from what fits the per-name notional cap (100% below $100K — the
+                # per-name cap no longer binds on small accounts, Rain 2026-06-14;
+                # else max_single_name_notional_pct) so a small book is right-sized
                 # instead of over-committed by a flat base. IV-rank up-scaling is
                 # skipped below $500K (affordability is the governor there).
-                _name_pct = 0.50 if prev_nlv < 100_000 else params.max_single_name_notional_pct
+                _name_pct = 1.0 if prev_nlv < 100_000 else params.max_single_name_notional_pct
                 if 0 < prev_nlv < 500_000 and top.strike > 0:
                     contracts = max(1, int((prev_nlv * _name_pct) / (top.strike * 100)))
                 else:
@@ -1334,7 +1335,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 need = top.strike * 100 * contracts
                 # Per-name assignment-notional cap (2026-06-08, NLV-tiered 2026-06-11):
                 # this single name's notional can't exceed the per-name cap of NLV
-                # (50% below $100K, else max_single_name_notional_pct). Steers small
+                # (100% below $100K — non-binding on small accounts — else
+                # max_single_name_notional_pct). Steers small
                 # books off lumpy high-priced names; non-binding at large NLV. Since
                 # `contracts` above is already sized to fit the cap below $500K, this
                 # only skips a name where even one lot blows the cap. Mirrors live
