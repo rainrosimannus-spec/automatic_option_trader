@@ -159,9 +159,8 @@ def _get_vix_from_fmp() -> Optional[float]:
     """Fallback: get VIX from FMP API."""
     try:
         import requests
-        from src.core.config import load_config
-        cfg = load_config()
-        api_key = cfg.get("fmp", {}).get("api_key", "")
+        from src.portfolio.fmp import get_fmp_key
+        api_key = get_fmp_key()
         if not api_key:
             return None
         url = f"https://financialmodelingprep.com/stable/quote?symbol=%5EVIX&apikey={api_key}"

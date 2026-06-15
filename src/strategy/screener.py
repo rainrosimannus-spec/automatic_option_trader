@@ -97,6 +97,12 @@ def screen_puts(
     exchange: used for option chain queries (DTB, ICEEU, etc.)
     stock_exchange: used for stock price/IV lookups (defaults to exchange if not set)
     """
+    # Bind this (scheduler worker) thread to the single main event loop before any
+    # sync ib_insync call, otherwise get_put_contracts() collides with the running
+    # loop and raises "This event loop is already running" on every symbol. Mirrors
+    # screen_calls() (commit c023684). NOT nest_asyncio — see main.py.
+    from src.broker.connection import ensure_main_event_loop
+    ensure_main_event_loop()
     cfg = get_settings().strategy
     stk_exchange = stock_exchange or exchange
 
