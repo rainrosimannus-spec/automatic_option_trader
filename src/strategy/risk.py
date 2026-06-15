@@ -89,24 +89,19 @@ def adaptive_commitment_multiple(net_liq: float) -> float:
 def adaptive_name_notional_pct(net_liq: float) -> float:
     """Per-name assignment-notional cap as a fraction of NLV, scaled by account size.
 
-    Below $100K the per-name concentration cap is RAISED to 100% of NLV (Rain
-    2026-06-14): the earlier 50% ceiling (itself a loosening of the 25% target)
-    still priced a small book out of higher-quality, higher-priced names and held
-    auto-sizing to half the account. At 100% a single name can carry up to a full
-    NLV of assignment notional — so the per-name cap no longer binds on small
-    accounts; the account-level total-commitment cap (adaptive_commitment_multiple,
-    2.0× NLV below $100K) plus the slot limit and buying power are the remaining
-    backstops. The 2× total budget still wants ~2 names to fill, so the book keeps
-    some spread rather than collapsing onto one position. This further reverses
-    bc2439e's small-account tightening on purpose (see memory:
-    assignment-cash-lockout-prevention) — note it weakens the per-name guard
-    against a correlated single-name gap-down for small accounts, accepted by Rain
-    for his own (small) account.
+    Below $100K the 25% anti-lumpiness cap is LOOSENED to 50% (Rain 2026-06-11):
+    on a small account the 25% cap (e.g. $5K on a $20K book) prices the account
+    out of essentially every name, so 1 lot of anything over ~$50/share is
+    rejected. 50% doubles the affordable universe (≤ ~$100/share at $20K) while
+    still keeping a real per-name concentration guard — you can never commit more
+    than half the book's assignment liability to a single name. This partially
+    reverses bc2439e's small-account tightening on purpose; the guard is loosened,
+    not removed (see memory: assignment-cash-lockout-prevention).
 
     At/above $100K the tighter target (max_single_name_notional_pct, 25%) applies.
     Mirrors MarsWalk engine's per-name cap (src/marswalk/engine.py)."""
     if net_liq < 100_000:
-        return 1.0
+        return 0.50
     return get_settings().risk.max_single_name_notional_pct
 
 
@@ -999,9 +994,8 @@ class RiskManager:
         # Layer 3 — per-name ASSIGNMENT-NOTIONAL cap (added 2026-06-08, made
         # account-size-aware 2026-06-11). Layers 1-2 cap MARGIN; this caps the cash
         # you'd owe if this name's put assigns, as % of NLV. The cap itself is now
-        # NLV-tiered (adaptive_name_notional_pct: 100% below $100K — non-binding on
-        # small accounts — 25% at/above) and we estimate with the
-        # AFFORDABILITY-derived order size, not the flat
+        # NLV-tiered (adaptive_name_notional_pct: 50% below $100K, 25% at/above) and
+        # we estimate with the AFFORDABILITY-derived order size, not the flat
         # contracts_per_stock base — so the gate only rejects names where even a
         # single lot blows the cap, instead of rejecting because a small account's
         # flat 2-lot base was over-sized. Stays correct at $4M (affordable count
