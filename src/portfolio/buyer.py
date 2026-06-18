@@ -681,8 +681,11 @@ class PortfolioBuyer:
     def _get_market_price(self, symbol: str = "SPY") -> float | None:
         """Latest price for a market gauge (SPY) via the shared IBKR data path."""
         try:
-            from src.broker.market_data import get_stock_price
-            return get_stock_price(symbol, exchange="SMART", currency="USD")
+            # Use the PORTFOLIO connection — calling the options-side
+            # get_stock_price here ran on the portfolio loop and raised
+            # "This event loop is already running" (cross-connection).
+            from src.portfolio.connection import get_portfolio_stock_price
+            return get_portfolio_stock_price(symbol, exchange="SMART", currency="USD")
         except Exception as e:
             log.warning("compounder_market_price_failed", symbol=symbol, error=str(e))
             return None

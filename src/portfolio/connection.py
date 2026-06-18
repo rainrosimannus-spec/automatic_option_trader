@@ -82,6 +82,68 @@ def is_portfolio_connected() -> bool:
     return _portfolio_ib is not None and _portfolio_ib.isConnected()
 
 
+# ── Stock price (PORTFOLIO connection) ───────────────────────
+# Exchanges where SMART re-routing breaks historical data (keep original).
+_NON_SMART_EXCHANGES = {"SEHK", "JSE", "SGX", "TASE", "NSE", "ASX",
+                        "BSE", "KSE", "TWSE", "BKK", "IDX"}
+
+
+def get_portfolio_stock_price(
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+) -> Optional[float]:
+    """Latest stock price via the PORTFOLIO IBKR connection.
+
+    Portfolio jobs must NOT call src.broker.market_data.get_stock_price: that
+    drives the *options* connection on the *portfolio* loop and raises
+    "This event loop is already running". This mirrors the proven fetch in
+    PortfolioBuyer.update_holdings_prices() — portfolio loop + lock + connection.
+    Reuses market_data's per-symbol fail/backoff bookkeeping (pure dict, no IB).
+    """
+    from ib_insync import Stock
+    from src.broker.market_data import (
+        _is_symbol_blocked, _record_symbol_failure, _record_symbol_success,
+    )
+
+    if _is_symbol_blocked(symbol):
+        log.debug("portfolio_price_symbol_skipped_blocked", symbol=symbol)
+        return None
+    try:
+        _ensure_event_loop()
+        with get_portfolio_lock():
+            ib = get_portfolio_ib()
+            contract = Stock(symbol, exchange, currency)
+            ib.qualifyContracts(contract)
+            # Only override to SMART for exchanges that support it.
+            if exchange not in _NON_SMART_EXCHANGES:
+                contract.exchange = "SMART"
+            # Try TRADES first, then MIDPOINT (needed for many non-US names).
+            for what in ("TRADES", "MIDPOINT"):
+                try:
+                    bars = ib.reqHistoricalData(
+                        contract, endDateTime="",
+                        durationStr="2 D", barSizeSetting="1 day",
+                        whatToShow=what, useRTH=False,
+                        formatDate=1, timeout=8,
+                    )
+                    if bars:
+                        _record_symbol_success(symbol)
+                        return float(bars[-1].close)
+                except Exception as e:
+                    log.debug("portfolio_price_request_failed",
+                              symbol=symbol, what=what, error=str(e) or repr(e))
+                ib.sleep(0.5)  # brief pause before retry
+
+        log.warning("portfolio_no_price_data", symbol=symbol, exchange=exchange)
+        _record_symbol_failure(symbol)
+        return None
+    except Exception as e:
+        log.warning("portfolio_price_fetch_error", symbol=symbol, error=str(e))
+        _record_symbol_failure(symbol)
+        return None
+
+
 def initial_connect_portfolio() -> IB:
     """Connect at startup. Only called once from main.py."""
     global _portfolio_ib
@@ -126,6 +188,23 @@ def _connect(max_retries: int = 3) -> IB:
             log.info("portfolio_connection_established",
                      accounts=ib.managedAccounts(),
                      clientId=cfg.ibkr_client_id)
+
+            # Prime the open-order wrapper state so the loop-free openTrades()
+            # accessor (used by refresh_portfolio_pending_orders_cache) reports
+            # working orders after a (re)connect. openTrades() is a PASSIVE
+            # accessor — empty on a fresh connection until orders are actively
+            # requested — so without this, a reconnect silently blanks the
+            # dashboard's Pending Orders (the 2026-06-18 15:35 reconnect wiped 2
+            # working orders to count=0 and they never came back). This runs ONCE
+            # per connect, in the synchronous connect sequence (the same place
+            # sync_ibkr_holdings already drives reqHistoricalData), so it does NOT
+            # reintroduce the run_until_complete loop collision that openTrades()
+            # was adopted to avoid in the periodic 5-min refresh.
+            try:
+                with get_portfolio_lock():
+                    ib.reqAllOpenOrders()
+            except Exception as e:
+                log.warning("portfolio_open_orders_prime_failed", error=str(e))
 
             try:
                 refresh_portfolio_account_cache_from(ib)

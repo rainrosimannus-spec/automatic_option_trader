@@ -733,7 +733,7 @@ def _review_existing_holdings(
     from src.core.database import get_db
     from src.portfolio.models import PortfolioHolding
     from src.core.suggestions import create_suggestion
-    from src.broker.market_data import get_stock_price
+    from src.portfolio.connection import get_portfolio_stock_price as get_stock_price
 
     suggestions = []
 
@@ -992,7 +992,7 @@ def _review_existing_holdings_monthly(
     from src.core.database import get_db
     from src.portfolio.models import PortfolioHolding
     from src.core.suggestions import create_suggestion, TradeSuggestion
-    from src.broker.market_data import get_stock_price
+    from src.portfolio.connection import get_portfolio_stock_price as get_stock_price
     from src.portfolio.fmp import get_full_fundamentals
     from datetime import datetime, timedelta
 
@@ -1804,7 +1804,7 @@ def job_portfolio_trailing_stop_monitor(cfg):
     from src.core.suggestions import TradeSuggestion, create_suggestion
     from src.core.database import get_db
     from src.portfolio.connection import get_portfolio_ib
-    from src.broker.market_data import get_stock_price
+    from src.portfolio.connection import get_portfolio_stock_price as get_stock_price
     import datetime as dt
 
     WATCH_ACTIONS = {"sell_stock_review", "reduce_position_review"}

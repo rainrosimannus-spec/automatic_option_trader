@@ -441,11 +441,15 @@ def _execute_approved_order(suggestion_id: int):
 
 def _execute_approved_order_inner(suggestion_id: int):
     """Inner execution logic with no timeout protection."""
-    import asyncio
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
+    # This runs in a ThreadPoolExecutor worker (see _execute_approved_order).
+    # The previous ad-hoc asyncio.new_event_loop() created a FRESH loop instead
+    # of pinning the options connection's loop, so the budget re-check's
+    # RiskManager -> get_regime/get_vix/get_iv_rank/get_spy_moving_averages calls
+    # drove the wrong loop and raised "This event loop is already running"
+    # (589 vix + IV/MA errors/day). Pin this worker thread to _main_loop with the
+    # same guard the scan jobs and screeners already use.
+    from src.broker.connection import ensure_main_event_loop
+    ensure_main_event_loop()
     with get_db() as db:
         s = db.query(TradeSuggestion).filter(
             TradeSuggestion.id == suggestion_id
