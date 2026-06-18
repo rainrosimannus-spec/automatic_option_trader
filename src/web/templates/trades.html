@@ -59,7 +59,15 @@
                 </td>
                 <td class="py-3 px-4 text-right text-gray-300">{{ "$%.2f"|format(t.strike) if t.strike else '—' }}</td>
                 <td class="py-3 px-4 text-gray-400">{{ t.expiry if t.expiry else '—' }}</td>
-                <td class="py-3 px-4 text-right text-emerald-400">${{ "%.2f"|format(t.fill_price) }}</td>
+                <td class="py-3 px-4 text-right">
+                    {% if t.order_status.value == 'filled' %}
+                        <span class="text-emerald-400">${{ "%.2f"|format(t.fill_price) }}</span>
+                    {% elif t.fill_price %}
+                        <span class="text-gray-500">${{ "%.2f"|format(t.fill_price) }} limit</span>
+                    {% else %}
+                        <span class="text-gray-500">—</span>
+                    {% endif %}
+                </td>
                 <td class="py-3 px-4 text-right text-gray-300">{{ t.quantity }}</td>
                 <td class="py-3 px-4 text-right text-gray-500">{{ "$%.2f"|format(t.commission) if t.commission else '—' }}</td>
                 <td class="py-3 px-4">

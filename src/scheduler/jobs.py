@@ -129,6 +129,17 @@ def job_scan_market(market: str):
             for oo in get_open_orders():
                 sym = getattr(oo.contract, 'symbol', '')
                 if sym.upper() in market_symbols:
+                    # Never sweep BUY orders: these close a live short (CC
+                    # profit-take, put buyback) or are stock/hedge buys we want
+                    # to fill. The sweep exists only to clear stale SELL *entry*
+                    # orders left from a prior scan. Cancelling a fresh
+                    # buy-to-close strands a live short (the NVDA-call case).
+                    action = str(getattr(oo.order, 'action', '')).upper()
+                    if action == 'BUY':
+                        log.info("scan_skip_close_order",
+                                 market=market, symbol=sym,
+                                 order_id=oo.order.orderId, action=action)
+                        continue
                     log.info("scan_cancelling_stale_order",
                              market=market, symbol=sym,
                              order_id=oo.order.orderId)

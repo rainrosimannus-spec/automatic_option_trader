@@ -676,6 +676,21 @@ class ProfitTaker:
             except Exception as e:
                 log.warning("cancel_existing_cc_check_failed", symbol=pos.symbol, error=str(e))
 
+        # Self-healing reprice: a prior close that was CANCELLED unfilled (e.g.
+        # swept by an earlier market scan before the BUY-skip fix, or reconciled
+        # away) does NOT block this retry — the existing-order query above filters
+        # only SUBMITTED. Log it so the re-place is observable in the journal.
+        prior_cancelled = db.query(Trade).filter(
+            Trade.position_id == pos.id,
+            Trade.trade_type == TradeType.BUY_CALL,
+            Trade.order_status == OrderStatus.CANCELLED,
+            Trade.ibkr_exec_id.is_(None),
+        ).order_by(Trade.created_at.desc()).first()
+        if prior_cancelled:
+            log.info("cc_close_reattempt_after_cancel",
+                     symbol=pos.symbol, prior_order_id=prior_cancelled.order_id,
+                     new_target=target_price)
+
         trade = buy_to_close_call(
             symbol=pos.symbol,
             expiry=pos.expiry or "",

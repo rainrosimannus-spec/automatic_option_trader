@@ -484,25 +484,37 @@ def refresh_portfolio_pending_orders_cache() -> None:
     """
     Fetch genuinely pending (unfilled) orders from portfolio IBKR account.
 
-    Uses the LIST RETURNED BY reqAllOpenOrders() — a fresh snapshot of orders TWS
-    currently reports as open across all clients (including orders placed manually
-    in Trader). We deliberately do NOT read ib.openTrades(): that returns the
-    wrapper's accumulated state, and an order that fills in Trader while this
-    read-only connection isn't tracking it stays stuck at status "Submitted" in
-    wrapper.trades forever — which is exactly the stale-pending bug. Re-querying
-    each refresh means a filled order simply drops out of the fresh snapshot.
+    Uses ib.openTrades() — a pure, loop-free accessor over the wrapper's order
+    state that returns only orders NOT in a DoneState. We deliberately do NOT use
+    reqAllOpenOrders(): that is a synchronous _run()/run_until_complete call that
+    drives the asyncio loop, and in merged mode this refresh fires on the already-
+    running loop thread, so it raised "This event loop is already running" on ~98%
+    of cycles (171 failures vs 3 successes/day) — each failure left the cache
+    frozen at a stale snapshot, so filled orders lingered for hours. That was the
+    actual stale-pending bug.
+
+    Winston places its OWN orders on this clientId (97), so this connection receives
+    their orderStatus/fill updates and openTrades() drops them the instant they fill.
+
+    To ALSO show manual TWS orders (placed on clientId 0) and clear them on fill,
+    set Master API Client ID = 97 on the 7496 gateway (TWS/Gateway → Global Config →
+    API → Settings). A non-master client cannot receive another client's order/exec
+    events, so this is the only way to consolidate manual + automatic orders into
+    one read-only monitoring connection — no code or async polling required, and it
+    keeps this refresh loop-free. reqAllOpenOrders() is NOT a viable alternative: it
+    drives the asyncio loop via run_until_complete, which collides with Maggy's
+    concurrent loop use on other worker threads (~98% "event loop already running"),
+    freezing the cache. This mirrors the loop-free pattern in broker/orders.py.
     """
     global _cached_portfolio_pending
     try:
         if not is_portfolio_connected():
             return
         ib = get_portfolio_ib()
-        # get_portfolio_lock() serializes against the screener on the shared
-        # asyncio loop in merged mode (ib_lock -> _portfolio_lock order).
-        # reqAllOpenOrders() blocks on the openOrders end event, so the returned
-        # list is complete on return — no sleep needed.
+        # openTrades() is loop-free (no _run), so it's safe to call on the shared
+        # running loop. The lock still serializes access to the wrapper state.
         with get_portfolio_lock():
-            open_trades = ib.reqAllOpenOrders()
+            open_trades = ib.openTrades()
         DONE_STATES = {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
         new_cache = []
         for oo in open_trades or []:
