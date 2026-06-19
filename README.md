@@ -61,7 +61,7 @@ Dashboard: http://37.0.30.34:8080
 | Component | Account | Port | IBC tmux | App tmux |
 |-----------|---------|------|----------|----------|
 | Options Trader | U23886415 | 4001 | `options` | `trader` |
-| Portfolio Manager | U17562704 | 7496 | `portfolio` | — |
+| Portfolio Manager | U26413485 | 7496 | `portfolio` | — |
 | IPO Rider | both | both | both | — |
 
 The Python app (`trader` tmux) serves the web dashboard via uvicorn on port 8080. Each IBKR gateway runs in its own IBC tmux session. One Python process per gateway, single IBKR connection per process, lock-based to prevent race conditions.

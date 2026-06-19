@@ -347,7 +347,7 @@ def _sync_ibkr_holdings():
     Sync real IBKR portfolio positions into the holdings database.
     Reads all stock positions from the PORTFOLIO account and creates/updates
     PortfolioHolding entries. Uses a dedicated portfolio connection so that
-    after the account split, it reads from the correct account (U17562704).
+    after the account split, it reads from the correct account (U26413485).
     """
     from src.portfolio.connection import get_portfolio_ib, is_portfolio_connected
     from src.core.database import get_db

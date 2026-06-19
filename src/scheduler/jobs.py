@@ -1800,6 +1800,30 @@ def create_scheduler() -> BackgroundScheduler:
         max_instances=1,
     )
 
+    def _job_portfolio_injection_sync():
+        """Pull the PORTFOLIO account's deposit/withdrawal history from IBKR Flex and
+        record it as signed capital injections, so Total Invested tracks the NET cash
+        actually put in (deposits add, withdrawals deduct). No-op until the portfolio
+        Flex creds are set in settings.yaml."""
+        _ensure_event_loop()
+        try:
+            from src.portfolio.capital_injections import sync_injections_from_ibkr
+            added = sync_injections_from_ibkr(include_withdrawals=True)
+            if added:
+                log.info("portfolio_injections_synced", added=added)
+        except ValueError:
+            log.info("portfolio_injection_sync_skipped", reason="flex creds unset")
+        except Exception as e:
+            log.error("portfolio_injection_sync_error", error=str(e))
+
+    scheduler.add_job(
+        _job_portfolio_injection_sync,
+        CronTrigger(hour=16, minute=10, timezone=us_tz),  # staggered after options sync
+        id="portfolio_injection_sync",
+        name="Portfolio Deposit/Withdrawal Sync (Flex)",
+        max_instances=1,
+    )
+
     # Snapshot at market open and market close (to catch both)
     scheduler.add_job(
         _job_account_snapshot,

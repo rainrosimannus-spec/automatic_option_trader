@@ -11,7 +11,10 @@ One-time setup in IBKR Account Management:
        flex_query_id: "YOUR_QUERY_ID_HERE"
   6. Then click Sync Deposits on the portfolio page
 
-Until step 5 is done, the system uses the hardcoded seed of $498,514.
+Until the Flex creds are set and synced, Total Invested falls back to the live
+IBKR account-summary cash (so a fresh account reflects its actual deposited cash,
+not a stale constant). Withdrawals are tracked too: the portfolio sync keeps the
+sign of each cash flow, so Total Invested = net deposits − withdrawals.
 """
 from __future__ import annotations
 
@@ -35,9 +38,6 @@ FLEX_GET_URL = (
     "https://gdcdyn.interactivebrokers.com"
     "/Universal/servlet/FlexStatementService.GetStatement"
 )
-
-SEED_USD = 498_514.0
-
 
 def fetch_flex_statement(flex_token: str, query_id: str) -> str:
     """Request an IBKR Flex statement and return the XML string."""
@@ -86,14 +86,23 @@ def fetch_flex_statement(flex_token: str, query_id: str) -> str:
     raise TimeoutError("Flex statement not ready after 30 seconds")
 
 
-def parse_deposits_from_flex(xml_content: str) -> List[Dict]:
-    """Parse positive (deposit) rows from Flex XML."""
+def parse_deposits_from_flex(xml_content: str, include_withdrawals: bool = False) -> List[Dict]:
+    """Parse cash-flow rows from Flex XML.
+
+    Default: deposits only (positive amounts) — the legacy behaviour the options
+    performance chart relies on. With include_withdrawals=True, withdrawals
+    (negative amounts) are returned too with their sign PRESERVED, so the caller
+    can sum them into a NET invested-capital figure (deposits add, withdrawals
+    deduct). `amount` from IBKR is already signed.
+    """
     root = ET.fromstring(xml_content)
     rows = []
 
     for dw in root.iter("DepositWithdrawal"):
         amount = float(dw.get("amount", 0))
-        if amount <= 0:
+        if amount == 0:
+            continue
+        if amount < 0 and not include_withdrawals:
             continue
 
         currency = dw.get("currency", "USD")
@@ -106,7 +115,8 @@ def parse_deposits_from_flex(xml_content: str) -> List[Dict]:
         if date_str and len(date_str) == 8 and "-" not in date_str:
             date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
-        notes = (dw.get("description") or dw.get("type") or "deposit")[:200]
+        default_note = "deposit" if amount > 0 else "withdrawal"
+        notes = (dw.get("description") or dw.get("type") or default_note)[:200]
         rows.append({
             "date": date_str,
             "amount_original": amount,
@@ -114,7 +124,7 @@ def parse_deposits_from_flex(xml_content: str) -> List[Dict]:
             "notes": notes,
         })
 
-    log.info("flex_deposits_parsed", count=len(rows))
+    log.info("flex_cashflows_parsed", count=len(rows), include_withdrawals=include_withdrawals)
     return rows
 
 
@@ -155,6 +165,7 @@ def sync_injections_from_ibkr(
     account_id: str | None = None,
     flex_token: str | None = None,
     flex_query_id: str | None = None,
+    include_withdrawals: bool = False,
 ) -> int:
     """
     Pull deposit history from IBKR Flex, convert to USD, upsert into DB.
@@ -181,7 +192,7 @@ def sync_injections_from_ibkr(
         )
 
     xml_content = fetch_flex_statement(flex_token, flex_query_id)
-    deposits = parse_deposits_from_flex(xml_content)
+    deposits = parse_deposits_from_flex(xml_content, include_withdrawals=include_withdrawals)
 
     added = 0
     pending_bridge_bumps = []  # collect (amount_usd, account_id) tuples for Bridge benchmark
@@ -262,7 +273,14 @@ def sync_options_injections_from_ibkr() -> int:
 
 def get_total_invested_usd(account_id: str | None = None) -> float:
     """
-    Total capital injected in USD. Uses injections table or falls back to seed.
+    Net capital invested in USD for the given account (deposits − withdrawals),
+    summed from the IBKR-Flex-sourced injections table.
+
+    When no net-positive cash-flow rows exist yet (fresh account, or Flex not yet
+    synced), the PORTFOLIO account falls back to the live account-summary cash
+    (cached NLV) so the figure reflects the money actually in the account rather
+    than a stale constant. For any other account_id (e.g. the bridge's options
+    source_account) the fallback is 0.0, preserving prior behaviour.
     """
     try:
         with get_db() as db:
@@ -277,7 +295,31 @@ def get_total_invested_usd(account_id: str | None = None) -> float:
     except Exception as e:
         log.warning("get_total_invested_usd_failed", error=str(e))
 
-    return 0.0 if account_id is not None else SEED_USD
+    # No (net-positive) cash-flow rows yet → portfolio falls back to account cash.
+    try:
+        from src.core.config import get_settings
+        port_acct = getattr(get_settings().portfolio, "ibkr_account", "") or None
+    except Exception:
+        port_acct = None
+    if account_id is None or account_id == port_acct:
+        return _account_summary_cash_usd()
+    return 0.0
+
+
+def _account_summary_cash_usd() -> float:
+    """Best-effort 'cash put in' from the IBKR portfolio account-summary cache.
+    For a freshly-funded, un-invested account NLV ≈ deposited cash, so this is a
+    sane Total-Invested bootstrap until Flex cash-flow rows are synced. Returns
+    0.0 if the account cache is unavailable (e.g. gateway not yet connected)."""
+    try:
+        from src.portfolio.connection import get_cached_portfolio_account
+        acct = get_cached_portfolio_account() or {}
+        nlv = float(acct.get("nlv") or 0.0)
+        if nlv > 0:
+            return nlv
+    except Exception as e:
+        log.warning("account_summary_cash_lookup_failed", error=str(e))
+    return 0.0
 
 
 def fetch_accrued_interest_usd() -> float:

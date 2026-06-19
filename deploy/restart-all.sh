@@ -28,8 +28,8 @@ fi
 echo ""
 echo "=== SPLIT MODE: portfolio gateway :7496 + options gateway :4002 ==="
 echo ""
-echo "=== Starting portfolio gateway (pohja359 / U17562704) ==="
-echo ">>> APPROVE IB KEY ON YOUR PHONE for pohja359 <<<"
+echo "=== Starting portfolio gateway (thenewroma / U26413485) ==="
+echo ">>> APPROVE IB KEY ON YOUR PHONE for thenewroma <<<"
 tmux new-session -d -s portfolio '~/start-gateway-portfolio.sh'
 sleep 35
 

@@ -38,7 +38,7 @@ unit for the trader** (only Caddy is systemd-managed).
 | Process | Launched by | tmux session | Structured log | stdout / stderr |
 |---|---|---|---|---|
 | **Trader** (`python -m src.main` — scheduler **+** web dashboard **+** screener, all one process) | `~/restart-all.sh`, respawned by `~/watchdog-trader.sh` | `trader` | `logs/trader.log` | tmux pane **+ `logs/console.log`** (via pipe-pane) |
-| **IB Gateway** (Java, account U17562704, port 7496) | `~/start-gateway-portfolio.sh` | `portfolio` | `~/ibc/logs/portfolio/ibc-*.txt` | tmux pane (ephemeral); Xvfb → `/dev/null` |
+| **IB Gateway** (Java, account U26413485, port 7496) | `~/start-gateway-portfolio.sh` | `portfolio` | `~/ibc/logs/portfolio/ibc-*.txt` | tmux pane (ephemeral); Xvfb → `/dev/null` |
 | **Watchdog** | cron `*/5 * * * *` | — | `data/watchdog.log` | cron-swallowed (writes its own log) |
 | **Caddy** (reverse proxy / TLS / basic-auth) | `systemd` (`caddy.service`) | — | `journalctl -u caddy` | `/var/log/caddy/dashboard-access.log` |
 | **Lender portal** (son's — `lender.mesicap.com`) | separate uvicorn (son-owned) | — | `logs/lender.log` | son's domain — diagnose read-only, defer fixes |

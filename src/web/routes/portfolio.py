@@ -38,9 +38,11 @@ def _build_portfolio_performance() -> dict:
     """
     from src.core.models import AccountSnapshot, SystemState
     from src.portfolio.capital_injections import get_total_invested_usd
+    from src.core.config import get_settings
     from datetime import date as date_type
 
-    total_invested_usd = get_total_invested_usd()
+    _pacct = getattr(get_settings().portfolio, "ibkr_account", "") or None
+    total_invested_usd = get_total_invested_usd(account_id=_pacct)
     today_str = str(date_type.today())
 
     with get_db() as db:
@@ -221,12 +223,15 @@ async def portfolio_page(request: Request):
     # FX conversion: convert non-USD holdings to USD for display
 
 
-    # Total invested = capital deposited (from injections table, not cost basis)
+    # Total invested = net capital deposited (deposits − withdrawals, from injections
+    # table scoped to the portfolio account; not cost basis)
     from src.portfolio.capital_injections import get_total_invested_usd
+    from src.core.config import get_settings
     # Pre-fetch all FX rates in one API call
     currencies = list(set(h.currency for h in holdings if h.currency not in ("USD", None)))
     fx_rates = _get_fx_rates(currencies)
-    total_invested = get_total_invested_usd()
+    _pacct = getattr(get_settings().portfolio, "ibkr_account", "") or None
+    total_invested = get_total_invested_usd(account_id=_pacct)
     total_value = sum(_to_usd(h.market_value or 0, h.currency, fx_rates) for h in holdings)
     ibkr_unrealized_pnl = None
     try:
@@ -497,9 +502,9 @@ async def sync_capital_injections():
     """Sync deposit history from IBKR Flex Web Service."""
     try:
         from src.portfolio.capital_injections import sync_injections_from_ibkr
-        added = sync_injections_from_ibkr()
+        added = sync_injections_from_ibkr(include_withdrawals=True)
         return {"status": "ok", "added": added,
-                "message": f"Synced {added} new deposit row(s) from IBKR"}
+                "message": f"Synced {added} new deposit/withdrawal row(s) from IBKR"}
     except ValueError as e:
         return {"status": "setup_needed", "message": str(e)}
     except Exception as e:
