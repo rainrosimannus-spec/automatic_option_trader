@@ -37,12 +37,13 @@ def _build_portfolio_performance() -> dict:
     BRK-B benchmark anchored the same way.
     """
     from src.core.models import AccountSnapshot, SystemState
-    from src.portfolio.capital_injections import get_total_invested_usd
+    from src.portfolio.capital_injections import get_total_invested_base
     from src.core.config import get_settings
     from datetime import date as date_type
 
     _pacct = getattr(get_settings().portfolio, "ibkr_account", "") or None
-    total_invested_usd = get_total_invested_usd(account_id=_pacct)
+    # base-currency (EUR) invested so the return % matches the EUR NLV in the snapshots
+    total_invested_usd = get_total_invested_base(account_id=_pacct)
     today_str = str(date_type.today())
 
     with get_db() as db:
@@ -172,6 +173,33 @@ def _to_usd(amount: float, currency: str, fx_rates: dict = None) -> float:
         return amount * rate
     return amount
 
+
+def _portfolio_base_ccy(fx_rates: dict = None) -> str:
+    """Account BASE currency = the one IBKR reports with ExchangeRate == 1.0 (EUR for U26413485).
+    Falls back to USD if the cache has no rates yet."""
+    rates = fx_rates if fx_rates is not None else _fx_cache
+    for c, r in (rates or {}).items():
+        try:
+            if abs(float(r) - 1.0) < 1e-9:
+                return c
+        except Exception:
+            pass
+    return "USD"
+
+
+def _to_base(amount: float, currency: str, fx_rates: dict = None, base_ccy: str = None) -> float:
+    """Convert an amount in `currency` to the account BASE currency using IBKR's per-currency
+    ExchangeRate (which is quoted currency→base). Unlike _to_usd, this does NOT pass USD through —
+    so for a euro-base account a USD holding is converted to EUR."""
+    if not amount:
+        return 0.0
+    rates = fx_rates if fx_rates is not None else _fx_cache
+    base = base_ccy or _portfolio_base_ccy(rates)
+    if currency in (base, "BASE", None):
+        return amount
+    rate = (rates or {}).get(currency)
+    return amount * rate if rate else amount
+
 def _build_tier_breakdown(holdings, fx_rates=None) -> dict:
     """Build tier allocation data for pie/bar chart."""
     tiers = {"dividend": 0, "growth": 0, "breakthrough": 0}
@@ -225,14 +253,17 @@ async def portfolio_page(request: Request):
 
     # Total invested = net capital deposited (deposits − withdrawals, from injections
     # table scoped to the portfolio account; not cost basis)
-    from src.portfolio.capital_injections import get_total_invested_usd
+    from src.portfolio.capital_injections import get_total_invested_base
     from src.core.config import get_settings
     # Pre-fetch all FX rates in one API call
     currencies = list(set(h.currency for h in holdings if h.currency not in ("USD", None)))
     fx_rates = _get_fx_rates(currencies)
     _pacct = getattr(get_settings().portfolio, "ibkr_account", "") or None
-    total_invested = get_total_invested_usd(account_id=_pacct)
-    total_value = sum(_to_usd(h.market_value or 0, h.currency, fx_rates) for h in holdings)
+    # Total Invested + Total Value reported in the account BASE currency (EUR for U26413485) so the
+    # top cards match the IBKR EUR figures — not a USD mix. Per-stock rows are left in native USD.
+    _base_ccy = _portfolio_base_ccy(fx_rates)
+    total_invested = get_total_invested_base(account_id=_pacct)
+    total_value = sum(_to_base(h.market_value or 0, h.currency, fx_rates, _base_ccy) for h in holdings)
     ibkr_unrealized_pnl = None
     try:
         from src.portfolio.connection import get_cached_portfolio_account
@@ -296,7 +327,10 @@ async def portfolio_page(request: Request):
         portfolio_maintenance_margin = cached.get("margin", 0.0)
         portfolio_buying_power = cached.get("buying_power", 0.0)
         portfolio_margin_pct = cached.get("margin_pct", 0.0)
-        portfolio_loans = cached.get("loans", 0.0)
+        # LOANS card = actual IBKR margin loan (amount borrowed), not the signed cash balance.
+        # cached["loans"] is TotalCashBalance (signed: +cash / -debit); borrowed = max(0, -that),
+        # so a cash-positive account shows 0 instead of mislabeling its cash as a loan.
+        portfolio_loans = max(0.0, -cached.get("loans", 0.0))
         portfolio_accrued_interest = cached.get("accrued_interest", 0.0)
     except Exception:
         pass

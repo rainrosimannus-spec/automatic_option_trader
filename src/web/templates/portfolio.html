@@ -94,11 +94,11 @@ function syncInjections() {
     <div class="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Total Invested</div>
-            <div class="text-2xl font-bold text-white mt-1">${{"{:,.0f}".format(total_invested)}}</div>
+            <div class="text-2xl font-bold text-white mt-1">€{{"{:,.0f}".format(total_invested)}}</div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Market Value</div>
-            <div class="text-2xl font-bold text-white mt-1">${{"{:,.0f}".format(total_value)}}</div>
+            <div class="text-2xl font-bold text-white mt-1">€{{"{:,.0f}".format(total_value)}}</div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Unrealized P&L</div>
@@ -128,7 +128,7 @@ function syncInjections() {
             <div class="text-2xl font-bold mt-1 {% if portfolio_margin_pct > 70 %}text-red-400{% elif portfolio_margin_pct > 50 %}text-amber-400{% else %}text-emerald-400{% endif %}">
                 {{"{:.1f}".format(portfolio_margin_pct)}}%
             </div>
-            <div class="text-xs text-gray-500 mt-1">${{"{:,.0f}".format(portfolio_maintenance_margin)}} / ${{"{:,.0f}".format(portfolio_nlv)}}</div>
+            <div class="text-xs text-gray-500 mt-1">€{{"{:,.0f}".format(portfolio_maintenance_margin)}} / €{{"{:,.0f}".format(portfolio_nlv)}}</div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Holdings</div>
@@ -136,21 +136,21 @@ function syncInjections() {
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Buying Power</div>
-            <div class="text-2xl font-bold text-cyan-400 mt-1">${{"{:,.0f}".format(portfolio_buying_power)}}</div>
+            <div class="text-2xl font-bold text-cyan-400 mt-1">€{{"{:,.0f}".format(portfolio_buying_power)}}</div>
             <div class="text-xs text-gray-500 mt-1">Available in account</div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Net Liquidation</div>
-            <div class="text-2xl font-bold text-white mt-1">${{"{:,.0f}".format(portfolio_nlv)}}</div>
+            <div class="text-2xl font-bold text-white mt-1">€{{"{:,.0f}".format(portfolio_nlv)}}</div>
             <div class="text-xs text-gray-500 mt-1">Total account value</div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Loans / Interest</div>
             <div class="text-2xl font-bold mt-1 {% if portfolio_loans < 0 %}text-red-400{% else %}text-gray-400{% endif %}">
-                ${{"{:,.0f}".format(portfolio_loans)}}
+                €{{"{:,.0f}".format(portfolio_loans)}}
             </div>
             <div class="text-xs text-gray-500 mt-1">
-                Accrued: ${{"{:,.0f}".format(portfolio_accrued_interest)}}
+                Accrued: €{{"{:,.0f}".format(portfolio_accrued_interest)}}
             </div>
         </div>
     </div>

@@ -354,13 +354,16 @@ def refresh_portfolio_account_cache_from(ib: IB):
         data = {}
         for v in values:
             if v.currency in ("BASE", "EUR", "USD"):
-                if v.tag == "NetLiquidation" and v.currency in ("BASE", "USD"):
+                # Include EUR (and any non-USD base): IBKR reports NetLiquidation/BuyingPower/etc.
+                # in the account's BASE currency code — "EUR" for a euro-denominated account — so a
+                # BASE/USD-only filter silently drops them and the dashboard shows 0. U26413485 is EUR.
+                if v.tag == "NetLiquidation" and v.currency in ("BASE", "USD", "EUR"):
                     data["nlv"] = float(v.value)
-                elif v.tag == "MaintMarginReq" and v.currency in ("BASE", "USD"):
+                elif v.tag == "MaintMarginReq" and v.currency in ("BASE", "USD", "EUR"):
                     data["margin"] = float(v.value)
-                elif v.tag == "BuyingPower" and v.currency in ("BASE", "USD"):
+                elif v.tag == "BuyingPower" and v.currency in ("BASE", "USD", "EUR"):
                     data["buying_power"] = float(v.value)
-                elif v.tag == "UnrealizedPnL" and v.currency in ("BASE", "USD"):
+                elif v.tag == "UnrealizedPnL" and v.currency in ("BASE", "USD", "EUR"):
                     data["unrealized_pnl"] = float(v.value)
 
         fx_rates = {}

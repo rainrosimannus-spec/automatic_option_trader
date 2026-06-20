@@ -322,6 +322,38 @@ def _account_summary_cash_usd() -> float:
     return 0.0
 
 
+def get_total_invested_base(account_id: str | None = None) -> float:
+    """Net capital invested in the account's BASE currency (deposits − withdrawals), summed from the
+    deposit ORIGINAL amounts — i.e. the currency the account was funded in (EUR for U26413485, a
+    euro-base account). Use this for the EUR portfolio dashboard so Total Invested is shown in euros,
+    not a USD-converted figure. Falls back to the account-summary cash (cached NLV, already in base
+    currency) when no deposit rows exist yet; 0.0 for any non-portfolio account_id.
+
+    NOTE: assumes deposits were funded in the account's base currency (the normal case). Mixed-currency
+    funding would need per-row FX-at-deposit conversion — not handled here.
+    """
+    try:
+        with get_db() as db:
+            q = db.query(PortfolioCapitalInjection)
+            if account_id is not None:
+                q = q.filter(PortfolioCapitalInjection.account_id == account_id)
+            rows = q.all()
+            if rows:
+                total = sum(r.amount_original for r in rows)
+                if total > 0:
+                    return total
+    except Exception as e:
+        log.warning("get_total_invested_base_failed", error=str(e))
+    try:
+        from src.core.config import get_settings
+        port_acct = getattr(get_settings().portfolio, "ibkr_account", "") or None
+    except Exception:
+        port_acct = None
+    if account_id is None or account_id == port_acct:
+        return _account_summary_cash_usd()  # cached NLV is already in the account's base currency
+    return 0.0
+
+
 def fetch_accrued_interest_usd() -> float:
     """
     Fetch today's accrued interest from IBKR Flex Query.
