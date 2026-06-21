@@ -24,7 +24,21 @@ function syncInjections() {
             <p class="text-sm text-gray-500 mt-1">10–30 year wealth accumulation — buy quality at good prices</p>
         </div>
         <div class="flex items-center gap-3">
-            {% if market_status == "overbought" %}
+            {% if is_compounder %}
+            {% if market_status == "crash" %}
+            <span class="px-3 py-1.5 rounded-full bg-amber-900/40 text-amber-300 text-sm">
+                ⚠ Drawdown — Crash Reserve Deploying
+            </span>
+            {% elif market_status == "normal" %}
+            <span class="px-3 py-1.5 rounded-full bg-emerald-900/40 text-emerald-300 text-sm">
+                ✓ Compounder Active — Deploying Capital
+            </span>
+            {% else %}
+            <span class="px-3 py-1.5 rounded-full bg-gray-800 text-gray-400 text-sm">
+                Awaiting first scan
+            </span>
+            {% endif %}
+            {% elif market_status == "overbought" %}
             <span class="px-3 py-1.5 rounded-full bg-amber-900/40 text-amber-300 text-sm">
                 ⚠ Market Overbought ({{market_pct}}% above 200 SMA) — Accumulating Cash
             </span>

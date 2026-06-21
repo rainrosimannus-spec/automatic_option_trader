@@ -558,6 +558,11 @@ class PortfolioBuyer:
         self._store_state("compounder_live_target", str(round(target_total)))
         self._store_state("compounder_deployed", str(round(deployed)))
         self._store_state("compounder_daily_budget", str(round(budget)))
+        # Header badge: a real scan completed (priceable names existed). The compounder always
+        # accumulates, so "normal" = deploying; flag active crash-reserve deployment separately.
+        # This block is only reached with priceable names, so the "Awaiting first scan" placeholder
+        # persists correctly until the first market-hours scan, then flips and stays (persisted).
+        self._store_state("market_status", "crash" if crash_active else "normal")
 
         log.info("compounder_state", nlv=round(nlv), cash=round(cash), deployed=round(deployed),
                  target_total=round(target_total), budget=round(budget),
