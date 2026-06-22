@@ -189,22 +189,19 @@ def _connect(max_retries: int = 3) -> IB:
                      accounts=ib.managedAccounts(),
                      clientId=cfg.ibkr_client_id)
 
-            # Prime the open-order wrapper state so the loop-free openTrades()
-            # accessor (used by refresh_portfolio_pending_orders_cache) reports
-            # working orders after a (re)connect. openTrades() is a PASSIVE
-            # accessor — empty on a fresh connection until orders are actively
-            # requested — so without this, a reconnect silently blanks the
-            # dashboard's Pending Orders (the 2026-06-18 15:35 reconnect wiped 2
-            # working orders to count=0 and they never came back). This runs ONCE
-            # per connect, in the synchronous connect sequence (the same place
-            # sync_ibkr_holdings already drives reqHistoricalData), so it does NOT
-            # reintroduce the run_until_complete loop collision that openTrades()
-            # was adopted to avoid in the periodic 5-min refresh.
-            try:
-                with get_portfolio_lock():
-                    ib.reqAllOpenOrders()
-            except Exception as e:
-                log.warning("portfolio_open_orders_prime_failed", error=str(e))
+            # NOTE: do NOT prime the open-order wrapper with ib.reqAllOpenOrders()
+            # here. It was added (dc8b74c) so the loop-free openTrades() accessor
+            # would report working orders right after a reconnect. But on a gateway
+            # whose API is in Read-Only mode (or otherwise slow to answer), the
+            # open/completed-orders download never returns, the request times out,
+            # and the cancelled run_until_complete WEDGES the portfolio event loop —
+            # after which EVERY later sync IB call (qualifyContracts in the analyzer,
+            # trade-sync, price fetches) raises "This event loop is already running".
+            # That took portfolio pricing to 0% on the new U26413485 gateway
+            # (2026-06-20..22: Error 321 + "open orders request timed out" on every
+            # connect, qualify_ok=0). Trading off a cosmetic Pending-Orders refresh
+            # for the risk of killing ALL pricing is not worth it. openTrades() will
+            # repopulate naturally as Winston's own order events arrive on cid 97.
 
             try:
                 refresh_portfolio_account_cache_from(ib)
