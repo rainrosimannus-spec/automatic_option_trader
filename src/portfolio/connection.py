@@ -22,7 +22,19 @@ from src.core.logger import get_logger
 log = get_logger(__name__)
 
 _portfolio_ib: Optional[IB] = None
-_portfolio_lock = threading.RLock()
+# SHARED IBKR lock (pure threading — NOT asyncio). The portfolio and options
+# connections both capture the main thread's default event loop at startup, so
+# they run on the SAME asyncio loop; ib_insync drives it with run_until_complete
+# on every sync call, and only ONE such call can be in flight at a time. The
+# 2026-06-09 account split gave portfolio its OWN lock on the (wrong) assumption
+# of a separate loop — which let an options job and a portfolio job call
+# run_until_complete concurrently on the shared loop and raise "This event loop
+# is already running" (portfolio pricing 0%; the scheduler aligns many jobs on
+# the same :11/:41 ticks so the overlap was ~constant). Reusing the OPTIONS
+# RLock makes ALL IBKR calls across BOTH connections serialize on one lock.
+# RLock → same-thread re-entry stays safe; one lock → no lock-ordering deadlock.
+from src.broker.connection import get_ib_lock as _get_ib_lock
+_portfolio_lock = _get_ib_lock()
 _portfolio_main_loop = None
 
 _INFO_CODES = {2103, 2104, 2105, 2106, 2107, 2108, 2119, 2158}
@@ -72,9 +84,12 @@ def get_portfolio_ib() -> IB:
 def get_portfolio_lock():
     """Return the lock guarding Winston's IBKR calls.
 
-    Winston (portfolio) and Maggy (options) run on separate gateways/accounts
-    since the 2026-06-09 split, so each strategy serializes only within itself.
-    Always usable as: `with get_portfolio_lock(): ...`"""
+    NOTE: this is the SAME RLock as the options side's get_ib_lock(). Although
+    Winston (portfolio) and Maggy (options) use separate gateways/accounts since
+    the 2026-06-09 split, both connections share ONE asyncio event loop, so a
+    single lock must serialize every IBKR call across both — otherwise concurrent
+    run_until_complete raises "This event loop is already running". See the
+    _portfolio_lock binding above. Always usable as: `with get_portfolio_lock(): ...`"""
     return _portfolio_lock
 
 
@@ -219,15 +234,18 @@ def _connect(max_retries: int = 3) -> IB:
             except Exception as e:
                 log.warning("portfolio_holdings_sync_failed", error=str(e))
 
-            # Subscribe to account updates to keep connection alive.
-            # Without this, IBKR drops the read-only connection after ~60s idle.
-            try:
-                ib.reqAccountUpdates(cfg.ibkr_account)
-                log.info("portfolio_account_updates_subscribed",
-                         account=cfg.ibkr_account)
-            except Exception as e:
-                import traceback
-                log.warning("portfolio_account_updates_failed", error=str(e), tb=traceback.format_exc())
+            # NOTE: do NOT call ib.reqAccountUpdates() here. ib_insync's
+            # connectAsync ALREADY subscribes to account updates during connect
+            # (reqs['account updates'] = self.reqAccountUpdatesAsync(account)), so
+            # this was redundant. Worse: on U26413485 the re-subscribe never gets a
+            # fresh accountDownloadEnd, so it hangs, times out after RequestTimeout
+            # (15s), and the cancelled run_until_complete WEDGES the portfolio event
+            # loop — after which every later qualifyContracts/price fetch raises
+            # "This event loop is already running" (portfolio pricing 0% on
+            # 2026-06-22: the loop was healthy right after connect — brkb_history
+            # fetched fine — and only wedged once this call timed out). The OPTIONS
+            # connection never made this call and never had the problem; connectAsync's
+            # own subscription keeps the connection alive. Removed 2026-06-22.
 
             return ib
 
