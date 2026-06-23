@@ -197,6 +197,15 @@ def sync_injections_from_ibkr(
     added = 0
     pending_bridge_bumps = []  # collect (amount_usd, account_id) tuples for Bridge benchmark
     with get_db() as db:
+        # Flex is the authoritative cash-flow source: drop any provisional manual_bootstrap rows
+        # for this account before upserting the real deposits, so a hand-seeded placeholder (used to
+        # keep the return chart honest while Flex was unavailable) can never double-count alongside
+        # the genuine Flex row.
+        db.query(PortfolioCapitalInjection).filter(
+            PortfolioCapitalInjection.account_id == account_id,
+            PortfolioCapitalInjection.source == "manual_bootstrap",
+        ).delete(synchronize_session=False)
+
         for dep in deposits:
             existing = db.query(PortfolioCapitalInjection).filter(
                 PortfolioCapitalInjection.date == dep["date"],
@@ -352,6 +361,39 @@ def get_total_invested_base(account_id: str | None = None) -> float:
     if account_id is None or account_id == port_acct:
         return _account_summary_cash_usd()  # cached NLV is already in the account's base currency
     return 0.0
+
+
+def get_capital_ledger_base(account_id: str | None = None) -> "list[tuple[str, float]]":
+    """Cumulative net invested (base currency) as of each injection date, ascending.
+
+    Returns [(date_str, cumulative_invested_base), ...] built from the deposit/withdrawal
+    ledger for `account_id`, summing the ORIGINAL (base-currency) amounts. The performance
+    chart uses this to measure each snapshot's return against the capital that was actually in
+    the account ON that date — so a mid-series deposit raises NLV and the invested base
+    together (the return dilutes) instead of showing up as growth. Same-day flows collapse to
+    one cumulative point. Empty list when no ledger rows exist (the caller then falls back to a
+    single current-invested scalar).
+    """
+    try:
+        with get_db() as db:
+            q = db.query(PortfolioCapitalInjection)
+            if account_id is not None:
+                q = q.filter(PortfolioCapitalInjection.account_id == account_id)
+            rows = q.order_by(PortfolioCapitalInjection.date.asc()).all()
+    except Exception as e:
+        log.warning("get_capital_ledger_base_failed", error=str(e))
+        return []
+
+    ledger: "list[tuple[str, float]]" = []
+    running = 0.0
+    for r in rows:
+        running += float(r.amount_original or 0.0)
+        d = str(r.date)[:10]
+        if ledger and ledger[-1][0] == d:
+            ledger[-1] = (d, running)  # collapse same-day flows into one cumulative point
+        else:
+            ledger.append((d, running))
+    return ledger
 
 
 def fetch_accrued_interest_usd() -> float:

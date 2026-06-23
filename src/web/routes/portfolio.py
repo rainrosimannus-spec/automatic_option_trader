@@ -65,14 +65,37 @@ def _build_portfolio_performance() -> dict:
             .all()
         )
 
+    # Per-date invested base: divide each snapshot's NLV by the capital that was actually in the
+    # account AS OF that date (cumulative net deposits), not by a single current total. Otherwise a
+    # mid-series deposit makes every older (smaller-NLV) snapshot divide by the new, larger invested
+    # base — dragging the anchor down so the deposit shows up as fake growth (e.g. a 10k→20k deposit
+    # reading as +50%). With the per-date base, a deposit raises NLV and the invested base together
+    # and the return dilutes to ~flat. Ledger empty / dates before the first deposit → fall back to
+    # the latest scalar so behaviour is unchanged until the deposit ledger is populated.
+    from src.portfolio.capital_injections import get_capital_ledger_base
+    ledger = get_capital_ledger_base(account_id=_pacct)
+
+    def _invested_asof(day: str) -> float:
+        base = 0.0
+        for d, cum in ledger:
+            if d <= day:
+                base = cum
+            else:
+                break
+        return base
+
     labels = []
     raw_returns = []
     for snap in snapshots:
         nlv = snap.portfolio_nlv if snap.portfolio_nlv and snap.portfolio_nlv > 0 else None
         if not nlv or nlv <= 0:
             continue
-        labels.append(str(snap.date)[:10])
-        raw_returns.append((nlv / total_invested_usd - 1.0) * 100.0)
+        day = str(snap.date)[:10]
+        invested = _invested_asof(day) or total_invested_usd
+        if not invested or invested <= 0:
+            continue
+        labels.append(day)
+        raw_returns.append((nlv / invested - 1.0) * 100.0)
 
     if not raw_returns:
         return {
