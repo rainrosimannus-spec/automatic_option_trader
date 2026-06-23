@@ -651,9 +651,9 @@ document.addEventListener('DOMContentLoaded', function() {
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">VIX-adaptive DTE (0–3 base, 0–7 in confirmed bulls; halt &gt; 35)</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">0-3 DTE positions expire — no early close</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">40% below 52-week high — no new puts</span>
-        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Hybrid wheel: patient OTM CCs (0.35–0.45Δ) by default; deep-ITM exit-velocity (0.80–0.95Δ) only when stock &lt; MA200</span>
+        <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">Velocity-always CCs: deep-ITM (0.80–0.95Δ) on every assigned lot → called away in days (crash-bolster branch sweep-rejected, off)</span>
         <!-- Structural — blue -->
-        <span class="px-2.5 py-1 rounded bg-blue-900/40 text-blue-300">CC strikes ≥ net cost basis (realized)</span>
+        <span class="px-2.5 py-1 rounded bg-blue-900/40 text-blue-300">CC strikes ≥ net cost basis (2% small-loss tolerance in normal regime; strict in crash)</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-500">SPY tail hedge — disabled</span>
         <!-- Safety guards — red -->
         <span class="px-2.5 py-1 rounded bg-red-900/40 text-red-300">Live-only option prices (no BS fallback)</span>

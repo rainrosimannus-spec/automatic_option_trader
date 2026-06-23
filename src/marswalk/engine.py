@@ -107,6 +107,21 @@ class Params:
     cc_delta_min: float = 0.30     # live patient wheel (Strategy B default)
     cc_delta_max: float = 0.45
     cc_min_premium: float = 0.0    # 0 = use settings.yaml default
+    # ── Regime-specific CC (2026-06-23) — mirror of live RiskConfig cc_* ──
+    # Normal: velocity-always deep-ITM call-away in days + small-loss floor relax.
+    # Crash (crash_active): bolster — strict floor, patient OTM out to cc_crash_dte_max.
+    # Requires crash_when_active_enabled=True for crash_active to compute.
+    cc_velocity_always: bool = True
+    wheel_exit_velocity_enabled: bool = True
+    wheel_exit_velocity_delta_min: float = 0.80
+    wheel_exit_velocity_delta_max: float = 0.95
+    cc_exit_loss_tolerance_pct: float = 0.02   # normal regime: floor = net_basis*(1-tol)
+    cc_crash_dte_max: int = 21                 # crash regime: longer CC DTE
+    cc_crash_delta_min: float = 0.15           # crash regime: defensive OTM band
+    cc_crash_delta_max: float = 0.30
+    cc_crash_bolster_enabled: bool = False     # OFF (sweep-rejected) — True = bolster branch when crash_active
+    cc_crash_velocity: bool = False            # crash regime: try deep-ITM exit-velocity (dump harder)
+    cc_crash_loss_tolerance_pct: float = 0.0   # crash regime floor relax (0 = strict breakeven)
     # ── Portfolio ──
     start_capital: float = 4_000_000.0   # forward-looking simulation scale (NOT matched to live account; see memory: marswalk-start-capital)
     max_positions: int = 50           # live risk.max_portfolio_positions
@@ -858,31 +873,47 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             spot, iv = q
             cb = st["cost_basis"]
             net_cb = cb - st.get("realized_cc", 0.0)
-            # Hybrid-wheel CC selection — mirrors live src/strategy/wheel.py:
-            #   rescue (spot < 95% cb)        → 0.05-0.35 wide band
-            #   distressed (below own MA200)  → deep-ITM 0.80-0.95 (exit velocity)
-            #   patient (above own MA200)     → configured cc_delta band (Strategy B)
-            sym_ma_today = per_name_ma200.get(sym, {}).get(d) if per_name_ma200 else None
-            below_own_ma200 = (sym_ma_today is not None and spot < sym_ma_today)
-            if spot < cb * 0.95:
-                cdmin, cdmax = 0.05, 0.35
-                cc_branch = "rescue"
-            elif below_own_ma200:
-                cdmin, cdmax = 0.80, 0.95
-                cc_branch = "distressed_exit"
+            # Regime-specific CC selection — mirrors live src/strategy/wheel.py
+            # (2026-06-23). crash_active is the running detector state (prior-day,
+            # no lookahead). DEFAULT = VELOCITY-ALWAYS in every regime: deep-ITM
+            # 0.80-0.95 on every lot + floor relaxed by cc_exit_loss_tolerance_pct
+            # (rescue band 0.05-0.35 when already below breakeven). The crash-
+            # BOLSTER branch (cc_crash_bolster_enabled, default OFF) was REJECTED by
+            # the A/B sweep (lost to velocity in all 7 crash regimes) — retained for
+            # experimentation only. Crash defense lives on the put side + hedge.
+            in_rescue = spot < cb * 0.95
+            cc_dte_hi = cc_dte_max
+            bolster = crash_active and params.cc_crash_bolster_enabled
+            if bolster:
+                cdmin, cdmax = params.cc_crash_delta_min, params.cc_crash_delta_max
+                cc_dte_hi = params.cc_crash_dte_max
+                floor_basis = net_cb * (1.0 - max(params.cc_crash_loss_tolerance_pct, 0.0))
+                cc_branch = "crash_bolster"
+                try_velocity = params.cc_crash_velocity and params.wheel_exit_velocity_enabled
             else:
-                cdmin, cdmax = params.cc_delta_min, params.cc_delta_max
-                cc_branch = "patient_wheel"
-            min_strike = net_cb if cc_above_cb else None
-            chain = [sc for sc in pricing.build_contracts(spot, d, cc_dte_max + 7, symbol=sym)
-                     if cc_dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= cc_dte_max
+                floor_basis = net_cb * (1.0 - max(params.cc_exit_loss_tolerance_pct, 0.0))
+                if in_rescue:
+                    cdmin, cdmax = 0.05, 0.35
+                    cc_branch = "rescue"
+                    try_velocity = False
+                else:
+                    cdmin, cdmax = params.cc_delta_min, params.cc_delta_max
+                    cc_branch = "velocity"
+                    try_velocity = params.wheel_exit_velocity_enabled and params.cc_velocity_always
+            min_strike = floor_basis if cc_above_cb else None
+            chain = [sc for sc in pricing.build_contracts(spot, d, cc_dte_hi + 7, symbol=sym)
+                     if cc_dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= cc_dte_hi
                      and (min_strike is None or sc.strike >= min_strike)]
-            cc_iv = pricing.effective_iv(iv, (cc_dte_min + cc_dte_max) // 2, params.short_dte_uplift_k)
-            cands = score_call_candidates(spot, cc_iv, chain, cc_cfg, cdmin, cdmax, d)
-            # Distressed: if no deep-ITM candidate clears min_strike, fall back to
-            # the wider exit-mode band (0.35-0.55) like live wheel.py does.
-            if not cands and cc_branch == "distressed_exit":
-                cands = score_call_candidates(spot, cc_iv, chain, cc_cfg, 0.35, 0.55, d)
+            cc_iv = pricing.effective_iv(iv, (cc_dte_min + cc_dte_hi) // 2, params.short_dte_uplift_k)
+            cands = None
+            # Velocity-always: try the deep-ITM band first for fast call-away.
+            if try_velocity:
+                cands = score_call_candidates(spot, cc_iv, chain, cc_cfg,
+                                              params.wheel_exit_velocity_delta_min,
+                                              params.wheel_exit_velocity_delta_max, d)
+            # Fallback band: crash bolster (patient OTM), rescue, or patient.
+            if not cands:
+                cands = score_call_candidates(spot, cc_iv, chain, cc_cfg, cdmin, cdmax, d)
             if not cands:
                 continue
             top = max(cands, key=lambda c: c.score)

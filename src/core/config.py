@@ -274,6 +274,30 @@ class RiskConfig(BaseModel):
     wheel_exit_margin_rate_annual: float = 0.07   # margin interest rate for surcharge in min_strike
     wheel_cc_profit_threshold: float = 0.80       # close CC when (entry - ask)/entry >= this (80% profit)
     wheel_sell_fee_per_share: float = 0.04        # per-share sell commission used in pre-market exit threshold
+    # ── Regime-specific covered calls (2026-06-23) ──────────────────────────
+    # DEFAULT = VELOCITY-ALWAYS in every regime: attempt the deep-ITM exit-velocity
+    # call (wheel_exit_velocity_delta_*) on EVERY assigned lot (not just below-MA200
+    # names) so it is called away in days, and relax the breakeven floor by
+    # cc_exit_loss_tolerance_pct so a lot a hair underwater still clears (accept a
+    # SMALL loss to recycle capital into the put engine). Replaces the old
+    # below-MA200 distressed-exit + interest-surcharge branch.
+    #
+    # CRASH-BOLSTER (cc_crash_bolster_enabled, default OFF): when the crash detector
+    # fires, skip exit-velocity, re-impose the strict net-cost-basis floor, and write
+    # defensive patient OTM CCs (cc_crash_delta_*) out to cc_crash_dte_max.
+    # REJECTED by the MarsWalk A/B (data/cc_regime_sweep_ab_2026*): every bolster
+    # variant — defensive AND aggressive-dump — LOST to velocity-everywhere across
+    # all 7 crash regimes (negative CRASH-sum, max-DD unchanged). The CC branch is
+    # not a crash lever (crash P&L is dominated by held-stock notional; holding
+    # longer forgoes the recycling velocity captures). Crash defense lives on the
+    # put-entry side (crash detector → strangle/halt) + hedge module. Flag retained
+    # OFF for future experimentation. Mirrored in MarsWalk engine + dashboard chip.
+    cc_velocity_always: bool = True               # deep-ITM exit-velocity on ALL assigned lots, every regime
+    cc_exit_loss_tolerance_pct: float = 0.02      # allow strike down to net_basis*(1-tol) for a fast small-loss exit
+    cc_crash_bolster_enabled: bool = False        # OFF — sweep-rejected; True = use bolster branch when crash detector fires
+    cc_crash_dte_max: int = 21                    # bolster: longer CC DTE to ride out the move
+    cc_crash_delta_min: float = 0.15              # bolster: defensive patient OTM band floor
+    cc_crash_delta_max: float = 0.30              # bolster: defensive patient OTM band ceiling
     # ── Cash-and-carry mode (high-vol-grind detector + SGOV rotation) ──
     # Ported 2026-05-28 from MarsWalk after the high-vol-grind detector + parameter-
     # override experiment (memory: stagflation-strategy-attempted-2026-05-28) showed

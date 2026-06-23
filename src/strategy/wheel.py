@@ -411,6 +411,15 @@ class WheelManager:
         log.info("scanning_for_covered_calls")
         written: list[str] = []
 
+        # Regime switch for CC selection — evaluate the crash detector ONCE per
+        # scan (day-level idempotent state machine) and thread it into _write_call.
+        # crash_active=True → bolster branch; False → velocity-always branch.
+        try:
+            crash_active, _crash_reason = self.risk.evaluate_crash_detector()
+        except Exception as e:
+            log.warning("cc_crash_detector_error", error=str(e))
+            crash_active = False
+
         with get_db() as db:
             stock_positions = (
                 db.query(Position)
@@ -491,7 +500,7 @@ class WheelManager:
                          to_cover=lots_to_cover)
 
                 try:
-                    result = self._write_call(db, stock_pos, contracts=lots_to_cover)
+                    result = self._write_call(db, stock_pos, contracts=lots_to_cover, crash_active=crash_active)
                     if result:
                         written.append(symbol)
                 except Exception as e:
@@ -500,13 +509,18 @@ class WheelManager:
         log.info("covered_calls_written", symbols=written)
         return written
 
-    def _write_call(self, db, stock_pos: Position, contracts: int = 0) -> bool:
+    def _write_call(self, db, stock_pos: Position, contracts: int = 0, crash_active: bool = False) -> bool:
         """
         Screen and sell a covered call on an assigned stock position.
-        Smart strike management:
-        - Always sell above cost basis
-        - If stock has recovered significantly, use lower delta (protect upside)
-        - Progressive: as stock price rises above cost basis, widen the gap
+
+        Regime-specific (2026-06-23), switched by the crash detector:
+        - Normal (crash_active=False) → VELOCITY-ALWAYS: deep-ITM exit-velocity
+          call on every assigned lot + breakeven floor relaxed by
+          cc_exit_loss_tolerance_pct → called away in days, small loss accepted.
+        - Crash (crash_active=True) → BOLSTER: no exit-velocity, strict net-basis
+          floor, defensive patient OTM CCs out to cc_crash_dte_max.
+        Strike floor never below (relaxed) net cost basis; rescue band still
+        applies for names already below breakeven.
         """
         symbol = stock_pos.symbol
         cost_basis = stock_pos.cost_basis
@@ -524,89 +538,71 @@ class WheelManager:
         realized_cc_per_share = _realized_cc_premium_per_share(db, stock_pos)
         net_cost_basis = (cost_basis or 0) - realized_cc_per_share
 
-        # Exit mode: bump delta range, add interest surcharge to min_strike
+        # ── Regime-specific CC selection (2026-06-23) ──────────────────────
+        # DEFAULT = VELOCITY-ALWAYS in every regime: deep-ITM exit-velocity call on
+        # EVERY assigned lot + breakeven floor relaxed by cc_exit_loss_tolerance_pct
+        # → called away in days, small loss accepted, capital recycled to the put
+        # engine. Replaces the old below-MA200 distressed-exit + interest-surcharge
+        # branch (velocity-always now covers broken names too).
+        #
+        # The crash-bolster branch (defensive patient OTM + strict floor when the
+        # crash detector fires) is RETAINED but DISABLED by default
+        # (cc_crash_bolster_enabled=False). MarsWalk A/B (2026-06-23,
+        # data/cc_regime_sweep_ab) REJECTED every bolster variant — defensive AND
+        # aggressive-dump — across all 7 crash regimes (negative CRASH-sum vs
+        # velocity-everywhere, max-DD unchanged): the CC branch isn't a crash lever
+        # because crash P&L is dominated by the held-stock notional, and holding
+        # longer forgoes the recycling velocity captures. Crash defense lives on the
+        # put-entry side (crash detector → strangle/halt) + hedge module. Flag kept
+        # for future experimentation. Mirrored in MarsWalk engine + dashboard chip.
         from src.core.config import get_settings as _gs
         risk_cfg = _gs().risk
-        interest_surcharge = 0.0
-        # Hybrid wheel: assigned stock above its own MA200 → patient OTM CCs
-        # (Strategy B). Below its own MA200 → exit-velocity band + interest
-        # surcharge (Strategy A). MarsWalk 13-regime backtest: B wins 11/13
-        # (bulls, V-shapes, chop, reflation) by ~$25.9k combined; A wins the
-        # 2 sustained bears (bear_2022, ai_crash) by ~$8.5k combined. Gating
-        # A on per-name MA200 captures both edges. is_below_ma200 fails open
-        # to None → treated as healthy (patient) — the per-name MA200 entry
-        # gate already pre-screens distressed names, so this default is safe.
-        below_ma200 = (
-            bool(self.risk.is_below_ma200(symbol))
-            if stock_pos.wheel_exit_mode else False
-        )
+
         in_rescue = bool(current_price and cost_basis and current_price < cost_basis * 0.95)
-        if in_rescue:
-            # Rescue mode: stock 5%+ below cost basis. Overrides BOTH normal and
-            # exit-mode branches because assignments default to exit_mode=True,
-            # which would otherwise gate this branch out. Strike floor
-            # (min_strike >= net_cost_basis) unchanged — still never sells below
-            # breakeven. Far-OTM strikes above cost basis have low delta by
-            # definition (e.g. $25.50 strike on $20.49 stock has delta ~0.15),
-            # so widen the floor to find any candidate above cost basis.
-            cc_delta_min, cc_delta_max = 0.05, 0.35
-        elif stock_pos.wheel_exit_mode and below_ma200:
-            # Distressed-exit branch (Strategy A): wider delta band + interest
-            # surcharge to force fast turnover when the name is structurally
-            # broken (below its own 200d SMA).
-            try:
-                from datetime import datetime as _dt
-                days_held = (_dt.utcnow() - stock_pos.opened_at).days
-            except Exception:
-                days_held = 0
-            interest_surcharge = max(days_held, 0) * (risk_cfg.wheel_exit_margin_rate_annual / 365.0) * (cost_basis or 0)
-            cc_delta_min = risk_cfg.wheel_exit_delta_min
-            cc_delta_max = risk_cfg.wheel_exit_delta_max
-        else:
-            # Patient-wheel branch (Strategy B): assigned stock above its own
-            # MA200 (or non-assignment-acquired stock). OTM CCs collect premium,
-            # reduce effective cost basis, wait for recovery. No surcharge —
-            # we're choosing to hold, not stuck.
-            cc_delta_min = self.cfg.cc_delta_min
-            cc_delta_max = self.cfg.cc_delta_max
+        bolster = crash_active and getattr(risk_cfg, "cc_crash_bolster_enabled", False)
+        dte_max_override = None
 
-        # min_strike = net basis plus interest surcharge (exit mode) or net basis alone (normal)
-        min_strike_value = net_cost_basis + interest_surcharge
-        min_strike = min_strike_value if self.cfg.cc_above_cost_basis and min_strike_value > 0 else None
-
-        # Surface the hybrid branch in logs: "patient" (above MA200, OTM band)
-        # vs "distressed" (below MA200, exit-velocity band) vs "rescue" / "cash"
-        if in_rescue:
-            wheel_branch = "rescue"
-        elif stock_pos.wheel_exit_mode and below_ma200:
-            wheel_branch = "distressed_exit"
-        elif stock_pos.wheel_exit_mode:
-            wheel_branch = "patient_wheel"
+        if bolster:
+            # BOLSTER (off by default): strict floor, defensive patient OTM, longer DTE.
+            wheel_branch = "crash_bolster"
+            cc_delta_min = risk_cfg.cc_crash_delta_min
+            cc_delta_max = risk_cfg.cc_crash_delta_max
+            dte_max_override = risk_cfg.cc_crash_dte_max
+            floor_basis = net_cost_basis                       # strict: never below breakeven
         else:
-            wheel_branch = "cash_cc"
+            # VELOCITY-ALWAYS: relax floor by tolerance for a fast small-loss exit;
+            # deep-ITM exit-velocity is attempted below for all non-rescue names.
+            floor_basis = net_cost_basis * (1.0 - max(risk_cfg.cc_exit_loss_tolerance_pct, 0.0))
+            if in_rescue:
+                # Stock already 5%+ below basis — deep-ITM won't clear the floor;
+                # widen to find any far-OTM candidate above the (relaxed) floor.
+                wheel_branch = "rescue"
+                cc_delta_min, cc_delta_max = 0.05, 0.35
+            else:
+                wheel_branch = "velocity"
+                cc_delta_min = self.cfg.cc_delta_min
+                cc_delta_max = self.cfg.cc_delta_max
+
+        min_strike = floor_basis if self.cfg.cc_above_cost_basis and floor_basis > 0 else None
+
         log.info("covered_call_params", symbol=symbol,
                  exit_mode=stock_pos.wheel_exit_mode,
                  wheel_branch=wheel_branch,
-                 below_ma200=below_ma200,
+                 crash_active=crash_active,
                  cost_basis=round(cost_basis, 2) if cost_basis else None,
                  net_cost_basis=round(net_cost_basis, 2),
-                 interest_surcharge=round(interest_surcharge, 4),
                  min_strike=round(min_strike, 2) if min_strike else None,
                  current_price=round(current_price, 2) if current_price else None,
+                 dte_max=dte_max_override if dte_max_override is not None else self.cfg.cc_dte_max,
                  delta_range=(cc_delta_min, cc_delta_max))
-        # #1 Exit-velocity: in exit mode, first try a deep-ITM call that is
-        # near-certain to be called away next expiry → fastest return to cash.
-        # The min_strike floor (>= breakeven) means this only finds a candidate
-        # when the stock has recovered enough that a deep-ITM strike still sits
-        # at/above breakeven; otherwise it returns None and we fall through to
-        # the normal exit-mode band. Skipped in rescue mode (stock < breakeven).
+
         candidate = None
-        # Hybrid wheel: deep-ITM exit-velocity only fires when the name is
-        # below its own 200d SMA (distressed). Above-MA200 assigned stock
-        # uses patient OTM CCs (Strategy B) to maximize premium + cost-basis
-        # reduction during recovery.
-        if (stock_pos.wheel_exit_mode and self.cfg.wheel_exit_velocity_enabled
-                and not in_rescue and below_ma200):
+        # Velocity-always: try a deep-ITM call (near-certain call-away next
+        # expiry) on EVERY assigned lot → return to cash in days. Skipped in
+        # rescue (stock already below breakeven, no deep-ITM strike clears the
+        # floor) and when the (default-off) bolster branch is active.
+        if (self.cfg.wheel_exit_velocity_enabled and risk_cfg.cc_velocity_always
+                and not bolster and not in_rescue):
             candidate = screen_calls(
                 symbol,
                 exchange=exchange,
@@ -618,9 +614,10 @@ class WheelManager:
             if candidate:
                 log.info("cc_exit_velocity_deep_itm", symbol=symbol,
                          strike=candidate.strike, delta=round(candidate.delta, 2),
-                         note="deep-ITM CC for fast call-away (below MA200)")
+                         note="deep-ITM CC for fast call-away (velocity-always)")
 
-        # Screen for the best call with adjusted parameters (normal/exit-mode band)
+        # Fallback band: crash bolster (patient OTM, longer DTE), rescue (far-OTM),
+        # or normal patient band when no deep-ITM candidate cleared the floor.
         if not candidate:
             candidate = screen_calls(
                 symbol,
@@ -629,6 +626,7 @@ class WheelManager:
                 min_strike=min_strike,
                 delta_min_override=cc_delta_min,
                 delta_max_override=cc_delta_max,
+                max_dte_override=dte_max_override,
             )
 
         if not candidate:
