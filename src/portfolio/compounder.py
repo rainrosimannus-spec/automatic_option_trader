@@ -308,6 +308,21 @@ def daily_deploy_budget(investable: float, base_pct: float, dca_horizon_days: in
     return max(0.0, min(budget, free_cash))
 
 
+def single_buy_bounds(nlv: float, cc) -> tuple[float, float]:
+    """NLV-scaled (min, max) per-name order size for the compounder.
+
+    The portfolio account spans ~$50k → $11M+. Flat $5k/$100k bounds blocked all deployment below
+    ~$4M (per-name targets stay under $5k), so each order is sized as a % of CURRENT NLV:
+      eff_min = clamp(NLV * min_single_buy_pct, min_single_buy_floor, min_single_buy)  # 0.1%, in [$250, $5k]
+      eff_max = max(  NLV * max_single_buy_pct, eff_min)                               # 2%
+    eff_min never drops below the anti-dust floor ($250, stops binding above ~$250k NLV) nor exceeds the
+    cap ($5k, reached at ~$5M, so the small-target tail still deploys at $11M+); eff_max scales freely.
+    """
+    lo = max(min(nlv * cc.min_single_buy_pct, cc.min_single_buy), cc.min_single_buy_floor)
+    hi = max(nlv * cc.max_single_buy_pct, lo)
+    return lo, hi
+
+
 def ladder_plan(core_price: float, urgency: float, is_leader: bool,
                 cc) -> list[tuple[float, float]]:
     """Conviction-scaled DAY limit-ladder for one direct buy (pure).

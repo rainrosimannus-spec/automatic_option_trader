@@ -69,9 +69,16 @@ class CompounderConfig(BaseModel):
     direct_threshold: float = 0.0      # attractiveness >= this -> direct buy, else put-sell
     urgent_underweight: float = 0.5    # if >=50% below target, buy directly regardless of price
     put_target_discount_pct: float = 5.0  # CSP strike ~ this far below price when waiting
-    # Per-trade sizing
-    max_single_buy: float = 100000.0
-    min_single_buy: float = 5000.0
+    # Per-trade sizing — bounds SCALE with this account's NLV (see single_buy_bounds()). The portfolio
+    # account grows ~$50k → $11M+; each order is sized as a % of CURRENT NLV: min 0.1% (clamped to
+    # [$250 anti-dust, $5k cap]) and max 2%. So the $250 floor stops binding above ~$250k NLV, and the
+    # minimum stops growing above ~$5M (the small-target tail still deploys at $11M+). The old flat
+    # $5k/$100k blocked ALL deployment below ~$4M (conviction-weighted per-name targets stay under $5k).
+    max_single_buy: float = 100000.0      # legacy/classic-path reference (compounder uses the pcts below)
+    min_single_buy: float = 5000.0        # now the UPPER cap on the scaled minimum
+    min_single_buy_pct: float = 0.001     # min order = 0.1% of NLV
+    max_single_buy_pct: float = 0.02      # max order = 2%   of NLV
+    min_single_buy_floor: float = 250.0   # absolute anti-dust floor (commission drag on small accounts)
     # Conviction-scaled DAY limit-ladder entries. Replaces the flat 0.2% under-bid in _execute_buy.
     # Core rung bids near market for HIGH-urgency names (underweight/leader/crash) so the position
     # actually fills; LOW-urgency names bid deeper to lower cost (OK to miss). Leaders also get extra

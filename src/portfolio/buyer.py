@@ -527,6 +527,9 @@ class PortfolioBuyer:
         targets = cmp.target_weights(ranked, tier_budgets, live_invest, cc.per_name_cap_pct,
                                      leader_syms=leaders, leader_cap_pct=cc.leader_cap_pct,
                                      conviction_power=cc.conviction_power)
+        # Per-name order-size bounds scale with NLV (account grows ~$50k → $11M+); flat $5k/$100k
+        # blocked deployment below ~$4M. See compounder.single_buy_bounds.
+        min_buy, max_buy = cmp.single_buy_bounds(nlv, cc)
 
         held = self._get_holdings_map()           # symbol -> FILLED market value (sync truth)
         deployed = sum(held.values())
@@ -574,8 +577,8 @@ class PortfolioBuyer:
         self._persist_compounder_signals(ranked, targets, held, open_put_syms,
                                          rank_idx, crash_active, cc, leaders)
 
-        if budget < cc.min_single_buy:
-            log.info("compounder_no_budget_today", budget=round(budget))
+        if budget < min_buy:
+            log.info("compounder_no_budget_today", budget=round(budget), min_buy=round(min_buy))
             return bought
 
         # Underweight buy queue, ordered by fair-price attractiveness (cheapest first).
@@ -602,8 +605,8 @@ class PortfolioBuyer:
             if spent >= budget:
                 break
             stock, a = analyses[r.symbol]
-            brick = min(cc.max_single_buy, tgt - cur, budget - spent)
-            if brick < cc.min_single_buy:
+            brick = min(max_buy, tgt - cur, budget - spent)
+            if brick < min_buy:
                 continue
             idx = rank_idx.get(r.symbol, 0)
             is_leader = r.symbol in leaders
@@ -625,7 +628,7 @@ class PortfolioBuyer:
                 )
                 core_placed, total_placed = self._execute_compounder_buy(
                     stock, a, brick, urgency, is_leader, cash_room,
-                    rank=idx, rank_score=r.rank_score, rationale=rat)
+                    rank=idx, rank_score=r.rank_score, rationale=rat, min_buy=min_buy)
                 if total_placed > 0:
                     bought.append(stock.symbol)
                     spent += core_placed        # throttle base pace by the core rung only
@@ -1491,6 +1494,7 @@ class PortfolioBuyer:
         rank: int = 0,
         rank_score: float = 0.0,
         rationale: str | None = None,
+        min_buy: float | None = None,
     ) -> tuple[float, float]:
         """Place a conviction-scaled DAY limit ladder (live) or one core-rung suggestion card
         (suggestion mode). Returns (core_placed_notional, total_placed_notional).
@@ -1508,6 +1512,9 @@ class PortfolioBuyer:
 
         from src.portfolio import compounder as cmp
         cc = self.cfg.compounder
+        # NLV-scaled core-rung floor (the caller's brick already cleared it); fall back to the
+        # configured cap if not threaded through, so the method is safe to call standalone.
+        core_floor = min_buy if min_buy is not None else cc.min_single_buy
         plan = cmp.ladder_plan(px, urgency, is_leader, cc)
         if not plan:
             return (0.0, 0.0)
@@ -1519,8 +1526,8 @@ class PortfolioBuyer:
                 continue
             shares = int((core_amount * frac) / price)
             notional = shares * price
-            # Core rung must clear min_single_buy; dip rungs just need to be non-trivial.
-            floor = cc.min_single_buy if i == 0 else 1000.0
+            # Core rung must clear the NLV-scaled min order; dip rungs just need to be non-trivial.
+            floor = core_floor if i == 0 else 1000.0
             if shares <= 0 or notional < floor:
                 continue
             rungs.append((price, shares))
