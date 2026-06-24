@@ -53,8 +53,8 @@ data/statements/
 data/backups/
 data/contracts/
 
-# Bookkeeping bridge — live-mode idempotency ledger (posted journal refs)
-data/bookkeeping_posted.jsonl
+# Bookkeeping bridge — live-mode idempotency ledger (posted journal refs, per entity)
+data/bookkeeping_posted*.jsonl
 
 # Historical backup files (kept locally, never committed)
 *.v1-backup

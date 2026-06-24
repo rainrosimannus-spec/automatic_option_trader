@@ -16,12 +16,12 @@ cash transfers + FX. No mark-to-market (cost basis only).
 """
 from __future__ import annotations
 
-__all__ = ["run_daily_sync"]
+__all__ = ["run_daily_sync", "run_all_entities"]
 
 
 def __getattr__(name: str):
     # Lazy re-export so `python -m src.bookkeeping.daily_sync` doesn't double-import.
-    if name == "run_daily_sync":
-        from src.bookkeeping.daily_sync import run_daily_sync
-        return run_daily_sync
+    if name in ("run_daily_sync", "run_all_entities"):
+        from src.bookkeeping import daily_sync
+        return getattr(daily_sync, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
