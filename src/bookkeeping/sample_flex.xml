@@ -1,0 +1,31 @@
+<FlexQueryResponse queryName="SKXHoldco" type="AF">
+ <FlexStatements count="1">
+  <FlexStatement accountId="U-SKX" fromDate="2026-06-23" toDate="2026-06-23" period="LastBusinessDay">
+   <Trades>
+    <Trade tradeID="101" symbol="AAPL" assetCategory="STK" buySell="BUY" tradeDate="2026-06-23"
+           quantity="100" tradePrice="200.00" proceeds="-20000.00" ibCommission="-1.00"
+           netCash="-20001.00" cost="20001.00" fifoPnlRealized="0" currency="USD" fxRateToBase="0.92"/>
+    <Trade tradeID="102" symbol="MSFT" assetCategory="STK" buySell="SELL" tradeDate="2026-06-23"
+           quantity="-50" tradePrice="450.00" proceeds="22500.00" ibCommission="-1.50"
+           netCash="22498.50" cost="20000.00" fifoPnlRealized="2498.50" currency="USD" fxRateToBase="0.92"/>
+    <Trade tradeID="103" symbol="EUR.USD" assetCategory="CASH" buySell="BUY" tradeDate="2026-06-23"
+           quantity="10000" tradePrice="1.087" proceeds="-10870.00" ibCommission="-2.00"
+           netCash="-10872.00" cost="0" fifoPnlRealized="0" currency="USD" fxRateToBase="0.92"/>
+   </Trades>
+   <CashTransactions>
+    <CashTransaction transactionID="201" type="Dividends" symbol="AAPL" amount="25.00"
+                     currency="USD" fxRateToBase="0.92" dateTime="2026-06-23" description="AAPL CASH DIVIDEND"/>
+    <CashTransaction transactionID="202" type="Withholding Tax" symbol="AAPL" amount="-3.75"
+                     currency="USD" fxRateToBase="0.92" dateTime="2026-06-23" description="AAPL WHT 15%"/>
+    <CashTransaction transactionID="203" type="Broker Interest Received" symbol="" amount="12.40"
+                     currency="USD" fxRateToBase="0.92" dateTime="2026-06-23" description="CREDIT INT"/>
+    <CashTransaction transactionID="204" type="Other Fees" symbol="" amount="-5.00"
+                     currency="EUR" fxRateToBase="1.0" dateTime="2026-06-23" description="MARKET DATA FEE"/>
+   </CashTransactions>
+   <DepositsWithdrawals>
+    <DepositWithdrawal transactionID="301" type="Deposit" amount="50000.00" currency="EUR"
+                       fxRateToBase="1.0" reportDate="2026-06-23" description="SHAREHOLDER CONTRIBUTION"/>
+   </DepositsWithdrawals>
+  </FlexStatement>
+ </FlexStatements>
+</FlexQueryResponse>
