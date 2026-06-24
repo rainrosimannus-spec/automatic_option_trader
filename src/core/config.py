@@ -294,6 +294,7 @@ class RiskConfig(BaseModel):
     # OFF for future experimentation. Mirrored in MarsWalk engine + dashboard chip.
     cc_velocity_always: bool = True               # deep-ITM exit-velocity on ALL assigned lots, every regime
     cc_exit_loss_tolerance_pct: float = 0.02      # allow strike down to net_basis*(1-tol) for a fast small-loss exit
+    cc_rescue_threshold: float = 0.97             # spot < cost_basis*thr → rescue (deep-OTM cushion) vs velocity dump; 0.97 swept-optimal (was 0.95)
     cc_crash_bolster_enabled: bool = False        # OFF — sweep-rejected; True = use bolster branch when crash detector fires
     cc_crash_dte_max: int = 21                    # bolster: longer CC DTE to ride out the move
     cc_crash_delta_min: float = 0.15              # bolster: defensive patient OTM band floor

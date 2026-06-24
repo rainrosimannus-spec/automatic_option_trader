@@ -558,7 +558,7 @@ class WheelManager:
         from src.core.config import get_settings as _gs
         risk_cfg = _gs().risk
 
-        in_rescue = bool(current_price and cost_basis and current_price < cost_basis * 0.95)
+        in_rescue = bool(current_price and cost_basis and current_price < cost_basis * risk_cfg.cc_rescue_threshold)
         bolster = crash_active and getattr(risk_cfg, "cc_crash_bolster_enabled", False)
         dte_max_override = None
 
