@@ -76,10 +76,10 @@ class CompounderConfig(BaseModel):
     # its target grows with NLV), so the deployment concentrates into meaningful sizes and broadens as
     # the account compounds. The minimum stops growing above ~$5M (small-target tail still deploys).
     max_single_buy: float = 100000.0      # legacy/classic-path reference (compounder uses the pcts below)
-    min_single_buy: float = 5000.0        # UPPER cap on the scaled minimum (floor <= scaled min <= this)
-    min_single_buy_pct: float = 0.001     # min order = 0.1% of NLV (only binds once NLV > $3M)
+    min_single_buy: float = 5000.0        # _execute_compounder_buy fallback floor only (bounds are uncapped)
+    min_single_buy_pct: float = 0.006     # min order scales at 0.6% of NLV → equals the $3k floor at $500k
     max_single_buy_pct: float = 0.02      # max order = 2%   of NLV
-    min_single_buy_floor: float = 3000.0  # HARD per-order floor — never place a buy smaller than this
+    min_single_buy_floor: float = 3000.0  # HARD per-order floor — flat below ~$500k, then 0.6% scales above
     # Conviction-scaled DAY limit-ladder entries. Replaces the flat 0.2% under-bid in _execute_buy.
     # Core rung bids near market for HIGH-urgency names (underweight/leader/crash) so the position
     # actually fills; LOW-urgency names bid deeper to lower cost (OK to miss). Leaders also get extra
