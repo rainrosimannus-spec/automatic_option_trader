@@ -468,33 +468,52 @@ def job_execute_queued():
 
 
 def job_execute_portfolio_buys():
-    """Execute approved/queued PORTFOLIO buy_stock suggestions on the portfolio account.
+    """Execute PORTFOLIO buy_stock suggestions on the portfolio account.
 
     The options executor (job_execute_queued) filters source=='options', and the core
     buy_stock branch is a no-op stub — so approved portfolio buys never reached IBKR. This is
-    the portfolio analogue: it picks the highest-rank approved/queued portfolio buy and routes
-    it to the real portfolio executor, ONE per cycle to pace deployment (the per-name size was
-    already set by the compounder when the suggestion was created)."""
+    the portfolio analogue: it picks the highest-rank portfolio buy and routes it to the real
+    portfolio executor, ONE per cycle to pace deployment (the per-name size was already set by
+    the compounder when the suggestion was created).
+
+    Auto-execute: when auto_approve_portfolio is ON, PENDING suggestions are eligible too and are
+    promoted to approved here. This is required because auto-approve-on-create only fires for the
+    absolute rank-1 name, but the green-only buying policy means the top actionable suggestion is
+    usually NOT rank 1 (ranks above it are yellow / get no suggestion) — so without this, every
+    portfolio suggestion sat pending forever showing "Sending to IBKR" with no order ever placed.
+    When auto-approve is OFF, only user-approved (queued/approved) suggestions execute."""
     try:
+        from datetime import datetime as _dt
         from src.core.suggestions import TradeSuggestion
+        from src.core.models import SystemState
         from src.portfolio.connection import is_portfolio_connected
         if not is_portfolio_connected():
             return
         with get_db() as db:
+            aa = db.query(SystemState).filter(
+                SystemState.key == "auto_approve_portfolio").first()
+            statuses = ["queued", "approved"]
+            if aa is not None and aa.value == "true":
+                statuses.append("pending")   # auto-execute pending greens, top rank first
             sel = (
                 db.query(TradeSuggestion)
                 .filter(
-                    TradeSuggestion.status.in_(["queued", "approved"]),
+                    TradeSuggestion.status.in_(statuses),
                     TradeSuggestion.source == "portfolio",
                     TradeSuggestion.action == "buy_stock",
                 )
                 .order_by(TradeSuggestion.rank.asc())
                 .first()
             )
-            target_id = sel.id if sel else None
-            target_sym = sel.symbol if sel else None
-        if target_id is None:
-            return
+            if sel is None:
+                return
+            target_id, target_sym = sel.id, sel.symbol
+            if sel.status == "pending":
+                # Promote so the executor (which gates on approved/queued/executing) will place it.
+                sel.status = "approved"
+                sel.reviewed_at = _dt.utcnow()
+                sel.review_note = "auto-approved (portfolio auto-execute)"
+                db.commit()
         log.info("executing_portfolio_buy", id=target_id, symbol=target_sym)
         from src.portfolio.buyer import execute_portfolio_buy_suggestion
         execute_portfolio_buy_suggestion(target_id)
