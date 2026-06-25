@@ -465,7 +465,10 @@ async def portfolio_page(request: Request):
         # Compounder strategy reserve state (cards shown only when active)
         "is_compounder": (_get_state("strategy") == "compounder"),
         "compounder": {
-            "deployed": float(_get_state("compounder_deployed") or 0),
+            # Live deployed = current market value of holdings (base ccy). Was read from the persisted
+            # compounder_deployed state, which only the periodic scan refreshes — so it lagged behind
+            # fills/price updates. total_value is recomputed every page load from the holdings table.
+            "deployed": total_value,
             "live_target": float(_get_state("compounder_live_target") or 0),
             "investable": float(_get_state("compounder_investable") or 0),
             "daily_budget": float(_get_state("compounder_daily_budget") or 0),
