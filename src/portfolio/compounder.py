@@ -314,14 +314,14 @@ def single_buy_bounds(nlv: float, cc) -> tuple[float, float]:
 
     The portfolio account spans ~$50k → $11M+. Flat $5k/$100k bounds blocked all deployment below
     ~$4M (per-name targets stay under $5k), so each order is sized as a % of CURRENT NLV:
-      eff_min = clamp(NLV * min_single_buy_pct, min_single_buy_floor, min_single_buy)  # 0.1%, in [$3k, $5k]
+      eff_min = clamp(NLV * min_single_buy_pct, min_single_buy_floor, min_single_buy)  # 0.4%, floor $2k
       eff_max = max(  NLV * max_single_buy_pct, eff_min)                               # 2%
-    eff_min is a HARD $3,000 floor that holds flat up to ~$500k NLV, then SCALES UP with NLV
-    (min_single_buy_pct = 0.6%, so 0.6% × $500k = $3,000) — uncapped, like eff_max. No order is ever
+    eff_min is a HARD $2,000 floor that holds flat up to ~$500k NLV, then SCALES UP with NLV
+    (min_single_buy_pct = 0.4%, so 0.4% × $500k = $2,000) — uncapped, like eff_max. No order is ever
     smaller than eff_min; a name whose target gap is below it is skipped until its target grows. So:
-      eff_min = max(NLV * 0.6%, $3,000)   # flat $3k <= $500k, then 0.6% of NLV
+      eff_min = max(NLV * 0.4%, $2,000)   # flat $2k <= $500k, then 0.4% of NLV
       eff_max = max(NLV * 2%,  eff_min)   # 2% of NLV
-    Below ~$150k NLV eff_min == eff_max == $3k (every order exactly the floor). min stays ~30% of max
+    Below ~$100k NLV eff_min == eff_max == $2k (every order exactly the floor). min stays ~20% of max
     once both scale.
     """
     lo = max(nlv * cc.min_single_buy_pct, cc.min_single_buy_floor)
