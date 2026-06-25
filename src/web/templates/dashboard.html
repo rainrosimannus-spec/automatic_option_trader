@@ -15,11 +15,6 @@
             🔔 {{ pending_options }} Options
         </a>
         {% endif %}
-        {% if pending_portfolio > 0 %}
-        <a href="/suggestions" class="flex items-center gap-1.5 px-3 py-1 rounded-full border border-blue-600 bg-blue-950/40 text-blue-300 hover:bg-blue-900/40 transition">
-            🔔 {{ pending_portfolio }} Portfolio
-        </a>
-        {% endif %}
         {% if ipo_confirmed > 0 %}
         <a href="/ipo" class="flex items-center gap-1.5 px-3 py-1 rounded-full border border-purple-600 bg-purple-950/40 text-purple-300 hover:bg-purple-900/40 transition">
             🚀 {{ ipo_confirmed }} IPO{{ 's' if ipo_confirmed > 1 else '' }}

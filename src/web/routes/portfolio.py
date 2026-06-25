@@ -406,8 +406,21 @@ async def portfolio_page(request: Request):
         except Exception as _e:
             log.warning("compounder_dashboard_signals_failed", error=str(_e))
 
+    # Pending portfolio suggestions — chip moved here from the options dashboard header
+    pending_portfolio = 0
+    try:
+        from src.core.suggestions import TradeSuggestion
+        with get_db() as _db:
+            pending_portfolio = _db.query(TradeSuggestion).filter(
+                TradeSuggestion.status.in_(["pending", "submitted", "approved", "queued"]),
+                TradeSuggestion.source == "portfolio",
+            ).count()
+    except Exception as _e:
+        log.warning("portfolio_pending_count_failed", error=str(_e))
+
     return templates.TemplateResponse("portfolio.html", {
         "request": request,
+        "pending_portfolio": pending_portfolio,
         "holdings": holdings,
         "watchlist": watchlist,
         "transactions": transactions,
