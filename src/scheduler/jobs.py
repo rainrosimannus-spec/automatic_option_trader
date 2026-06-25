@@ -467,6 +467,41 @@ def job_execute_queued():
         log.warning("queued_suggestion_error", error=str(e))
 
 
+def job_execute_portfolio_buys():
+    """Execute approved/queued PORTFOLIO buy_stock suggestions on the portfolio account.
+
+    The options executor (job_execute_queued) filters source=='options', and the core
+    buy_stock branch is a no-op stub — so approved portfolio buys never reached IBKR. This is
+    the portfolio analogue: it picks the highest-rank approved/queued portfolio buy and routes
+    it to the real portfolio executor, ONE per cycle to pace deployment (the per-name size was
+    already set by the compounder when the suggestion was created)."""
+    try:
+        from src.core.suggestions import TradeSuggestion
+        from src.portfolio.connection import is_portfolio_connected
+        if not is_portfolio_connected():
+            return
+        with get_db() as db:
+            sel = (
+                db.query(TradeSuggestion)
+                .filter(
+                    TradeSuggestion.status.in_(["queued", "approved"]),
+                    TradeSuggestion.source == "portfolio",
+                    TradeSuggestion.action == "buy_stock",
+                )
+                .order_by(TradeSuggestion.rank.asc())
+                .first()
+            )
+            target_id = sel.id if sel else None
+            target_sym = sel.symbol if sel else None
+        if target_id is None:
+            return
+        log.info("executing_portfolio_buy", id=target_id, symbol=target_sym)
+        from src.portfolio.buyer import execute_portfolio_buy_suggestion
+        execute_portfolio_buy_suggestion(target_id)
+    except Exception as e:
+        log.warning("portfolio_buy_executor_error", error=str(e))
+
+
 def _is_any_market_open() -> bool:
     """Check if at least one major market is currently open."""
     import pytz
@@ -1365,6 +1400,15 @@ def create_scheduler() -> BackgroundScheduler:
         IntervalTrigger(seconds=30),
         id="execute_queued",
         name="Execute Queued Suggestions",
+        max_instances=1,
+    )
+
+    # ── Portfolio buy executor — every 30s, one order/cycle (approve -> real order) ──
+    scheduler.add_job(
+        job_execute_portfolio_buys,
+        IntervalTrigger(seconds=30),
+        id="execute_portfolio_buys",
+        name="Execute Portfolio Buys",
         max_instances=1,
     )
 

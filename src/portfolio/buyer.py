@@ -2087,3 +2087,128 @@ class PortfolioBuyer:
                         h.updated_at = datetime.utcnow()
                 except Exception as e:
                     log.debug("portfolio_price_update_error", symbol=h.symbol, error=str(e))
+
+
+def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
+    """Place the real LimitOrder for an approved portfolio buy_stock suggestion.
+
+    Mirrors the options side's approve -> queued -> executor flow (_execute_approved_order_inner),
+    but places the order on the PORTFOLIO IBKR connection (U26413485) — the options executor's
+    buy_stock branch was a no-op stub and never routed here, which is why approved portfolio buys
+    never reached IBKR. Returns the resulting suggestion status string.
+
+    Idempotent: marks the suggestion 'executing' before placing so a second pass can't double-fire,
+    and skips if an open order for the same symbol already exists on the portfolio account.
+    """
+    from src.core.suggestions import TradeSuggestion
+    from src.core.config import get_settings
+    from src.portfolio.connection import (
+        get_portfolio_ib, is_portfolio_connected,
+        refresh_portfolio_pending_orders_cache,
+    )
+
+    # ── Load + validate, then claim the suggestion (status='executing') ──
+    with get_db() as db:
+        s = db.query(TradeSuggestion).filter(TradeSuggestion.id == suggestion_id).first()
+        if not s or s.source != "portfolio" or s.action != "buy_stock":
+            return "skip"
+        if s.status not in ("approved", "queued", "executing"):
+            return s.status
+        if not s.quantity or s.quantity <= 0 or not s.limit_price or s.limit_price <= 0:
+            s.status = "approved"
+            s.review_note = "Invalid quantity/price — not placed"
+            return "approved"
+
+        if getattr(get_settings().portfolio, "readonly", False):
+            s.review_note = "Portfolio account read-only — order not placed"
+            return s.status
+        if not is_portfolio_connected():
+            s.review_note = "Portfolio IBKR disconnected — will retry next cycle"
+            return s.status
+
+        # Exchange/currency for the stock contract come from the watchlist row.
+        wl = db.query(PortfolioWatchlist).filter(
+            PortfolioWatchlist.symbol == s.symbol).first()
+        exch = (wl.exchange if wl and wl.exchange else "SMART")
+        ccy = (wl.currency if wl and wl.currency else "USD")
+        symbol = s.symbol
+        shares = int(s.quantity)
+        limit_price = round(float(s.limit_price), 2)
+
+        s.status = "executing"
+        s.review_note = "Placing order on portfolio account"
+        db.commit()
+
+    # ── Place the order on the live portfolio connection ──
+    try:
+        _ensure_event_loop()
+        ib = get_portfolio_ib()
+
+        # Dedup: if an order for this symbol is already working, don't place another.
+        try:
+            with get_portfolio_lock():
+                open_trades = ib.openTrades()
+            for t in open_trades:
+                c = getattr(t, "contract", None)
+                if c is not None and getattr(c, "symbol", None) == symbol \
+                        and getattr(c, "secType", "STK") == "STK":
+                    with get_db() as db:
+                        s = db.query(TradeSuggestion).filter(
+                            TradeSuggestion.id == suggestion_id).first()
+                        if s:
+                            s.status = "submitted"
+                            s.review_note = "Order already open on IBKR"
+                    log.info("portfolio_exec_dedup_open_order", id=suggestion_id, symbol=symbol)
+                    return "submitted"
+        except Exception as e:
+            log.debug("portfolio_exec_dedup_check_failed", error=str(e))
+
+        contract = Stock(symbol, exch, ccy)
+        with get_portfolio_lock():
+            ib.qualifyContracts(contract)
+
+        order = LimitOrder("BUY", shares, limit_price)
+        order.tif = "DAY"
+        order.outsideRth = True
+
+        with get_portfolio_lock():
+            trade = ib.placeOrder(contract, order)
+            ib.sleep(2)
+
+        try:
+            refresh_portfolio_pending_orders_cache()
+        except Exception:
+            pass
+
+        fill_status = "Submitted"
+        try:
+            fill_status = trade.orderStatus.status or "Submitted"
+        except Exception:
+            pass
+
+        with get_db() as db:
+            s = db.query(TradeSuggestion).filter(
+                TradeSuggestion.id == suggestion_id).first()
+            if s:
+                if fill_status == "Filled":
+                    s.status = "executed"
+                    s.review_note = "Filled"
+                else:
+                    s.status = "submitted"
+                    s.review_note = f"Order {fill_status} — awaiting fill"
+        log.info("portfolio_suggestion_order_placed", id=suggestion_id, symbol=symbol,
+                 shares=shares, price=limit_price, exchange=exch, currency=ccy,
+                 order_status=fill_status)
+        return "submitted"
+
+    except Exception as e:
+        err = str(e) or type(e).__name__
+        log.error("portfolio_suggestion_execution_failed", id=suggestion_id,
+                  symbol=symbol, error=err)
+        with get_db() as db:
+            s = db.query(TradeSuggestion).filter(
+                TradeSuggestion.id == suggestion_id).first()
+            if s:
+                s.status = "approved"  # back to approved so it can retry / be visible
+                s.review_note = f"Execution failed: {err}"
+        return "approved"
