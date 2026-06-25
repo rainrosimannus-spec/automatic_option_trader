@@ -236,14 +236,18 @@ def sync_injections_from_ibkr(
     added = 0
     pending_bridge_bumps = []  # collect (amount_usd, account_id) tuples for Bridge benchmark
     with get_db() as db:
-        # Flex is the authoritative cash-flow source: drop any provisional manual_bootstrap rows
-        # for this account before upserting the real deposits, so a hand-seeded placeholder (used to
-        # keep the return chart honest while Flex was unavailable) can never double-count alongside
-        # the genuine Flex row.
-        db.query(PortfolioCapitalInjection).filter(
-            PortfolioCapitalInjection.account_id == account_id,
-            PortfolioCapitalInjection.source == "manual_bootstrap",
-        ).delete(synchronize_session=False)
+        # Flex is the authoritative cash-flow source: once it returns real deposits, drop any
+        # provisional manual_bootstrap rows for this account so a hand-seeded placeholder (used to
+        # keep the return chart honest while Flex was unavailable) can't double-count alongside the
+        # genuine Flex row. CONDITIONAL on deposits being found: if Flex returns zero rows (a
+        # misconfigured query, an old parser that doesn't read this query's element form, or a
+        # lockout-then-empty result) we KEEP the bootstrap safety net rather than wiping it and
+        # leaving the chart with no invested base.
+        if deposits:
+            db.query(PortfolioCapitalInjection).filter(
+                PortfolioCapitalInjection.account_id == account_id,
+                PortfolioCapitalInjection.source == "manual_bootstrap",
+            ).delete(synchronize_session=False)
 
         for dep in deposits:
             existing = db.query(PortfolioCapitalInjection).filter(
