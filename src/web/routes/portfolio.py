@@ -451,9 +451,12 @@ async def portfolio_page(request: Request):
         "tier_dividend": tiers.get("dividend", 0),
         "tier_growth": tiers.get("growth", 0),
         "tier_breakthrough": tiers.get("breakthrough", 0),
-        # Top performers
-        "top_performers": performers[:5],
-        "bottom_performers": list(reversed(performers[-5:])) if len(performers) > 5 else [],
+        # Top performers (gainers) vs underperformers (losers), split by SIGN — not a fixed
+        # top-5/bottom-5 slice (which hid the losers card entirely with <=5 holdings and could show
+        # a name that's actually down as a "top performer"). `performers` is sorted P&L%-desc.
+        "top_performers": [p for p in performers if p["pnl_pct"] >= 0][:5],
+        "bottom_performers": sorted([p for p in performers if p["pnl_pct"] < 0],
+                                    key=lambda x: x["pnl_pct"])[:5],
         "portfolio_open_orders": portfolio_open_orders,
         "portfolio_pending_orders": portfolio_pending_orders,
         "position_cap": position_cap,

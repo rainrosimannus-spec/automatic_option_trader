@@ -253,7 +253,7 @@ function syncInjections() {
                             {% elif p.tier == 'breakthrough' %}bg-purple-900/50 text-purple-300
                             {% else %}bg-emerald-900/50 text-emerald-300{% endif %}">{{p.tier}}</span>
                     </div>
-                    <span class="font-mono text-emerald-400">+{{"{:.1f}".format(p.pnl_pct)}}% · ${{"{:,.0f}".format(p.pnl_abs)}}</span>
+                    <span class="font-mono {% if p.pnl_pct >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">{{ "+" if p.pnl_pct >= 0 else "" }}{{"{:.1f}".format(p.pnl_pct)}}% · ${{"{:,.0f}".format(p.pnl_abs)}}</span>
                 </div>
                 {% endfor %}
             </div>
