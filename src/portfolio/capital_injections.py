@@ -86,43 +86,82 @@ def fetch_flex_statement(flex_token: str, query_id: str) -> str:
     raise TimeoutError("Flex statement not ready after 30 seconds")
 
 
+def _norm_flex_date(date_str: str) -> str:
+    """Normalise an IBKR Flex date (YYYYMMDD or 'YYYYMMDD;HHMMSS') to YYYY-MM-DD."""
+    if not date_str:
+        return ""
+    date_str = date_str.split(";")[0].split(" ")[0].strip()  # drop any time component
+    if len(date_str) == 8 and "-" not in date_str:
+        return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    return date_str[:10]
+
+
 def parse_deposits_from_flex(xml_content: str, include_withdrawals: bool = False) -> List[Dict]:
     """Parse cash-flow rows from Flex XML.
 
-    Default: deposits only (positive amounts) — the legacy behaviour the options
-    performance chart relies on. With include_withdrawals=True, withdrawals
-    (negative amounts) are returned too with their sign PRESERVED, so the caller
-    can sum them into a NET invested-capital figure (deposits add, withdrawals
-    deduct). `amount` from IBKR is already signed.
+    Deposits/withdrawals appear in Flex statements EITHER as dedicated
+    <DepositWithdrawal> elements OR — depending on how the Flex query is built — as
+    <CashTransaction type="Deposits/Withdrawals"> rows. The portfolio account's query
+    (U26413485) returns the CashTransaction form and no DepositWithdrawal elements, so a
+    parser that only looked at DepositWithdrawal silently found 0 deposits and the return
+    chart never diluted fresh cash. We now read BOTH and dedupe by (date, amount, currency)
+    so a statement carrying both forms can't double-count.
+
+    Default: deposits only (positive amounts) — the legacy behaviour the options performance
+    chart relies on. With include_withdrawals=True, withdrawals (negative amounts) are returned
+    too with their sign PRESERVED, so the caller can sum them into a NET invested-capital figure
+    (deposits add, withdrawals deduct). `amount` from IBKR is already signed.
     """
     root = ET.fromstring(xml_content)
     rows = []
+    seen = set()  # (date, rounded amount, currency) — dedupe across both element forms
 
-    for dw in root.iter("DepositWithdrawal"):
-        amount = float(dw.get("amount", 0))
+    def _add(amount: float, currency: str, date_str: str, notes: str):
         if amount == 0:
-            continue
+            return
         if amount < 0 and not include_withdrawals:
-            continue
-
-        currency = dw.get("currency", "USD")
-        date_str = (
-            dw.get("reportDate")
-            or dw.get("settleDate")
-            or dw.get("date")
-            or ""
-        )
-        if date_str and len(date_str) == 8 and "-" not in date_str:
-            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-
-        default_note = "deposit" if amount > 0 else "withdrawal"
-        notes = (dw.get("description") or dw.get("type") or default_note)[:200]
+            return
+        date_str = _norm_flex_date(date_str)
+        key = (date_str, round(amount, 2), currency)
+        if key in seen:
+            return
+        seen.add(key)
         rows.append({
             "date": date_str,
             "amount_original": amount,
             "currency": currency,
-            "notes": notes,
+            "notes": notes[:200],
         })
+
+    # Form 1: dedicated DepositWithdrawal elements.
+    for dw in root.iter("DepositWithdrawal"):
+        amount = float(dw.get("amount", 0) or 0)
+        currency = dw.get("currency", "USD")
+        date_str = dw.get("reportDate") or dw.get("settleDate") or dw.get("date") or ""
+        default_note = "deposit" if amount > 0 else "withdrawal"
+        notes = dw.get("description") or dw.get("type") or default_note
+        _add(amount, currency, date_str, notes)
+
+    # Form 2: CashTransaction rows whose type is the deposits/withdrawals category. Other
+    # CashTransaction types (dividends, interest, fees, withholding) are NOT capital flows and
+    # are skipped.
+    for ct in root.iter("CashTransaction"):
+        ctype = (ct.get("type") or "")
+        low = ctype.lower()
+        if "deposit" not in low and "withdrawal" not in low:
+            continue
+        amount = float(ct.get("amount", 0) or 0)
+        currency = ct.get("currency", "USD")
+        date_str = (
+            ct.get("settleDate")
+            or ct.get("reportDate")
+            or ct.get("dateTime")
+            or ct.get("date")
+            or ""
+        )
+        default_note = "deposit" if amount > 0 else "withdrawal"
+        notes = ct.get("description") or ctype or default_note
+        _add(amount, currency, date_str, notes)
 
     log.info("flex_cashflows_parsed", count=len(rows), include_withdrawals=include_withdrawals)
     return rows
