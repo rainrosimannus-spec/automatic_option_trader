@@ -1481,6 +1481,19 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                 log.debug("portfolio_trade_sync_not_connected")
                 return
 
+            # Refresh holdings from live IBKR positions on EVERY trade-sync (periodic + the manual
+            # Sync button). The compounder's buys are resting DAY limits that fill asynchronously, so
+            # the buyer/executor can't write the holding at place-time; sync_ibkr_holdings (reqPositions)
+            # is the single source of truth for stock rows. Previously it ran only once on connect — so
+            # post-connect fills never appeared on the portfolio/watchlist pages even though Trade
+            # History (PortfolioTransaction) did. Lock is an RLock so re-entry here is safe.
+            try:
+                from src.portfolio.sync import sync_ibkr_holdings
+                _n = sync_ibkr_holdings(ib)
+                log.info("portfolio_holdings_synced", count=_n)
+            except Exception as e:
+                log.warning("portfolio_holdings_sync_failed", error=str(e))
+
             # Get fills from IBKR — always request fresh executions first
             try:
                 ib.reqExecutions()
