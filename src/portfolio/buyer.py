@@ -2170,7 +2170,15 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         except Exception as e:
             log.debug("portfolio_exec_dedup_check_failed", error=str(e))
 
-        contract = Stock(symbol, exch, ccy)
+        # Route via SMART (with the listing exchange as a hint) for SMART-eligible markets. A raw
+        # direct-route to e.g. NASDAQ is rejected by IBKR's Precautionary Settings (error 10311 —
+        # "directly routed orders may result in higher fees"), which silently cancels the order.
+        # Only the genuinely non-SMART venues keep their native exchange.
+        _NON_SMART = {"SEHK", "JSE", "SGX", "TASE", "NSE", "ASX", "BSE", "KSE", "TWSE", "BKK", "IDX"}
+        if exch and exch not in _NON_SMART and exch != "SMART":
+            contract = Stock(symbol, "SMART", ccy, primaryExchange=exch)
+        else:
+            contract = Stock(symbol, exch or "SMART", ccy)
         with get_portfolio_lock():
             ib.qualifyContracts(contract)
 
@@ -2200,13 +2208,18 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                 if fill_status == "Filled":
                     s.status = "executed"
                     s.review_note = "Filled"
+                elif fill_status in ("Cancelled", "ApiCancelled", "Inactive", "Rejected"):
+                    # Terminal non-fill — do NOT mislabel as "awaiting fill". Back to approved so
+                    # the next cycle retries (and shows the real reason), not a phantom open order.
+                    s.status = "approved"
+                    s.review_note = f"Order {fill_status} — not resting (will retry)"
                 else:
                     s.status = "submitted"
                     s.review_note = f"Order {fill_status} — awaiting fill"
         log.info("portfolio_suggestion_order_placed", id=suggestion_id, symbol=symbol,
                  shares=shares, price=limit_price, exchange=exch, currency=ccy,
                  order_status=fill_status)
-        return "submitted"
+        return fill_status
 
     except Exception as e:
         err = str(e) or type(e).__name__
