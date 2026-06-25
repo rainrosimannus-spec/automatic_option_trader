@@ -275,9 +275,10 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
             action = "—"
         elif cur >= tgt * 0.98:
             action = "hold"
+        elif att < 0:
+            action = "wait"      # yellow — above fair price; skip until it's green
         else:
-            action = choose_entry_mode(att, uw, False, cc.direct_threshold,
-                                       cc.urgent_underweight, is_leader=(r.symbol in leaders))
+            action = "direct"    # green & underweight — buy in quality-rank order
         out.append({
             "symbol": r.symbol, "tier": r.tier, "rank": rank_idx[r.symbol],
             "rank_score": round(r.rank_score, 1), "s10x": round(r.s10x, 1),

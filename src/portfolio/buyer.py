@@ -581,7 +581,11 @@ class PortfolioBuyer:
             log.info("compounder_no_budget_today", budget=round(budget), min_buy=round(min_buy))
             return bought
 
-        # Underweight buy queue, ordered by fair-price attractiveness (cheapest first).
+        # Buy queue — buying policy: accumulate the BEST names by QUALITY RANK (top rank first),
+        # but only while they are at/below fair price ("green": attractiveness >= 0, the same
+        # threshold the watchlist colours emerald). Names trading above fair price ("yellow":
+        # attractiveness < 0) are SKIPPED entirely — no direct buy and no put-sell — we simply
+        # wait on them. So the queue is rank-ordered (not cheapest-first) and green-only.
         # `cur` is FILLED holdings + resting BUY notional so a name with working DAY rungs isn't
         # re-laddered and isn't double-counted toward its target.
         queue = []
@@ -595,9 +599,12 @@ class PortfolioBuyer:
             if r.symbol in open_put_syms:
                 continue                          # one open put per name at a time
             attractiveness = cmp.fair_price_attractiveness(r.price, r.sma200, r.high_52w)
+            if attractiveness < 0:
+                continue                          # yellow — above fair price → skip and wait
             uw = (tgt - cur) / tgt if tgt > 0 else 0.0
             queue.append((attractiveness, uw, r, tgt, cur))
-        queue.sort(key=lambda x: -x[0])
+        # Top quality rank first (rank 1 → N), NOT cheapest-first.
+        queue.sort(key=lambda x: rank_idx.get(x[2].symbol, 10**9))
 
         spent = 0.0
         cash_room = free_cash          # bounds total resting notional placed this scan (no margin)
@@ -670,10 +677,10 @@ class PortfolioBuyer:
                     action = "—"
                 elif cur >= tgt * 0.98:
                     action = "hold"
+                elif attractiveness < 0:
+                    action = "wait"      # yellow — above fair price; skip until it's green
                 else:
-                    action = cmp.choose_entry_mode(attractiveness, uw, crash_active,
-                                                   cc.direct_threshold, cc.urgent_underweight,
-                                                   is_leader=(r.symbol in leaders))
+                    action = "direct"    # green & underweight — buy in quality-rank order
                 signals.append({
                     "symbol": r.symbol, "tier": r.tier, "rank": rank_idx.get(r.symbol, 0),
                     "rank_score": round(r.rank_score, 1), "s10x": round(r.s10x, 1),

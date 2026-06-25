@@ -110,7 +110,8 @@
                     <td class="px-3 py-2 text-right text-gray-400">${{"{:,.0f}".format(s.current)}}</td>
                     <td class="px-3 py-2 text-right text-gray-400">{{"{:.0f}".format(s.underweight_pct)}}%</td>
                     <td class="px-3 py-2 text-center">
-                        {% if s.action == 'direct' %}<span class="text-xs px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300">direct buy</span>
+                        {% if s.action == 'direct' %}<span class="text-xs px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300">buy</span>
+                        {% elif s.action == 'wait' %}<span class="text-xs px-2 py-0.5 rounded bg-amber-900/50 text-amber-300">wait (above fair)</span>
                         {% elif s.action == 'put' %}<span class="text-xs px-2 py-0.5 rounded bg-indigo-900/60 text-indigo-300">sell put</span>
                         {% elif s.action == 'put_open' %}<span class="text-xs px-2 py-0.5 rounded bg-indigo-900/40 text-indigo-400">put open</span>
                         {% elif s.action == 'hold' %}<span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400">hold (full)</span>
@@ -132,7 +133,7 @@
         <div class="px-4 py-10 text-center text-gray-500">No signals yet — the compounder scan hasn't run, or strategy is "classic".</div>
         {% endif %}
     </div>
-    <p class="text-xs text-gray-600 mt-3">Quality = composite fundamental score (0–100): a tier-weighted blend of quality / growth / forward-growth / valuation (dividend-total-return for the dividend tier), less risk penalties — the fundamental half of Rank, which adds momentum. Fair-price = blend of distance below 200-day trend and pullback from 52-week high (higher = relatively cheaper). Direct buy fires on cheap/urgent/crash; sell-put when extended (get paid to wait). Targets are conviction-weighted (∝ rank^power) within the 60/25/15 growth/breakthrough/dividend budgets, capped per name.</p>
+    <p class="text-xs text-gray-600 mt-3">Quality = composite fundamental score (0–100): a tier-weighted blend of quality / growth / forward-growth / valuation (dividend-total-return for the dividend tier), less risk penalties — the fundamental half of Rank, which adds momentum. Fair-price = blend of distance below 200-day trend and pullback from 52-week high (≥ 0 = green/at-or-below fair, &lt; 0 = yellow/above fair). Buying policy: accumulate by quality rank, top rank first, buying only names that are green (at/below fair price); yellow names (above fair) are skipped — we wait. Targets are conviction-weighted (∝ rank^power) within the 60/25/15 growth/breakthrough/dividend budgets, capped per name.</p>
 </div>
 <script>
 function filterSig() {
