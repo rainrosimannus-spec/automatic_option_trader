@@ -1481,19 +1481,6 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                 log.debug("portfolio_trade_sync_not_connected")
                 return
 
-            # Refresh holdings from live IBKR positions on EVERY trade-sync (periodic + the manual
-            # Sync button). The compounder's buys are resting DAY limits that fill asynchronously, so
-            # the buyer/executor can't write the holding at place-time; sync_ibkr_holdings (reqPositions)
-            # is the single source of truth for stock rows. Previously it ran only once on connect — so
-            # post-connect fills never appeared on the portfolio/watchlist pages even though Trade
-            # History (PortfolioTransaction) did. Lock is an RLock so re-entry here is safe.
-            try:
-                from src.portfolio.sync import sync_ibkr_holdings
-                _n = sync_ibkr_holdings(ib)
-                log.info("portfolio_holdings_synced", count=_n)
-            except Exception as e:
-                log.warning("portfolio_holdings_sync_failed", error=str(e))
-
             # Get fills from IBKR — always request fresh executions first
             try:
                 ib.reqExecutions()
@@ -1769,6 +1756,19 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
 
             if imported > 0:
                 log.info("portfolio_trade_sync_done", imported=imported)
+
+            # Refresh holdings from live IBKR positions — run AFTER the buy rows above are committed
+            # (the get_db block at the top of this function has closed by here), so sync_ibkr_holdings'
+            # new-holding fallback dedups against them and never invents a phantom put_assigned
+            # DUPLICATE of a real buy (the RKLB case). reqPositions is the source of truth for stock
+            # rows; the compounder's buys fill async so the executor can't write them at place-time.
+            # Ran only on connect before — post-connect fills never reached the portfolio/watchlist
+            # pages even though Trade History did. RLock → re-entry under the held lock is safe.
+            try:
+                from src.portfolio.sync import sync_ibkr_holdings
+                log.info("portfolio_holdings_synced", count=sync_ibkr_holdings(ib))
+            except Exception as e:
+                log.warning("portfolio_holdings_sync_failed", error=str(e))
 
             # Write portfolio_nlv to snapshot — same pattern as options trade sync
             try:
