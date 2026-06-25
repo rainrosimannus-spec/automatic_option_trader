@@ -292,12 +292,17 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
 
 def daily_deploy_budget(investable: float, base_pct: float, dca_horizon_days: int,
                         unlocked_fraction: float, deployed: float, target_total: float,
-                        crash_active: bool, free_cash: float) -> float:
-    """How much new capital to put to work today.
+                        crash_active: bool, free_cash: float,
+                        deployed_today: float = 0.0) -> float:
+    """How much new capital to put to work in THIS scan.
 
-    - Base tranche (base_pct of investable) is DCA'd over dca_horizon_days.
-    - When a drawdown tranche is active, deploy the unlocked reserve fast (up to the full
-      remaining gap to target) — that's the dry powder doing its job.
+    - Base tranche (base_pct of investable) is DCA'd over dca_horizon_days, i.e. base_pace per DAY.
+    - base_pace is a per-DAY budget, but the scan runs many times a day — so subtract what's already
+      been deployed TODAY (`deployed_today`) and only offer the day's remaining room. Without this the
+      per-day pace was applied per-scan and the whole base could deploy in 2-3 days (timing risk both
+      ways). The market can go either direction, so we hold the DCA to ~base_pace/day.
+    - When a drawdown tranche is active, deploy the unlocked reserve fast (up to the full remaining
+      gap to target) — that's the dry powder doing its job, NOT subject to the daily DCA throttle.
     Always bounded by the remaining gap to target and by free cash on hand.
     """
     remaining_gap = max(0.0, target_total - deployed)
@@ -305,7 +310,8 @@ def daily_deploy_budget(investable: float, base_pct: float, dca_horizon_days: in
         budget = remaining_gap
     else:
         base_pace = investable * base_pct / max(1, dca_horizon_days)
-        budget = min(remaining_gap, base_pace)
+        daily_room = max(0.0, base_pace - max(0.0, deployed_today))   # cap NEW deployment per DAY
+        budget = min(remaining_gap, daily_room)
     return max(0.0, min(budget, free_cash))
 
 

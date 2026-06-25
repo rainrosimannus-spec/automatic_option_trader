@@ -546,9 +546,20 @@ class PortfolioBuyer:
         target_total = sum(targets.values())
         open_put_syms = self._open_put_symbols()
         free_cash = max(0.0, cash - nlv * cc.cash_buffer_pct)
+        # Per-day DCA throttle: base_pace is a per-DAY budget but the scan runs every 30 min, so
+        # cap the day's TOTAL new deployment at base_pace by subtracting what's already gone out
+        # today. Reset the running tally when the date rolls over.
+        _today = datetime.utcnow().strftime("%Y-%m-%d")
+        deployed_today = 0.0
+        if self._get_state_value("compounder_deploy_date") == _today:
+            try:
+                deployed_today = float(self._get_state_value("compounder_deployed_today") or 0.0)
+            except (TypeError, ValueError):
+                deployed_today = 0.0
         budget = cmp.daily_deploy_budget(
             investable, cc.base_pct, cc.dca_horizon_days, unlocked,
-            deployed_eff, target_total, crash_active, free_cash)
+            deployed_eff, target_total, crash_active, free_cash,
+            deployed_today=deployed_today)
 
         # Persist state for the dashboard cards
         self._store_state("strategy", "compounder")
@@ -653,7 +664,12 @@ class PortfolioBuyer:
                     spent += brick   # throttle puts by the same daily budget (collateral intent)
 
         self._store_state("compounder_last_spent", str(round(spent)))
-        log.info("compounder_scan_completed", actions=len(bought), spent=round(spent), bought=bought)
+        # Accumulate the day's deployment so the next scan's budget shrinks by what already went out
+        # today (per-day DCA throttle). Reset the tally when the date rolls over.
+        self._store_state("compounder_deploy_date", _today)
+        self._store_state("compounder_deployed_today", str(round(deployed_today + spent)))
+        log.info("compounder_scan_completed", actions=len(bought), spent=round(spent),
+                 deployed_today=round(deployed_today + spent), bought=bought)
         return bought
 
     def _persist_compounder_signals(self, ranked, targets, held, open_put_syms,
