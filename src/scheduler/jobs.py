@@ -1831,9 +1831,19 @@ def create_scheduler() -> BackgroundScheduler:
                     if portfolio_nlv > 0:
                         existing.portfolio_nlv = round(portfolio_nlv, 2)
                 else:
+                    # Don't seed today's first snapshot with a 0 NLV (account summary not loaded yet,
+                    # e.g. right after a restart) — that shows as a -100% false fall on the chart.
+                    # Carry the last known good NLV forward until a real value lands (update branch
+                    # above then overwrites it once nlv > 0).
+                    nlv_to_write = round(nlv, 2)
+                    if nlv <= 0:
+                        prev = db.query(AccountSnapshot).filter(
+                            AccountSnapshot.net_liquidation > 0
+                        ).order_by(AccountSnapshot.date.desc()).first()
+                        nlv_to_write = prev.net_liquidation if prev else 0.0
                     db.add(AccountSnapshot(
                         date=today,
-                        net_liquidation=round(nlv, 2),
+                        net_liquidation=nlv_to_write,
                         options_premium_collected=round(cum_premium, 2),
                         portfolio_invested=round(port_invested, 2),
                         portfolio_market_value=round(port_value, 2),

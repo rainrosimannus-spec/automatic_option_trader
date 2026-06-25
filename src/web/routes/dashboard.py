@@ -121,6 +121,12 @@ def _get_performance_data() -> dict:
             .all()
         )
 
+    # Drop snapshots with no/zero NLV. These are transient rows written right after a restart,
+    # before the IBKR account summary has loaded — net_liquidation comes back 0, and (0/invested - 1)
+    # = -100% spikes the chart straight down (and, if it's the first point, anchors everything there).
+    # The graph "recovers" only when a real NLV snapshot lands. Filtering them removes the false fall.
+    snapshots = [s for s in snapshots if s.net_liquidation and s.net_liquidation > 0]
+
     # ── Snapshot-based chart (preferred, handles deposits correctly) ──
     if len(snapshots) >= 1:
         labels = []
