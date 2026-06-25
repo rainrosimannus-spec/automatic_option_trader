@@ -149,6 +149,7 @@ def job_scan_market(market: str):
             with get_db() as db:
                 stale = db.query(TradeSuggestion).filter(
                     TradeSuggestion.status == "submitted",
+                    TradeSuggestion.source == "options",  # never expire PORTFOLIO suggestions here
                     TradeSuggestion.symbol.in_(market_symbols),
                 ).all()
                 for s in stale:
@@ -260,6 +261,7 @@ def job_check_assignments():
             with get_db() as db:
                 stale = db.query(TradeSuggestion).filter(
                     TradeSuggestion.status == "submitted",
+                    TradeSuggestion.source == "options",  # never expire PORTFOLIO suggestions here
                 ).all()
                 for s in stale:
                     filled = db.query(Trade).filter(
