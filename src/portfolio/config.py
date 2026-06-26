@@ -186,6 +186,6 @@ class PortfolioConfig(BaseModel):
     flex_query_id: str = ""
 
     # Schedule
-    check_interval_hours: int = 4
+    check_interval_hours: int = 2   # buy-scan cadence; re-prices resting orders to the current market
     scan_hour: int = 10
     scan_minute: int = 30
