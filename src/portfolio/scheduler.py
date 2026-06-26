@@ -1705,6 +1705,23 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                     existing_ids.add(exec_id)
                     imported += 1
 
+                    # Reconcile the suggestion to 'executed' on its fill. The executor only sets it to
+                    # 'submitted' (awaiting fill); the fill lands here asynchronously, and without this
+                    # the suggestion drifts to 'expired' even though it filled (the GOOG case — held +
+                    # transaction present, but suggestion said expired). Flip the most recent matching
+                    # portfolio buy_stock suggestion, including one that already wrongly expired.
+                    if action == "buy":
+                        from src.core.suggestions import TradeSuggestion as _TS
+                        _sug = (db.query(_TS)
+                                .filter(_TS.source == "portfolio", _TS.action == "buy_stock",
+                                        _TS.symbol == symbol,
+                                        _TS.status.in_(["submitted", "executing", "queued",
+                                                        "approved", "pending", "expired"]))
+                                .order_by(_TS.id.desc()).first())
+                        if _sug is not None:
+                            _sug.status = "executed"
+                            _sug.review_note = "Filled (reconciled from IBKR fill)"
+
                     # If put was assigned, create/update portfolio holding
                     if action == "put_assigned":
                         try:
