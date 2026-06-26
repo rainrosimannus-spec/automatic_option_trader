@@ -33,6 +33,16 @@ from src.portfolio.ranker import (
 log = get_logger(__name__)
 
 
+# outsideRth is only honoured by North-American and European venues. Asia/AU/ZA reject out-of-hours
+# orders and park them in PendingSubmit indefinitely (the HK 3690 case), so those markets are RTH-only
+# — their orders rest and transmit when the local market opens.
+_OUTSIDE_RTH_CCY = {"USD", "CAD", "EUR", "GBP", "CHF", "NOK", "SEK", "DKK"}
+
+
+def _outside_rth_ok(currency: str | None) -> bool:
+    return (currency or "USD").upper() in _OUTSIDE_RTH_CCY
+
+
 # _ensure_event_loop imported from connection.py
 
 
@@ -546,16 +556,20 @@ class PortfolioBuyer:
         target_total = sum(targets.values())
         open_put_syms = self._open_put_symbols()
         free_cash = max(0.0, cash - nlv * cc.cash_buffer_pct)
-        # Per-day DCA throttle: base_pace is a per-DAY budget but the scan runs every 30 min, so
-        # cap the day's TOTAL new deployment at base_pace by subtracting what's already gone out
-        # today. Reset the running tally when the date rolls over.
+        # Per-day DCA throttle: base_pace is a per-DAY budget but the scan runs every 30 min, so cap
+        # the day's TOTAL deployment at base_pace by subtracting what's already gone out today. Measure
+        # that from ACTUALLY FILLED buys (PortfolioTransaction), NOT the scan's intended spend — orders
+        # that never filled (a stuck HK PendingSubmit, a direct-route-cancelled US name) must not eat
+        # the day's budget. The date filter resets it automatically each day.
+        from sqlalchemy import func as _func
         _today = datetime.utcnow().strftime("%Y-%m-%d")
-        deployed_today = 0.0
-        if self._get_state_value("compounder_deploy_date") == _today:
-            try:
-                deployed_today = float(self._get_state_value("compounder_deployed_today") or 0.0)
-            except (TypeError, ValueError):
-                deployed_today = 0.0
+        with get_db() as _db:
+            deployed_today = float(_db.query(
+                _func.coalesce(_func.sum(PortfolioTransaction.amount), 0.0)
+            ).filter(
+                PortfolioTransaction.action == "buy",
+                PortfolioTransaction.created_at >= _today + " 00:00:00",
+            ).scalar() or 0.0)
         budget = cmp.daily_deploy_budget(
             investable, cc.base_pct, cc.dca_horizon_days, unlocked,
             deployed_eff, target_total, crash_active, free_cash,
@@ -664,12 +678,11 @@ class PortfolioBuyer:
                     spent += brick   # throttle puts by the same daily budget (collateral intent)
 
         self._store_state("compounder_last_spent", str(round(spent)))
-        # Accumulate the day's deployment so the next scan's budget shrinks by what already went out
-        # today (per-day DCA throttle). Reset the tally when the date rolls over.
-        self._store_state("compounder_deploy_date", _today)
-        self._store_state("compounder_deployed_today", str(round(deployed_today + spent)))
+        # deployed_today is computed live from actual fills each scan (see above) — just persist the
+        # current value for the dashboard. Failed/unfilled orders never inflate it.
+        self._store_state("compounder_deployed_today", str(round(deployed_today)))
         log.info("compounder_scan_completed", actions=len(bought), spent=round(spent),
-                 deployed_today=round(deployed_today + spent), bought=bought)
+                 deployed_today=round(deployed_today), bought=bought)
         return bought
 
     def _persist_compounder_signals(self, ranked, targets, held, open_put_syms,
@@ -1463,7 +1476,7 @@ class PortfolioBuyer:
 
             order = LimitOrder("BUY", shares, limit_price)
             order.tif = "DAY"
-            order.outsideRth = True
+            order.outsideRth = _outside_rth_ok(stock.currency)
 
             with get_portfolio_lock():
                 trade = self.ib.placeOrder(contract, order)
@@ -1593,7 +1606,7 @@ class PortfolioBuyer:
                     continue                      # can't afford this rung — skip (core has priority)
                 order = LimitOrder("BUY", shares, price)
                 order.tif = "DAY"
-                order.outsideRth = True
+                order.outsideRth = _outside_rth_ok(stock.currency)
                 with get_portfolio_lock():
                     self.ib.placeOrder(contract, order)
                     self.ib.sleep(1)
@@ -1665,7 +1678,7 @@ class PortfolioBuyer:
 
             order = LimitOrder("BUY", shares, round(price * 1.001, 2))
             order.tif = "DAY"
-            order.outsideRth = True
+            order.outsideRth = _outside_rth_ok(self.cfg.cash_yield_currency)
             with get_portfolio_lock():
                 self.ib.placeOrder(contract, order)
                 self.ib.sleep(1)
@@ -2200,7 +2213,7 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
 
         order = LimitOrder("BUY", shares, limit_price)
         order.tif = "DAY"
-        order.outsideRth = True
+        order.outsideRth = _outside_rth_ok(ccy)
 
         with get_portfolio_lock():
             trade = ib.placeOrder(contract, order)
