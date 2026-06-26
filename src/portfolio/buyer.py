@@ -2260,7 +2260,12 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         with get_portfolio_lock():
             ib.qualifyContracts(contract)
 
-        order = LimitOrder("BUY", shares, limit_price)
+        # LSE/GBP stocks quote in PENCE (GBX). The analyzer normalises IBKR's pence quotes to pounds
+        # (÷100, analyzer.py), so the suggestion's limit_price is in pounds — but an LSE order must be
+        # priced in pence. Multiply back by 100 (this exactly reverses the analyzer's ÷100, so it
+        # equals IBKR's original quote). Share count is unit-independent, so only the price changes.
+        order_price = round(limit_price * 100.0, 2) if (ccy or "").upper() == "GBP" else limit_price
+        order = LimitOrder("BUY", shares, order_price)
         order.tif = "DAY"
         order.outsideRth = _outside_rth_ok(ccy)
 
