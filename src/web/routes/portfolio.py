@@ -423,7 +423,7 @@ async def portfolio_page(request: Request):
     # refreshing at the 2-hourly scan (which left it showing the full budget right after several fills).
     _live_daily_budget = float(_get_state("compounder_daily_budget") or 0)
     try:
-        from datetime import date as _date_t
+        from datetime import datetime as _dt_t
         from sqlalchemy import func as _func2
         from src.portfolio.config import CompounderConfig as _CC
         from src.portfolio.connection import get_cached_portfolio_pending_orders as _gp
@@ -431,7 +431,9 @@ async def portfolio_page(request: Request):
         if _investable > 0:
             _ccfg = _CC()
             _base_pace = _investable * _ccfg.base_pct / max(1, _ccfg.dca_horizon_days)
-            _start = _date_t.today().isoformat() + " 00:00:00"
+            # UTC boundary — match the scan's throttle (buyer.py uses datetime.utcnow) and the UTC
+            # created_at storage, so the live budget card and the actual per-day cap agree on "today".
+            _start = _dt_t.utcnow().strftime("%Y-%m-%d") + " 00:00:00"
             with get_db() as _bdb:
                 _fills_today = float(_bdb.query(
                     _func2.coalesce(_func2.sum(PortfolioTransaction.amount), 0.0)
