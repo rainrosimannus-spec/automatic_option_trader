@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from ib_insync import IB, Stock, Option, LimitOrder, MarketOrder
+from ib_insync import IB, Stock, Option, LimitOrder, MarketOrder, Forex
 
 from src.core.logger import get_logger
 from src.core.database import get_db
@@ -471,8 +471,12 @@ class PortfolioBuyer:
             rstate, dd = cmp.reserve_update(rstate, spy, tuple(cc.drawdown_tranches))
             self._save_reserve_state(rstate)
         unlocked_dd = cmp.reserve_unlocked_fraction(rstate.tranches_fired, len(cc.drawdown_tranches))
-        # Crash dump only on a real drawdown tranche
+        # Crash dump (deploy the parked cash reserve fast) on ANY real drawdown tranche.
         crash_active = unlocked_dd > 0 and dd >= (cc.drawdown_tranches[0] if cc.drawdown_tranches else 1.0)
+        # Capitulation = the DEEPEST tranche has been hit. The margin facility (below) is gated to this,
+        # NOT to crash_active — margin is a last-resort supplement, the parked cash reserve is primary.
+        deepest_dd = (cc.drawdown_tranches[-1] if cc.drawdown_tranches else 1.0)
+        capitulation = dd >= deepest_dd
         # Time-based backstop bleed: if no crash within backstop_start_days, deploy the reserve
         # slowly anyway so we're never permanently under-invested in a melt-up.
         import datetime as _dt
@@ -486,6 +490,28 @@ class PortfolioBuyer:
             days_since = 0
         backstop = cmp.backstop_unlocked_fraction(days_since, cc.backstop_start_days, cc.backstop_bleed_days)
         unlocked = max(unlocked_dd, backstop)
+
+        # ── Leverage gate (margin account) ───────────────────────────────────────────────
+        # Cash-FIRST: the deployable base is genuine SETTLED cash (TotalCashValue), NOT the broker's
+        # AvailableFunds — the latter already bakes in margin buying power, which silently levered the
+        # book in calm markets. Margin is used ONLY when a crash drawdown-tranche is active, bounded by
+        # crash_margin_pct, and the whole path is hard-stopped / soft-de-rated by the maintenance-margin
+        # level. (The classic path's margin gate never ran for the compounder branch — this wires it in.)
+        settled = self._get_settled_cash()
+        base_cash = settled if settled is not None else cash
+        maint = self._get_maintenance_margin() or 0.0
+        margin_pct = (maint / nlv * 100.0) if nlv > 0 else 0.0
+        self._store_state("margin_utilization", str(round(margin_pct, 1)))
+        hard_limit = cc.margin_hard_limit_crash_pct if capitulation else cc.margin_hard_limit_pct
+        if margin_pct > hard_limit:
+            log.warning("compounder_margin_gate_blocked", margin_pct=round(margin_pct, 1),
+                        limit=hard_limit, crash=crash_active)
+            self._store_state("portfolio_blocked_reason",
+                              f"margin {margin_pct:.0f}% > {hard_limit:.0f}% limit")
+            return bought
+        soft_scale = 1.0
+        if margin_pct > cc.margin_soft_floor_pct:
+            soft_scale = max(0.0, (hard_limit - margin_pct) / (hard_limit - cc.margin_soft_floor_pct))
 
         # Build ranked universe from live technicals + refreshed fundamental scores
         watch = self._get_watchlist()
@@ -536,13 +562,21 @@ class PortfolioBuyer:
         }
         targets = cmp.target_weights(ranked, tier_budgets, live_invest, cc.per_name_cap_pct,
                                      leader_syms=leaders, leader_cap_pct=cc.leader_cap_pct,
-                                     conviction_power=cc.conviction_power)
+                                     conviction_power=cc.conviction_power,
+                                     abs_ceiling=cc.per_name_abs_ceiling)
+        # Sector cap: keep any single sector's TARGET ≤ sector_cap_pct of NLV. The tier/per-name caps are
+        # sector-blind, so a momentum-led growth book could otherwise pile its top names into one sector
+        # (AI/semis) — on a margin account that concentrates the drawdown that can trip a maintenance call.
+        # New-buy sizing only; held winners are never trimmed.
+        sectors = {s.symbol: (getattr(s, "sector", "") or "") for s in watch}
+        targets = cmp.apply_sector_caps(targets, sectors, cc.sector_cap_pct * nlv)
         # Per-name order-size bounds scale with NLV (account grows ~$50k → $11M+); flat $5k/$100k
         # blocked deployment below ~$4M. See compounder.single_buy_bounds.
         min_buy, max_buy = cmp.single_buy_bounds(nlv, cc)
 
-        held = self._get_holdings_map()           # symbol -> FILLED market value (sync truth)
+        held = self._get_holdings_map()           # symbol -> FILLED market value (excludes the bill-ETF)
         deployed = sum(held.values())
+        parked = self._get_parked_value()         # cash reserve parked in the bill ETF (sellable T+1)
         # Re-price every scan: cancel the prior scan's still-resting compounder BUY orders so each
         # green name is re-evaluated and re-placed at the CURRENT price. Prices move between the
         # 4-hourly scans — a stale DAY limit may no longer fill, or the name may have risen above
@@ -562,7 +596,19 @@ class PortfolioBuyer:
         deployed_eff = deployed + sum(open_buy.values())
         target_total = sum(targets.values())
         open_put_syms = self._open_put_symbols()
-        free_cash = max(0.0, cash - nlv * cc.cash_buffer_pct)
+        # Cash-first + bounded crash margin (see the leverage gate above). deployable_cash uses SETTLED
+        # cash so once cash hits the buffer the book stops buying in normal regimes (no accidental
+        # leverage); a fired tranche adds up to crash_margin_pct×NLV of NEW borrowing, net of any loan
+        # already outstanding (negative settled cash). soft_scale de-rates as maint-margin rises.
+        buffer_amt = nlv * cc.cash_buffer_pct
+        deployable_cash = max(0.0, base_cash - buffer_amt)
+        already_borrowed = max(0.0, -base_cash)
+        # The cash reserve is PARKED in the bill ETF for yield; it's sellable on demand, so count it as
+        # deployable (the executor un-parks it just-in-time before placing). Without this the cash-first
+        # gate would read the parked reserve as "no cash" and starve deployment.
+        margin_ok = capitulation if cc.margin_capitulation_only else crash_active
+        crash_margin = max(0.0, cc.crash_margin_pct * nlv - already_borrowed) if margin_ok else 0.0
+        free_cash = (deployable_cash + parked + crash_margin) * soft_scale
         # Per-day DCA throttle: base_pace is a per-DAY budget but the scan runs every 30 min, so cap
         # the day's TOTAL deployment at base_pace by subtracting what's already gone out today. Measure
         # that from ACTUALLY FILLED buys (PortfolioTransaction), NOT the scan's intended spend — orders
@@ -618,13 +664,12 @@ class PortfolioBuyer:
             log.info("compounder_no_budget_today", budget=round(budget), min_buy=round(min_buy))
             return bought
 
-        # Buy queue — buying policy: accumulate the BEST names by QUALITY RANK (top rank first),
-        # but only while they are at/below fair price ("green": attractiveness >= 0, the same
-        # threshold the watchlist colours emerald). Names trading above fair price ("yellow":
-        # attractiveness < 0) are SKIPPED entirely — no direct buy and no put-sell — we simply
-        # wait on them. So the queue is rank-ordered (not cheapest-first) and green-only.
-        # `cur` is FILLED holdings + resting BUY notional so a name with working DAY rungs isn't
-        # re-laddered and isn't double-counted toward its target.
+        # Buy queue — accumulate toward the conviction targets, filling the biggest underweight $ gap
+        # first. GREEN names (at/below fair price, attractiveness >= 0) are filled FIRST; YELLOW names
+        # (above fair price) are NOT skipped — they're filled LAST, only if budget remains after the
+        # greens. So we always make progress toward the targets (time-in-market), preferring better
+        # entries first. Put-selling is retired: we fill the target rather than wait to be paid.
+        # `cur` is FILLED holdings + resting BUY notional so a working name isn't re-laddered/double-counted.
         queue = []
         for r in ranked:
             tgt = targets.get(r.symbol, 0.0)
@@ -634,17 +679,20 @@ class PortfolioBuyer:
             if cur >= tgt * 0.98:
                 continue                          # already at/working toward target — hold
             if r.symbol in open_put_syms:
-                continue                          # one open put per name at a time
+                continue                          # legacy: respect any still-open put on the name
             attractiveness = cmp.fair_price_attractiveness(r.price, r.sma200, r.high_52w)
-            if attractiveness < 0:
-                continue                          # yellow — above fair price → skip and wait
             uw = (tgt - cur) / tgt if tgt > 0 else 0.0
             queue.append((attractiveness, uw, r, tgt, cur))
-        # Top quality rank first (rank 1 → N), NOT cheapest-first.
-        queue.sort(key=lambda x: rank_idx.get(x[2].symbol, 10**9))
+        # Green (attractiveness >= 0) before yellow (< 0); within each band, biggest underweight $ gap
+        # first (gap-to-target convergence — backtested +~1pp CAGR vs quality-rank ordering at equal DD,
+        # because it routes marginal cash to the laggards and reaches the conviction targets faster).
+        # Quality already lives in the targets (rank_score**conviction_power); the buy order only needs
+        # to close the gap, so re-ranking by quality here would double-concentrate the path. (tgt=x[3],
+        # cur=x[4]; gap = tgt - cur.)
+        queue.sort(key=lambda x: (0 if x[0] >= 0 else 1, -(x[3] - x[4])))
 
         spent = 0.0
-        cash_room = free_cash          # bounds total resting notional placed this scan (no margin)
+        cash_room = free_cash          # bounds total resting notional placed this scan
         for attractiveness, uw, r, tgt, cur in queue:
             if spent >= budget:
                 break
@@ -654,40 +702,32 @@ class PortfolioBuyer:
                 continue
             idx = rank_idx.get(r.symbol, 0)
             is_leader = r.symbol in leaders
-            mode = cmp.choose_entry_mode(attractiveness, uw, crash_active,
-                                         cc.direct_threshold, cc.urgent_underweight,
-                                         is_leader=is_leader)
-            a.signal_type = f"compounder_{mode}"
-            if mode == "direct":
-                # Conviction: underweight names, leaders, and crash tranches bid near market so the
-                # position actually fills (Rain is stagnation-averse); patient names bid deeper.
-                urgency = max(uw, 1.0 if is_leader else 0.0, 1.0 if crash_active else 0.0)
-                rat = (
-                    f"Compounder #{idx} {stock.tier} (10x {r.s10x:.0f}, mom p{r.momentum_pct * 100:.0f}, "
-                    f"rank {r.rank_score:.0f}). Direct buy ${brick:,.0f} toward target ${tgt:,.0f} "
-                    f"(now ${cur:,.0f}, {uw * 100:.0f}% underweight). Price ${r.price:.2f} "
-                    f"{'cheap' if attractiveness >= 0 else 'extended'} vs trend"
-                    f"{'; LEADER — always direct + dip rungs' if is_leader else ''}"
-                    f"{'; CRASH tranche active' if crash_active else ''}."
-                )
-                core_placed, total_placed = self._execute_compounder_buy(
-                    stock, a, brick, urgency, is_leader, cash_room,
-                    rank=idx, rank_score=r.rank_score, rationale=rat, min_buy=min_buy)
-                if total_placed > 0:
-                    bought.append(stock.symbol)
-                    spent += core_placed        # throttle base pace by the core rung only
-                    cash_room -= total_placed    # dips draw extra cash/reserve, not the base budget
-            else:
-                rat = (
-                    f"Compounder #{idx} {stock.tier} (10x {r.s10x:.0f}, rank {r.rank_score:.0f}). "
-                    f"Extended vs fair price — sell CSP ~{cc.put_target_discount_pct:.0f}% below "
-                    f"to get paid while waiting for a better entry. Target ${tgt:,.0f}, now ${cur:,.0f}."
-                )
-                if self._execute_put_entry(stock, a, rank=idx, rank_score=r.rank_score,
-                                           rationale=rat,
-                                           target_discount_override=cc.put_target_discount_pct):
-                    bought.append(f"{stock.symbol}(P)")
-                    spent += brick   # throttle puts by the same daily budget (collateral intent)
+            green = attractiveness >= 0
+            a.signal_type = "compounder_direct"
+            # Conviction: green-underweight names, leaders, and crash tranches bid near market so the
+            # position actually fills (Rain is stagnation-averse); extended (yellow) names that aren't
+            # urgent bid deeper for a better entry — they're filled only after the greens (queue order).
+            urgency = max(uw if green else 0.0, 1.0 if is_leader else 0.0, 1.0 if crash_active else 0.0)
+            rat = (
+                f"Compounder #{idx} {stock.tier} (10x {r.s10x:.0f}, mom p{r.momentum_pct * 100:.0f}, "
+                f"rank {r.rank_score:.0f}). Direct buy ${brick:,.0f} toward target ${tgt:,.0f} "
+                f"(now ${cur:,.0f}, {uw * 100:.0f}% underweight). Price ${r.price:.2f} "
+                f"{'cheap/fair' if green else 'extended — filled after greens'} vs trend"
+                f"{'; LEADER — always direct + dip rungs' if is_leader else ''}"
+                f"{'; CRASH tranche active' if crash_active else ''}."
+            )
+            core_placed, total_placed = self._execute_compounder_buy(
+                stock, a, brick, urgency, is_leader, cash_room,
+                rank=idx, rank_score=r.rank_score, rationale=rat, min_buy=min_buy)
+            if total_placed > 0:
+                bought.append(stock.symbol)
+                spent += core_placed        # throttle base pace by the core rung only
+                cash_room -= total_placed    # dips draw extra cash/reserve, not the base budget
+
+        # Park any standing idle cash (the crash reserve + undeployed slack) into the bill ETF for yield;
+        # the executor un-parks it just-in-time when it's time to deploy. Cash backing this scan's intended
+        # buys (`spent`) and still-working orders is left liquid so fills don't open a margin loan.
+        self._park_compounder_excess(nlv, spent)
 
         self._store_state("compounder_last_spent", str(round(spent)))
         # deployed_today is computed live from actual fills each scan (see above) — just persist the
@@ -719,9 +759,9 @@ class PortfolioBuyer:
                 elif cur >= tgt * 0.98:
                     action = "hold"
                 elif attractiveness < 0:
-                    action = "wait"      # yellow — above fair price; skip until it's green
+                    action = "fill"      # yellow — above fair price; filled after greens, in rank order
                 else:
-                    action = "direct"    # green & underweight — buy in quality-rank order
+                    action = "direct"    # green & underweight — buy first, in quality-rank order
                 signals.append({
                     "symbol": r.symbol, "tier": r.tier, "rank": rank_idx.get(r.symbol, 0),
                     "rank_score": round(r.rank_score, 1), "s10x": round(r.s10x, 1),
@@ -830,15 +870,48 @@ class PortfolioBuyer:
         return detect_market_regime(vix, spy_data)
 
     def _get_holdings_map(self) -> dict[str, float]:
-        """Get symbol → market value map for all holdings."""
+        """Get symbol → market value map for all holdings. Excludes the cash-yield ETF (SGOV) — that's
+        a parked cash RESERVE, not a deployed compounder position, so it must not count toward targets."""
+        park = getattr(self.cfg, "cash_yield_symbol", None)
         with get_db() as db:
             holdings = db.query(PortfolioHolding).filter(
                 PortfolioHolding.shares > 0
             ).all()
             return {
                 h.symbol: (h.market_value or h.total_invested or 0)
-                for h in holdings
+                for h in holdings if h.symbol != park
             }
+
+    def _get_parked_value(self) -> float:
+        """Market value of the cash reserve parked in the bill ETF (SGOV) — sellable on demand, so it
+        counts as deployable cash (the executor un-parks it just-in-time before placing a buy)."""
+        park = getattr(self.cfg, "cash_yield_symbol", None)
+        if not park or not getattr(self.cfg, "cash_yield_enabled", False):
+            return 0.0
+        with get_db() as db:
+            h = db.query(PortfolioHolding).filter(
+                PortfolioHolding.symbol == park, PortfolioHolding.shares > 0
+            ).first()
+            return float(h.market_value or h.total_invested or 0.0) if h else 0.0
+
+    def _park_compounder_excess(self, nlv: float, spent_this_scan: float) -> None:
+        """Park standing idle cash (the crash reserve + undeployed slack) into the bill ETF for yield.
+        Parks only cash that is genuinely idle: settled cash above the operational buffer, minus cash
+        committed to still-working BUY orders and minus this scan's intended deployment (`spent`), so a
+        resting/approved buy never has its funding parked out from under it (which would open a loan).
+        Best-effort and gated on cash_yield_enabled + not-readonly; un-parking is JIT in the executor."""
+        cc = self.cfg.compounder
+        if not getattr(self.cfg, "cash_yield_enabled", False) or getattr(self.cfg, "readonly", False):
+            return
+        try:
+            settled = self._get_settled_cash() or 0.0
+            open_buy_now = sum(self._open_buy_map().values())
+            excess = settled - nlv * cc.cash_buffer_pct - open_buy_now - max(0.0, spent_this_scan)
+            if excess < getattr(cc, "cash_park_min", 5000.0):
+                return
+            self._park_cash(amount=excess)
+        except Exception as e:
+            log.warning("compounder_park_excess_error", error=str(e))
 
     def _cancel_stale_compounder_buys(self, watchlist_symbols: set) -> int:
         """Cancel still-resting compounder stock BUY orders so the scan re-prices them at the current
@@ -1650,6 +1723,13 @@ class PortfolioBuyer:
             with get_portfolio_lock():
                 self.ib.qualifyContracts(contract)
 
+            # Un-park the bill-ETF reserve, then fund the FX leg — so the resting rungs draw on the parked
+            # reserve / base cash instead of opening a margin loan.
+            total_notional = sum(price * shares for price, shares in rungs)
+            _unpark_yield(self.ib, self.cfg, total_notional)
+            _ensure_currency_funding(self.ib, stock.currency,
+                                     getattr(self.cfg, "base_currency", "EUR"), total_notional)
+
             room = cash_room
             for i, (price, shares) in enumerate(rungs):
                 notional = shares * price
@@ -1689,20 +1769,26 @@ class PortfolioBuyer:
         return (core_placed, total_placed)
 
     # ── Cash management ──────────────────────────────────────
-    def _park_cash(self):
-        """Park excess cash in treasury ETF for yield."""
+    def _park_cash(self, amount: float | None = None):
+        """Park excess cash in treasury ETF for yield. With `amount` set (compounder path), park exactly
+        that much; otherwise (classic path) park all available cash above the 5% reserve."""
         if not self.cfg.cash_yield_enabled:
             return
         _ensure_event_loop()
         try:
-            available = self._get_available_cash()
-            if not available or available < 1000:
-                return
-            net_liq = self._get_net_liquidation() or available
-            reserve = net_liq * self.cfg.cash_reserve_pct
-            parkable = available - reserve
-            if parkable < 1000:
-                return
+            if amount is not None:
+                parkable = amount
+                if parkable < 1000:
+                    return
+            else:
+                available = self._get_available_cash()
+                if not available or available < 1000:
+                    return
+                net_liq = self._get_net_liquidation() or available
+                reserve = net_liq * self.cfg.cash_reserve_pct
+                parkable = available - reserve
+                if parkable < 1000:
+                    return
 
             contract = Stock(
                 self.cfg.cash_yield_symbol,
@@ -1765,6 +1851,25 @@ class PortfolioBuyer:
             return None
         except Exception as e:
             log.warning("portfolio_cash_query_error", error=str(e))
+            return None
+
+    def _get_settled_cash(self) -> float | None:
+        """Genuine settled cash in base currency (TotalCashValue) — can be NEGATIVE on a margin loan.
+        The cash-first deployable base uses this, NOT AvailableFunds (which already includes margin
+        buying power and silently levered the compounder in calm markets)."""
+        try:
+            _ensure_event_loop()
+            with get_portfolio_lock():
+                values = self.ib.accountValues()
+            for item in values:
+                if item.tag == "TotalCashValue" and item.currency in ("EUR", "BASE"):
+                    return float(item.value)
+            for item in values:
+                if item.tag == "TotalCashValue":
+                    return float(item.value)
+            return None
+        except Exception as e:
+            log.warning("portfolio_settled_cash_query_error", error=str(e))
             return None
 
     def _get_net_liquidation(self) -> float | None:
@@ -2176,6 +2281,82 @@ class PortfolioBuyer:
                     log.debug("portfolio_price_update_error", symbol=h.symbol, error=str(e))
 
 
+def _ensure_currency_funding(ib, stock_ccy: str, base_ccy: str, notional_ccy: float,
+                             min_convert: float = 1000.0) -> None:
+    """Auto-convert base currency into a foreign stock's settlement currency BEFORE the buy, so the
+    trade is cash-funded and no overnight margin loan accrues. IBKR otherwise borrows the foreign ccy
+    automatically even when base-currency cash is positive — recurring margin interest with no return
+    benefit, and invisible to the (base-currency) leverage gate. No-op for same-currency or sub-min
+    amounts; best-effort (a failed/too-small conversion logs and the buy still proceeds, degrading to
+    the prior loan behaviour rather than blocking deployment). NOTE: IDEALPRO has a per-order minimum,
+    so very small shortfalls are intentionally left to the loan."""
+    ccy = (stock_ccy or "").upper()
+    base = (base_ccy or "EUR").upper()
+    if not ccy or ccy == base or notional_ccy <= 0:
+        return
+    try:
+        have = 0.0
+        with get_portfolio_lock():
+            vals = ib.accountValues()
+        for v in vals:
+            if v.tag == "CashBalance" and v.currency == ccy:
+                have = float(v.value)
+                break
+        shortfall = notional_ccy - have
+        if shortfall < min_convert:
+            return
+        qty = round(shortfall)
+        pair = Forex(ccy + base)          # symbol=ccy, currency=base → BUY ccy funded by base
+        with get_portfolio_lock():
+            ib.qualifyContracts(pair)
+            ib.placeOrder(pair, MarketOrder("BUY", qty))
+            ib.sleep(2)
+        log.info("portfolio_fx_funded", ccy=ccy, base=base, qty=qty)
+    except Exception as e:
+        log.warning("portfolio_fx_fund_failed", ccy=ccy, error=str(e))
+
+
+def _unpark_yield(ib, cfg, needed: float) -> None:
+    """Sell enough of the cash-yield ETF (SGOV) to raise ~`needed` of cash BEFORE a stock buy, so the
+    buy is funded from the parked reserve instead of opening a margin loan. SGOV is a 0–3mo T-bill ETF
+    (penny spreads, ~flat NAV) so a market sell is effectively a cash withdrawal. Sized generously and
+    capped at the holding; any excess raised simply re-parks next scan. No-op when disabled/readonly or
+    when there's nothing parked. Best-effort: failure logs and the buy proceeds (degrades to the loan)."""
+    if not getattr(cfg, "cash_yield_enabled", False) or getattr(cfg, "readonly", False) or needed <= 0:
+        return
+    sym = getattr(cfg, "cash_yield_symbol", None)
+    if not sym:
+        return
+    try:
+        with get_portfolio_lock():
+            positions = ib.positions()
+        pos = next((p for p in positions
+                    if getattr(getattr(p, "contract", None), "symbol", None) == sym), None)
+        held_shares = int(getattr(pos, "position", 0) or 0) if pos else 0
+        if held_shares <= 0:
+            return
+        contract = Stock(sym, "SMART", cfg.cash_yield_currency)
+        with get_portfolio_lock():
+            ib.qualifyContracts(contract)
+            bars = ib.reqHistoricalData(contract, endDateTime="", durationStr="2 D",
+                                        barSizeSetting="1 day", whatToShow="TRADES",
+                                        useRTH=False, formatDate=1, timeout=8)
+        price = float(bars[-1].close) if bars else None
+        if not price or price <= 0:
+            return
+        shares = min(held_shares, int(needed / price) + 1)
+        if shares <= 0:
+            return
+        order = MarketOrder("SELL", shares)
+        order.tif = "DAY"
+        with get_portfolio_lock():
+            ib.placeOrder(contract, order)
+            ib.sleep(2)
+        log.info("portfolio_unparked", symbol=sym, shares=shares, raised=round(shares * price))
+    except Exception as e:
+        log.warning("portfolio_unpark_error", error=str(e))
+
+
 def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
     """Place the real LimitOrder for an approved portfolio buy_stock suggestion.
 
@@ -2270,6 +2451,13 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         # priced in pence. Multiply back by 100 (this exactly reverses the analyzer's ÷100, so it
         # equals IBKR's original quote). Share count is unit-independent, so only the price changes.
         order_price = round(limit_price * 100.0, 2) if (ccy or "").upper() == "GBP" else limit_price
+        # Fund the foreign-currency leg up front (settlement amount: GBP order_price is in pence → ÷100
+        # for pounds) so the buy doesn't silently open a margin loan in the foreign ccy.
+        notional_settle = shares * (order_price / 100.0 if (ccy or "").upper() == "GBP" else order_price)
+        # Un-park the bill-ETF reserve, then convert the FX leg — so the buy is funded from the parked
+        # reserve / base cash rather than silently opening a margin loan.
+        _unpark_yield(ib, get_settings().portfolio, notional_settle)
+        _ensure_currency_funding(ib, ccy, get_settings().portfolio.base_currency, notional_settle)
         order = LimitOrder("BUY", shares, order_price)
         order.tif = "DAY"
         order.outsideRth = _outside_rth_ok(ccy)

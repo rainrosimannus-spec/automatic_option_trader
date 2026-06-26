@@ -60,7 +60,7 @@ class CompounderConfig(BaseModel):
     tier_dividend: float = 0.05
     # Base + crash reserve deployment — deploy the bulk within ~1 trading month, keep a small
     # crash hedge that bleeds in fast if no drawdown materializes.
-    base_pct: float = 0.80             # deploy 80% as the fast-DCA'd base
+    base_pct: float = 0.90             # deploy 90% as the fast-DCA'd base (10% parked crash reserve)
     dca_horizon_days: int = 21         # base fully deployed over ≈1 month of trading days
     drawdown_tranches: list[float] = [0.10, 0.20, 0.30]  # 20% reserve fires at these SPY drawdowns
     backstop_start_days: int = 90      # if no crash within ~3mo, start bleeding the reserve in
@@ -93,6 +93,24 @@ class CompounderConfig(BaseModel):
     ladder_step_pct: float = 1.0            # spacing between dip rungs, % of price
     ladder_rung_frac: float = 0.25          # each dip rung sized at frac x core brick
     ladder_leader_only_dips: bool = True    # only leaders get dip rungs; others get core only
+    # ── Leverage posture (margin account) ────────────────────────────────────────────────
+    # Cash-FIRST: normal regimes deploy genuine SETTLED cash only (TotalCashValue, not the broker's
+    # AvailableFunds, which already includes margin buying power and silently levered us in calm
+    # markets). Margin is used ONLY when a crash drawdown-tranche has fired, and even then it is
+    # bounded by crash_margin_pct and hard-stopped by the maint-margin gate below.
+    crash_margin_pct: float = 0.15          # in a fired tranche, borrow up to 15% of NLV on top of cash
+    # Margin is a LAST-RESORT supplement, not the primary reserve: borrowing to catch a falling knife
+    # re-introduces forced-liquidation risk (the one terminal outcome a long-horizon holder must avoid),
+    # which a parked CASH reserve never carries. So the facility is gated to the DEEPEST drawdown tranche
+    # (true capitulation) only — not every -10% dip. The parked bill-ETF reserve is the primary dry powder.
+    margin_capitulation_only: bool = True   # crash-margin only in the deepest tranche (capitulation), not any dip
+    cash_park_min: float = 5000.0           # only park idle cash into the bill ETF above this (avoid churn)
+    margin_hard_limit_pct: float = 40.0     # block ALL new compounder buys above this maint-margin/NLV
+    margin_hard_limit_crash_pct: float = 55.0  # relaxed cap while a crash tranche is active (~15% NLV loan)
+    margin_soft_floor_pct: float = 25.0     # above this maint-margin level, linearly de-rate deployment
+    # ── Concentration caps on NEW target sizing (winners still run untrimmed — these gate buys only) ──
+    per_name_abs_ceiling: float = 750000.0  # hard $ ceiling per name on top of the 6%/10% pct caps
+    sector_cap_pct: float = 0.30            # max 30% of NLV targeted into any single sector
 
 
 class PortfolioConfig(BaseModel):
@@ -113,6 +131,7 @@ class PortfolioConfig(BaseModel):
     ibkr_port: int = 7496
     ibkr_client_id: int = 99
     ibkr_account: str = ""
+    base_currency: str = "EUR"  # account base ccy — foreign buys auto-convert into the stock's ccy via FX
 
     # Tier allocation (must sum to 1.0)
     tier_allocation: TierAllocation = TierAllocation()

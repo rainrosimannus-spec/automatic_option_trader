@@ -143,14 +143,18 @@ def target_weights(ranked: list[RankedName], tier_budgets: dict[str, float],
                    max_names: dict[str, int] | None = None,
                    leader_syms: set[str] | None = None,
                    leader_cap_pct: float | None = None,
-                   conviction_power: float = 1.0) -> dict[str, float]:
+                   conviction_power: float = 1.0,
+                   abs_ceiling: float | None = None) -> dict[str, float]:
     """Target dollars per name. Within each tier, target ∝ rank_score ** conviction_power,
     normalized to the tier's capital budget, capped per name. `conviction_power` > 1 concentrates
     the budget into the top-ranked names (up to the caps); 1.0 = the original near-flat weighting.
     Leaders (in `leader_syms`) carry the higher `leader_cap_pct`; everyone else is capped at
-    `per_name_cap_pct`."""
-    base_cap = per_name_cap_pct * investable
-    lead_cap = (leader_cap_pct if leader_cap_pct is not None else per_name_cap_pct) * investable
+    `per_name_cap_pct`. `abs_ceiling` (if set) is a HARD $ ceiling applied to every name on top of
+    the percentage caps — it binds only at large NLV (e.g. 10% of an $11M book > $750k) and stops any
+    one name from dominating regardless of how high the pct cap scales."""
+    ceil = abs_ceiling if (abs_ceiling and abs_ceiling > 0) else float("inf")
+    base_cap = min(per_name_cap_pct * investable, ceil)
+    lead_cap = min((leader_cap_pct if leader_cap_pct is not None else per_name_cap_pct) * investable, ceil)
     leaders = leader_syms or set()
     by_tier: dict[str, list[RankedName]] = {}
     for r in ranked:
@@ -168,6 +172,33 @@ def target_weights(ranked: list[RankedName], tier_budgets: dict[str, float],
         alloc = _cap_redistribute(weights, budget_frac * investable, caps)
         targets.update(alloc)
     return targets
+
+
+def apply_sector_caps(targets: dict[str, float], sectors: dict[str, str],
+                      cap_dollars: float) -> dict[str, float]:
+    """Cap the dollars TARGETED into any single sector at `cap_dollars` (e.g. 30% of NLV).
+
+    The per-tier weighting and per-name caps are blind to sector, so a momentum-led growth book can
+    pile the top names into one sector (AI/semis). This scales an over-cap sector's names down
+    proportionally; freed budget is left UNDEPLOYED (conservative — we don't force capital into
+    lower-conviction names just to fill a quota). Names with an unknown ("") sector are not capped
+    (we can't attribute them). Caps NEW accumulation only — held winners are never trimmed."""
+    if cap_dollars <= 0:
+        return dict(targets)
+    by_sec: dict[str, list[str]] = {}
+    for sym in targets:
+        sec = sectors.get(sym) or ""
+        by_sec.setdefault(sec, []).append(sym)
+    out = dict(targets)
+    for sec, syms in by_sec.items():
+        if not sec:
+            continue
+        tot = sum(targets[s] for s in syms)
+        if tot > cap_dollars and tot > 0:
+            scale = cap_dollars / tot
+            for s in syms:
+                out[s] = targets[s] * scale
+    return out
 
 
 # ── 3. Crash reserve (drawdown tranches) ─────────────────────
@@ -276,9 +307,9 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
         elif cur >= tgt * 0.98:
             action = "hold"
         elif att < 0:
-            action = "wait"      # yellow — above fair price; skip until it's green
+            action = "fill"      # yellow — above fair price; filled after greens, in rank order
         else:
-            action = "direct"    # green & underweight — buy in quality-rank order
+            action = "direct"    # green & underweight — buy first, in quality-rank order
         out.append({
             "symbol": r.symbol, "tier": r.tier, "rank": rank_idx[r.symbol],
             "rank_score": round(r.rank_score, 1), "s10x": round(r.s10x, 1),
