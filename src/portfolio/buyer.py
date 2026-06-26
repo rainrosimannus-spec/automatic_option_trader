@@ -571,12 +571,17 @@ class PortfolioBuyer:
         from sqlalchemy import func as _func
         _today = datetime.utcnow().strftime("%Y-%m-%d")
         with get_db() as _db:
-            deployed_today = float(_db.query(
+            _fills_today = float(_db.query(
                 _func.coalesce(_func.sum(PortfolioTransaction.amount), 0.0)
             ).filter(
                 PortfolioTransaction.action == "buy",
                 PortfolioTransaction.created_at >= _today + " 00:00:00",
             ).scalar() or 0.0)
+        # deployed_today = committed capital today = today's FILLS + still-working BUY orders. Counting
+        # open_buy too means a placed order reduces the day's budget immediately (so the budget moves
+        # with the buys, not only once they fill), while cancelled/failed orders — which leave open_buy
+        # — don't. DAY orders don't survive overnight, so open_buy is today's working notional.
+        deployed_today = _fills_today + sum(open_buy.values())
         budget = cmp.daily_deploy_budget(
             investable, cc.base_pct, cc.dca_horizon_days, unlocked,
             deployed_eff, target_total, crash_active, free_cash,

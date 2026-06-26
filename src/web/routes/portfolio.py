@@ -418,6 +418,33 @@ async def portfolio_page(request: Request):
     except Exception as _e:
         log.warning("portfolio_pending_count_failed", error=str(_e))
 
+    # Live daily budget: base_pace minus capital already committed TODAY (filled buys + still-working
+    # BUY orders). Computed every page load so the budget card moves with the buys, instead of only
+    # refreshing at the 2-hourly scan (which left it showing the full budget right after several fills).
+    _live_daily_budget = float(_get_state("compounder_daily_budget") or 0)
+    try:
+        from datetime import date as _date_t
+        from sqlalchemy import func as _func2
+        from src.portfolio.config import CompounderConfig as _CC
+        from src.portfolio.connection import get_cached_portfolio_pending_orders as _gp
+        _investable = float(_get_state("compounder_investable") or 0)
+        if _investable > 0:
+            _ccfg = _CC()
+            _base_pace = _investable * _ccfg.base_pct / max(1, _ccfg.dca_horizon_days)
+            _start = _date_t.today().isoformat() + " 00:00:00"
+            with get_db() as _bdb:
+                _fills_today = float(_bdb.query(
+                    _func2.coalesce(_func2.sum(PortfolioTransaction.amount), 0.0)
+                ).filter(PortfolioTransaction.action == "buy",
+                         PortfolioTransaction.created_at >= _start).scalar() or 0.0)
+            _open_buy_notional = 0.0
+            for _o in _gp() or []:
+                if _o.get("sec_type") == "STK" and _o.get("action") == "BUY":
+                    _open_buy_notional += float(_o.get("remaining") or 0) * float(_o.get("limit_price") or 0)
+            _live_daily_budget = max(0.0, _base_pace - _fills_today - _open_buy_notional)
+    except Exception as _e:
+        log.warning("compounder_live_budget_failed", error=str(_e))
+
     return templates.TemplateResponse("portfolio.html", {
         "request": request,
         "pending_portfolio": pending_portfolio,
@@ -471,7 +498,7 @@ async def portfolio_page(request: Request):
             "deployed": total_value,
             "live_target": float(_get_state("compounder_live_target") or 0),
             "investable": float(_get_state("compounder_investable") or 0),
-            "daily_budget": float(_get_state("compounder_daily_budget") or 0),
+            "daily_budget": _live_daily_budget,
             "drawdown_pct": float(_get_state("compounder_drawdown_pct") or 0),
             "tranches_fired": int(float(_get_state("compounder_tranches_fired") or 0)),
             "unlocked_pct": float(_get_state("compounder_reserve_unlocked_pct") or 0),
