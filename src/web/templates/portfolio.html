@@ -715,9 +715,32 @@ function syncInjections() {
             </div>
         </div>
 
-        <!-- Row 2: $5M Adaptive Caps -->
+        <!-- Row 1.5: Compounder leverage & concentration (ACTIVE path) -->
         <div class="mb-4">
-            <div class="text-xs text-gray-600 uppercase tracking-wider mb-2">Adaptive Deployment Caps — current NLV ${{"{:,.0f}".format(portfolio_nlv)}}</div>
+            <div class="text-xs text-gray-600 uppercase tracking-wider mb-2">Compounder — Leverage &amp; Concentration (active path)</div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-gray-400">
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <span class="text-emerald-400 font-medium block mb-0.5">Cash-first leverage</span>
+                    Deploys settled cash only (TotalCashValue) — zero margin in normal times. Margin is a last-resort supplement, gated to true capitulation (deepest tranche) only — up to 15% NLV, hard-stop 40% maint (55% in capitulation), soft de-rate above 25%.
+                </div>
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <span class="text-emerald-400 font-medium block mb-0.5">Parked cash reserve</span>
+                    Deploys 90% of investable; the ~10% crash reserve + slack is parked in a bill ETF (SGOV, USD) for yield and un-parked just-in-time to deploy. Cash reserve is the primary crash dry powder, not margin.
+                </div>
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <span class="text-emerald-400 font-medium block mb-0.5">Concentration caps</span>
+                    Per-sector ≤30% of NLV. Per-name ≤6% (leaders ≤10%) of investable, hard $750K ceiling. New-buy sizing only — winners run untrimmed.
+                </div>
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <span class="text-emerald-400 font-medium block mb-0.5">Fill policy &amp; auto-FX</span>
+                    Fills the biggest underweight gap first (gap-to-target) — green (at/below fair) first, then yellow (extended) only if budget remains. Foreign legs pre-funded via IDEALPRO FX so no foreign margin loan accrues.
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 2: $5M Adaptive Caps (legacy classic dip-buyer path — NOT enforced for the compounder) -->
+        <div class="mb-4">
+            <div class="text-xs text-gray-600 uppercase tracking-wider mb-2">Adaptive Deployment Caps — classic dip-buyer path (NLV ${{"{:,.0f}".format(portfolio_nlv)}})</div>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <!-- Per-position cap -->
                 <div class="bg-gray-800/60 rounded-lg p-3">
