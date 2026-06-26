@@ -543,6 +543,13 @@ class PortfolioBuyer:
 
         held = self._get_holdings_map()           # symbol -> FILLED market value (sync truth)
         deployed = sum(held.values())
+        # Re-price every scan: cancel the prior scan's still-resting compounder BUY orders so each
+        # green name is re-evaluated and re-placed at the CURRENT price. Prices move between the
+        # 4-hourly scans — a stale DAY limit may no longer fill, or the name may have risen above
+        # fair (we'd no longer buy it at all). Mirrors the options side's cancel-then-rescan. Filled
+        # shares are holdings (not open orders) so they're untouched; only watchlist names are swept,
+        # leaving the cash-park ETF and any manual/non-universe orders alone.
+        self._cancel_stale_compounder_buys({getattr(s, "symbol", None) for s in watch})
         # Net resting DAY-limit BUY orders (from earlier scans/days) into both the budget gate and
         # the per-name underweight check, so we don't re-ladder a working name or deploy today's
         # budget twice intraday. Holdings reflect only fills; the orders below are still working.
@@ -827,6 +834,45 @@ class PortfolioBuyer:
                 h.symbol: (h.market_value or h.total_invested or 0)
                 for h in holdings
             }
+
+    def _cancel_stale_compounder_buys(self, watchlist_symbols: set) -> int:
+        """Cancel still-resting compounder stock BUY orders so the scan re-prices them at the current
+        market. Only watchlist symbols are touched (the cash-park ETF and any non-universe/manual
+        orders are left alone); filled shares are holdings, not open orders, so they survive. Only
+        working/unfilled BUY orders are cancelled — the scan then re-places the names that are still
+        green & underweight at the current price (and simply doesn't re-place ones now above fair)."""
+        cancelled = 0
+        try:
+            _ensure_event_loop()
+            park_sym = getattr(self.cfg, "cash_yield_symbol", None)
+            _TERMINAL = {"Filled", "Cancelled", "ApiCancelled", "Inactive", "PendingCancel"}
+            with get_portfolio_lock():
+                trades = list(self.ib.openTrades())
+            for t in trades:
+                c = getattr(t, "contract", None)
+                o = getattr(t, "order", None)
+                st = getattr(getattr(t, "orderStatus", None), "status", "") or ""
+                if c is None or o is None:
+                    continue
+                sym = getattr(c, "symbol", None)
+                if getattr(c, "secType", "") != "STK" \
+                        or str(getattr(o, "action", "")).upper() != "BUY":
+                    continue
+                if sym not in watchlist_symbols or sym == park_sym or st in _TERMINAL:
+                    continue
+                with get_portfolio_lock():
+                    self.ib.cancelOrder(o)
+                cancelled += 1
+                log.info("compounder_cancel_stale_buy", symbol=sym,
+                         order_id=getattr(o, "orderId", None), status=st)
+            if cancelled:
+                with get_portfolio_lock():
+                    self.ib.sleep(2)   # let the cancels settle before the scan reads open orders
+        except Exception as e:
+            log.warning("compounder_cancel_stale_buys_failed", error=str(e))
+        if cancelled:
+            log.info("compounder_stale_buys_cancelled", count=cancelled)
+        return cancelled
 
     def _open_buy_map(self) -> dict[str, float]:
         """symbol → notional ($) of currently-RESTING stock BUY orders at IBKR.
