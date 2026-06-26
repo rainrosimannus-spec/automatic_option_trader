@@ -2284,10 +2284,13 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                     s.status = "executed"
                     s.review_note = "Filled"
                 elif fill_status in ("Cancelled", "ApiCancelled", "Inactive", "Rejected"):
-                    # Terminal non-fill — do NOT mislabel as "awaiting fill". Back to approved so
-                    # the next cycle retries (and shows the real reason), not a phantom open order.
-                    s.status = "approved"
-                    s.review_note = f"Order {fill_status} — not resting (will retry)"
+                    # Terminal non-fill (no trading permission, direct-route block, etc.). REJECT —
+                    # do NOT bounce back to 'approved', which made the 30s executor hammer the same
+                    # doomed order forever (the AZN/XRO loop). The 2-hourly scan re-creates a fresh
+                    # suggestion for still-green names, so genuinely-tradeable names retry at that
+                    # cadence; permanently-blocked ones just show their reason and stop churning.
+                    s.status = "rejected"
+                    s.review_note = f"Order {fill_status} — not placed"
                 else:
                     s.status = "submitted"
                     s.review_note = f"Order {fill_status} — awaiting fill"
