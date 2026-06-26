@@ -2249,11 +2249,14 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         # direct-route to e.g. NASDAQ is rejected by IBKR's Precautionary Settings (error 10311 —
         # "directly routed orders may result in higher fees"), which silently cancels the order.
         # Only the genuinely non-SMART venues keep their native exchange.
-        _NON_SMART = {"SEHK", "JSE", "SGX", "TASE", "NSE", "ASX", "BSE", "KSE", "TWSE", "BKK", "IDX"}
-        if exch and exch not in _NON_SMART and exch != "SMART":
+        # Route EVERY order via SMART with the listing exchange as a hint. IBKR's Precautionary
+        # Settings reject direct-routed orders (error 10311 — GOOG/NASDAQ, XRO/ASX), so SMART is the
+        # only path that fills, and SMART supports the venues in this universe (ASX, SEHK, LSE, AEB,
+        # BVME, ...). Don't special-case "non-SMART" exchanges to direct routing — that was the XRO bug.
+        if exch and exch != "SMART":
             contract = Stock(symbol, "SMART", ccy, primaryExchange=exch)
         else:
-            contract = Stock(symbol, exch or "SMART", ccy)
+            contract = Stock(symbol, "SMART", ccy)
         with get_portfolio_lock():
             ib.qualifyContracts(contract)
 
