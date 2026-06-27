@@ -660,9 +660,13 @@ class PortfolioBuyer:
         self._persist_compounder_signals(ranked, targets, held, open_put_syms,
                                          rank_idx, crash_active, cc, leaders)
 
+        # No deploy budget today? Do NOT return here — the deploy loop below naturally no-ops (every
+        # brick fails the min_buy floor when budget < min_buy), so no buys happen, but we still fall
+        # through to PARK idle reserve cash at the end. Parking is treasury management and must run
+        # regardless of whether there's deploy budget this scan; `spent` stays 0, so nothing the loop
+        # intends to buy is wrongly withheld from parking.
         if budget < min_buy:
             log.info("compounder_no_budget_today", budget=round(budget), min_buy=round(min_buy))
-            return bought
 
         # Buy queue — accumulate toward the conviction targets, filling the biggest underweight $ gap
         # first. GREEN names (at/below fair price, attractiveness >= 0) are filled FIRST; YELLOW names
