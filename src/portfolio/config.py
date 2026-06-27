@@ -61,7 +61,17 @@ class CompounderConfig(BaseModel):
     # Base + crash reserve deployment — deploy the bulk within ~1 trading month, keep a small
     # crash hedge that bleeds in fast if no drawdown materializes.
     base_pct: float = 0.90             # deploy 90% as the fast-DCA'd base (10% parked crash reserve)
-    dca_horizon_days: int = 21         # base fully deployed over ≈1 month of trading days
+    dca_horizon_days: int = 21         # routine top-ups deploy over ≈1 month of trading days
+    # Lump defusal: the DCA horizon STRETCHES with the size of the undeployed gap, so a big new deposit
+    # (gap ≈ the whole base) averages in over ~lump_horizon_days instead of ~1 month — you're never
+    # fully deployed right before a crash. Small routine top-ups still deploy over dca_horizon_days.
+    lump_horizon_days: int = 126       # ≈6 months — full-lump deployment horizon
+    # Froth throttle: slow base deployment when SPY is extended above its 200-day trend (deploy slower
+    # into euphoria, full speed once at/below trend). Never throttles the crash dump. floor > 0 so a
+    # persistent melt-up never fully stalls deployment (stagnation-aversion); set floor 0 for a hard pause.
+    deploy_throttle_start_pct: float = 5.0    # SPY % over 200-DMA where slowing begins
+    deploy_throttle_full_pct: float = 15.0    # …where the throttle hits its floor (matches overbought guard)
+    deploy_throttle_floor: float = 0.25       # min pace fraction at extreme froth (never fully stop)
     drawdown_tranches: list[float] = [0.10, 0.20, 0.30]  # 20% reserve fires at these SPY drawdowns
     backstop_start_days: int = 90      # if no crash within ~3mo, start bleeding the reserve in
     backstop_bleed_days: int = 180     # ...fully deployed over the following ~6mo (never idle long)

@@ -628,10 +628,25 @@ class PortfolioBuyer:
         # with the buys, not only once they fill), while cancelled/failed orders — which leave open_buy
         # — don't. DAY orders don't survive overnight, so open_buy is today's working notional.
         deployed_today = _fills_today + sum(open_buy.values())
+        # Froth throttle: slow the base DCA when SPY is extended above its 200-day trend (deploy slower
+        # into euphoria, full speed once at/below trend). Linear ramp from deploy_throttle_start_pct
+        # (full pace) to deploy_throttle_full_pct (floor). Never throttles the crash dump. The compounder
+        # otherwise ignored the overbought guard entirely and would deploy at full pace into froth.
+        pace_throttle = 1.0
+        try:
+            _, spy_ext = self.analyzer.check_market_overbought(cc.deploy_throttle_full_pct)
+            if spy_ext is not None and spy_ext > cc.deploy_throttle_start_pct:
+                _span = max(0.1, cc.deploy_throttle_full_pct - cc.deploy_throttle_start_pct)
+                _frac = min(1.0, (spy_ext - cc.deploy_throttle_start_pct) / _span)
+                pace_throttle = max(cc.deploy_throttle_floor, 1.0 - _frac * (1.0 - cc.deploy_throttle_floor))
+        except Exception as e:
+            log.warning("compounder_throttle_calc_failed", error=str(e))
+        self._store_state("compounder_pace_throttle", str(round(pace_throttle, 2)))
         budget = cmp.daily_deploy_budget(
             investable, cc.base_pct, cc.dca_horizon_days, unlocked,
             deployed_eff, target_total, crash_active, free_cash,
-            deployed_today=deployed_today)
+            deployed_today=deployed_today,
+            lump_horizon_days=cc.lump_horizon_days, pace_throttle=pace_throttle)
 
         # Persist state for the dashboard cards
         self._store_state("strategy", "compounder")

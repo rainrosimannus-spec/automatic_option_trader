@@ -54,6 +54,37 @@ def test_sector_cap_disabled_when_nonpositive():
     assert cmp.apply_sector_caps(tgt, {"A": "x", "B": "x"}, 0.0) == tgt
 
 
+def _budget(deployed, target=900_000.0, investable=1_000_000.0, crash=False,
+            deployed_today=0.0, lump_horizon=126, throttle=1.0):
+    return cmp.daily_deploy_budget(
+        investable, 0.9, 21, 0.0, deployed, target, crash, free_cash=10_000_000.0,
+        deployed_today=deployed_today, lump_horizon_days=lump_horizon, pace_throttle=throttle)
+
+
+def test_lump_deploys_far_slower_than_routine_topup():
+    # Fresh full lump (nothing deployed, gap == whole base): should pace over ~lump_horizon (126d),
+    # i.e. ~base/126 per day — NOT the ~base/21 the old fixed horizon gave.
+    lump_day = _budget(deployed=0.0)
+    assert abs(lump_day - 900_000 / 126) < 50          # ≈ $7,143/day
+    assert lump_day < (900_000 / 21) / 5               # >5x slower than the old 21-day pace
+    # A small routine top-up (gap tiny) still deploys quickly — the whole small gap at once.
+    topup_day = _budget(deployed=895_000.0)            # $5k gap
+    assert abs(topup_day - 5_000) < 1                   # deploys the small gap, not stretched
+
+
+def test_froth_throttle_scales_base_pace():
+    full = _budget(deployed=0.0, throttle=1.0)
+    quarter = _budget(deployed=0.0, throttle=0.25)
+    assert abs(quarter - full * 0.25) < 1               # throttle multiplies the base pace
+    assert _budget(deployed=0.0, throttle=0.0) == 0.0   # hard pause when throttle floored to 0
+
+
+def test_crash_dump_ignores_lump_stretch_and_throttle():
+    # In a fired tranche, deploy the full remaining gap regardless of lump horizon / froth throttle.
+    b = _budget(deployed=100_000.0, crash=True, throttle=0.0, lump_horizon=126)
+    assert b == 800_000.0                                # full remaining gap (900k target - 100k)
+
+
 def test_queue_orders_green_first_then_by_underweight_gap():
     # mirrors the run_compounder_scan queue sort key: (green-first, then biggest underweight $ gap).
     # tuples: (attractiveness, gap$). gap = tgt - cur; bigger gap fills first.
