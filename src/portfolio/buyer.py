@@ -593,6 +593,12 @@ class PortfolioBuyer:
         except Exception:
             pass
         open_buy = self._open_buy_map()           # symbol -> notional of resting BUY orders
+        # Net in compounder buy SUGGESTIONS queued but not yet placed at IBKR (suggestion mode): they
+        # aren't resting orders yet, so without this a follow-up scan re-creates them and deploys the
+        # day's budget twice. Folding them into open_buy makes deployed_eff, deployed_today, the accrual
+        # window, AND the per-name underweight check all account for this in-flight intent.
+        for _sym, _notional in self._pending_buy_suggestion_map().items():
+            open_buy[_sym] = open_buy.get(_sym, 0.0) + _notional
         deployed_eff = deployed + sum(open_buy.values())
         target_total = sum(targets.values())
         open_put_syms = self._open_put_symbols()
@@ -675,6 +681,25 @@ class PortfolioBuyer:
                     budget = max(budget, min(remaining_gap, free_cash, banked))
                     log.info("compounder_accrual_budget", base_pace=round(base_pace),
                              accrual_days=accrual_days, banked=round(banked), budget=round(budget))
+
+        # Burn-in deployment cap — FINAL ceiling on this scan's budget. Caps TOTAL committed capital
+        # (deployed_eff = filled holdings + working orders + pending suggestions) until the live FX /
+        # unpark / order-placement paths are validated at small size. Self-arms off detected deposits and
+        # ramps up over burn_in_ramp_days (or an explicit manual cap); 0 = no cap. Applies even to the
+        # crash dump (don't lever into a half-trusted execution path). Parking still runs below, so a
+        # bound scan parks idle reserve rather than leaving it as drag. See _compounder_burn_in_cap().
+        burn_cap = self._compounder_burn_in_cap(cc, investable)
+        if burn_cap > 0:
+            room_to_cap = max(0.0, burn_cap - deployed_eff)
+            if budget > room_to_cap:
+                log.info("compounder_burn_in_cap_binding", cap=round(burn_cap),
+                         deployed=round(deployed_eff), budget_before=round(budget),
+                         budget_after=round(room_to_cap))
+                budget = room_to_cap
+                self._store_state(
+                    "portfolio_blocked_reason",
+                    f"burn-in cap ${burn_cap:,.0f} reached (committed ${deployed_eff:,.0f}) — "
+                    f"ramping up automatically; raise compounder.burn_in_* to scale faster")
 
         # Persist state for the dashboard cards
         self._store_state("strategy", "compounder")
@@ -1022,6 +1047,104 @@ class PortfolioBuyer:
             except Exception:
                 continue
         return out
+
+    def _pending_buy_suggestion_map(self) -> dict[str, float]:
+        """symbol → notional ($) of portfolio buy_stock suggestions that are queued/approved/executing
+        but NOT yet resting at IBKR. In suggestion_mode the compounder writes a buy card each scan and a
+        separate 30s executor places it later; between those two moments no IBKR order exists, so the
+        order is invisible to _open_buy_map — and a follow-up scan would re-create it and deploy the day's
+        budget twice. Netting these in (alongside resting orders) closes that window so the budget gate,
+        deployed_today, and the per-name underweight check all see in-flight intent. Empty in live-direct
+        mode (no pending cards). Conservative: an order momentarily both 'executing' here AND already
+        resting at IBKR is double-counted for ~2s, which only slightly slows deployment (the safe way)."""
+        from src.core.suggestions import TradeSuggestion
+        out: dict[str, float] = {}
+        try:
+            with get_db() as db:
+                rows = db.query(TradeSuggestion).filter(
+                    TradeSuggestion.source == "portfolio",
+                    TradeSuggestion.action == "buy_stock",
+                    TradeSuggestion.status.in_(("pending", "approved", "queued", "executing")),
+                ).all()
+                for s in rows:
+                    notional = float(s.est_cost or 0.0)
+                    if notional <= 0 and s.quantity and s.limit_price:
+                        notional = float(s.quantity) * float(s.limit_price)
+                    if notional > 0:
+                        out[s.symbol] = out.get(s.symbol, 0.0) + notional
+        except Exception as e:
+            log.warning("compounder_pending_suggestion_map_failed", error=str(e))
+        return out
+
+    def _compounder_burn_in_cap(self, cc, investable: float) -> float:
+        """Active burn-in ceiling on TOTAL committed capital (0 = disabled / no cap).
+
+        A manual `burn_in_max_deployed` > 0 always wins (explicit operator cap). Otherwise, when
+        `burn_in_auto_arm` is set, the cap SELF-ARMS off authoritative deposit data: when cumulative
+        deposits (PortfolioCapitalInjection, NOT NLV — which moves with the market) jump by at least
+        `burn_in_trigger_deposit`, a large lump is landing → hold deployment to `burn_in_floor` and ramp
+        the ceiling linearly to full (`investable`) over `burn_in_ramp_days`, then auto-disarm. So an
+        $11M arriving ~$1M/day deploys at a controlled, self-scaling pace through the freshly-live
+        funding paths, while the small pre-deposit account (no big deposit) is never throttled.
+
+        State (PortfolioState): compounder_burn_in_deposits_seen (last cumulative total — baselined on
+        the first scan so PRE-EXISTING deposits never arm) and compounder_burn_in_armed_date.
+        """
+        manual = getattr(cc, "burn_in_max_deployed", 0.0) or 0.0
+        if manual > 0:
+            return manual
+        if not getattr(cc, "burn_in_auto_arm", False):
+            return 0.0
+
+        import datetime as _dt
+        from sqlalchemy import func as _func
+        from src.portfolio.models import PortfolioCapitalInjection
+        try:
+            with get_db() as _db:
+                total_dep = float(_db.query(
+                    _func.coalesce(_func.sum(PortfolioCapitalInjection.amount_usd), 0.0)
+                ).scalar() or 0.0)
+        except Exception as e:
+            log.warning("compounder_burn_in_deposit_read_failed", error=str(e))
+            return 0.0
+
+        seen_str = self._get_state_value("compounder_burn_in_deposits_seen")
+        armed_str = self._get_state_value("compounder_burn_in_armed_date")
+        # First ever scan: baseline the seen-total so deposits already in the account don't arm a burn-in.
+        if seen_str is None:
+            self._store_state("compounder_burn_in_deposits_seen", str(round(total_dep, 2)))
+            return 0.0
+        seen = float(seen_str or 0.0)
+        trigger = getattr(cc, "burn_in_trigger_deposit", 500000.0)
+        if total_dep - seen >= trigger:
+            # A large new deposit landed — re-baseline, and arm the burn-in if not already armed (an
+            # already-running ramp keeps its original clock so successive daily deposits don't reset it).
+            self._store_state("compounder_burn_in_deposits_seen", str(round(total_dep, 2)))
+            if not armed_str:
+                armed_str = _dt.date.today().isoformat()
+                self._store_state("compounder_burn_in_armed_date", armed_str)
+                log.info("compounder_burn_in_armed", new_deposit=round(total_dep - seen),
+                         total_deposits=round(total_dep), floor=getattr(cc, "burn_in_floor", 250000.0),
+                         ramp_days=getattr(cc, "burn_in_ramp_days", 21))
+
+        if not armed_str:
+            return 0.0
+        floor = getattr(cc, "burn_in_floor", 250000.0)
+        ramp_days = max(1, int(getattr(cc, "burn_in_ramp_days", 21)))
+        try:
+            days = (_dt.date.today() - _dt.date.fromisoformat(armed_str)).days
+        except Exception:
+            days = 0
+        if days >= ramp_days:
+            # Window elapsed — the live paths have run for the full burn-in; disarm so the cap lifts.
+            self._store_state("compounder_burn_in_armed_date", "")
+            log.info("compounder_burn_in_complete", days=days, ramp_days=ramp_days)
+            return 0.0
+        from src.portfolio import compounder as _cmp
+        cap = _cmp.burn_in_ceiling(days, ramp_days, floor, investable)
+        self._store_state("compounder_burn_in_cap", str(round(cap)))
+        self._store_state("compounder_burn_in_day", f"{days}/{ramp_days}")
+        return cap
 
     def _get_tier_values(self) -> dict[str, float]:
         """Get total value per tier."""
@@ -1770,12 +1893,20 @@ class PortfolioBuyer:
             with get_portfolio_lock():
                 self.ib.qualifyContracts(contract)
 
-            # Un-park the bill-ETF reserve, then fund the FX leg — so the resting rungs draw on the parked
-            # reserve / base cash instead of opening a margin loan.
+            # Un-park the bill-ETF reserve, then fund the FX leg, then GATE on the authoritative funding
+            # path for this currency: the FX conversion for a foreign buy, or the SGOV unpark for a
+            # same-currency buy. If that path could not be funded, SKIP this name rather than silently
+            # open a margin loan (fail-closed). The 4-hourly scan re-creates the buy when cash is ready.
             total_notional = sum(price * shares for price, shares in rungs)
-            _unpark_yield(self.ib, self.cfg, total_notional)
-            _ensure_currency_funding(self.ib, stock.currency,
-                                     getattr(self.cfg, "base_currency", "EUR"), total_notional)
+            base_ccy = getattr(self.cfg, "base_currency", "EUR") or "EUR"
+            ccy = stock.currency or "USD"
+            unpark_ok = _unpark_yield(self.ib, self.cfg, total_notional, settle_ccy=ccy)
+            fx_ok = _ensure_currency_funding(self.ib, ccy, base_ccy, total_notional)
+            funded = fx_ok if ccy.upper() != base_ccy.upper() else unpark_ok
+            if not funded:
+                log.warning("compounder_buy_unfunded_skip", symbol=stock.symbol,
+                            ccy=ccy, notional=round(total_notional))
+                return (0.0, 0.0)
 
             room = cash_room
             for i, (price, shares) in enumerate(rungs):
@@ -2329,18 +2460,21 @@ class PortfolioBuyer:
 
 
 def _ensure_currency_funding(ib, stock_ccy: str, base_ccy: str, notional_ccy: float,
-                             min_convert: float = 1000.0) -> None:
+                             min_convert: float = 1000.0) -> bool:
     """Auto-convert base currency into a foreign stock's settlement currency BEFORE the buy, so the
     trade is cash-funded and no overnight margin loan accrues. IBKR otherwise borrows the foreign ccy
     automatically even when base-currency cash is positive — recurring margin interest with no return
-    benefit, and invisible to the (base-currency) leverage gate. No-op for same-currency or sub-min
-    amounts; best-effort (a failed/too-small conversion logs and the buy still proceeds, degrading to
-    the prior loan behaviour rather than blocking deployment). NOTE: IDEALPRO has a per-order minimum,
-    so very small shortfalls are intentionally left to the loan."""
+    benefit, and invisible to the (base-currency) leverage gate.
+
+    Returns True if the buy MAY proceed: same-currency, already-funded, or a sub-min remainder that is
+    intentionally left to the loan (below IDEALPRO's per-order minimum — converting it is impossible).
+    Returns False if a REAL (>= min_convert) shortfall could NOT be converted — the FX order errored or
+    did not fill. For a foreign buy the caller treats this as fatal and SKIPS the order rather than
+    silently opening a foreign-currency margin loan (fail-closed)."""
     ccy = (stock_ccy or "").upper()
     base = (base_ccy or "EUR").upper()
     if not ccy or ccy == base or notional_ccy <= 0:
-        return
+        return True
     try:
         have = 0.0
         with get_portfolio_lock():
@@ -2351,37 +2485,71 @@ def _ensure_currency_funding(ib, stock_ccy: str, base_ccy: str, notional_ccy: fl
                 break
         shortfall = notional_ccy - have
         if shortfall < min_convert:
-            return
+            return True                   # already funded, or a sub-min remainder left to the loan
         qty = round(shortfall)
         pair = Forex(ccy + base)          # symbol=ccy, currency=base → BUY ccy funded by base
         with get_portfolio_lock():
             ib.qualifyContracts(pair)
-            ib.placeOrder(pair, MarketOrder("BUY", qty))
+            trade = ib.placeOrder(pair, MarketOrder("BUY", qty))
             ib.sleep(2)
-        log.info("portfolio_fx_funded", ccy=ccy, base=base, qty=qty)
+        status, filled = "", 0.0
+        try:
+            status = trade.orderStatus.status or ""
+            filled = float(trade.orderStatus.filled or 0.0)
+        except Exception:
+            pass
+        # IDEALPRO market orders fill within seconds; accept Filled or a substantially-filled order.
+        if status == "Filled" or filled >= qty * 0.9:
+            log.info("portfolio_fx_funded", ccy=ccy, base=base, qty=qty, status=status)
+            return True
+        log.warning("portfolio_fx_fund_unfilled", ccy=ccy, qty=qty, status=status, filled=filled)
+        return False
     except Exception as e:
         log.warning("portfolio_fx_fund_failed", ccy=ccy, error=str(e))
+        return False
 
 
-def _unpark_yield(ib, cfg, needed: float) -> None:
+def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool:
     """Sell enough of the cash-yield ETF (SGOV) to raise ~`needed` of cash BEFORE a stock buy, so the
     buy is funded from the parked reserve instead of opening a margin loan. SGOV is a 0–3mo T-bill ETF
-    (penny spreads, ~flat NAV) so a market sell is effectively a cash withdrawal. Sized generously and
-    capped at the holding; any excess raised simply re-parks next scan. No-op when disabled/readonly or
-    when there's nothing parked. Best-effort: failure logs and the buy proceeds (degrades to the loan)."""
+    (penny spreads, ~flat NAV) so a market sell is effectively a cash withdrawal.
+
+    Returns True if the buy MAY proceed (disabled/readonly, nothing parked, ETF-currency cash already
+    covers the need, or the sell filled). Returns False ONLY when this unpark is the AUTHORITATIVE
+    funding path — i.e. the settlement currency equals the ETF currency, so its proceeds directly fund
+    the buy (no FX leg) — liquid cash in that currency is short, AND the sell failed to fill. In that
+    one case the caller SKIPS rather than draw margin. For a foreign buy the FX leg is the real funding
+    gate, so an unpark hiccup there stays best-effort and never blocks (returns True)."""
     if not getattr(cfg, "cash_yield_enabled", False) or getattr(cfg, "readonly", False) or needed <= 0:
-        return
+        return True
     sym = getattr(cfg, "cash_yield_symbol", None)
     if not sym:
-        return
+        return True
+    park_ccy = (getattr(cfg, "cash_yield_currency", "USD") or "USD").upper()
+    # Authoritative only when the ETF's proceeds settle the buy directly (same currency, no FX leg).
+    fatal_on_fail = (settle_ccy or "").upper() == park_ccy
     try:
+        shortfall = needed
+        if fatal_on_fail:
+            have = 0.0
+            with get_portfolio_lock():
+                vals = ib.accountValues()
+            for v in vals:
+                if v.tag == "CashBalance" and (v.currency or "").upper() == park_ccy:
+                    have = float(v.value)
+                    break
+            if have >= needed:
+                return True               # settlement-currency cash already covers it — no sell needed
+            shortfall = needed - have
         with get_portfolio_lock():
             positions = ib.positions()
         pos = next((p for p in positions
                     if getattr(getattr(p, "contract", None), "symbol", None) == sym), None)
         held_shares = int(getattr(pos, "position", 0) or 0) if pos else 0
         if held_shares <= 0:
-            return
+            # Nothing parked. The upstream free_cash gate already bounds deployment to settled cash +
+            # parked, so 'nothing parked' means settled cash is the funding source — proceed.
+            return True
         contract = Stock(sym, "SMART", cfg.cash_yield_currency)
         with get_portfolio_lock():
             ib.qualifyContracts(contract)
@@ -2390,18 +2558,30 @@ def _unpark_yield(ib, cfg, needed: float) -> None:
                                         useRTH=False, formatDate=1, timeout=8)
         price = float(bars[-1].close) if bars else None
         if not price or price <= 0:
-            return
-        shares = min(held_shares, int(needed / price) + 1)
+            return not fatal_on_fail       # can't price the ETF; only fatal if its proceeds were required
+        shares = min(held_shares, int(shortfall / price) + 1)
         if shares <= 0:
-            return
+            return True
         order = MarketOrder("SELL", shares)
         order.tif = "DAY"
         with get_portfolio_lock():
-            ib.placeOrder(contract, order)
+            trade = ib.placeOrder(contract, order)
             ib.sleep(2)
-        log.info("portfolio_unparked", symbol=sym, shares=shares, raised=round(shares * price))
+        status, filled = "", 0.0
+        try:
+            status = trade.orderStatus.status or ""
+            filled = float(trade.orderStatus.filled or 0.0)
+        except Exception:
+            pass
+        if status == "Filled" or filled >= shares * 0.9:
+            log.info("portfolio_unparked", symbol=sym, shares=shares,
+                     raised=round(shares * price), status=status)
+            return True
+        log.warning("portfolio_unpark_unfilled", symbol=sym, shares=shares, status=status, filled=filled)
+        return not fatal_on_fail
     except Exception as e:
         log.warning("portfolio_unpark_error", error=str(e))
+        return not fatal_on_fail
 
 
 def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
@@ -2501,10 +2681,22 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         # Fund the foreign-currency leg up front (settlement amount: GBP order_price is in pence → ÷100
         # for pounds) so the buy doesn't silently open a margin loan in the foreign ccy.
         notional_settle = shares * (order_price / 100.0 if (ccy or "").upper() == "GBP" else order_price)
-        # Un-park the bill-ETF reserve, then convert the FX leg — so the buy is funded from the parked
-        # reserve / base cash rather than silently opening a margin loan.
-        _unpark_yield(ib, get_settings().portfolio, notional_settle)
-        _ensure_currency_funding(ib, ccy, get_settings().portfolio.base_currency, notional_settle)
+        # Un-park the bill-ETF reserve, then convert the FX leg, then GATE on the authoritative funding
+        # path for this currency. If it could not be funded, leave the suggestion 'approved' (retry next
+        # cycle) rather than place an order that silently opens a margin loan (fail-closed).
+        pcfg = get_settings().portfolio
+        unpark_ok = _unpark_yield(ib, pcfg, notional_settle, settle_ccy=ccy)
+        fx_ok = _ensure_currency_funding(ib, ccy, pcfg.base_currency, notional_settle)
+        funded = fx_ok if (ccy or "").upper() != (pcfg.base_currency or "EUR").upper() else unpark_ok
+        if not funded:
+            log.warning("portfolio_suggestion_unfunded_skip", id=suggestion_id, symbol=symbol,
+                        ccy=ccy, notional=round(notional_settle))
+            with get_db() as db:
+                s = db.query(TradeSuggestion).filter(TradeSuggestion.id == suggestion_id).first()
+                if s:
+                    s.status = "approved"   # retry next cycle; do not place an unfunded (margin) order
+                    s.review_note = f"Skipped — could not fund {ccy} leg without margin; will retry"
+            return "approved"
         order = LimitOrder("BUY", shares, order_price)
         order.tif = "DAY"
         order.outsideRth = _outside_rth_ok(ccy)

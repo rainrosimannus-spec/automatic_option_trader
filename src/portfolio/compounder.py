@@ -217,6 +217,19 @@ def reserve_unlocked_fraction(fired: int, n_tranches: int = 3) -> float:
     return min(1.0, fired / n_tranches) if n_tranches > 0 else 0.0
 
 
+def burn_in_ceiling(armed_days: int, ramp_days: int, floor: float, investable: float) -> float:
+    """Deployment ceiling during the self-arming burn-in: hold at `floor` on day 0 and ramp linearly to
+    the full `investable` over `ramp_days`, returning 0.0 once the window has elapsed (the caller then
+    disarms). This is a HARD cap on TOTAL committed capital — separate from, and usually looser than, the
+    lump-defusal pace. Its job is to bound real exposure while the freshly-live FX / unpark / order paths
+    prove out, including capping a crash dump, for the first ramp_days of operation after a big deposit."""
+    ramp_days = max(1, int(ramp_days))
+    if armed_days >= ramp_days:
+        return 0.0
+    frac = max(0.0, armed_days) / ramp_days
+    return floor + frac * max(0.0, investable - floor)
+
+
 def backstop_unlocked_fraction(days_since_start: int, start_days: int = 365,
                                bleed_days: int = 365) -> float:
     """Time-based backstop: if no crash tranche has fired by `start_days`, deploy the reserve

@@ -28,6 +28,11 @@ from src.portfolio.connection import (
 log = get_logger(__name__)
 
 _consecutive_disconnect_checks: int = 0
+# Scan liveness — proof the portfolio buy-scan is actually completing. job_portfolio_scan stamps
+# _last_successful_portfolio_scan on every clean run; job_portfolio_health_check (every 5 min) pages
+# if it goes stale. Seeded to "now" at import so a fresh process doesn't false-alarm before its first scan.
+_last_successful_portfolio_scan: float = time.time()
+_last_scan_stale_alert: float = 0.0
 
 
 def job_portfolio_health_check(cfg: PortfolioConfig):
@@ -99,6 +104,28 @@ def job_portfolio_health_check(cfg: PortfolioConfig):
     except Exception as e:
         log.warning("portfolio_health_snapshot_failed", error=str(e))
 
+    # ── Scan liveness watchdog ──────────────────────────────────────────────────────────────
+    # Page if no buy-scan has COMPLETED within scan_staleness_alert_hours. The scan job swallows its
+    # own exceptions (so the scheduler survives) — this is what makes a silent stall visible. Re-pages
+    # at most once per staleness window so a prolonged outage doesn't spam every 5 minutes.
+    try:
+        global _last_scan_stale_alert
+        stale_h = float(getattr(cfg, "scan_staleness_alert_hours", 6.0) or 0.0)
+        if stale_h > 0:
+            ago_h = (time.time() - _last_successful_portfolio_scan) / 3600.0
+            if ago_h >= stale_h and (time.time() - _last_scan_stale_alert) >= stale_h * 3600.0:
+                _last_scan_stale_alert = time.time()
+                log.error("portfolio_scan_stale", hours_since=round(ago_h, 1), threshold_h=stale_h)
+                from src.core.alerts import get_alert_manager
+                get_alert_manager().critical(
+                    "Portfolio scan STALLED",
+                    f"No portfolio buy-scan has completed in {ago_h:.1f}h "
+                    f"(threshold {stale_h:.0f}h). Deployment is paused — check the portfolio IBKR "
+                    f"gateway and scheduler (grep logs for portfolio_scan_job_error).",
+                )
+    except Exception as e:
+        log.warning("portfolio_scan_liveness_check_failed", error=str(e))
+
 
 def job_portfolio_scan(cfg: PortfolioConfig):
     """Scan watchlist for buy opportunities."""
@@ -111,6 +138,10 @@ def job_portfolio_scan(cfg: PortfolioConfig):
             ib = get_portfolio_ib()
             buyer = PortfolioBuyer(ib, cfg)
             bought = buyer.run_scan()
+            # Stamp liveness ONLY on a clean completion — a scan that raised must look stale so the
+            # health check can page. A scan that ran but found nothing to buy still "completed".
+            global _last_successful_portfolio_scan
+            _last_successful_portfolio_scan = time.time()
             log.info("portfolio_scan_job_done", bought=bought)
         except Exception as e:
             log.error("portfolio_scan_job_error", error=str(e))

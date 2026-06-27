@@ -105,6 +105,55 @@ def test_accrual_banks_small_pace_into_one_min_order():
     assert banked_after < min_buy
 
 
+def _burn_in_clamp(budget, cap, deployed_eff):
+    """Mirror of run_compounder_scan's burn-in clamp: cap TOTAL committed capital at `cap`."""
+    if cap <= 0:
+        return budget                                  # disabled
+    return min(budget, max(0.0, cap - deployed_eff))
+
+
+def test_burn_in_cap_clamps_budget_to_remaining_room():
+    # cap $300k, already committed $250k → only $50k of room left regardless of the day's budget
+    assert _burn_in_clamp(120_000, cap=300_000, deployed_eff=250_000) == 50_000
+    # under the cap with a small budget → unaffected
+    assert _burn_in_clamp(40_000, cap=300_000, deployed_eff=100_000) == 40_000
+    # at/over the cap → no new deployment (parking still runs in the real scan)
+    assert _burn_in_clamp(120_000, cap=300_000, deployed_eff=300_000) == 0.0
+    assert _burn_in_clamp(120_000, cap=300_000, deployed_eff=340_000) == 0.0
+    # disabled (0) is a no-op — full budget passes through
+    assert _burn_in_clamp(120_000, cap=0.0, deployed_eff=9_000_000) == 120_000
+
+
+def test_burn_in_ceiling_ramps_floor_to_full_then_lifts():
+    floor, inv, ramp = 250_000.0, 10_670_000.0, 21
+    # day 0 → hold at the floor
+    assert cmp.burn_in_ceiling(0, ramp, floor, inv) == floor
+    # midway → roughly half of (full - floor) above the floor
+    mid = cmp.burn_in_ceiling(ramp // 2, ramp, floor, inv)
+    assert abs(mid - (floor + (10 / 21) * (inv - floor))) < 1
+    # last day inside the window → just below full
+    assert cmp.burn_in_ceiling(ramp - 1, ramp, floor, inv) < inv
+    # window elapsed → 0.0 (no cap; caller disarms)
+    assert cmp.burn_in_ceiling(ramp, ramp, floor, inv) == 0.0
+    assert cmp.burn_in_ceiling(ramp + 5, ramp, floor, inv) == 0.0
+    # ceiling never dips below the floor even with a tiny investable
+    assert cmp.burn_in_ceiling(0, ramp, floor, investable=100_000.0) == floor
+
+
+def _should_arm(total_dep, seen, trigger):
+    """Mirror of the buyer's arm trigger: a cumulative-deposit jump >= trigger arms the burn-in."""
+    return (total_dep - seen) >= trigger
+
+
+def test_burn_in_arms_on_large_deposit_only():
+    # a $1M deposit on top of the $60k baseline arms it; small/zero deltas do not
+    assert _should_arm(1_060_000, 60_000, 500_000) is True
+    assert _should_arm(60_000, 60_000, 500_000) is False        # no new deposit
+    assert _should_arm(110_000, 60_000, 500_000) is False       # $50k top-up, below trigger
+    # a deposit-table purge (total drops) never arms
+    assert _should_arm(0, 60_000, 500_000) is False
+
+
 def test_crash_dump_ignores_lump_stretch_and_throttle():
     # In a fired tranche, deploy the full remaining gap regardless of lump horizon / froth throttle.
     b = _budget(deployed=100_000.0, crash=True, throttle=0.0, lump_horizon=126)

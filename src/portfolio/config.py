@@ -121,6 +121,24 @@ class CompounderConfig(BaseModel):
     # ── Concentration caps on NEW target sizing (winners still run untrimmed — these gate buys only) ──
     per_name_abs_ceiling: float = 750000.0  # hard $ ceiling per name on top of the 6%/10% pct caps
     sector_cap_pct: float = 0.30            # max 30% of NLV targeted into any single sector
+    # ── Burn-in deployment cap (software-trust gate, NOT market timing) ───────────────────────────
+    # Hard ceiling on TOTAL committed capital (filled holdings + working orders + pending suggestions).
+    # While bound, the scan deploys nothing new (parking/treasury still runs). Purpose: before trusting
+    # the live FX / cash-unpark / order-placement paths with a large incoming lump, cap real exposure and
+    # let the funding paths prove out on real fills first. Crash dump is NOT exempt (don't lever into a
+    # half-validated path). Two ways to engage — the manual flat cap always wins when set:
+    #   • burn_in_max_deployed > 0  — explicit flat ceiling you arm/lift by hand (0 = off).
+    #   • burn_in_auto_arm          — SELF-arming: when cumulative deposits jump by >= burn_in_trigger_
+    #     deposit (a large lump starting to land, e.g. $1M/day toward $11M), hold deployment to
+    #     burn_in_floor and ramp the ceiling linearly to full over burn_in_ramp_days, then auto-disarm.
+    #     The small pre-deposit account (no big deposit) is NEVER throttled. IMPORTANT: deploy/restart
+    #     this BEFORE the transfers begin so the arrival registers as a jump — a lump already sitting in
+    #     the account on the first scan is taken as the baseline and won't arm.
+    burn_in_max_deployed: float = 0.0          # manual flat ceiling (0 = off); overrides auto-arm when > 0
+    burn_in_auto_arm: bool = True              # self-arm the burn-in when a large deposit lands
+    burn_in_trigger_deposit: float = 500000.0  # cumulative new-deposit jump (USD) that arms the burn-in
+    burn_in_floor: float = 250000.0            # day-0 deployment ceiling while armed
+    burn_in_ramp_days: int = 21                # ramp the ceiling floor→full over this many days, then disarm
 
 
 class PortfolioConfig(BaseModel):
@@ -218,3 +236,10 @@ class PortfolioConfig(BaseModel):
     check_interval_hours: int = 2   # buy-scan cadence; re-prices resting orders to the current market
     scan_hour: int = 10
     scan_minute: int = 30
+
+    # Scan liveness: alert if no portfolio buy-scan has COMPLETED within this many hours. The scan job
+    # already catches its own exceptions (logs portfolio_scan_job_error) so a crash won't take down the
+    # scheduler — but nothing noticed if it silently stopped deploying. The health check (every 5 min)
+    # compares now() against the last successful scan and pages once it goes stale. Set comfortably above
+    # check_interval_hours so a normal idle gap (off-hours) doesn't false-alarm.
+    scan_staleness_alert_hours: float = 6.0
