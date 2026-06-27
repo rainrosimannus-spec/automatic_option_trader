@@ -121,6 +121,9 @@ def _migrate_columns(engine):
         ("consigliere_memos", "impact_eur_month", "REAL"),
         ("consigliere_memos", "sample_n", "INTEGER"),
         ("consigliere_memos", "confidence", "VARCHAR(10)"),
+        # IPO rider — SEC-parsed lock-up confidence (June 2026)
+        ("ipo_watchlist", "lockup_confidence", "VARCHAR(12)"),
+        ("ipo_watchlist", "lockup_source", "VARCHAR(20)"),
     ]
     from sqlalchemy import text
     with engine.connect() as conn:

@@ -1,22 +1,22 @@
 """
-IPO Rider — execution engine.
+IPO Rider — execution engine (v2).
 
-Phase 1 (Day-one flip):
-  1. Poll IBKR every 30s checking if ticker is tradeable
-  2. Once found: wait for first trade to print (opening auction done)
-  3. Buy market order
-  4. Place trailing stop sell + hard stop-loss
-  5. Monitor until sold
+Phase 1 — opening-day "slack" scalp (small/optional; backtest edge is thin, ~break-even):
+  Wait for the first daily CLOSE; flip only names that closed >=3% above their open (day-1 supply
+  absorbed → buyers control day 2), enter day 2, exit on a trailing stop SCALED to the day-1 range
+  + a hard stop. No blind 20-min buy, no opening-print "chase" gate (that gate was inert anyway).
 
-Phase 2 (Lockup re-entry):
-  1. Record pre-lockup price a few days before lockup expiry
-  2. After lockup date: monitor for dip
-  3. Place trailing stop buy order (triggers on bounce from low)
-  4. Once filled: record as long-term portfolio holding
+Phase 2 — post-lockup long entry (the real edge: +16.8% median / 66% win in the last-12mo backtest):
+  Resolve the REAL lock-up date from the SEC prospectus (src/ipo/lockup — lock-ups are 90/120/180d,
+  NOT uniform), record the pre-lockup price, and on the post-lockup forced-supply dip HAND THE NAME
+  OFF to the compounder universe, which sizes & accumulates it with its full NLV-scaled / capped / DCA
+  logic. Confirmed dates auto-hand-off; estimates only alert. Phase 2 places NO IBKR orders.
+
+No local event loop here — the jobs hand in the right connection (Phase 1 = options, Phase 2 = portfolio),
+so the trader inherits it. (The old homegrown asyncio.new_event_loop() footgun is gone.)
 """
 from __future__ import annotations
 
-import asyncio
 import math
 from datetime import datetime, timedelta
 from typing import Optional
@@ -30,12 +30,38 @@ from src.portfolio.models import PortfolioHolding, PortfolioTransaction
 
 log = get_logger(__name__)
 
+# NOTE: no local event-loop management here. The IPO jobs (src/scheduler/jobs.py) already establish
+# the correct loop for the connection they hand in — Phase 1 on the options conn, Phase 2 on the
+# portfolio conn — so the trader inherits it. A homegrown asyncio.new_event_loop() here was the
+# classic "standalone loop silently times out" footgun; it's gone.
 
-def _ensure_event_loop():
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
+
+# ── Phase 1 (opening-day "slack" flip) tunables ─────────────────────────────────────────────
+# Backtest (102 liquid US IPOs, last 12mo): the day-1 CLOSE-vs-OPEN tell separates runners from
+# faders (closed-strong +1.0% mean vs closed-weak −4.5%); the opening *premium vs offer* is useless.
+# So we no longer buy blind 20min in — we wait for the first daily CLOSE, only flip names that closed
+# strong, and trail with a stop scaled to the name's own day-1 range (a fixed 8% trail gets shaken out
+# by the noise of a 30-90%-range debut). Phase 1 is a small scalp; the real edge is Phase 2 (post-lockup).
+FLIP_MIN_CLOSE_ABOVE_OPEN_PCT = 3.0   # day-1 close must be >= this % above day-1 open to flip
+FLIP_TRAIL_MIN_PCT = 10.0             # vol-scaled trailing-stop floor
+FLIP_TRAIL_MAX_PCT = 25.0             # …and cap
+FLIP_MAX_ENTRY_DAY = 4                # only enter within the first N trading days of listing (no chasing)
+
+
+def flip_decision(d_open: float, d_high: float, d_low: float, d_close: float) -> dict:
+    """Pure Phase-1 decision from the day-1 OHLC: should we flip, and at what trailing-stop %.
+
+    Enter only if the first session CLOSED at least FLIP_MIN_CLOSE_ABOVE_OPEN_PCT above its OPEN
+    (day-1 supply absorbed → buyers control day 2). Trailing stop is scaled to the day-1 range so a
+    violently volatile debut isn't stopped out by its own noise. Returns {enter, trail_pct, reason}."""
+    if not d_open or d_open <= 0:
+        return {"enter": False, "trail_pct": FLIP_TRAIL_MAX_PCT, "reason": "no day-1 open"}
+    close_above = (d_close - d_open) / d_open * 100.0
+    rng = (d_high - d_low) / d_open * 100.0 if d_high and d_low else FLIP_TRAIL_MIN_PCT
+    trail = max(FLIP_TRAIL_MIN_PCT, min(FLIP_TRAIL_MAX_PCT, rng))
+    enter = close_above >= FLIP_MIN_CLOSE_ABOVE_OPEN_PCT
+    return {"enter": enter, "trail_pct": round(trail, 1),
+            "reason": f"close {close_above:+.1f}% vs open, day1 range {rng:.0f}%"}
 
 
 class IpoTrader:
@@ -56,7 +82,6 @@ class IpoTrader:
         - Expected date is today or in the past
         Called by scheduler every 30 seconds during market hours.
         """
-        _ensure_event_loop()
         today = datetime.utcnow().strftime("%Y-%m-%d")
 
         with get_db() as db:
@@ -83,59 +108,77 @@ class IpoTrader:
                 continue  # invalid date format
 
             try:
-                tradeable, open_price = self._is_ticker_tradeable(ipo.expected_ticker, ipo.exchange, ipo.currency)
-                if tradeable:
-                    log.info("ipo_ticker_found", ticker=ipo.expected_ticker, company=ipo.company_name)
-                    self._execute_day_one_buy(ipo, open_price)
+                listing = self._get_listing(ipo.expected_ticker, ipo.exchange, ipo.currency)
+                # days_listed counts completed daily bars: 1 = debut session still open → wait for the
+                # CLOSE before judging. Only flip within the first few sessions (no chasing a week-old IPO).
+                if not listing or listing["days_listed"] < 2:
+                    continue
+                if listing["days_listed"] > FLIP_MAX_ENTRY_DAY:
+                    self._skip_flip(ipo, f"listed >{FLIP_MAX_ENTRY_DAY} sessions ago — no chase")
+                    continue
+                d1 = listing["day1"]
+                decision = flip_decision(d1["open"], d1["high"], d1["low"], d1["close"])
+                if not decision["enter"]:
+                    self._skip_flip(ipo, f"day-1 closed weak ({decision['reason']})")
+                    continue
+                log.info("ipo_flip_armed", ticker=ipo.expected_ticker,
+                         company=ipo.company_name, reason=decision["reason"])
+                self._execute_day_two_buy(ipo, d1, decision)
             except Exception as e:
                 log.debug("ipo_scan_check", ticker=ipo.expected_ticker, error=str(e))
 
-    def _is_ticker_tradeable(self, ticker: str, exchange: str, currency: str) -> bool:
-        """
-        Check if a ticker exists and has traded (opening auction complete).
-        Extra careful to avoid matching existing stocks with similar tickers.
-        """
+    def _skip_flip(self, ipo: IpoWatchlist, reason: str):
+        """The day-1 close didn't qualify (weak, or too late) — skip the Phase-1 scalp and route the
+        name straight to Phase 2 (the real edge is post-lockup anyway)."""
+        log.info("ipo_flip_skipped", ticker=ipo.expected_ticker, reason=reason)
+        with get_db() as db:
+            entry = db.query(IpoWatchlist).filter(IpoWatchlist.id == ipo.id).first()
+            if entry:
+                entry.status = "lockup_waiting" if entry.lockup_enabled else "flip_done"
+                entry.updated_at = datetime.utcnow()
+
+    def _get_listing(self, ticker: str, exchange: str, currency: str) -> Optional[dict]:
+        """Listing state for a freshly-public ticker, or None if not yet tradeable.
+
+        Returns {days_listed, day1:{open,high,low,close,date}, last}. days_listed is the count of
+        completed daily bars (1 = debut session still in progress)."""
         contract = Stock(ticker, exchange, currency)
         qualified = self.ib.qualifyContracts(contract)
-
         if not qualified:
-            return False
-
-        # Verify this is actually a new listing, not an existing stock
-        # Check if it has more than 1 day of trading history — if yes, it's NOT a new IPO
+            return None
         try:
             bars = self.ib.reqHistoricalData(
-                contract, endDateTime="",
-                durationStr="5 D", barSizeSetting="1 day",
-                whatToShow="TRADES", useRTH=True,
-                formatDate=1, timeout=5,
+                contract, endDateTime="", durationStr="10 D",
+                barSizeSetting="1 day", whatToShow="TRADES", useRTH=True,
+                formatDate=1, timeout=8,
             )
-            if bars and len(bars) > 2:
-                # Has multiple days of history — this is an existing stock, not a new IPO
-                return False
         except Exception:
-            pass  # no history = could be brand new, continue checking
+            return None
+        if not bars:
+            return None
+        d1 = bars[0]
+        last = None
+        try:
+            self.ib.reqMarketDataType(1)   # live data only, not delayed
+            td = self.ib.reqMktData(contract, "", False, False)
+            self.ib.sleep(2)
+            last = td.last
+            self.ib.cancelMktData(contract)
+        except Exception:
+            pass
+        if not last or math.isnan(last) or last <= 0:
+            last = d1.close
+        return {
+            "days_listed": len(bars),
+            "day1": {"open": d1.open, "high": d1.high, "low": d1.low,
+                     "close": d1.close, "date": str(d1.date)},
+            "last": last,
+        }
 
-        # Check if there's a last price (meaning first trade has printed = auction done)
-        self.ib.reqMarketDataType(1)  # live data only, not delayed
-        ticker_data = self.ib.reqMktData(contract, "", False, False)
-        self.ib.sleep(3)  # wait for data
-
-        last = ticker_data.last
-        self.ib.cancelMktData(contract)
-
-        if last and not math.isnan(last) and last > 0:
-            return True, last
-
-        return False, None
-
-    def _execute_day_one_buy(self, ipo: IpoWatchlist, open_price: float = None):
-        """Buy shares and set up trailing stop + hard stop-loss.
-
-        open_price: the price at first detection (opening print).
-        We wait at least 20 minutes after market open AND verify price
-        hasn't already run more than 8% above the opening print.
-        """
+    def _execute_day_two_buy(self, ipo: IpoWatchlist, d1: dict, decision: dict):
+        """Day-2 entry on a name that CLOSED strong on its debut (see flip_decision). Market buy, then
+        a trailing stop SCALED to the day-1 range + a hard stop-loss. No opening-print 'chase' gate —
+        the entry is gated on the day-1 close, not on intraday premium (that gate was inert anyway)."""
         from datetime import datetime as dt
         import pytz
 
@@ -169,19 +212,6 @@ class IpoTrader:
             return
 
         self.ib.cancelMktData(contract)
-
-        # ── Price gate: don't buy if already up >8% from opening print ──
-        max_premium_pct = 8.0
-        if open_price and open_price > 0 and price > 0:
-            run_pct = ((price - open_price) / open_price) * 100
-            if run_pct > max_premium_pct:
-                log.warning("ipo_price_already_ran",
-                            ticker=ipo.expected_ticker,
-                            open=round(open_price, 2),
-                            current=round(price, 2),
-                            run_pct=round(run_pct, 1),
-                            max_pct=max_premium_pct)
-                return  # missed the entry, don't chase
 
         # Calculate shares based on configured amount
         shares = int(ipo.flip_amount / price)
@@ -236,7 +266,7 @@ class IpoTrader:
         trailing_order.action = "SELL"
         trailing_order.totalQuantity = shares
         trailing_order.orderType = "TRAIL"
-        trailing_order.trailingPercent = ipo.flip_trailing_pct
+        trailing_order.trailingPercent = decision.get("trail_pct", ipo.flip_trailing_pct)
         trailing_order.tif = "GTC"
 
         trailing_trade = self.ib.placeOrder(contract, trailing_order)
@@ -272,7 +302,6 @@ class IpoTrader:
         OR if max hold days have been exceeded (force sell at market).
         Called by scheduler periodically.
         """
-        _ensure_event_loop()
 
         with get_db() as db:
             active_flips = db.query(IpoWatchlist).filter(
@@ -479,52 +508,34 @@ class IpoTrader:
     # ══════════════════════════════════════════════════════════
 
     def check_lockup_entries(self):
-        """
-        Monitor IPOs approaching or past lockup expiry.
-        - Record pre-lockup price 3 days before
-        - After lockup: place trailing stop buy when dip target reached
-        Called by scheduler daily.
-        """
-        _ensure_event_loop()
+        """Phase 2 — the real edge: enter a LONG-TERM position after lock-up expiry (forced-supply dip),
+        sized and accumulated by the COMPOUNDER (not a flat lockup_amount). Resolves the real lock-up
+        date from the SEC prospectus, records the pre-lockup reference price, and on the post-lockup dip
+        HANDS THE NAME OFF to the compounder universe. Places NO IBKR orders. Called daily."""
         today = datetime.utcnow().strftime("%Y-%m-%d")
-
         with get_db() as db:
-            lockup_waiting = db.query(IpoWatchlist).filter(
+            names = db.query(IpoWatchlist).filter(
                 IpoWatchlist.status.in_(["lockup_waiting", "flip_done"]),
                 IpoWatchlist.lockup_enabled == True,
-                IpoWatchlist.lockup_date.isnot(None),
             ).all()
-
-        for ipo in lockup_waiting:
+        for ipo in names:
             try:
                 self._process_lockup(ipo, today)
             except Exception as e:
                 log.error("ipo_lockup_check_error", ticker=ipo.expected_ticker, error=str(e))
 
-        # Also check active lockup trailing buy orders
-        with get_db() as db:
-            lockup_trading = db.query(IpoWatchlist).filter(
-                IpoWatchlist.status == "lockup_trading",
-            ).all()
-
-        for ipo in lockup_trading:
-            try:
-                self._check_lockup_fill(ipo)
-            except Exception as e:
-                log.error("ipo_lockup_fill_check_error", ticker=ipo.expected_ticker, error=str(e))
-
     def _process_lockup(self, ipo: IpoWatchlist, today: str):
-        """Handle pre-lockup price recording and post-lockup trailing buy."""
-        lockup = ipo.lockup_date
+        """Resolve the real lock-up date, record the pre-lockup price, and hand the name to the
+        compounder on the post-lockup dip. Auto only on a CONFIRMED date; alert on an estimate."""
+        lockup, confidence = self._ensure_lockup_date(ipo, today)
         if not lockup:
             return
 
-        # Record pre-lockup price 3 days before lockup
         from datetime import datetime as dt
         lockup_dt = dt.strptime(lockup, "%Y-%m-%d")
-        pre_lockup_start = (lockup_dt - timedelta(days=3)).strftime("%Y-%m-%d")
-
-        if today >= pre_lockup_start and not ipo.pre_lockup_price:
+        # Record the pre-lockup reference ~2 weeks (≈10 trading days) before expiry (matches backtest).
+        pre_start = (lockup_dt - timedelta(days=14)).strftime("%Y-%m-%d")
+        if today >= pre_start and not ipo.pre_lockup_price:
             price = self._get_current_price(ipo.expected_ticker, ipo.exchange, ipo.currency)
             if price and price > 0:
                 with get_db() as db:
@@ -534,19 +545,115 @@ class IpoTrader:
                         entry.updated_at = datetime.utcnow()
                 log.info("ipo_pre_lockup_price_recorded", ticker=ipo.expected_ticker, price=price)
 
-        # After lockup date: check if dip target reached, place trailing buy
+        # After expiry: on the forced-supply dip, hand off to the compounder (confirmed dates only).
         if today >= lockup and ipo.pre_lockup_price:
             price = self._get_current_price(ipo.expected_ticker, ipo.exchange, ipo.currency)
             if not price or price <= 0:
                 return
-
             dip_pct = ((ipo.pre_lockup_price - price) / ipo.pre_lockup_price) * 100
+            if dip_pct < ipo.lockup_dip_pct:
+                return
+            log.info("ipo_lockup_dip_reached", ticker=ipo.expected_ticker,
+                     pre_lockup=ipo.pre_lockup_price, current=price,
+                     dip_pct=round(dip_pct, 1), confidence=confidence)
+            if confidence == "confirmed":
+                self._handoff_to_compounder(ipo, price, dip_pct)
+            else:
+                self._alert_lockup_estimate(ipo, price, dip_pct)
 
-            if dip_pct >= ipo.lockup_dip_pct:
-                log.info("ipo_lockup_dip_reached", ticker=ipo.expected_ticker,
-                         pre_lockup=ipo.pre_lockup_price, current=price,
-                         dip_pct=round(dip_pct, 1))
-                self._place_lockup_trailing_buy(ipo, price)
+    def _ensure_lockup_date(self, ipo: IpoWatchlist, today: str) -> tuple[Optional[str], str]:
+        """Return (lockup_date, confidence). Resolves the REAL lock-up period from the SEC prospectus
+        when we don't already hold a confirmed one — lock-ups are 90/120/180d, not uniform (src/ipo/lockup)."""
+        if ipo.lockup_date and (ipo.lockup_confidence or "") == "confirmed":
+            return ipo.lockup_date, "confirmed"
+        ipo_date = ipo.expected_date
+        if not ipo_date:
+            return ipo.lockup_date, (ipo.lockup_confidence or "low")
+        try:
+            from src.ipo.lockup import resolve_lockup
+            res = resolve_lockup(ipo.expected_ticker, ipo_date)
+        except Exception as e:
+            log.warning("ipo_lockup_resolve_error", ticker=ipo.expected_ticker, error=str(e))
+            res = None
+        if res:
+            with get_db() as db:
+                entry = db.query(IpoWatchlist).filter(IpoWatchlist.id == ipo.id).first()
+                if entry:
+                    entry.lockup_date = res["end_date"]
+                    entry.lockup_confidence = res["confidence"]
+                    entry.lockup_source = res["source"]
+                    entry.updated_at = datetime.utcnow()
+            return res["end_date"], res["confidence"]
+        if ipo.lockup_date:
+            return ipo.lockup_date, (ipo.lockup_confidence or "low")
+        # Last resort: a flagged 180-day ESTIMATE (never auto-traded — only alerts).
+        from datetime import datetime as dt
+        try:
+            est = (dt.strptime(ipo_date, "%Y-%m-%d") + timedelta(days=180)).strftime("%Y-%m-%d")
+        except ValueError:
+            return None, "none"
+        with get_db() as db:
+            entry = db.query(IpoWatchlist).filter(IpoWatchlist.id == ipo.id).first()
+            if entry:
+                entry.lockup_date = est
+                entry.lockup_confidence = "low"
+                entry.lockup_source = "estimate_180d"
+                entry.updated_at = datetime.utcnow()
+        return est, "low"
+
+    def _handoff_to_compounder(self, ipo: IpoWatchlist, price: float, dip_pct: float):
+        """Add the unlocked name to the COMPOUNDER universe so the compounder sizes & accumulates it with
+        its own logic (NLV-scaled, conviction-weighted, capped, DCA'd, fail-closed funding) — not a flat
+        lockup_amount. The IPO rider is only the timing gate. In suggestion_mode the compounder proposes
+        the buy for approval (human-gated — can't auto-pollute the book). No IBKR order placed here."""
+        from src.portfolio.models import PortfolioWatchlist
+        sym = ipo.expected_ticker
+        with get_db() as db:
+            exists = db.query(PortfolioWatchlist).filter(PortfolioWatchlist.symbol == sym).first()
+            if not exists:
+                db.add(PortfolioWatchlist(
+                    symbol=sym, name=ipo.company_name,
+                    exchange=ipo.exchange or "SMART", currency=ipo.currency or "USD",
+                    sector="", tier="growth", category="growth",
+                    # Modest starting scores so the compounder gives it a real target; the monthly
+                    # screen re-scores it properly from fundamentals on its next run.
+                    growth_score=60.0, quality_score=55.0, forward_growth_score=55.0,
+                    valuation_score=50.0, fundamentals_complete=False,
+                    rationale=f"IPO post-lockup entry (sourced by IPO rider, dip {dip_pct:.0f}%)",
+                    screened_at=datetime.utcnow(),
+                ))
+            entry = db.query(IpoWatchlist).filter(IpoWatchlist.id == ipo.id).first()
+            if entry:
+                entry.status = "lockup_done"
+                entry.lockup_entry_price = price
+                entry.lockup_entry_time = datetime.utcnow()
+                entry.updated_at = datetime.utcnow()
+        log.info("ipo_handoff_to_compounder", ticker=sym, price=price, dip_pct=round(dip_pct, 1))
+        try:
+            from src.core.alerts import get_alert_manager
+            get_alert_manager().send(
+                title=f"🎯 IPO post-lockup → Compounder: {sym}",
+                body=(f"{ipo.company_name}\nLock-up expired; dipped {dip_pct:.0f}% from pre-lockup.\n"
+                      f"Added to the compounder universe — it sizes & accumulates (suggestion-gated)."),
+                priority="high", tags="ipo",
+            )
+        except Exception:
+            pass
+
+    def _alert_lockup_estimate(self, ipo: IpoWatchlist, price: float, dip_pct: float):
+        """Lock-up date is only an ESTIMATE (couldn't confirm from the prospectus). Don't auto-trade a
+        possibly-wrong unlock — alert the user to confirm the date manually."""
+        log.info("ipo_lockup_estimate_dip", ticker=ipo.expected_ticker, dip_pct=round(dip_pct, 1))
+        try:
+            from src.core.alerts import get_alert_manager
+            get_alert_manager().send(
+                title=f"⚠️ IPO lock-up dip (UNCONFIRMED date): {ipo.expected_ticker}",
+                body=(f"{ipo.company_name} dipped {dip_pct:.0f}% near an ESTIMATED lock-up date. "
+                      f"Confirm the real lock-up date before entering."),
+                priority="default", tags="ipo",
+            )
+        except Exception:
+            pass
 
     def _place_lockup_trailing_buy(self, ipo: IpoWatchlist, current_price: float):
         """Place trailing stop buy order to catch the bounce after lockup dip."""
