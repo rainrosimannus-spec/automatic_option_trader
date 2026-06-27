@@ -1912,6 +1912,30 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
         except Exception:
             pass
 
+    # ── TTM override (freshness) ──────────────────────────────────────────────────────────────
+    # The annual revenue_yoy_pct / margin LEVELS above lag up to ~12 months: a name that accelerated
+    # after its fiscal year-end won't show it until the next annual report drops (e.g. AAPL's latest
+    # annual is Sep-2025 even mid-2026, missing two reported quarters). Recompute the GROWTH-RATE and
+    # CURRENT-PROFITABILITY signals from the last 8 quarters — TTM vs prior TTM — so they refresh each
+    # earnings report and stay seasonality-free (full trailing years, not a single quarter). The
+    # MULTI-YEAR structural-quality signals (5yr ROIC, 3yr margin/R&D/dilution/goodwill TRENDS,
+    # neg-NI-years) intentionally remain on annual data — they measure durability, not this quarter.
+    # Falls back to the annual values if a name lacks 8 quarters of history (e.g. a recent IPO).
+    q_income = _fmp_get("income-statement", symbol, {"limit": 8, "period": "quarter"})
+    if q_income and len(q_income) >= 8:
+        try:
+            q_rev = [(x.get("revenue") or 0) for x in q_income]
+            ttm_rev = sum(q_rev[0:4])
+            prior_ttm_rev = sum(q_rev[4:8])
+            if prior_ttm_rev:
+                result["revenue_yoy_pct"] = (ttm_rev - prior_ttm_rev) / abs(prior_ttm_rev) * 100
+            if ttm_rev and ttm_rev > 0:
+                result["gross_margin_pct"] = sum((x.get("grossProfit") or 0) for x in q_income[0:4]) / ttm_rev * 100
+                result["operating_margin_pct"] = sum((x.get("operatingIncome") or 0) for x in q_income[0:4]) / ttm_rev * 100
+            result["net_income_latest"] = sum((x.get("netIncome") or 0) for x in q_income[0:4])
+        except Exception:
+            pass
+
     # ── Ratios: PE, PEG, dividend yield, payout ──
     ratios = _fmp_get("ratios", symbol, {"limit": 5})
     if ratios and len(ratios) >= 1:
