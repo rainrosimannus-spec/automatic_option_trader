@@ -347,14 +347,28 @@ def daily_deploy_budget(investable: float, base_pct: float, dca_horizon_days: in
     if crash_active:
         budget = remaining_gap
     else:
-        base_target = max(1.0, investable * base_pct)
-        start_gap = remaining_gap + max(0.0, deployed_today)        # gap as of start-of-day
-        gap_frac = max(0.0, min(1.0, start_gap / base_target))      # 1 = fresh full lump, ~0 = topped up
-        horizon = dca_horizon_days + max(0, lump_horizon_days - dca_horizon_days) * gap_frac
-        base_pace = (investable * base_pct / max(1.0, horizon)) * max(0.0, min(1.0, pace_throttle))
+        base_pace = base_daily_pace(investable, base_pct, dca_horizon_days, remaining_gap,
+                                    deployed_today, lump_horizon_days, pace_throttle)
         daily_room = max(0.0, base_pace - max(0.0, deployed_today))  # cap NEW deployment per DAY
         budget = min(remaining_gap, daily_room)
     return max(0.0, min(budget, free_cash))
+
+
+def base_daily_pace(investable: float, base_pct: float, dca_horizon_days: int,
+                    remaining_gap: float, deployed_today: float = 0.0,
+                    lump_horizon_days: int = 126, pace_throttle: float = 1.0) -> float:
+    """The non-crash per-DAY base deployment rate (lump-stretched horizon × froth throttle).
+
+    Exposed separately from daily_deploy_budget so the caller can size an ACCRUAL WINDOW when this
+    rate falls below the minimum order size: on a large account a throttled/lump-stretched pace (e.g.
+    ~$19k/day) can be below min_buy (e.g. $44k at $11M NLV), which would stall deployment entirely
+    (every brick < min_buy). The caller banks this pace over ceil(min_buy / pace) days and deploys one
+    fee-efficient ~min_buy chunk when the bank clears the floor — average pace stays at base_pace."""
+    base_target = max(1.0, investable * base_pct)
+    start_gap = max(0.0, remaining_gap) + max(0.0, deployed_today)  # gap as of start-of-day
+    gap_frac = max(0.0, min(1.0, start_gap / base_target))          # 1 = fresh full lump, ~0 = topped up
+    horizon = dca_horizon_days + max(0, lump_horizon_days - dca_horizon_days) * gap_frac
+    return (investable * base_pct / max(1.0, horizon)) * max(0.0, min(1.0, pace_throttle))
 
 
 def single_buy_bounds(nlv: float, cc) -> tuple[float, float]:

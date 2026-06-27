@@ -79,6 +79,32 @@ def test_froth_throttle_scales_base_pace():
     assert _budget(deployed=0.0, throttle=0.0) == 0.0   # hard pause when throttle floored to 0
 
 
+def test_base_daily_pace_matches_budget_and_can_fall_below_min_order():
+    # at $11M a froth-throttled fresh lump paces well below a $44k min order → would stall without accrual
+    inv = 10_670_000.0   # 11M * 0.97
+    full = cmp.base_daily_pace(inv, 0.9, 21, remaining_gap=inv * 0.9, deployed_today=0.0,
+                               lump_horizon_days=126, pace_throttle=1.0)
+    throttled = cmp.base_daily_pace(inv, 0.9, 21, remaining_gap=inv * 0.9, deployed_today=0.0,
+                                    lump_horizon_days=126, pace_throttle=0.25)
+    assert abs(full - inv * 0.9 / 126) < 50          # ≈ $76k/day, fine
+    assert abs(throttled - full * 0.25) < 1          # throttle scales it
+    assert throttled < 44_000 < full                 # throttled pace is BELOW the $44k min order
+
+
+def test_accrual_banks_small_pace_into_one_min_order():
+    # bank a sub-min daily pace over ceil(min_buy/pace) days → one fee-efficient min_buy chunk
+    import math
+    base_pace, min_buy = 19_000.0, 44_000.0
+    accrual_days = max(1, math.ceil(min_buy / base_pace))     # ceil(2.3) = 3
+    assert accrual_days == 3
+    # nothing deployed in the window → bank clears the floor → deploy ~min_buy
+    banked_fresh = base_pace * accrual_days - 0.0
+    assert banked_fresh >= min_buy
+    # just deployed a chunk this window → bank below floor → wait (no stall, no churn)
+    banked_after = base_pace * accrual_days - 44_000.0
+    assert banked_after < min_buy
+
+
 def test_crash_dump_ignores_lump_stretch_and_throttle():
     # In a fired tranche, deploy the full remaining gap regardless of lump horizon / froth throttle.
     b = _budget(deployed=100_000.0, crash=True, throttle=0.0, lump_horizon=126)

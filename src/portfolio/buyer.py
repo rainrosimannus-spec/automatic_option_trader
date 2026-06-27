@@ -11,7 +11,7 @@ Tier-aware: different buy criteria for dividend, breakthrough, growth stocks.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from ib_insync import IB, Stock, Option, LimitOrder, MarketOrder, Forex
@@ -647,6 +647,34 @@ class PortfolioBuyer:
             deployed_eff, target_total, crash_active, free_cash,
             deployed_today=deployed_today,
             lump_horizon_days=cc.lump_horizon_days, pace_throttle=pace_throttle)
+
+        # Middle road: when the per-DAY pace is below the minimum ORDER size (froth-throttled and/or
+        # lump-stretched on a large account — e.g. ~$19k/day vs a $44k min_buy at $11M NLV), the daily
+        # budget never reaches min_buy and deployment STALLS (every brick < min_buy → skipped). Bank the
+        # allowance over a trailing window long enough to fund ONE min-size order, then deploy a single
+        # fee-efficient ~min_buy chunk. Average pace stays ≈ base_pace; orders never go below min_buy, so
+        # IBKR commissions stay trivial (~$1-2 on a $44k order). Crash dump is unaffected (full gap).
+        remaining_gap = max(0.0, target_total - deployed_eff)
+        if not crash_active and budget < min_buy and remaining_gap >= min_buy and free_cash >= min_buy:
+            base_pace = cmp.base_daily_pace(investable, cc.base_pct, cc.dca_horizon_days,
+                                            remaining_gap, deployed_today,
+                                            cc.lump_horizon_days, pace_throttle)
+            if base_pace > 0:
+                import math
+                accrual_days = min(cc.lump_horizon_days, max(1, math.ceil(min_buy / base_pace)))
+                cal_window = accrual_days + accrual_days // 2 + 2   # ~×1.5 to span weekends (loose)
+                _wstart = (datetime.utcnow().date() - timedelta(days=cal_window)).isoformat() + " 00:00:00"
+                with get_db() as _db:
+                    _fills_window = float(_db.query(
+                        _func.coalesce(_func.sum(PortfolioTransaction.amount), 0.0)
+                    ).filter(PortfolioTransaction.action == "buy",
+                             PortfolioTransaction.created_at >= _wstart).scalar() or 0.0)
+                deployed_window = _fills_window + sum(open_buy.values())
+                banked = base_pace * accrual_days - deployed_window
+                if banked >= min_buy:
+                    budget = max(budget, min(remaining_gap, free_cash, banked))
+                    log.info("compounder_accrual_budget", base_pace=round(base_pace),
+                             accrual_days=accrual_days, banked=round(banked), budget=round(budget))
 
         # Persist state for the dashboard cards
         self._store_state("strategy", "compounder")
