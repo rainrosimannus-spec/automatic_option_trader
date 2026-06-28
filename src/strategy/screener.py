@@ -232,6 +232,7 @@ def screen_calls(
     stock_exchange: str | None = None,
     stock_price_override: float | None = None,
     max_dte_override: int | None = None,
+    min_dte_override: int | None = None,
     target_expiry: str | None = None,
 ) -> Optional[ScoredContract]:
     """
@@ -239,6 +240,8 @@ def screen_calls(
     delta_min/max_override: for progressive strike management.
     stock_price_override: use live price instead of get_stock_price (yesterday close).
     max_dte_override: cap DTE for roll-up scenarios (e.g. 14 days).
+    min_dte_override: raise the DTE floor (e.g. mild-rescue repair wants 30-60 DTE
+        to harvest real time-value above the breakeven floor).
     target_expiry: if set (YYYYMMDD), filter candidates to ONLY this expiry.
         Used by the strangle leg in put_seller to match the just-sold put's
         expiry exactly. Other callers leave it None and get the best
@@ -250,12 +253,13 @@ def screen_calls(
     cfg = get_settings().strategy
     stk_exchange = stock_exchange or exchange
     dte_max = max_dte_override if max_dte_override is not None else cfg.cc_dte_max
+    dte_min = min_dte_override if min_dte_override is not None else cfg.cc_dte_min
 
     contracts = get_call_contracts(
         symbol,
         exchange=exchange,
         currency=currency,
-        min_dte=cfg.cc_dte_min,
+        min_dte=dte_min,
         max_dte=dte_max,
         min_strike=min_strike,
     )

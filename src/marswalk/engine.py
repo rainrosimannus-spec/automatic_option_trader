@@ -117,6 +117,15 @@ class Params:
     wheel_exit_velocity_delta_max: float = 0.95
     cc_exit_loss_tolerance_pct: float = 0.02   # normal regime: floor = net_basis*(1-tol)
     cc_rescue_threshold: float = 0.97          # spot < cb*thr → rescue (deep-OTM hold) vs velocity dump; swept-optimal (was 0.95)
+    # ── Rescue DTE-repair (2026-06-28) — mirror of live RiskConfig, ON ──
+    # Rescue lot (spot < rescue_thr*cb): write a 30-60 DTE OTM call ABOVE the
+    # breakeven floor (real time-value, no loss) instead of the worthless 1-7 DTE
+    # band. Flip cc_rescue_repair_enabled False for the legacy 1-7 rescue band.
+    # Sim caveat (config.py): BS pricing + no fee floor means MarsWalk can't see
+    # this fix's live upside. cc_rescue_repair_sweep.py A/Bs it.
+    cc_rescue_repair_enabled: bool = True      # rescue lots write 30-60 DTE above breakeven; False = legacy 1-7
+    cc_rescue_repair_dte_min: int = 30         # rescue repair: DTE window floor
+    cc_rescue_repair_dte_max: int = 60         # rescue repair: DTE window ceiling
     cc_crash_dte_max: int = 21                 # crash regime: longer CC DTE
     cc_crash_delta_min: float = 0.15           # crash regime: defensive OTM band
     cc_crash_delta_max: float = 0.30
@@ -882,7 +891,12 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             # BOLSTER branch (cc_crash_bolster_enabled, default OFF) was REJECTED by
             # the A/B sweep (lost to velocity in all 7 crash regimes) — retained for
             # experimentation only. Crash defense lives on the put side + hedge.
+            # Rescue DTE-repair (2026-06-28, mirrors live _write_call): a rescue
+            # lot writes a longer-DTE OTM time-value call above the floor (repair
+            # ON) instead of the worthless 1-7 DTE band (repair OFF = legacy).
             in_rescue = spot < cb * params.cc_rescue_threshold
+            repair = params.cc_rescue_repair_enabled
+            cc_dte_lo = cc_dte_min
             cc_dte_hi = cc_dte_max
             bolster = crash_active and params.cc_crash_bolster_enabled
             if bolster:
@@ -894,8 +908,15 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             else:
                 floor_basis = net_cb * (1.0 - max(params.cc_exit_loss_tolerance_pct, 0.0))
                 if in_rescue:
+                    # Mildly underwater. Repair ON: longer-DTE OTM time-value above
+                    # floor. OFF: legacy single rescue band @ 1-7 DTE.
                     cdmin, cdmax = 0.05, 0.35
-                    cc_branch = "rescue"
+                    if repair:
+                        cc_dte_lo = params.cc_rescue_repair_dte_min
+                        cc_dte_hi = params.cc_rescue_repair_dte_max
+                        cc_branch = "rescue_repair"
+                    else:
+                        cc_branch = "rescue"
                     try_velocity = False
                 else:
                     cdmin, cdmax = params.cc_delta_min, params.cc_delta_max
@@ -903,9 +924,9 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     try_velocity = params.wheel_exit_velocity_enabled and params.cc_velocity_always
             min_strike = floor_basis if cc_above_cb else None
             chain = [sc for sc in pricing.build_contracts(spot, d, cc_dte_hi + 7, symbol=sym)
-                     if cc_dte_min <= _dte(sc.lastTradeDateOrContractMonth, d) <= cc_dte_hi
+                     if cc_dte_lo <= _dte(sc.lastTradeDateOrContractMonth, d) <= cc_dte_hi
                      and (min_strike is None or sc.strike >= min_strike)]
-            cc_iv = pricing.effective_iv(iv, (cc_dte_min + cc_dte_hi) // 2, params.short_dte_uplift_k)
+            cc_iv = pricing.effective_iv(iv, (cc_dte_lo + cc_dte_hi) // 2, params.short_dte_uplift_k)
             cands = None
             # Velocity-always: try the deep-ITM band first for fast call-away.
             if try_velocity:

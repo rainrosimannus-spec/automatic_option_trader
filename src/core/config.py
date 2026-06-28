@@ -299,6 +299,22 @@ class RiskConfig(BaseModel):
     cc_crash_dte_max: int = 21                    # bolster: longer CC DTE to ride out the move
     cc_crash_delta_min: float = 0.15              # bolster: defensive patient OTM band floor
     cc_crash_delta_max: float = 0.30              # bolster: defensive patient OTM band ceiling
+    # ── Rescue DTE-repair (2026-06-28) — MILD-only, ships ON ────────────────────
+    # The legacy single rescue band (0.05-0.35Δ at 1-7 DTE) finds ~zero economic
+    # premium LIVE: a >10% OTM call at 1-7 DTE has delta <0.05 and premium under
+    # the fee floor, so a mildly-underwater lot gets NO covered call at all (naked
+    # + idle). Fix = relax only the DTE: for a rescue lot (spot < cc_rescue_thr*cb)
+    # search 30-60 DTE instead of 1-7, same 0.05-0.35Δ ABOVE the unchanged
+    # breakeven floor → real time-value premium, NO loss ever locked. Flip
+    # cc_rescue_repair_enabled False to restore the legacy 1-7 DTE rescue band.
+    # NOTE: the cc_rescue_repair_sweep rates this a sim drag, but MarsWalk prices
+    # the chain with Black-Scholes and no fee floor so it always writes the
+    # short-DTE cushion live can't — it cannot see this fix's live upside; shipped
+    # on live reasoning. The price-relaxing DEEP-dump tier was REJECTED (locks
+    # losses on names that recover — the one harm the sim CAN see, and real).
+    cc_rescue_repair_enabled: bool = True         # rescue lots write 30-60 DTE above breakeven vs nothing; False = legacy 1-7 DTE band
+    cc_rescue_repair_dte_min: int = 30            # rescue repair: time-value OTM call DTE window floor
+    cc_rescue_repair_dte_max: int = 60            # rescue repair: time-value OTM call DTE window ceiling
     # ── Cash-and-carry mode (high-vol-grind detector + SGOV rotation) ──
     # Ported 2026-05-28 from MarsWalk after the high-vol-grind detector + parameter-
     # override experiment (memory: stagflation-strategy-attempted-2026-05-28) showed

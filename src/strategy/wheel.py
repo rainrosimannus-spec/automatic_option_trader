@@ -136,19 +136,21 @@ class WheelManager:
         return assigned_symbols
 
     def _handle_assignment(self, db, put_pos: Position, symbol: str) -> None:
-        """Process a put assignment — close put position, open stock position.
+        """Process a put assignment — close the put, blend shares into the lot.
 
-        Idempotency: if an OPEN stock Position already exists for this symbol
-        with quantity matching the assignment (100 * put.quantity), skip the
-        stock Position creation. This prevents duplicate stock rows when
-        check_assignments runs multiple times against the same assigned put
-        (e.g., race between concurrent scheduler runs, or re-fire after a
-        previous call's commit was rolled back).
+        Dedup key = the assigned PUT itself (one ASSIGNMENT Trade per
+        position_id). If this put already has an ASSIGNMENT trade, the whole
+        assignment (put close + stock blend) already happened on a prior cycle,
+        so we return before touching anything. This is what makes the handler
+        safe against the re-fire path: trade_sync keeps reopening the put while
+        it is still live in IBKR, so check_assignments re-selects it repeatedly.
 
-        The put-side state changes (status=ASSIGNED, trade row) remain
-        idempotent: re-setting an ASSIGNED position to ASSIGNED is harmless,
-        and the existing duplicate check on trade insertion handles the
-        Trade row.
+        Multiple assignments of the SAME symbol at DIFFERENT strikes are BLENDED
+        into one open wheel stock row — a share-weighted cost basis with summed
+        quantity and premiums (matches the MarsWalk engine blend). The old guard
+        skipped the second assignment on "a stock row already exists", which
+        silently dropped the second lot's shares, leaving them naked + invisible
+        to covered-call writing.
         """
         log.info(
             "put_assigned",
@@ -161,10 +163,11 @@ class WheelManager:
         put_pos.status = PositionStatus.ASSIGNED
         put_pos.closed_at = datetime.utcnow()
 
-        # Record assignment trade — but only once. Previously this inserted a
-        # fresh ASSIGNMENT row on every check_assignments cycle (the put kept
-        # being reopened by trade_sync while still live in IBKR), producing
-        # dozens of duplicates. Dedupe on (position_id, ASSIGNMENT).
+        # Dedup on THIS put: an ASSIGNMENT trade for this position_id means the
+        # assignment was already fully processed (put closed + shares blended).
+        # Re-fire (trade_sync reopening the still-live put) is then a no-op. This
+        # MUST gate the stock mutation too, not just the Trade row — otherwise a
+        # re-fire would double-count the assigned shares.
         existing_assignment = (
             db.query(Trade)
             .filter(
@@ -173,52 +176,72 @@ class WheelManager:
             )
             .first()
         )
-        if not existing_assignment:
-            db.add(Trade(
-                position_id=put_pos.id,
-                symbol=symbol,
-                trade_type=TradeType.ASSIGNMENT,
-                strike=put_pos.strike or 0,
-                expiry=put_pos.expiry or "",
-                premium=0,
-                quantity=put_pos.quantity,
-                fill_price=put_pos.strike or 0,
-                order_status=OrderStatus.FILLED,
-                notes="Put assigned — received 100 shares",
-            ))
+        if existing_assignment:
+            log.info("assignment_already_processed", symbol=symbol,
+                     put_id=put_pos.id, note="skipping duplicate assignment")
+            return
 
-        # Idempotency guard: skip stock Position creation if one already exists
-        # for this symbol with the expected quantity. Defensive against race
-        # conditions where _handle_assignment is called more than once for the
-        # same underlying assignment event.
-        expected_qty = 100 * put_pos.quantity
+        db.add(Trade(
+            position_id=put_pos.id,
+            symbol=symbol,
+            trade_type=TradeType.ASSIGNMENT,
+            strike=put_pos.strike or 0,
+            expiry=put_pos.expiry or "",
+            premium=0,
+            quantity=put_pos.quantity,
+            fill_price=put_pos.strike or 0,
+            order_status=OrderStatus.FILLED,
+            notes="Put assigned — received 100 shares",
+        ))
+
+        # Blend into the existing open wheel stock lot if one exists, else create
+        # it. Share-weighted cost basis so a second assignment at a different
+        # strike folds in correctly (e.g. 215 + 105 → 160), with summed shares
+        # and premiums. Formula mirrors MarsWalk engine.py.
+        new_qty = 100 * put_pos.quantity
+        add_basis = (put_pos.strike or 0) - put_pos.entry_premium
+        from src.core.config import get_settings as _gs
+        exit_mode_enabled = _gs().risk.wheel_exit_mode_enabled
+
         existing_stock = db.query(Position).filter(
             Position.symbol == symbol,
             Position.status == PositionStatus.OPEN,
             Position.position_type == "stock",
             Position.is_wheel == True,
         ).first()
+
         if existing_stock:
-            log.info(
-                "assignment_stock_position_already_exists",
-                symbol=symbol,
-                existing_id=existing_stock.id,
-                existing_qty=existing_stock.quantity,
-                expected_qty=expected_qty,
-                note="skipping duplicate stock Position creation",
+            old_qty = existing_stock.quantity or 0
+            old_basis = existing_stock.cost_basis or 0.0
+            tot_qty = old_qty + new_qty
+            blended_basis = (
+                (old_basis * old_qty + add_basis * new_qty) / tot_qty
+                if tot_qty else add_basis
             )
+            existing_stock.cost_basis = blended_basis
+            existing_stock.quantity = tot_qty
+            existing_stock.total_premium_collected = (
+                (existing_stock.total_premium_collected or 0.0)
+                + put_pos.total_premium_collected
+            )
+            # Arm exit mode if newly enabled; never downgrade an armed lot.
+            if exit_mode_enabled and not existing_stock.wheel_exit_mode:
+                existing_stock.wheel_exit_mode = True
+            log.info("assignment_blended", symbol=symbol,
+                     old_qty=old_qty, add_qty=new_qty, new_qty=tot_qty,
+                     old_basis=round(old_basis, 2),
+                     add_basis=round(add_basis, 2),
+                     new_basis=round(blended_basis, 2))
             return
 
         # Create stock position (cost basis = strike - premium received)
-        cost_basis = (put_pos.strike or 0) - put_pos.entry_premium
-        from src.core.config import get_settings as _gs
-        exit_mode_enabled = _gs().risk.wheel_exit_mode_enabled
+        cost_basis = add_basis
         stock_pos = Position(
             symbol=symbol,
             status=PositionStatus.OPEN,
             position_type="stock",
             cost_basis=cost_basis,
-            quantity=expected_qty,
+            quantity=new_qty,
             total_premium_collected=put_pos.total_premium_collected,
             is_wheel=True,
             wheel_exit_mode=exit_mode_enabled,
@@ -336,19 +359,36 @@ class WheelManager:
                 if lots_to_cover <= 0:
                     continue  # has CC coverage — wheel handles this
 
-                # Recover assignment strike from the ASSIGNMENT trade
-                assignment_trade = db.query(Trade).filter(
+                # Recover the called-away level. With multiple assignments of the
+                # same name blended into one lot (e.g. 215 + 105 → 160), a single
+                # trade's strike is wrong — using the latest (105) would dump the
+                # whole 200-share lot at a loss. Share-weight the most-recent
+                # assignment trades up to the currently-held lot count.
+                assignment_trades = db.query(Trade).filter(
                     Trade.symbol == symbol,
                     Trade.trade_type == TradeType.ASSIGNMENT,
-                ).order_by(Trade.created_at.desc()).first()
+                ).order_by(Trade.created_at.desc()).all()
 
-                if not assignment_trade or not assignment_trade.strike:
+                acc_lots = 0
+                strike_num = 0.0
+                for t in assignment_trades:
+                    if not t.strike or not t.quantity:
+                        continue
+                    take = min(t.quantity, lots_needed - acc_lots)
+                    if take <= 0:
+                        break
+                    strike_num += t.strike * take
+                    acc_lots += take
+                    if acc_lots >= lots_needed:
+                        break
+
+                if acc_lots <= 0:
                     log.warning("wheel_exit_no_assignment_strike",
                                 symbol=symbol,
                                 note="cannot compute threshold without strike")
                     continue
 
-                strike = assignment_trade.strike
+                strike = round(strike_num / acc_lots, 2)  # share-weighted called-away level
                 threshold = strike + sell_fee
 
                 # Fetch live quote with bid/ask/last
@@ -559,8 +599,10 @@ class WheelManager:
         risk_cfg = _gs().risk
 
         in_rescue = bool(current_price and cost_basis and current_price < cost_basis * risk_cfg.cc_rescue_threshold)
+        repair = getattr(risk_cfg, "cc_rescue_repair_enabled", True)
         bolster = crash_active and getattr(risk_cfg, "cc_crash_bolster_enabled", False)
         dte_max_override = None
+        dte_min_override = None
 
         if bolster:
             # BOLSTER (off by default): strict floor, defensive patient OTM, longer DTE.
@@ -570,14 +612,22 @@ class WheelManager:
             dte_max_override = risk_cfg.cc_crash_dte_max
             floor_basis = net_cost_basis                       # strict: never below breakeven
         else:
-            # VELOCITY-ALWAYS: relax floor by tolerance for a fast small-loss exit;
-            # deep-ITM exit-velocity is attempted below for all non-rescue names.
+            # VELOCITY-ALWAYS: relax floor by the small-loss tolerance for a fast
+            # exit; deep-ITM exit-velocity is attempted below for non-rescue names.
             floor_basis = net_cost_basis * (1.0 - max(risk_cfg.cc_exit_loss_tolerance_pct, 0.0))
             if in_rescue:
-                # Stock already 5%+ below basis — deep-ITM won't clear the floor;
-                # widen to find any far-OTM candidate above the (relaxed) floor.
-                wheel_branch = "rescue"
+                # Mildly underwater: deep-ITM won't clear the floor. With repair ON
+                # (default), write a LONGER-DTE OTM call above breakeven to harvest
+                # real time-value (never locks a loss) — a 1-7 DTE above-breakeven
+                # call is worthless, a 30-60 DTE one isn't. With repair OFF, the
+                # legacy single rescue band (0.05-0.35Δ at the 1-7 DTE window).
                 cc_delta_min, cc_delta_max = 0.05, 0.35
+                if repair:
+                    wheel_branch = "rescue_repair"
+                    dte_min_override = risk_cfg.cc_rescue_repair_dte_min
+                    dte_max_override = risk_cfg.cc_rescue_repair_dte_max
+                else:
+                    wheel_branch = "rescue"
             else:
                 wheel_branch = "velocity"
                 cc_delta_min = self.cfg.cc_delta_min
@@ -593,6 +643,7 @@ class WheelManager:
                  net_cost_basis=round(net_cost_basis, 2),
                  min_strike=round(min_strike, 2) if min_strike else None,
                  current_price=round(current_price, 2) if current_price else None,
+                 dte_min=dte_min_override if dte_min_override is not None else self.cfg.cc_dte_min,
                  dte_max=dte_max_override if dte_max_override is not None else self.cfg.cc_dte_max,
                  delta_range=(cc_delta_min, cc_delta_max))
 
@@ -616,8 +667,10 @@ class WheelManager:
                          strike=candidate.strike, delta=round(candidate.delta, 2),
                          note="deep-ITM CC for fast call-away (velocity-always)")
 
-        # Fallback band: crash bolster (patient OTM, longer DTE), rescue (far-OTM),
-        # or normal patient band when no deep-ITM candidate cleared the floor.
+        # Fallback band: crash bolster (patient OTM, longer DTE), rescue_repair
+        # (longer-DTE OTM time-value above breakeven), legacy rescue (far-OTM
+        # 1-7 DTE), or the normal patient band when no deep-ITM candidate cleared
+        # the floor.
         if not candidate:
             candidate = screen_calls(
                 symbol,
@@ -627,6 +680,7 @@ class WheelManager:
                 delta_min_override=cc_delta_min,
                 delta_max_override=cc_delta_max,
                 max_dte_override=dte_max_override,
+                min_dte_override=dte_min_override,
             )
 
         if not candidate:

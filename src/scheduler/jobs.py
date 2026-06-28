@@ -235,50 +235,55 @@ def job_check_assignments():
     risk = RiskManager(universe)
     wheel = WheelManager(risk, universe=universe)
 
-    # Assignment detection requires IBKR connection (needs stock positions)
-    if _ensure_connected():
-        assigned = wheel.check_assignments()
-        called = wheel.check_called_away()
-    else:
-        log.warning("assignment_check_skipped_no_connection",
-                    reason="IBKR not connected — skipping assignment detection, still writing CCs")
-
-    # Cancel any unfilled covered call orders before writing new ones
+    # Serialize the WHOLE assignment→CC cycle through _scan_lock. Assignment
+    # detection now mutates stock lots (blends shares into one row), and several
+    # market-close schedules can fire near-simultaneously. Without the lock
+    # around check_assignments, two runs could both pass the per-put ASSIGNMENT
+    # dedup gate before either commits and double-count the assigned shares.
     acquired = _scan_lock.acquire(timeout=60)
-    if acquired:
-        try:
-            from src.broker.orders import get_open_orders, cancel_order
-            from src.core.database import get_db
-            from src.core.suggestions import TradeSuggestion
-            # Cancel ALL unfilled options orders before fresh scan
-            for oo in get_open_orders():
-                log.info("cc_scan_cancelling_unfilled_order",
-                         symbol=getattr(oo.contract, 'symbol', '?'),
-                         order_id=oo.order.orderId)
-                cancel_order(oo)
-            # Expire submitted suggestions that have no matching filled trade
-            from src.core.models import Trade, OrderStatus
-            with get_db() as db:
-                stale = db.query(TradeSuggestion).filter(
-                    TradeSuggestion.status == "submitted",
-                    TradeSuggestion.source == "options",  # never expire PORTFOLIO suggestions here
-                ).all()
-                for s in stale:
-                    filled = db.query(Trade).filter(
-                        Trade.symbol == s.symbol,
-                        Trade.strike == s.strike,
-                        Trade.expiry == s.expiry,
-                        Trade.order_status == OrderStatus.FILLED,
-                    ).first()
-                    if not filled:
-                        s.status = "expired"
-                        s.review_note = "Cancelled by next scan"
-                        log.info("cc_scan_expiring_submitted_suggestion", id=s.id, symbol=s.symbol)
-            wheel.write_covered_calls()
-        finally:
-            _scan_lock.release()
-    else:
+    if not acquired:
         log.warning("covered_call_skipped_scan_lock_timeout")
+        return
+    try:
+        # Assignment detection requires IBKR connection (needs stock positions)
+        if _ensure_connected():
+            assigned = wheel.check_assignments()
+            called = wheel.check_called_away()
+        else:
+            log.warning("assignment_check_skipped_no_connection",
+                        reason="IBKR not connected — skipping assignment detection, still writing CCs")
+
+        # Cancel any unfilled covered call orders before writing new ones
+        from src.broker.orders import get_open_orders, cancel_order
+        from src.core.database import get_db
+        from src.core.suggestions import TradeSuggestion
+        # Cancel ALL unfilled options orders before fresh scan
+        for oo in get_open_orders():
+            log.info("cc_scan_cancelling_unfilled_order",
+                     symbol=getattr(oo.contract, 'symbol', '?'),
+                     order_id=oo.order.orderId)
+            cancel_order(oo)
+        # Expire submitted suggestions that have no matching filled trade
+        from src.core.models import Trade, OrderStatus
+        with get_db() as db:
+            stale = db.query(TradeSuggestion).filter(
+                TradeSuggestion.status == "submitted",
+                TradeSuggestion.source == "options",  # never expire PORTFOLIO suggestions here
+            ).all()
+            for s in stale:
+                filled = db.query(Trade).filter(
+                    Trade.symbol == s.symbol,
+                    Trade.strike == s.strike,
+                    Trade.expiry == s.expiry,
+                    Trade.order_status == OrderStatus.FILLED,
+                ).first()
+                if not filled:
+                    s.status = "expired"
+                    s.review_note = "Cancelled by next scan"
+                    log.info("cc_scan_expiring_submitted_suggestion", id=s.id, symbol=s.symbol)
+        wheel.write_covered_calls()
+    finally:
+        _scan_lock.release()
 
 
 
@@ -1378,6 +1383,25 @@ def create_scheduler() -> BackgroundScheduler:
         name="Check Assignments Overnight",
         max_instances=1,
     )
+
+    # ── PRIVATE intraday CC-timing instrumentation (default OFF) ──────────────
+    # Read-only: snapshots the would-be covered call at three US-session
+    # checkpoints to study whether writing later in the day beats the open in a
+    # V-recovery. Adds NOTHING to the running scheduler unless CC_TIMING_LOGGER=1
+    # is set in the environment, so live trading is unaffected by default. Not
+    # surfaced on the dashboard. See src/analysis/cc_timing_logger.py.
+    import os as _os
+    if _os.environ.get("CC_TIMING_LOGGER") == "1":
+        from src.analysis.cc_timing_logger import job_log_cc_timing
+        for _hh, _mm, _lbl in ((10, 0, "10:00ET"), (11, 30, "11:30ET"), (14, 0, "14:00ET")):
+            scheduler.add_job(
+                partial(job_log_cc_timing, _lbl),
+                CronTrigger(hour=_hh, minute=_mm, day_of_week="mon-fri", timezone=us_tz),
+                id=f"cc_timing_{_lbl}",
+                name=f"CC timing snapshot {_lbl}",
+                max_instances=1,
+            )
+        log.info("cc_timing_logger_enabled", checkpoints=["10:00ET", "11:30ET", "14:00ET"])
 
     # Japan/Australia close ~06:00 UTC
     scheduler.add_job(
