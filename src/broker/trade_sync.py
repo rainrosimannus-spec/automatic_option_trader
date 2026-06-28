@@ -19,6 +19,26 @@ from src.core.logger import get_logger
 log = get_logger(__name__)
 
 
+def _entry_quote(db, symbol, strike, expiry):
+    """Decision-time (bid, ask, mid) captured on the matching option-sell suggestion at scan, so the
+    synced Trade can record fill-vs-mid (Consigliere execution-quality / spread-capture measurement).
+    Matched on symbol+strike+expiry (unique enough for one option); most recent wins. (None,None,None)
+    if no suggestion carried a quote (e.g. legacy fills)."""
+    try:
+        from src.core.suggestions import TradeSuggestion
+        s = db.query(TradeSuggestion).filter(
+            TradeSuggestion.symbol == symbol,
+            TradeSuggestion.strike == strike,
+            TradeSuggestion.expiry == expiry,
+            TradeSuggestion.mid_at_entry.isnot(None),
+        ).order_by(TradeSuggestion.id.desc()).first()
+        if s:
+            return s.bid_at_entry, s.ask_at_entry, s.mid_at_entry
+    except Exception as e:
+        log.debug("entry_quote_lookup_failed", symbol=symbol, error=str(e))
+    return None, None, None
+
+
 def _classify_trade(fill) -> TradeType | None:
     """
     Classify an IBKR fill into a TradeType.
@@ -700,6 +720,7 @@ def sync_ibkr_positions() -> int:
                     Trade.expiry == data["expiry"],
                     Trade.trade_type == trade_type,
                 ).first()
+                _qb, _qa, _qm = _entry_quote(db, data["symbol"], data["strike"], data["expiry"])
                 if not existing_trade:
                     premium_ps = abs(data["avg_cost"]) / 100.0 if data["avg_cost"] else 0.0
                     db.add(Trade(
@@ -714,9 +735,12 @@ def sync_ibkr_positions() -> int:
                         order_status=OrderStatus.FILLED,
                         notes="Synced from IBKR position",
                         source="ibkr_sync",
+                        bid_at_entry=_qb, ask_at_entry=_qa, mid_at_entry=_qm,
                     ))
                     log.info("trade_created_for_existing_position",
                              symbol=data["symbol"], strike=data["strike"])
+                elif existing_trade.mid_at_entry is None and _qm is not None:
+                    existing_trade.bid_at_entry, existing_trade.ask_at_entry, existing_trade.mid_at_entry = _qb, _qa, _qm
                 continue
             premium_per_share = abs(data["avg_cost"]) / 100.0 if data["avg_cost"] else 0.0
 
@@ -743,6 +767,7 @@ def sync_ibkr_positions() -> int:
                 Trade.expiry == data["expiry"],
                 Trade.trade_type == trade_type,
             ).first()
+            _qb, _qa, _qm = _entry_quote(db, data["symbol"], data["strike"], data["expiry"])
             if not existing_trade:
                 db.add(Trade(
                     symbol=data["symbol"],
@@ -756,7 +781,10 @@ def sync_ibkr_positions() -> int:
                     order_status=OrderStatus.FILLED,
                     notes=f"Synced from IBKR position",
                     source="ibkr_sync",
+                    bid_at_entry=_qb, ask_at_entry=_qa, mid_at_entry=_qm,
                 ))
+            elif existing_trade.mid_at_entry is None and _qm is not None:
+                existing_trade.bid_at_entry, existing_trade.ask_at_entry, existing_trade.mid_at_entry = _qb, _qa, _qm
                 log.info("trade_created_from_position",
                          symbol=data["symbol"], strike=data["strike"],
                          premium=premium_per_share)

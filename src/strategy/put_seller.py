@@ -316,6 +316,10 @@ class PutSeller:
             current_price=cand["price"],
             est_cost=cand["collateral"],
             order_type="sell_put",
+            # Decision-time quote → trade_sync stamps fill-vs-mid onto the Trade (exec-quality measure).
+            bid_at_entry=getattr(candidate, "bid", None),
+            ask_at_entry=getattr(candidate, "ask", None),
+            mid_at_entry=getattr(candidate, "mid", None),
             rank=rank,
             rank_score=cand["score"],
             funding_source="cash",
@@ -477,6 +481,9 @@ class PutSeller:
                 current_price=get_stock_price(symbol, exchange=exchange, currency=currency),
                 est_cost=collateral,
                 order_type="sell_put",
+                bid_at_entry=getattr(candidate, "bid", None),
+                ask_at_entry=getattr(candidate, "ask", None),
+                mid_at_entry=getattr(candidate, "mid", None),
             )
             if suggestion:
                 log.info("options_put_suggestion_created",

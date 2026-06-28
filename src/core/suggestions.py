@@ -106,6 +106,12 @@ class TradeSuggestion(Base):
     trailing_peak_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # Highest price seen since the suggestion was created
 
+    # Decision-time quote (Consigliere execution-quality measurement). Captured at scan so trade_sync
+    # can stamp fill-vs-mid onto the resulting Trade — quantifies the bid→mid spread left on the table.
+    bid_at_entry: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ask_at_entry: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    mid_at_entry: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
 
 # ── Safety checks ────────────────────────────────────────────
 
@@ -188,6 +194,9 @@ def create_suggestion(
     opt_currency: str | None = None,
     trailing_stop_pct: float | None = None,
     trailing_peak_price: float | None = None,
+    bid_at_entry: float | None = None,
+    ask_at_entry: float | None = None,
+    mid_at_entry: float | None = None,
 ) -> TradeSuggestion | None:
     """
     Create a trade suggestion after safety validation.
@@ -256,6 +265,9 @@ def create_suggestion(
         opt_currency=opt_currency,
         trailing_stop_pct=trailing_stop_pct,
         trailing_peak_price=trailing_peak_price,
+        bid_at_entry=bid_at_entry,
+        ask_at_entry=ask_at_entry,
+        mid_at_entry=mid_at_entry,
         status="pending",
         expires_at=expires_at,
     )
