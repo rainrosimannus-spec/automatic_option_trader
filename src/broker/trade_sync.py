@@ -160,8 +160,13 @@ def sync_ibkr_trades() -> int:
 
             # Premium: for options it's the fill price, for stocks it's 0
             is_option = contract.secType in ("OPT", "FOP")
-            premium = execution.price if is_option else 0.0
-            fill_price = execution.price
+            # IBKR returns LSE/GBP prices in PENCE — normalise to pounds so fill_price/premium
+            # (and the stock realized-P&L computed from them) are in pounds for any GBP name.
+            _exec_px = execution.price
+            if str(getattr(contract, "currency", "") or "").upper() == "GBP":
+                _exec_px = _exec_px / 100.0
+            premium = _exec_px if is_option else 0.0
+            fill_price = _exec_px
 
             # Commission from commissionReport if available
             commission = 0.0

@@ -1605,6 +1605,13 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                 premium_collected = None
 
                 if sec_type == "STK":
+                    # IBKR returns LSE/GBP execution prices in PENCE — normalise to pounds so the
+                    # recorded price/amount (and everything downstream: deployed_today, the budget
+                    # gate, Recent Transactions) are in pounds, consistent with the holding sync
+                    # (item.averageCost is already pounds) and the analyzer. Without this an AZN
+                    # buy records as 14222 × 33 ≈ 469k and swamps the daily budget → stuck at 0.
+                    if str(getattr(contract, "currency", "") or "").upper() == "GBP":
+                        price = price / 100.0
                     if side == "BOT":
                         action = "buy"
                         shares = qty
