@@ -2494,6 +2494,12 @@ class PortfolioBuyer:
                         self.ib.sleep(0.5)
                     if price and price > 0:
                         price = float(bars[-1].close)
+                        # IBKR returns LSE/GBP prices in PENCE — normalise to pounds, identical to the
+                        # analyzer (analyzer.py:156) and the seven other GBP-handling sites. This was
+                        # the ONE price path missing it, so it intermittently stored pence and the
+                        # holding showed ~100× its value + a bogus gain (the AZN +9907% case).
+                        if (h.currency or "").upper() == "GBP":
+                            price = price / 100.0
                         h.current_price = price
                         h.market_value = price * h.shares
                         h.unrealized_pnl = h.market_value - h.total_invested
