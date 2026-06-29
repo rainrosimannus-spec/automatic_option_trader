@@ -98,10 +98,13 @@ def fetch_flex_statement(flex_token: str, query_id: str) -> str:
         )
         resp2.raise_for_status()
 
-        if (
-            "<FlexQueryResponse" in resp2.text
-            or "<FlexStatementResponse" in resp2.text
-        ):
+        # The finished statement comes back as <FlexQueryResponse>. A <FlexStatementResponse> wrapper
+        # is NOT the data — it's a status/error envelope (e.g. ErrorCode 1019 "generation in progress",
+        # which IBKR returns while a slower query is still building). Returning that envelope as if it
+        # were the statement silently parsed to 0 deposits (the options query did this — it generates a
+        # beat slower than the portfolio's, so its first poll was the in-progress wrapper). Only treat
+        # FlexQueryResponse as ready; an envelope is retried (transient) or raised (hard error).
+        if "<FlexQueryResponse" in resp2.text:
             log.info("flex_statement_ready", attempts=attempt + 1)
             return resp2.text
 
