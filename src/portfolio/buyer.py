@@ -989,21 +989,28 @@ class PortfolioBuyer:
         return detect_market_regime(vix, spy_data)
 
     def _get_holdings_map(self) -> dict[str, float]:
-        """Get symbol → market value map for all holdings. Excludes the cash-yield ETF (SGOV) — that's
-        a parked cash RESERVE, not a deployed compounder position, so it must not count toward targets."""
+        """Get symbol → market value map for all holdings, in the account BASE currency. Excludes the
+        cash-yield ETF (SGOV) — that's a parked cash RESERVE, not a deployed compounder position, so it
+        must not count toward targets. Market value is stored in the holding's LOCAL currency (£ for an
+        LSE name); targets are base-ccy, so FX-normalise here or a foreign holding is mis-measured
+        against its target by the FX rate (see src.portfolio.fx)."""
+        from src.portfolio import fx as pfx
         park = getattr(self.cfg, "cash_yield_symbol", None)
+        rates = pfx.load_fx_rates()
         with get_db() as db:
             holdings = db.query(PortfolioHolding).filter(
                 PortfolioHolding.shares > 0
             ).all()
             return {
-                h.symbol: (h.market_value or h.total_invested or 0)
+                h.symbol: pfx.to_base(h.market_value or h.total_invested or 0, h.currency, rates)
                 for h in holdings if h.symbol != park
             }
 
     def _get_parked_value(self) -> float:
-        """Market value of the cash reserve parked in the bill ETF (SGOV) — sellable on demand, so it
-        counts as deployable cash (the executor un-parks it just-in-time before placing a buy)."""
+        """Market value of the cash reserve parked in the bill ETF (SGOV), in the account BASE currency
+        — sellable on demand, so it counts as deployable cash (the executor un-parks it just-in-time
+        before placing a buy). SGOV is USD-denominated; free_cash is base-ccy, so FX-normalise."""
+        from src.portfolio import fx as pfx
         park = getattr(self.cfg, "cash_yield_symbol", None)
         if not park or not getattr(self.cfg, "cash_yield_enabled", False):
             return 0.0
@@ -1011,7 +1018,7 @@ class PortfolioBuyer:
             h = db.query(PortfolioHolding).filter(
                 PortfolioHolding.symbol == park, PortfolioHolding.shares > 0
             ).first()
-            return float(h.market_value or h.total_invested or 0.0) if h else 0.0
+            return pfx.to_base(float(h.market_value or h.total_invested or 0.0), h.currency) if h else 0.0
 
     def _park_compounder_excess(self, nlv: float, spent_this_scan: float) -> None:
         """Park standing idle cash (the crash reserve + undeployed slack) into the bill ETF for yield.
@@ -1072,7 +1079,7 @@ class PortfolioBuyer:
         return cancelled
 
     def _open_buy_map(self) -> dict[str, float]:
-        """symbol → notional ($) of currently-RESTING stock BUY orders at IBKR.
+        """symbol → notional of currently-RESTING stock BUY orders at IBKR, in the account BASE currency.
 
         Holdings reflect only FILLED shares (sync truth), so resting DAY-limit rungs from an
         earlier scan/day are invisible to _get_holdings_map. Netting this into both the per-name
@@ -1081,6 +1088,8 @@ class PortfolioBuyer:
         cache; caller should refresh it first so the snapshot is current.
         """
         from src.portfolio.connection import get_cached_portfolio_pending_orders
+        from src.portfolio import fx as pfx
+        rates = pfx.load_fx_rates()
         out: dict[str, float] = {}
         for o in get_cached_portfolio_pending_orders() or []:
             try:
@@ -1090,12 +1099,14 @@ class PortfolioBuyer:
                 px = float(o.get("limit_price") or 0)
                 if rem <= 0 or px <= 0:
                     continue
-                # LSE/GBP orders quote in PENCE — convert to pounds so the notional matches
-                # holdings/targets (all base-ccy). Without this an AZN order counts ~100× its
-                # value (14222 × 33 ≈ 469k) and swamps the daily budget → budget stuck at 0.
-                if (o.get("currency") or "").upper() == "GBP":
+                ccy = (o.get("currency") or "").upper()
+                # LSE/GBP orders quote in PENCE — convert to pounds first so the notional is in the
+                # order's major LOCAL unit, then FX-normalise local→base so it matches holdings/targets
+                # (all base-ccy). Without the pence step an AZN order counts ~100× its value (14222 × 33
+                # ≈ 469k) and swamps the daily budget; without the FX step a foreign order is mis-scaled.
+                if ccy == "GBP":
                     px = px / 100.0
-                out[o["symbol"]] = out.get(o["symbol"], 0.0) + rem * px
+                out[o["symbol"]] = out.get(o["symbol"], 0.0) + pfx.to_base(rem * px, ccy, rates)
             except Exception:
                 continue
         return out
@@ -1110,9 +1121,15 @@ class PortfolioBuyer:
         mode (no pending cards). Conservative: an order momentarily both 'executing' here AND already
         resting at IBKR is double-counted for ~2s, which only slightly slows deployment (the safe way)."""
         from src.core.suggestions import TradeSuggestion
+        from src.portfolio import fx as pfx
+        rates = pfx.load_fx_rates()
         out: dict[str, float] = {}
         try:
             with get_db() as db:
+                # symbol → currency for the universe, so a foreign suggestion's notional (stored in its
+                # LOCAL currency: est_cost = shares × local price) is FX-normalised to base like holdings.
+                ccy_map = {w.symbol: (w.currency or "USD")
+                           for w in db.query(PortfolioWatchlist).all()}
                 rows = db.query(TradeSuggestion).filter(
                     TradeSuggestion.source == "portfolio",
                     TradeSuggestion.action == "buy_stock",
@@ -1123,7 +1140,8 @@ class PortfolioBuyer:
                     if notional <= 0 and s.quantity and s.limit_price:
                         notional = float(s.quantity) * float(s.limit_price)
                     if notional > 0:
-                        out[s.symbol] = out.get(s.symbol, 0.0) + notional
+                        out[s.symbol] = out.get(s.symbol, 0.0) + pfx.to_base(
+                            notional, ccy_map.get(s.symbol, "USD"), rates)
         except Exception as e:
             log.warning("compounder_pending_suggestion_map_failed", error=str(e))
         return out
@@ -1893,7 +1911,14 @@ class PortfolioBuyer:
             return (0.0, 0.0)
 
         from src.portfolio import compounder as cmp
+        from src.portfolio import fx as pfx
         cc = self.cfg.compounder
+        # core_amount (the caller's brick) and the floors/cash_room are all in the account BASE currency,
+        # but `px` and the ladder rung prices are in the instrument's LOCAL currency (£ for an LSE name).
+        # Convert each rung price to base for share-sizing — a base brick ÷ a LOCAL price over-buys a
+        # foreign name by its FX rate (the AZN bug). `rate` is LOCAL→BASE (1.0 for base/USD-on-USD).
+        ccy = stock.currency or "USD"
+        rate = pfx.rate_to_base(ccy)
         # NLV-scaled core-rung floor (the caller's brick already cleared it); fall back to the
         # configured cap if not threaded through, so the method is safe to call standalone.
         core_floor = min_buy if min_buy is not None else cc.min_single_buy
@@ -1901,16 +1926,17 @@ class PortfolioBuyer:
         if not plan:
             return (0.0, 0.0)
 
-        # Resolve rungs to (price, shares); core sized from core_amount, dips as frac of it.
+        # Resolve rungs to (local price, shares); core sized from core_amount, dips as frac of it.
+        # Share count uses the BASE per-share cost (price × rate); the order itself prices in LOCAL.
         rungs: list[tuple[float, int]] = []
         for i, (price, frac) in enumerate(plan):
             if price <= 0:
                 continue
-            shares = int((core_amount * frac) / price)
-            notional = shares * price
+            shares = int((core_amount * frac) / (price * rate))
+            notional_base = shares * price * rate
             # Core rung must clear the NLV-scaled min order; dip rungs just need to be non-trivial.
             floor = core_floor if i == 0 else 1000.0
-            if shares <= 0 or notional < floor:
+            if shares <= 0 or notional_base < floor:
                 continue
             rungs.append((price, shares))
         if not rungs or rungs[0][1] <= 0:
@@ -1933,8 +1959,10 @@ class PortfolioBuyer:
             log.info("compounder_suggestion_created", symbol=stock.symbol,
                      shares=core_shares, price=core_price, urgency=round(urgency, 2),
                      leader=is_leader, signal=analysis.signal_type)
-            est = round(core_shares * core_price, 2)
-            return (est, est)
+            # Card est_cost is the actual LOCAL order cost; the RETURN must be base-ccy so the caller's
+            # `spent`/budget/cash_room accounting (all base) nets a foreign order at its true base value.
+            est_base = round(core_shares * core_price * rate, 2)
+            return (est_base, est_base)
 
         # Live mode — place each rung as a DAY limit, core first, bounded by cash_room.
         # A broker error on one symbol must not abort the whole scan — return whatever filled.
@@ -1949,9 +1977,10 @@ class PortfolioBuyer:
             # path for this currency: the FX conversion for a foreign buy, or the SGOV unpark for a
             # same-currency buy. If that path could not be funded, SKIP this name rather than silently
             # open a margin loan (fail-closed). The 4-hourly scan re-creates the buy when cash is ready.
+            # Funding is settled in the instrument's LOCAL currency (the FX leg converts base→local to
+            # buy the foreign stock; the SGOV unpark frees USD), so size the funding ask in LOCAL.
             total_notional = sum(price * shares for price, shares in rungs)
             base_ccy = getattr(self.cfg, "base_currency", "EUR") or "EUR"
-            ccy = stock.currency or "USD"
             unpark_ok = _unpark_yield(self.ib, self.cfg, total_notional, settle_ccy=ccy)
             fx_ok = _ensure_currency_funding(self.ib, ccy, base_ccy, total_notional, cfg=self.cfg)
             funded = fx_ok if ccy.upper() != base_ccy.upper() else unpark_ok
@@ -1960,10 +1989,12 @@ class PortfolioBuyer:
                             ccy=ccy, notional=round(total_notional))
                 return (0.0, 0.0)
 
+            # `cash_room` and the returned notionals are base-ccy (the caller's budget/spent are base),
+            # while the order prices in LOCAL — convert each rung's spend to base for the gate/return.
             room = cash_room
             for i, (price, shares) in enumerate(rungs):
-                notional = shares * price
-                if notional > room:
+                notional_base = shares * price * rate
+                if notional_base > room:
                     continue                      # can't afford this rung — skip (core has priority)
                 order = LimitOrder("BUY", shares, price)
                 order.tif = "DAY"
@@ -1971,13 +2002,13 @@ class PortfolioBuyer:
                 with get_portfolio_lock():
                     self.ib.placeOrder(contract, order)
                     self.ib.sleep(1)
-                room -= notional
-                total_placed += notional
+                room -= notional_base
+                total_placed += notional_base
                 if i == 0:
-                    core_placed = notional
+                    core_placed = notional_base
                 log.info("compounder_rung_placed", symbol=stock.symbol, rung=i,
-                         shares=shares, price=price, notional=round(notional),
-                         leader=is_leader)
+                         shares=shares, price=price, notional_base=round(notional_base),
+                         ccy=ccy, leader=is_leader)
         except Exception as e:
             log.error("compounder_buy_error", symbol=stock.symbol, error=str(e),
                       placed=round(total_placed))
@@ -2131,11 +2162,13 @@ class PortfolioBuyer:
             return None
 
     def _get_holding_value(self, symbol: str) -> float:
+        """Holding market value in the account BASE currency (compared against base NLV caps)."""
+        from src.portfolio import fx as pfx
         with get_db() as db:
             h = db.query(PortfolioHolding).filter(
                 PortfolioHolding.symbol == symbol
             ).first()
-            return h.market_value or h.total_invested if h else 0
+            return pfx.to_base(h.market_value or h.total_invested or 0, h.currency) if h else 0
 
     # ── Database helpers ─────────────────────────────────────
     def _get_watchlist(self) -> list[PortfolioWatchlist]:

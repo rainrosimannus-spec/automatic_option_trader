@@ -400,7 +400,11 @@ async def portfolio_page(request: Request):
                 "dividend": _cc.tier_dividend,
                 "growth": _cc.tier_growth,
             }
-            _held = {h.symbol: (h.market_value or h.total_invested or 0) for h in holdings}
+            # FX-normalise holdings to the account BASE currency before comparing to base-ccy targets —
+            # a £-priced LSE holding measured against a €-target without conversion mis-sizes it by the
+            # FX rate (matches the live engine's _get_holdings_map). nlv is already base.
+            _held = {h.symbol: _to_base(h.market_value or h.total_invested or 0, h.currency,
+                                        fx_rates, _base_ccy) for h in holdings}
             _compounder_signals = _cmp.build_signals_from_watchlist(
                 watchlist, _held, portfolio_nlv or 0, _cc, _tier_alloc)
         except Exception as _e:

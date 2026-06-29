@@ -55,7 +55,12 @@ async def watchlist_page(request: Request):
             rows = db.query(PortfolioWatchlist).all()
             holds = db.query(PortfolioHolding).filter(PortfolioHolding.shares > 0).all()
         wl_map = {w.symbol: w for w in rows}
-        held = {h.symbol: (h.market_value or h.total_invested or 0) for h in holds}
+        # FX-normalise holdings to the account BASE currency (investable/nlv are base) so a foreign
+        # holding isn't measured against its base-ccy target unconverted (see src.portfolio.fx).
+        from src.portfolio import fx as _pfx
+        _rates = _pfx.load_fx_rates()
+        held = {h.symbol: _pfx.to_base(h.market_value or h.total_invested or 0, h.currency, _rates)
+                for h in holds}
         inv = _num("compounder_investable")
         nlv = inv / (1 - cc.cash_buffer_pct) if inv > 0 else (sum(held.values()) or 1.0)
         signals = cmp.build_signals_from_watchlist(rows, held, nlv, cc, tier_alloc)
