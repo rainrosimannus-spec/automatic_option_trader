@@ -128,6 +128,9 @@ def _migrate_columns(engine):
         ("trade_suggestions", "bid_at_entry", "REAL"),
         ("trade_suggestions", "ask_at_entry", "REAL"),
         ("trade_suggestions", "mid_at_entry", "REAL"),
+        # Foreign-currency FX funding — count failed pre-buy conversion attempts so an unfundable
+        # foreign buy expires+alerts instead of churning 'approved' forever (June 2026)
+        ("trade_suggestions", "funding_attempts", "INTEGER DEFAULT 0"),
     ]
     from sqlalchemy import text
     with engine.connect() as conn:

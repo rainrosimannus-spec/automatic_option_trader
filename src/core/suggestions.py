@@ -92,6 +92,8 @@ class TradeSuggestion(Base):
     # Composite score that produced this rank (for display/audit)
     funding_source: Mapped[str] = mapped_column(String(25), default="cash")
     # "cash", "reserve", "margin_capitulation", "margin_stabilization"
+    funding_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # Failed pre-buy FX/unpark funding attempts; expire+alert after fx_funding_max_attempts
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

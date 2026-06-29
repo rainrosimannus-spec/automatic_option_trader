@@ -1901,7 +1901,7 @@ class PortfolioBuyer:
             base_ccy = getattr(self.cfg, "base_currency", "EUR") or "EUR"
             ccy = stock.currency or "USD"
             unpark_ok = _unpark_yield(self.ib, self.cfg, total_notional, settle_ccy=ccy)
-            fx_ok = _ensure_currency_funding(self.ib, ccy, base_ccy, total_notional)
+            fx_ok = _ensure_currency_funding(self.ib, ccy, base_ccy, total_notional, cfg=self.cfg)
             funded = fx_ok if ccy.upper() != base_ccy.upper() else unpark_ok
             if not funded:
                 log.warning("compounder_buy_unfunded_skip", symbol=stock.symbol,
@@ -2459,22 +2459,91 @@ class PortfolioBuyer:
                     log.debug("portfolio_price_update_error", symbol=h.symbol, error=str(e))
 
 
+def _fx_conversion_plan(base: str, ccy: str, shortfall_ccy: float, rate_ccy_per_base: float,
+                        pair_symbol: str, idealpro_min_base: float,
+                        min_convert: float = 1000.0) -> dict:
+    """Pure decision for the pre-buy FX conversion — no IBKR access, so it's unit-testable.
+
+    Given the shortfall in the stock's currency, the live rate (units of `ccy` per 1 unit of `base`),
+    and which currency is the SYMBOL of the canonical IBKR cash pair (IBKR defines only one direction
+    per pair — e.g. EUR.HKD, never HKD.EUR), decide whether to place an IDEALPRO conversion and with
+    what action/qty. Quantity is always denominated in the pair's symbol currency (IBKR convention),
+    with a small buffer so rate drift can't leave the buy a hair short.
+
+    Returns {place, action, qty, base_value, reason}:
+      • place=False reason='funded'    — nothing to convert (shortfall below min_convert).
+      • place=False reason='no_rate'   — couldn't price the leg; caller proceeds (auto-FX) non-blocking.
+      • place=False reason='below_min' — leg value under the IDEALPRO minimum; let IBKR auto-FX it.
+      • place=True                     — fire a real IDEALPRO conversion (action/qty set)."""
+    base = (base or "").upper()
+    ccy = (ccy or "").upper()
+    if shortfall_ccy <= 0 or shortfall_ccy < min_convert:
+        return {"place": False, "action": None, "qty": 0, "base_value": 0.0, "reason": "funded"}
+    if not rate_ccy_per_base or rate_ccy_per_base <= 0:
+        return {"place": False, "action": None, "qty": 0, "base_value": 0.0, "reason": "no_rate"}
+    base_value = shortfall_ccy / rate_ccy_per_base
+    if base_value < idealpro_min_base:
+        return {"place": False, "action": None, "qty": 0, "base_value": base_value, "reason": "below_min"}
+    buf = 1.01
+    if (pair_symbol or "").upper() == ccy:
+        # Canonical pair is ccy.base (symbol == ccy) → BUY ccy directly; qty denominated in ccy.
+        return {"place": True, "action": "BUY", "qty": int(round(shortfall_ccy * buf)),
+                "base_value": base_value, "reason": "convert"}
+    # Canonical pair is base.ccy (symbol == base) → SELL base to receive ccy; qty denominated in base.
+    return {"place": True, "action": "SELL", "qty": int(round(base_value * buf)),
+            "base_value": base_value, "reason": "convert"}
+
+
+def _fx_rate_ccy_per_base(ib, pair, base: str, ccy: str) -> float:
+    """Snapshot the FX mid for `pair` and return it as units of `ccy` per 1 unit of `base`.
+    The quoted price is symbol-per-currency, so invert when the pair's symbol is the stock ccy.
+    Returns 0.0 on any failure (caller treats that as 'unpriced' and proceeds via auto-FX)."""
+    try:
+        with get_portfolio_lock():
+            t = ib.reqMktData(pair, "", True, False)
+            ib.sleep(2)
+        px = None
+        for cand in (t.midpoint(), t.marketPrice(), t.last, t.close):
+            if cand and cand == cand and cand > 0:   # truthy, not-NaN, positive
+                px = float(cand)
+                break
+        try:
+            with get_portfolio_lock():
+                ib.cancelMktData(pair)
+        except Exception:
+            pass
+        if not px:
+            return 0.0
+        # Pair price is HKD-per-EUR when symbol==base (EUR.HKD); invert when symbol==ccy.
+        if (pair.symbol or "").upper() == (base or "").upper():
+            return px
+        return 1.0 / px
+    except Exception:
+        return 0.0
+
+
 def _ensure_currency_funding(ib, stock_ccy: str, base_ccy: str, notional_ccy: float,
-                             min_convert: float = 1000.0) -> bool:
+                             cfg=None, min_convert: float = 1000.0) -> bool:
     """Auto-convert base currency into a foreign stock's settlement currency BEFORE the buy, so the
     trade is cash-funded and no overnight margin loan accrues. IBKR otherwise borrows the foreign ccy
     automatically even when base-currency cash is positive — recurring margin interest with no return
     benefit, and invisible to the (base-currency) leverage gate.
 
-    Returns True if the buy MAY proceed: same-currency, already-funded, or a sub-min remainder that is
-    intentionally left to the loan (below IDEALPRO's per-order minimum — converting it is impossible).
-    Returns False if a REAL (>= min_convert) shortfall could NOT be converted — the FX order errored or
-    did not fill. For a foreign buy the caller treats this as fatal and SKIPS the order rather than
-    silently opening a foreign-currency margin loan (fail-closed)."""
+    IBKR exposes only ONE direction per FX pair (e.g. EUR.HKD, never HKD.EUR), so we qualify the
+    canonical pair and derive BUY/SELL + qty from which side it's quoted (see `_fx_conversion_plan`).
+
+    Returns True if the buy MAY proceed: same-currency, already-funded, a sub-min remainder, a leg
+    BELOW the IDEALPRO minimum (left to IBKR auto-FX — converting it is impossible, and the residual
+    margin is a few hundred currency units that self-cures), or a conversion that filled. Returns
+    False only when a REAL, above-minimum shortfall could NOT be converted (order errored / didn't
+    fill) — the caller treats that as fatal and SKIPS rather than silently open a foreign margin loan
+    (fail-closed)."""
     ccy = (stock_ccy or "").upper()
     base = (base_ccy or "EUR").upper()
     if not ccy or ccy == base or notional_ccy <= 0:
         return True
+    idealpro_min_base = float(getattr(cfg, "fx_idealpro_min_base", 22000.0) or 0.0)
+    wait_secs = float(getattr(cfg, "fx_fill_wait_secs", 12.0) or 12.0)
     try:
         have = 0.0
         with get_portfolio_lock():
@@ -2486,23 +2555,63 @@ def _ensure_currency_funding(ib, stock_ccy: str, base_ccy: str, notional_ccy: fl
         shortfall = notional_ccy - have
         if shortfall < min_convert:
             return True                   # already funded, or a sub-min remainder left to the loan
-        qty = round(shortfall)
-        pair = Forex(ccy + base)          # symbol=ccy, currency=base → BUY ccy funded by base
+
+        # Qualify the canonical pair. Try base-first (for an EUR base this is the IBKR-canonical
+        # direction, so no spurious Error-200), then ccy-first. If neither resolves (e.g. no FX
+        # permission for this pair), let IBKR auto-FX rather than block — but log it so a persistent
+        # large-leg failure is visible.
+        pair = None
         with get_portfolio_lock():
-            ib.qualifyContracts(pair)
-            trade = ib.placeOrder(pair, MarketOrder("BUY", qty))
-            ib.sleep(2)
-        status, filled = "", 0.0
+            for sym, cur in ((base, ccy), (ccy, base)):
+                cand = Forex(sym + cur)
+                try:
+                    ib.qualifyContracts(cand)
+                except Exception:
+                    cand = None
+                if cand is not None and getattr(cand, "conId", 0):
+                    pair = cand
+                    break
+        if pair is None:
+            log.warning("portfolio_fx_no_pair", ccy=ccy, base=base)
+            return True
+
+        rate = _fx_rate_ccy_per_base(ib, pair, base, ccy)
+        plan = _fx_conversion_plan(base, ccy, shortfall, rate, pair.symbol,
+                                   idealpro_min_base, min_convert)
+        if not plan["place"]:
+            if plan["reason"] == "below_min":
+                log.info("portfolio_fx_below_idealpro_min", ccy=ccy, base=base,
+                         base_value=round(plan["base_value"]), min_base=round(idealpro_min_base))
+            elif plan["reason"] == "no_rate":
+                log.warning("portfolio_fx_no_rate", ccy=ccy, base=base)
+            return True                   # proceed; IBKR auto-FX funds the sub-min / unpriced leg
+
+        # Above the IDEALPRO minimum → place the real conversion and verify the fill (fail-closed).
+        with get_portfolio_lock():
+            trade = ib.placeOrder(pair, MarketOrder(plan["action"], plan["qty"]))
+        waited = 0.0
+        while waited < wait_secs:
+            with get_portfolio_lock():
+                ib.sleep(1.0)
+            waited += 1.0
+            st = (trade.orderStatus.status or "")
+            if st in ("Filled", "Cancelled", "ApiCancelled", "Inactive"):
+                break
+        status = trade.orderStatus.status or ""
+        filled = float(trade.orderStatus.filled or 0.0)
+        if status == "Filled" or filled >= plan["qty"] * 0.9:
+            log.info("portfolio_fx_funded", ccy=ccy, base=base,
+                     pair=pair.symbol + pair.currency, action=plan["action"],
+                     qty=plan["qty"], status=status)
+            return True
+        # Didn't fill — cancel the leftover so it doesn't linger as a working order, then fail closed.
         try:
-            status = trade.orderStatus.status or ""
-            filled = float(trade.orderStatus.filled or 0.0)
+            with get_portfolio_lock():
+                ib.cancelOrder(trade.order)
         except Exception:
             pass
-        # IDEALPRO market orders fill within seconds; accept Filled or a substantially-filled order.
-        if status == "Filled" or filled >= qty * 0.9:
-            log.info("portfolio_fx_funded", ccy=ccy, base=base, qty=qty, status=status)
-            return True
-        log.warning("portfolio_fx_fund_unfilled", ccy=ccy, qty=qty, status=status, filled=filled)
+        log.warning("portfolio_fx_fund_unfilled", ccy=ccy, pair=pair.symbol + pair.currency,
+                    action=plan["action"], qty=plan["qty"], status=status, filled=filled)
         return False
     except Exception as e:
         log.warning("portfolio_fx_fund_failed", ccy=ccy, error=str(e))
@@ -2686,16 +2795,37 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         # cycle) rather than place an order that silently opens a margin loan (fail-closed).
         pcfg = get_settings().portfolio
         unpark_ok = _unpark_yield(ib, pcfg, notional_settle, settle_ccy=ccy)
-        fx_ok = _ensure_currency_funding(ib, ccy, pcfg.base_currency, notional_settle)
+        fx_ok = _ensure_currency_funding(ib, ccy, pcfg.base_currency, notional_settle, cfg=pcfg)
         funded = fx_ok if (ccy or "").upper() != (pcfg.base_currency or "EUR").upper() else unpark_ok
         if not funded:
+            # The suggestion-execution job runs every ~30s, so a permanently-unfundable foreign leg
+            # would re-fire (and re-spam IBKR) forever while sitting 'approved'. Count the attempts and
+            # EXPIRE + alert once the cap is hit, so a broken FX pair / missing permission is visible
+            # instead of a silent perpetual retry. (A genuinely transient shortfall recovers well
+            # within the cap.)
+            max_tries = int(getattr(pcfg, "fx_funding_max_attempts", 6) or 6)
             log.warning("portfolio_suggestion_unfunded_skip", id=suggestion_id, symbol=symbol,
                         ccy=ccy, notional=round(notional_settle))
             with get_db() as db:
                 s = db.query(TradeSuggestion).filter(TradeSuggestion.id == suggestion_id).first()
                 if s:
+                    s.funding_attempts = (s.funding_attempts or 0) + 1
+                    if s.funding_attempts >= max_tries:
+                        s.status = "expired"
+                        s.review_note = (f"Could not fund {ccy} leg after {s.funding_attempts} "
+                                         f"attempts (FX conversion failed) — needs review")
+                        try:
+                            from src.core.alerts import get_alert_manager
+                            get_alert_manager().critical(
+                                "Portfolio buy unfunded",
+                                f"{symbol} ({ccy}) expired after {s.funding_attempts} failed "
+                                f"FX-funding attempts. Check FX permission / pair for {ccy}.")
+                        except Exception:
+                            pass
+                        return "expired"
                     s.status = "approved"   # retry next cycle; do not place an unfunded (margin) order
-                    s.review_note = f"Skipped — could not fund {ccy} leg without margin; will retry"
+                    s.review_note = (f"Skipped — could not fund {ccy} leg (try {s.funding_attempts}/"
+                                     f"{max_tries}); will retry")
             return "approved"
         order = LimitOrder("BUY", shares, order_price)
         order.tif = "DAY"

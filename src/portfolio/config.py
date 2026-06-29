@@ -161,6 +161,16 @@ class PortfolioConfig(BaseModel):
     ibkr_account: str = ""
     base_currency: str = "EUR"  # account base ccy — foreign buys auto-convert into the stock's ccy via FX
 
+    # Foreign-currency FX funding (auto-convert base→stock ccy BEFORE a foreign buy so no margin loan
+    # accrues). IBKR defines only ONE direction per cash pair (e.g. EUR.HKD, never HKD.EUR), so the
+    # funding code qualifies the canonical pair and derives BUY/SELL + qty from it. Below
+    # fx_idealpro_min_base (the leg's value in base ccy) the conversion is under IDEALPRO's per-order
+    # minimum, so we let IBKR auto-FX the buy at settlement (negligible, self-curing) rather than fire
+    # a doomed order; at/above it we place a real IDEALPRO conversion and verify the fill (fail-closed).
+    fx_idealpro_min_base: float = 22000.0   # ≈ USD 25k IDEALPRO minimum, expressed in base ccy
+    fx_fill_wait_secs: float = 12.0         # poll this long for the FX conversion to fill before failing
+    fx_funding_max_attempts: int = 6        # expire+alert an approved buy after this many failed FX tries
+
     # Tier allocation (must sum to 1.0)
     tier_allocation: TierAllocation = TierAllocation()
 

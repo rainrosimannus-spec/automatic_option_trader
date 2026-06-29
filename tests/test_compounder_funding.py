@@ -17,6 +17,21 @@ class _OrderStatus:
 class _Trade:
     def __init__(self, status="Filled", filled=None):
         self.orderStatus = _OrderStatus(status, filled)
+        self.order = SimpleNamespace()
+
+
+class _FxTicker:
+    """Minimal ib_insync Ticker stand-in for the FX-rate snapshot."""
+    def __init__(self, rate):
+        self._rate = rate
+        self.last = float("nan")
+        self.close = float("nan")
+
+    def midpoint(self):
+        return self._rate
+
+    def marketPrice(self):
+        return self._rate
 
 
 class _Bar:
@@ -37,11 +52,13 @@ class _Pos:
 
 class FakeIB:
     """Configurable IB stub. fill_status drives the placed order's resulting status."""
-    def __init__(self, cash=None, sgov_shares=0, sgov_price=100.0, fill_status="Filled"):
+    def __init__(self, cash=None, sgov_shares=0, sgov_price=100.0, fill_status="Filled",
+                 fx_rate=1.0):
         self._cash = cash or []                       # list of (tag, ccy, value)
         self._sgov_shares = sgov_shares
         self._sgov_price = sgov_price
         self._fill_status = fill_status
+        self._fx_rate = fx_rate                       # ccy-per-base for the FX-rate snapshot
         self.orders_placed = 0
 
     def accountValues(self):
@@ -51,6 +68,22 @@ class FakeIB:
         return [_Pos("SGOV", self._sgov_shares)] if self._sgov_shares else []
 
     def qualifyContracts(self, *a, **k):
+        # The funding path qualifies the canonical FX pair and checks conId — stamp one so the
+        # first-tried (base-first) direction resolves, mirroring IBKR's single-direction pairs.
+        for c in a:
+            try:
+                c.conId = 1
+            except Exception:
+                pass
+        return list(a)
+
+    def reqMktData(self, *a, **k):
+        return _FxTicker(self._fx_rate)
+
+    def cancelMktData(self, *a, **k):
+        return None
+
+    def cancelOrder(self, *a, **k):
         return None
 
     def reqHistoricalData(self, *a, **k):
