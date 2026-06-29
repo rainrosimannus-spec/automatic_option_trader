@@ -603,7 +603,7 @@ function syncInjections() {
                         <td class="px-3 py-2 text-right text-emerald-400">{{o.filled}}</td>
                         <td class="px-3 py-2 text-right text-amber-400">{{o.remaining}}</td>
                         <td class="px-3 py-2 text-right text-gray-300">
-                            {% if o.limit_price and o.limit_price > 0 %}${{"{:.2f}".format(o.limit_price)}}{% else %}MKT{% endif %}
+                            {% if o.limit_price and o.limit_price > 0 %}{% if o.currency == 'GBP' %}£{{"{:.2f}".format(o.limit_price / 100)}}{% else %}${{"{:.2f}".format(o.limit_price)}}{% endif %}{% else %}MKT{% endif %}
                         </td>
                         <td class="px-3 py-2 text-xs text-gray-400">{{o.order_type}}</td>
                         <td class="px-3 py-2">

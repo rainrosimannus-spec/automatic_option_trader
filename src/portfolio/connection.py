@@ -635,6 +635,7 @@ def refresh_portfolio_pending_orders_cache() -> None:
                     "filled": filled,
                     "remaining": remaining,
                     "limit_price": oo.order.lmtPrice if hasattr(oo.order, "lmtPrice") else None,
+                    "currency": getattr(c, "currency", "USD"),
                     "order_type": oo.order.orderType,
                     "status": status,
                     "strike": getattr(c, "strike", None),
