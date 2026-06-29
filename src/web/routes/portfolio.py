@@ -418,19 +418,24 @@ async def portfolio_page(request: Request):
     except Exception as _e:
         log.warning("portfolio_pending_count_failed", error=str(_e))
 
-    # Live daily budget: base_pace minus capital already committed TODAY (filled buys + still-working
-    # BUY orders). Computed every page load so the budget card moves with the buys, instead of only
-    # refreshing at the 2-hourly scan (which left it showing the full budget right after several fills).
+    # Live daily budget: the scan's per-DAY pace minus capital already committed TODAY (filled buys +
+    # still-working BUY orders). Computed every page load so the budget card moves with the buys, instead
+    # of only refreshing at the 2-hourly scan (which left it showing the full budget right after several
+    # fills). CRITICAL: this MUST use the same pace math as the scan (compounder.base_daily_pace) — the
+    # lump-defusal horizon stretch AND the froth throttle — or the card overstates the budget. A naive
+    # investable*base_pct/dca_horizon ignored both and showed ~$15k when the real deployable pace was
+    # ~$6k (lump-stretched to ~45d) throttled to ~$1.4k after today's fills — "shows 10k, buys nothing".
     _live_daily_budget = float(_get_state("compounder_daily_budget") or 0)
     try:
         from datetime import datetime as _dt_t
         from sqlalchemy import func as _func2
         from src.portfolio.config import CompounderConfig as _CC
+        from src.portfolio.compounder import base_daily_pace as _base_daily_pace
         from src.portfolio.connection import get_cached_portfolio_pending_orders as _gp
         _investable = float(_get_state("compounder_investable") or 0)
         if _investable > 0:
             _ccfg = _CC()
-            _base_pace = _investable * _ccfg.base_pct / max(1, _ccfg.dca_horizon_days)
+            _throttle = float(_get_state("compounder_pace_throttle") or 1.0)
             # UTC boundary — match the scan's throttle (buyer.py uses datetime.utcnow) and the UTC
             # created_at storage, so the live budget card and the actual per-day cap agree on "today".
             _start = _dt_t.utcnow().strftime("%Y-%m-%d") + " 00:00:00"
@@ -442,8 +447,21 @@ async def portfolio_page(request: Request):
             _open_buy_notional = 0.0
             for _o in _gp() or []:
                 if _o.get("sec_type") == "STK" and _o.get("action") == "BUY":
-                    _open_buy_notional += float(_o.get("remaining") or 0) * float(_o.get("limit_price") or 0)
-            _live_daily_budget = max(0.0, _base_pace - _fills_today - _open_buy_notional)
+                    _px = float(_o.get("limit_price") or 0)
+                    # GBP/LSE limit prices are in PENCE — normalise to pounds (see GBP unit map).
+                    if str(_o.get("currency") or "").upper() == "GBP":
+                        _px = _px / 100.0
+                    _open_buy_notional += float(_o.get("remaining") or 0) * _px
+            # Replicate the scan's daily_deploy_budget non-crash branch: start-of-day gap drives the
+            # lump-stretched horizon, throttle slows the pace, then subtract what's gone out today.
+            _live_target = float(_get_state("compounder_live_target") or 0)
+            _deployed = float(_get_state("compounder_deployed") or 0)
+            _remaining_gap = max(0.0, _live_target - _deployed - _open_buy_notional)
+            _deployed_today = _fills_today + _open_buy_notional
+            _base_pace = _base_daily_pace(_investable, _ccfg.base_pct, _ccfg.dca_horizon_days,
+                                          _remaining_gap, _deployed_today,
+                                          _ccfg.lump_horizon_days, _throttle)
+            _live_daily_budget = max(0.0, min(_remaining_gap, _base_pace - _deployed_today))
     except Exception as _e:
         log.warning("compounder_live_budget_failed", error=str(_e))
 
