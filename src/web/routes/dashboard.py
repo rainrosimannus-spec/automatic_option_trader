@@ -147,17 +147,37 @@ def _get_performance_data() -> dict:
         injections = [(r.date, r.amount_usd or 0.0) for r in inj_rows]
 
         first_nlv = snapshots[0].net_liquidation or 1
+        from datetime import date as _date
+        _DEPOSIT_GRACE_DAYS = 7   # Flex value-dates a deposit a day or two from when the cash lands in
+                                  # NLV; recognise a near-future deposit early ONLY when NLV already
+                                  # reflects it, so the deposit dilutes the return rather than spiking it
+                                  # (mirrors the portfolio chart's _invested_asof — same artifact class).
 
-        def _invested_as_of(date_str: str) -> float:
-            # Cumulative deposits recorded on/before this snapshot date; falls back
-            # to the first snapshot's NLV before any deposit row exists.
-            total = sum(amt for d, amt in injections if d <= date_str)
+        def _invested_as_of(date_str: str, nlv: float) -> float:
+            # Cumulative deposits in effect on this snapshot date; falls back to the first snapshot's
+            # NLV before any deposit row exists. A deposit dated up to _DEPOSIT_GRACE_DAYS in the future
+            # counts early only when this day's NLV already holds the cash (never pulls money in before
+            # it's there, which would invert into a negative spike on the preceding days).
+            total = 0.0
+            for d, amt in injections:               # injections sorted by date asc
+                dd = str(d)[:10]
+                if dd <= date_str:
+                    total += amt
+                    continue
+                try:
+                    gap = (_date.fromisoformat(dd) - _date.fromisoformat(str(date_str)[:10])).days
+                except Exception:
+                    break
+                if 0 < gap <= _DEPOSIT_GRACE_DAYS and nlv >= (total + amt) * 0.98:
+                    total += amt
+                else:
+                    break
             return total if total > 0 else first_nlv
 
         # Compute raw returns, then anchor first point to 0%
         raw_returns = []
         for snap in snapshots:
-            invested = _invested_as_of(snap.date)
+            invested = _invested_as_of(snap.date, snap.net_liquidation)
             nlv_return = (snap.net_liquidation / invested - 1) * 100
             raw_returns.append(nlv_return)
         anchor = raw_returns[0] if raw_returns else 0
