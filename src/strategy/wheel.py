@@ -101,6 +101,19 @@ class WheelManager:
                     # assignment: a covered call on the same symbol always has
                     # stock behind it, which previously caused worthless-expired
                     # puts to be misread as assigned.
+                    # Assignment is proven by the stock-DELIVERY fill (BUY_STOCK at
+                    # ~strike, dated after the put opened) — NOT by the absence of a $0
+                    # buy-to-close. IBKR books a $0 BUY_PUT close for assignments too, so
+                    # the old "$0 close ⇒ worthless" test skipped every real assignment.
+                    from src.broker.trade_sync import assignment_delivery_fill
+                    delivery = assignment_delivery_fill(
+                        db, symbol, put_pos.strike, put_pos.opened_at, put_pos.quantity)
+                    if delivery is not None:
+                        # Stock was delivered → genuine assignment (blend / create lot).
+                        self._handle_assignment(db, put_pos, symbol)
+                        assigned_symbols.append(symbol)
+                        continue
+
                     closing_fill = (
                         db.query(Trade)
                         .filter(
@@ -114,23 +127,18 @@ class WheelManager:
                         .first()
                     )
                     if closing_fill:
+                        # $0 buy-to-close and NO stock delivery → worthless expiry;
+                        # trade_sync is the sole source of truth for booking it CLOSED.
                         log.info("put_expiry_worthless_ibkr_confirmed",
                                  symbol=symbol, strike=put_pos.strike,
                                  expiry=put_pos.expiry)
                         continue
 
-                    shares = stock_positions.get(symbol, 0)
-                    if shares >= 100 * put_pos.quantity:
-                        # No buy-to-close + shares delivered → genuine assignment.
-                        self._handle_assignment(db, put_pos, symbol)
-                        assigned_symbols.append(symbol)
-                    else:
-                        # No stock position — do NOT mark expired locally.
-                        # trade_sync is the sole source of truth for worthless expiry.
-                        # This avoids timezone flipping (e.g. AUD options expiring
-                        # in Sydney time while server clock is behind).
-                        log.debug("put_expiry_pending_ibkr_confirmation",
-                                  symbol=symbol, expiry=put_pos.expiry)
+                    # Neither delivery nor a $0 close yet — do NOT mark expired locally;
+                    # defer to the next sync (avoids timezone flipping, e.g. AUD options
+                    # expiring in Sydney time while the server clock is behind).
+                    log.debug("put_expiry_pending_ibkr_confirmation",
+                              symbol=symbol, expiry=put_pos.expiry)
 
         log.info("assignment_check_done", assigned=assigned_symbols)
         return assigned_symbols

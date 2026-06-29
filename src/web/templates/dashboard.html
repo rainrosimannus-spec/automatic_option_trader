@@ -547,7 +547,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <td class="py-2 px-3 text-right font-mono text-gray-300">{% if p.position_type == 'stock' %}{{ p.quantity }} sh{% else %}{{ p.quantity }}{% endif %}</td>
                         <td class="py-2 px-3 text-right font-mono">{% if p.position_type == 'stock' %}${{ "%.0f"|format(p.cost_basis) if p.cost_basis else '—' }}{% else %}${{ "%.0f"|format(p.strike) if p.strike else '—' }}{% endif %}</td>
                         <td class="py-2 px-3 text-gray-400">{{ p.expiry[4:6] + '/' + p.expiry[6:8] if p.expiry and p.expiry|length >= 8 else '—' }}</td>
-                        <td class="py-2 px-3 text-right text-emerald-400 font-mono">{% if p.position_type == 'stock' %}—{% else %}${{ "%.2f"|format(p.entry_premium) }}{% endif %}</td>
+                        <td class="py-2 px-3 text-right font-mono">{% if p.position_type == 'stock' %}{% if p.unrealized_pnl is not none and p.unrealized_pnl != 0 %}<span class="{{ 'text-emerald-400' if p.unrealized_pnl >= 0 else 'text-red-400' }}">{{ "%+,.0f"|format(p.unrealized_pnl) }}</span>{% else %}<span class="text-gray-500">—</span>{% endif %}{% else %}<span class="text-emerald-400">${{ "%.2f"|format(p.entry_premium) }}</span>{% endif %}</td>
                         <td class="py-2 px-3">
                             <button onclick="handleAction(this, '/controls/force-close/{{ p.id }}', 'Force close {{ p.symbol }}?')" class="text-red-500/60 hover:text-red-400 transition">✕</button>
                         </td>

@@ -474,6 +474,35 @@ def reconcile_submitted_trades(grace_minutes: int = 10) -> int:
     return reconciled
 
 
+def assignment_delivery_fill(db, symbol, strike, put_opened_at, quantity):
+    """Return the BUY_STOCK fill that represents a put-assignment delivery, or None.
+
+    IBKR books a put ASSIGNMENT as a $0 buy-to-close on the option PLUS a stock BUY at
+    the strike. That stock leg — a FILLED BUY_STOCK at ~strike, dated at/after the put
+    was opened — is the AUTHORITATIVE signal of assignment. The $0 buy-to-close alone is
+    NOT evidence of a worthless expiry, because assignments produce it too; and bare
+    stock presence is not evidence either (a covered call holds stock bought at a
+    different price). Matching the delivery fill at ~strike disambiguates both.
+
+    Used by BOTH the position reconciler (defer the put to the wheel) and
+    wheel.check_assignments (create the stock lot) so the two agree on the call."""
+    if not strike:
+        return None
+    return (
+        db.query(Trade)
+        .filter(
+            Trade.symbol == symbol,
+            Trade.trade_type == TradeType.BUY_STOCK,
+            Trade.order_status == OrderStatus.FILLED,
+            Trade.created_at >= put_opened_at,
+            Trade.fill_price >= strike * 0.99,
+            Trade.fill_price <= strike * 1.01,
+        )
+        .order_by(Trade.created_at.desc())
+        .first()
+    )
+
+
 def sync_ibkr_positions() -> int:
     """
     Sync open positions from IBKR into the Position table.
@@ -507,6 +536,7 @@ def sync_ibkr_positions() -> int:
     # Collect IBKR option and stock positions
     ibkr_positions = {}
     ibkr_stock_positions = {}
+    ibkr_stock_upnl = {}          # symbol → IBKR's live unrealized P&L for the stock leg
     for item in portfolio_items:
         contract = item.contract
         if account_id and hasattr(item, 'account') and item.account != account_id:
@@ -536,6 +566,10 @@ def sync_ibkr_positions() -> int:
             symbol = contract.symbol
             qty = int(item.position)
             ibkr_stock_positions[symbol] = qty
+            ibkr_stock_upnl[symbol] = (
+                float(item.unrealizedPNL)
+                if hasattr(item, 'unrealizedPNL') and item.unrealizedPNL else 0.0
+            )
 
     with get_db() as db:
         open_positions = db.query(Position).filter(
@@ -586,16 +620,18 @@ def sync_ibkr_positions() -> int:
                 )
                 expiry_passed = bool(pos.expiry) and pos.expiry < _date.today().strftime("%Y%m%d")
 
-                # Short put assignment: put vanishes, stock appears. Defer so the
-                # wheel can transition put → stock + covered-call. But ONLY when
-                # IBKR did NOT book a buy-to-close: a worthless expiry IS booked
-                # as a BUY_PUT (~$0), so a closing fill rules out assignment.
-                # Stock presence alone isn't evidence — a covered call on the same
-                # symbol always has stock behind it (this caused worthless-expired
-                # puts to be misread as assigned). Calls don't get "secretly
-                # assigned" via stock for the same reason.
-                if pos.position_type == "short_put" and not closing_fill and \
-                   ibkr_stock_positions.get(pos.symbol, 0) >= 100 * pos.quantity:
+                # Short put assignment: put vanishes, stock is delivered at the strike.
+                # DEFER so the wheel can transition put → stock + covered-call (the put
+                # must stay OPEN for check_assignments to see it). The discriminator is
+                # the stock-DELIVERY fill (BUY_STOCK at ~strike after the put opened) —
+                # NOT the absence of a $0 buy-to-close. IBKR books a $0 BUY_PUT close for
+                # assignments AND worthless expiries, so a closing fill does NOT rule out
+                # assignment (the old check missed every real assignment for this reason).
+                # A worthless expiry has the $0 close but no delivery → falls through to
+                # CLOSED/EXPIRED below.
+                if pos.position_type == "short_put" and \
+                   assignment_delivery_fill(db, pos.symbol, pos.strike,
+                                            pos.opened_at, pos.quantity) is not None:
                     log.info("position_sync_skipped_assignment",
                              symbol=pos.symbol, strike=pos.strike,
                              stock_qty=ibkr_stock_positions.get(pos.symbol, 0))
@@ -648,6 +684,13 @@ def sync_ibkr_positions() -> int:
         ).all()
         for pos in open_stock_positions:
             if pos.symbol in ibkr_stock_positions and ibkr_stock_positions[pos.symbol] != 0:
+                # Still held — mark-to-market from IBKR's own unrealized P&L so the
+                # dashboard shows the live gain per stock lot (it previously stayed 0).
+                if pos.symbol in ibkr_stock_upnl:
+                    new_upnl = round(ibkr_stock_upnl[pos.symbol], 2)
+                    if pos.unrealized_pnl != new_upnl:
+                        pos.unrealized_pnl = new_upnl
+                        changes += 1
                 continue
             # Stock no longer in IBKR. Look for the SELL_STOCK trade.
             stock_trades = db.query(Trade).filter(
