@@ -18,6 +18,12 @@ function syncInjections() {
 
 {% block content %}
 <div class="max-w-[1400px]">
+    {% if flex_stale %}
+    <div class="mb-4 px-4 py-3 rounded-lg bg-amber-900/40 border border-amber-600/60 text-amber-200 text-sm flex items-start gap-2">
+        <span>⚠️</span>
+        <span><span class="font-semibold">Invested base may be stale.</span> {{ flex_stale_msg }}</span>
+    </div>
+    {% endif %}
     <div class="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-3">
         <div>
             <h1 class="text-xl sm:text-2xl font-bold">📈 Long-Term Portfolio</h1>

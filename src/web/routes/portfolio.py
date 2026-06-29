@@ -477,7 +477,34 @@ async def portfolio_page(request: Request):
     except Exception as _e:
         log.warning("compounder_live_budget_failed", error=str(_e))
 
+    # Stale-invested guard: a silent Flex failure must never again let an unbooked deposit read as
+    # return. Flag when the deposit sync hasn't succeeded in >36h (nightly success keeps it <24h) AND
+    # there's a >2% NLV-over-invested gap that an unbooked deposit could explain. Self-clears once Flex
+    # syncs or the gap closes; the wording tells the operator the invested base may be missing deposits.
+    flex_stale = False
+    flex_stale_msg = ""
+    try:
+        from datetime import datetime as _dts
+        _last = _get_state(f"flex_last_success_{_pacct}") if _pacct else ""
+        _age_h = None
+        if _last:
+            try:
+                _age_h = (_dts.utcnow() - _dts.fromisoformat(_last)).total_seconds() / 3600.0
+            except Exception:
+                _age_h = None
+        _gap = (portfolio_nlv or 0) - (total_invested or 0)
+        if _gap > max(2000.0, 0.02 * (total_invested or 0)) and (_age_h is None or _age_h > 36):
+            flex_stale = True
+            _ago = "never" if _age_h is None else f"{_age_h:.0f}h ago"
+            flex_stale_msg = (
+                f"Deposit sync (Flex) last succeeded {_ago}. The invested base may be missing a recent "
+                f"deposit (~{_gap:,.0f} {_base_ccy} gap), which would read as return until it syncs.")
+    except Exception as _e:
+        log.warning("flex_stale_check_failed", error=str(_e))
+
     return templates.TemplateResponse("portfolio.html", {
+        "flex_stale": flex_stale,
+        "flex_stale_msg": flex_stale_msg,
         "request": request,
         "pending_portfolio": pending_portfolio,
         "holdings": holdings,

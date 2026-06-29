@@ -206,8 +206,8 @@ def _get_fx_rate_to_usd(currency: str, date_str: str) -> float:
         return 1.0
 
     try:
-        from src.core.config import get_settings
-        api_key = get_settings().fmp_api_key
+        from src.portfolio.fmp import get_fmp_key
+        api_key = get_fmp_key()
         pair = f"{currency}USD"
         url = (
             f"https://financialmodelingprep.com/stable/historical-price-eod/full"
@@ -276,10 +276,18 @@ def sync_injections_from_ibkr(
         # misconfigured query, an old parser that doesn't read this query's element form, or a
         # lockout-then-empty result) we KEEP the bootstrap safety net rather than wiping it and
         # leaving the chart with no invested base.
+        #
+        # PURGE-DATE GUARD: Flex publishes cash transactions with a ~1-day lag, so a deposit made
+        # TODAY isn't in the statement yet. Only purge manual rows up to the latest date Flex
+        # actually covers — a manual BRIDGE dated after that (today's deposit, hand-bridged so the
+        # chart isn't a fake gain) survives until Flex catches up and replaces it. Without this the
+        # nightly sync wiped the bridge before Flex had the row → invested dropped → deposit-as-return.
         if deposits:
+            latest_flex_date = max(d["date"] for d in deposits)
             db.query(PortfolioCapitalInjection).filter(
                 PortfolioCapitalInjection.account_id == account_id,
                 PortfolioCapitalInjection.source == "manual_bootstrap",
+                PortfolioCapitalInjection.date <= latest_flex_date,
             ).delete(synchronize_session=False)
 
         for dep in deposits:
@@ -321,6 +329,25 @@ def sync_injections_from_ibkr(
                 bump_bridge_benchmark(amount_usd, acct or "")
         except Exception as e:
             log.warning("bridge_benchmark_hook_failed", error=str(e))
+
+    # Record a successful Flex sync (fetch + parse returned rows) so the dashboard can flag a STALE
+    # invested base — a silent Flex failure must never again let a deposit read as return unnoticed.
+    if deposits:
+        try:
+            from src.core.database import get_db as _gdb
+            from src.portfolio.models import PortfolioState
+            from datetime import datetime as _dt
+            with _gdb() as _sdb:
+                key = f"flex_last_success_{account_id}"
+                row = _sdb.query(PortfolioState).filter(PortfolioState.key == key).first()
+                stamp = _dt.utcnow().isoformat()
+                if row:
+                    row.value = stamp
+                else:
+                    _sdb.add(PortfolioState(key=key, value=stamp))
+                _sdb.commit()
+        except Exception as e:
+            log.warning("flex_last_success_store_failed", error=str(e))
 
     log.info("injections_synced", added=added, account_id=account_id)
     return added
