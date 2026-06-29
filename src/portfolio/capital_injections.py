@@ -39,31 +39,62 @@ FLEX_GET_URL = (
     "/Universal/servlet/FlexStatementService.GetStatement"
 )
 
-def fetch_flex_statement(flex_token: str, query_id: str) -> str:
-    """Request an IBKR Flex statement and return the XML string."""
-    resp = requests.get(
-        FLEX_REQUEST_URL,
-        params={"t": flex_token, "q": query_id, "v": 3},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    root = ET.fromstring(resp.text)
+# IBKR Flex returns these when a statement is queued/throttled rather than failed — they mean
+# RETRY, not give up. 1019 = "Statement generation in progress"; the SendRequest throttle
+# ("Statement could not be generated at this time. Please try again shortly.") has no stable
+# code, so we also match the text. Keep retries BOUNDED + backed off — the Flex lockout is
+# IP-scoped and triggered by hammering.
+_FLEX_TRANSIENT_CODES = {"1019"}
+_FLEX_TRANSIENT_MARKERS = ("try again shortly", "could not be generated", "generation in progress")
+_FLEX_SEND_RETRY_BACKOFF = (10, 30, 60)   # seconds before each SendRequest retry (≈4 attempts total)
 
-    status = root.findtext("Status")
-    if status != "Success":
-        raise RuntimeError(
-            f"Flex request failed: {root.findtext('ErrorMessage') or resp.text}"
+
+def _flex_is_transient(error_code, error_msg) -> bool:
+    """True if a Flex error is a transient throttle / 'still generating' (so we should retry)."""
+    if error_code and str(error_code) in _FLEX_TRANSIENT_CODES:
+        return True
+    low = (error_msg or "").lower()
+    return any(m in low for m in _FLEX_TRANSIENT_MARKERS)
+
+
+def _flex_send_request(flex_token: str, query_id: str) -> str:
+    """SendRequest → reference code, retrying IBKR's transient 'try again shortly' throttle with
+    bounded backoff. Raises on a permanent error or once the backoff schedule is exhausted."""
+    last_msg = None
+    for i, backoff in enumerate((0,) + _FLEX_SEND_RETRY_BACKOFF):
+        if backoff:
+            time.sleep(backoff)
+        resp = requests.get(
+            FLEX_REQUEST_URL, params={"t": flex_token, "q": query_id, "v": 3}, timeout=30,
         )
+        resp.raise_for_status()
+        root = ET.fromstring(resp.text)
+        if root.findtext("Status") == "Success":
+            ref = root.findtext("ReferenceCode")
+            log.info("flex_statement_requested", reference_code=ref, send_attempt=i + 1)
+            return ref
+        code = root.findtext("ErrorCode")
+        last_msg = root.findtext("ErrorMessage") or resp.text
+        if not _flex_is_transient(code, last_msg):
+            raise RuntimeError(f"Flex request failed: {last_msg}")
+        log.warning("flex_send_throttled_retry", code=code,
+                    msg=(last_msg or "")[:120], send_attempt=i + 1)
+    raise RuntimeError(f"Flex request failed after retries (still throttled): {last_msg}")
 
-    reference_code = root.findtext("ReferenceCode")
-    log.info("flex_statement_requested", reference_code=reference_code)
 
-    for attempt in range(10):
-        time.sleep(3)
+def fetch_flex_statement(flex_token: str, query_id: str) -> str:
+    """Request an IBKR Flex statement and return the XML string.
+
+    Resilient to IBKR's transient responses — the SendRequest throttle ("Statement could not be
+    generated at this time. Please try again shortly.") and the GetStatement "generation in
+    progress" (ErrorCode 1019) are RETRIED, not treated as fatal. This is what lets the daily
+    deposit sync actually land deposits instead of dying before it can parse them."""
+    reference_code = _flex_send_request(flex_token, query_id)
+
+    for attempt in range(20):
+        time.sleep(6)
         resp2 = requests.get(
-            FLEX_GET_URL,
-            params={"t": flex_token, "q": reference_code, "v": 3},
-            timeout=30,
+            FLEX_GET_URL, params={"t": flex_token, "q": reference_code, "v": 3}, timeout=30,
         )
         resp2.raise_for_status()
 
@@ -74,16 +105,18 @@ def fetch_flex_statement(flex_token: str, query_id: str) -> str:
             log.info("flex_statement_ready", attempts=attempt + 1)
             return resp2.text
 
+        # Not ready yet — distinguish "still generating" (keep polling) from a hard error.
+        code = msg = None
         try:
-            log.debug(
-                "flex_statement_pending",
-                status=ET.fromstring(resp2.text).findtext("Status"),
-                attempt=attempt,
-            )
+            r = ET.fromstring(resp2.text)
+            code, msg = r.findtext("ErrorCode"), r.findtext("ErrorMessage")
         except Exception:
             pass
+        if code and not _flex_is_transient(code, msg):
+            raise RuntimeError(f"Flex GetStatement error {code}: {msg or resp2.text[:200]}")
+        log.debug("flex_statement_pending", code=code, attempt=attempt)
 
-    raise TimeoutError("Flex statement not ready after 30 seconds")
+    raise TimeoutError("Flex statement still generating after polling window (~120s)")
 
 
 def _norm_flex_date(date_str: str) -> str:
