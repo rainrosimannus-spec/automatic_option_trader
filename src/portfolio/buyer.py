@@ -43,6 +43,49 @@ def _outside_rth_ok(currency: str | None) -> bool:
     return (currency or "USD").upper() in _OUTSIDE_RTH_CCY
 
 
+# ── Permission-block registry ────────────────────────────────────────────────────────────
+# When an order is rejected because the account isn't permissioned to trade that exchange yet
+# (IBKR Error 200 "No security definition" / "no trading permission" — e.g. Hong Kong/3690
+# before worldwide perms activate), we pause the SYMBOL for a cooldown so the compounder scan
+# stops re-creating doomed suggestions for it and the day's deploy budget flows to names that
+# can actually fill. The name stays ranked/visible in the universe — it's just not given budget
+# until the block expires (auto-retries) or perms are granted. In-memory: a restart clears it,
+# so a blocked name gets one fresh attempt post-restart, then re-blocks if still failing.
+_PERMISSION_BLOCK_HOURS = 24.0
+_permission_blocked: dict[str, datetime] = {}
+
+
+def _mark_permission_blocked(symbol: str, hours: float = _PERMISSION_BLOCK_HOURS) -> None:
+    if symbol:
+        _permission_blocked[symbol] = datetime.utcnow() + timedelta(hours=hours)
+        log.warning("portfolio_symbol_permission_blocked", symbol=symbol, hours=hours)
+
+
+def _is_permission_blocked(symbol: str) -> bool:
+    until = _permission_blocked.get(symbol)
+    if not until:
+        return False
+    if datetime.utcnow() < until:
+        return True
+    _permission_blocked.pop(symbol, None)   # cooldown elapsed — allow a retry
+    return False
+
+
+def _order_blocked_by_permission(trade) -> bool:
+    """True if an order's cancel/rejection was a permission / no-security-definition error
+    (the account can't trade that exchange yet), vs a transient cancel. Reads the IBKR
+    TradeLogEntry codes/messages — Error 200 is the Hong Kong/3690 case."""
+    try:
+        for entry in (getattr(trade, "log", None) or []):
+            code = getattr(entry, "errorCode", 0) or 0
+            msg = (getattr(entry, "message", "") or "").lower()
+            if code == 200 or "no security definition" in msg or "permission" in msg:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 # _ensure_event_loop imported from connection.py
 
 
@@ -752,6 +795,10 @@ class PortfolioBuyer:
                 continue                          # already at/working toward target — hold
             if r.symbol in open_put_syms:
                 continue                          # legacy: respect any still-open put on the name
+            if _is_permission_blocked(r.symbol):
+                continue                          # exchange not permissioned yet — keep it ranked/
+                                                  # visible, but don't spend today's budget on a
+                                                  # doomed order; auto-retries after the cooldown
             attractiveness = cmp.fair_price_attractiveness(r.price, r.sma200, r.high_52w)
             uw = (tgt - cur) / tgt if tgt > 0 else 0.0
             queue.append((attractiveness, uw, r, tgt, cur))
@@ -2861,6 +2908,14 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                     # cadence; permanently-blocked ones just show their reason and stop churning.
                     s.status = "rejected"
                     s.review_note = f"Order {fill_status} — not placed"
+                    # If the rejection is a permission / no-security-definition error (the account
+                    # can't trade this exchange yet — e.g. HK/3690), pause the symbol so the scan
+                    # stops re-creating doomed suggestions and the daily budget flows to fillable
+                    # names. Auto-expires; resumes once perms are granted.
+                    if _order_blocked_by_permission(trade):
+                        _mark_permission_blocked(symbol)
+                        s.review_note = (f"Order {fill_status} — {ccy} not permissioned yet; "
+                                         f"paused (auto-retries later, doesn't block budget)")
                 else:
                     s.status = "submitted"
                     s.review_note = f"Order {fill_status} — awaiting fill"
