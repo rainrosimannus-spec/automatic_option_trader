@@ -1090,6 +1090,11 @@ class PortfolioBuyer:
                 px = float(o.get("limit_price") or 0)
                 if rem <= 0 or px <= 0:
                     continue
+                # LSE/GBP orders quote in PENCE — convert to pounds so the notional matches
+                # holdings/targets (all base-ccy). Without this an AZN order counts ~100× its
+                # value (14222 × 33 ≈ 469k) and swamps the daily budget → budget stuck at 0.
+                if (o.get("currency") or "").upper() == "GBP":
+                    px = px / 100.0
                 out[o["symbol"]] = out.get(o["symbol"], 0.0) + rem * px
             except Exception:
                 continue
