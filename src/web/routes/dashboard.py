@@ -388,6 +388,10 @@ def dashboard(request: Request):
 
         _all_recent = (
             db.query(Trade)
+            # Recent Trades = EXECUTED trades only. The order path records a provisional row at
+            # placement (order_status='SUBMITTED', e.g. a covered call still working), which must
+            # NOT appear here as if it traded — it lives in Pending Orders until it fills.
+            .filter(Trade.order_status.in_(["FILLED", "filled"]))
             .order_by(Trade.created_at.desc())
             .limit(50)
             .all()
