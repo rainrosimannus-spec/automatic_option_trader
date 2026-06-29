@@ -74,6 +74,10 @@ class IpoWatchlist(Base):
     lockup_confidence: Mapped[Optional[str]] = mapped_column(String(12), nullable=True)  # 'confirmed'/'low' (SEC-parsed)
     lockup_source: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)      # e.g. '424B4' / 'estimate_180d'
 
+    # SEC-parsed ticker + first-trading-day provenance (vs the legacy Finnhub/scrape guesses)
+    date_confidence: Mapped[Optional[str]] = mapped_column(String(12), nullable=True)    # 'confirmed' (424B4) / 'low' (S-1)
+    date_source: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)        # e.g. '424B4' / 'S-1' / 'scrape'
+
     ticker_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

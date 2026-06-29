@@ -124,6 +124,9 @@ def _migrate_columns(engine):
         # IPO rider — SEC-parsed lock-up confidence (June 2026)
         ("ipo_watchlist", "lockup_confidence", "VARCHAR(12)"),
         ("ipo_watchlist", "lockup_source", "VARCHAR(20)"),
+        # IPO rider — SEC-parsed ticker + first-trading-day source/confidence (June 2026)
+        ("ipo_watchlist", "date_confidence", "VARCHAR(12)"),
+        ("ipo_watchlist", "date_source", "VARCHAR(20)"),
         # Execution-quality measurement — decision-time option quote on the suggestion (June 2026)
         ("trade_suggestions", "bid_at_entry", "REAL"),
         ("trade_suggestions", "ask_at_entry", "REAL"),

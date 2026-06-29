@@ -1980,8 +1980,14 @@ def create_scheduler() -> BackgroundScheduler:
             log.error("ipo_lockup_check_error", error=str(e))
 
     def _job_ipo_date_scan():
-        """Check Finnhub for upcoming IPO dates."""
+        """Resolve IPO ticker + first-trading-day from SEC EDGAR (authoritative), then fall back to the
+        Finnhub/scrape calendar only for names SEC couldn't resolve yet (pre-S-1)."""
         _ensure_event_loop()
+        try:
+            from src.ipo.listing import sync_listings_from_sec
+            sync_listings_from_sec()
+        except Exception as e:
+            log.error("ipo_sec_listing_scan_error", error=str(e))
         try:
             scan_ipo_calendar()
         except Exception as e:
