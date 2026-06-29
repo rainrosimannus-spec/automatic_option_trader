@@ -26,6 +26,14 @@ def test_to_base_direction():
     assert fx.rate_to_base("GBP", _RATES) == 1.16
 
 
+def test_sum_base_mixes_currencies_correctly():
+    # Today's fills are stored per-row in LOCAL currency; a raw sum would mix £/$/€.
+    pairs = [("GBP", 4693.0), ("USD", 2000.0), ("EUR", 1000.0)]
+    expected = 4693 * 1.16 + 2000 * 0.875 + 1000
+    assert fx.sum_base(pairs, _RATES) == pytest.approx(expected)
+    assert fx.sum_base([], _RATES) == 0
+
+
 def test_unknown_or_missing_rate_passes_through():
     # Fail-safe: never silently scale an amount we can't price.
     assert fx.to_base(1000, "JPY", _RATES) == 1000

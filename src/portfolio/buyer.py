@@ -664,14 +664,21 @@ class PortfolioBuyer:
         # that never filled (a stuck HK PendingSubmit, a direct-route-cancelled US name) must not eat
         # the day's budget. The date filter resets it automatically each day.
         from sqlalchemy import func as _func
+        from src.portfolio import fx as _pfx
+        _fx_rates = _pfx.load_fx_rates()
         _today = datetime.utcnow().strftime("%Y-%m-%d")
         with get_db() as _db:
-            _fills_today = float(_db.query(
-                _func.coalesce(_func.sum(PortfolioTransaction.amount), 0.0)
+            # PortfolioTransaction.amount is stored in each fill's LOCAL currency (£ for an LSE fill),
+            # so a raw SUM mixes currencies — group by currency and FX-normalise to base. Without this
+            # a £4,693 AZN fill counts as 4,693 base instead of ~€5,443, mis-stating the day's pace.
+            _fills_rows = _db.query(
+                PortfolioTransaction.currency,
+                _func.coalesce(_func.sum(PortfolioTransaction.amount), 0.0),
             ).filter(
                 PortfolioTransaction.action == "buy",
                 PortfolioTransaction.created_at >= _today + " 00:00:00",
-            ).scalar() or 0.0)
+            ).group_by(PortfolioTransaction.currency).all()
+            _fills_today = _pfx.sum_base(_fills_rows, _fx_rates)
         # deployed_today = committed capital today = today's FILLS + still-working BUY orders. Counting
         # open_buy too means a placed order reduces the day's budget immediately (so the budget moves
         # with the buys, not only once they fill), while cancelled/failed orders — which leave open_buy
@@ -714,10 +721,13 @@ class PortfolioBuyer:
                 cal_window = accrual_days + accrual_days // 2 + 2   # ~×1.5 to span weekends (loose)
                 _wstart = (datetime.utcnow().date() - timedelta(days=cal_window)).isoformat() + " 00:00:00"
                 with get_db() as _db:
-                    _fills_window = float(_db.query(
-                        _func.coalesce(_func.sum(PortfolioTransaction.amount), 0.0)
+                    _window_rows = _db.query(
+                        PortfolioTransaction.currency,
+                        _func.coalesce(_func.sum(PortfolioTransaction.amount), 0.0),
                     ).filter(PortfolioTransaction.action == "buy",
-                             PortfolioTransaction.created_at >= _wstart).scalar() or 0.0)
+                             PortfolioTransaction.created_at >= _wstart
+                             ).group_by(PortfolioTransaction.currency).all()
+                    _fills_window = _pfx.sum_base(_window_rows, _fx_rates)   # FX-normalise (local→base)
                 deployed_window = _fills_window + sum(open_buy.values())
                 banked = base_pace * accrual_days - deployed_window
                 if banked >= min_buy:

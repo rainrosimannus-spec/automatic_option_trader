@@ -57,3 +57,10 @@ def to_base(amount: float, currency: str | None, rates: dict | None = None) -> f
     if not amount:
         return 0.0
     return amount * rate_to_base(currency, rates)
+
+
+def sum_base(pairs, rates: dict | None = None) -> float:
+    """Sum an iterable of (currency, amount) into the account base currency. Used to total fills/
+    transactions whose `amount` is stored in each row's LOCAL currency (so a raw SUM mixes currencies)."""
+    rates = rates if rates is not None else load_fx_rates()
+    return sum(to_base(amt, ccy, rates) for ccy, amt in pairs)

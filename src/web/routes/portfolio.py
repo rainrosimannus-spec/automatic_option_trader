@@ -444,18 +444,26 @@ async def portfolio_page(request: Request):
             # created_at storage, so the live budget card and the actual per-day cap agree on "today".
             _start = _dt_t.utcnow().strftime("%Y-%m-%d") + " 00:00:00"
             with get_db() as _bdb:
-                _fills_today = float(_bdb.query(
-                    _func2.coalesce(_func2.sum(PortfolioTransaction.amount), 0.0)
+                # amount is in each fill's LOCAL currency — group by currency and FX-normalise to base
+                # (a raw SUM mixes £/$/€); base must match the base-ccy pace below (see src.portfolio.fx).
+                _fills_rows = _bdb.query(
+                    PortfolioTransaction.currency,
+                    _func2.coalesce(_func2.sum(PortfolioTransaction.amount), 0.0),
                 ).filter(PortfolioTransaction.action == "buy",
-                         PortfolioTransaction.created_at >= _start).scalar() or 0.0)
+                         PortfolioTransaction.created_at >= _start
+                         ).group_by(PortfolioTransaction.currency).all()
+                _fills_today = sum(_to_base(_amt, _ccy, fx_rates, _base_ccy)
+                                   for _ccy, _amt in _fills_rows)
             _open_buy_notional = 0.0
             for _o in _gp() or []:
                 if _o.get("sec_type") == "STK" and _o.get("action") == "BUY":
                     _px = float(_o.get("limit_price") or 0)
-                    # GBP/LSE limit prices are in PENCE — normalise to pounds (see GBP unit map).
-                    if str(_o.get("currency") or "").upper() == "GBP":
+                    _occy = str(_o.get("currency") or "").upper()
+                    # GBP/LSE limit prices are in PENCE — to pounds first, then FX-normalise local→base.
+                    if _occy == "GBP":
                         _px = _px / 100.0
-                    _open_buy_notional += float(_o.get("remaining") or 0) * _px
+                    _open_buy_notional += _to_base(float(_o.get("remaining") or 0) * _px,
+                                                   _occy, fx_rates, _base_ccy)
             # Replicate the scan's daily_deploy_budget non-crash branch: start-of-day gap drives the
             # lump-stretched horizon, throttle slows the pace, then subtract what's gone out today.
             _live_target = float(_get_state("compounder_live_target") or 0)
