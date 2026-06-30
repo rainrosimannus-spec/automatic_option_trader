@@ -1071,6 +1071,7 @@ class PortfolioBuyer:
         working/unfilled BUY orders are cancelled — the scan then re-places the names that are still
         green & underweight at the current price (and simply doesn't re-place ones now above fair)."""
         cancelled = 0
+        cancelled_syms: set[str] = set()
         try:
             _ensure_event_loop()
             park_sym = getattr(self.cfg, "cash_yield_symbol", None)
@@ -1092,6 +1093,7 @@ class PortfolioBuyer:
                 with get_portfolio_lock():
                     self.ib.cancelOrder(o)
                 cancelled += 1
+                cancelled_syms.add(sym)
                 log.info("compounder_cancel_stale_buy", symbol=sym,
                          order_id=getattr(o, "orderId", None), status=st)
             if cancelled:
@@ -1099,6 +1101,29 @@ class PortfolioBuyer:
                     self.ib.sleep(2)   # let the cancels settle before the scan reads open orders
         except Exception as e:
             log.warning("compounder_cancel_stale_buys_failed", error=str(e))
+        # Cancelling the order orphans its suggestion: the card stays 'submitted' with no live order
+        # (a portfolio-side ghost) until the EOD expires_at sweep. Expire it here so the dashboard's
+        # pending count stays honest and the portfolio cleans its OWN ghosts (the options-account
+        # reconciler must never touch portfolio suggestions — see jobs.py). The scan re-creates a fresh
+        # suggestion below for any name still underweight, so this only clears the now-dead one.
+        if cancelled_syms:
+            try:
+                from src.core.suggestions import TradeSuggestion
+                with get_db() as db:
+                    ghosts = db.query(TradeSuggestion).filter(
+                        TradeSuggestion.source == "portfolio",
+                        TradeSuggestion.action == "buy_stock",
+                        TradeSuggestion.status == "submitted",
+                        TradeSuggestion.symbol.in_(cancelled_syms),
+                    ).all()
+                    for g in ghosts:
+                        g.status = "expired"
+                        g.review_note = "Order cancelled by scan re-price"
+                    if ghosts:
+                        log.info("compounder_expired_orphan_suggestions", count=len(ghosts),
+                                 symbols=sorted({g.symbol for g in ghosts}))
+            except Exception as e:
+                log.warning("compounder_expire_orphan_suggestions_failed", error=str(e))
         if cancelled:
             log.info("compounder_stale_buys_cancelled", count=cancelled)
         return cancelled
