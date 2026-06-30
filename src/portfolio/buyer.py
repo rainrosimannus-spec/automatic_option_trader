@@ -89,6 +89,64 @@ def _order_blocked_by_permission(trade) -> bool:
 # _ensure_event_loop imported from connection.py
 
 
+# Tracks when each symbol was FIRST seen stuck in 'PendingSubmit' (so a freshly-placed order that's
+# briefly PendingSubmit before it transmits isn't mistaken for stuck). In-memory; cleared on restart.
+_pending_submit_since: dict[str, datetime] = {}
+_STUCK_PENDING_SECONDS = 240.0      # PendingSubmit longer than this → never reached the exchange
+
+
+def detect_stuck_orders_from_cache() -> int:
+    """LOOP-SAFE prompt detector for orders that never reach the exchange (RACE/BVME PendingSubmit).
+
+    Reads ONLY the already-refreshed in-memory portfolio pending-orders cache — makes **zero** new IBKR
+    calls, so it adds NO load to the shared asyncio loop (the earlier ib.trades()/cancelOrder sweep in
+    the 5-min health check contended on that loop and wedged it — see commit 14ad4e0 revert; do NOT
+    reintroduce IBKR calls into a frequent job). A compounder STK BUY that stays 'PendingSubmit' for
+    longer than _STUCK_PENDING_SECONDS can't fill at any price → venue-block the name (the deploy queue
+    skips it and routes the budget to the next buy) and cancel its orphaned suggestion card. The actual
+    IBKR order is cancelled by the next compounder scan's _cancel_stale (on the loop, in the established
+    scan context). Runs every ~5 min from job_portfolio_health_check.
+    """
+    from src.portfolio.connection import get_cached_portfolio_pending_orders
+    from src.core.suggestions import TradeSuggestion
+    now = datetime.utcnow()
+    blocked: list[str] = []
+    try:
+        pending = get_cached_portfolio_pending_orders() or []
+        cur_stuck: set[str] = set()
+        for o in pending:
+            if (o.get("sec_type") == "STK" and str(o.get("action") or "").upper() == "BUY"
+                    and o.get("status") == "PendingSubmit"):
+                sym = o.get("symbol")
+                if not sym:
+                    continue
+                cur_stuck.add(sym)
+                first = _pending_submit_since.setdefault(sym, now)
+                if (now - first).total_seconds() >= _STUCK_PENDING_SECONDS and not _is_permission_blocked(sym):
+                    _mark_permission_blocked(sym, hours=6.0)
+                    blocked.append(sym)
+        # Forget symbols no longer stuck (transmitted / filled / cancelled) so they get a clean retry.
+        for sym in list(_pending_submit_since):
+            if sym not in cur_stuck:
+                _pending_submit_since.pop(sym, None)
+        if blocked:
+            with get_db() as db:
+                ghosts = db.query(TradeSuggestion).filter(
+                    TradeSuggestion.source == "portfolio",
+                    TradeSuggestion.action == "buy_stock",
+                    TradeSuggestion.status.in_(("submitted", "approved", "queued")),
+                    TradeSuggestion.symbol.in_(blocked),
+                ).all()
+                for g in ghosts:
+                    g.status = "cancelled"
+                    g.review_note = "Order stuck PendingSubmit (venue rights) — auto-blocked, budget to next"
+            log.warning("compounder_stuck_pending_blocked", symbols=sorted(blocked),
+                        note="never reached exchange — venue-blocked; order cancelled at next scan")
+    except Exception as e:
+        log.warning("compounder_stuck_detect_failed", error=str(e))
+    return len(blocked)
+
+
 class PortfolioBuyer:
     """Execute buy decisions for the three-tier long-term portfolio."""
 
