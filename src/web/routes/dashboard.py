@@ -149,33 +149,38 @@ def _get_performance_data() -> dict:
             )
         injections = [(r.date, r.amount_original or 0.0) for r in inj_rows]
 
-        first_nlv = snapshots[0].net_liquidation or 1
+        # Deposit-adjusted return ANCHORED TO INCEPTION: invested = the account's NLV at the first
+        # snapshot (the inception baseline — whatever funding existed then, INCLUDING any initial
+        # internal transfer that Flex never reports as a cash deposit) PLUS net deposits made AFTER
+        # inception. This is robust to an incomplete early deposit ledger: the old "sum deposits from
+        # zero" gave invested €15k on a day NLV was already ~€20k (the ~€5k initial transfer is missing
+        # from Flex) → a fake +35% first point that the 0%-anchor then subtracted off every later point
+        # (6/30 read −33%). Both inception_nlv and the deposits are in the account BASE currency (EUR).
+        inception_date = str(snapshots[0].date)[:10]
+        inception_nlv = snapshots[0].net_liquidation or 1
         from datetime import date as _date
         _DEPOSIT_GRACE_DAYS = 7   # Flex value-dates a deposit a day or two from when the cash lands in
                                   # NLV; recognise a near-future deposit early ONLY when NLV already
-                                  # reflects it, so the deposit dilutes the return rather than spiking it
-                                  # (mirrors the portfolio chart's _invested_asof — same artifact class).
+                                  # reflects it, so the deposit dilutes the return rather than spiking it.
 
         def _invested_as_of(date_str: str, nlv: float) -> float:
-            # Cumulative deposits in effect on this snapshot date; falls back to the first snapshot's
-            # NLV before any deposit row exists. A deposit dated up to _DEPOSIT_GRACE_DAYS in the future
-            # counts early only when this day's NLV already holds the cash (never pulls money in before
-            # it's there, which would invert into a negative spike on the preceding days).
-            total = 0.0
+            base = inception_nlv
             for d, amt in injections:               # injections sorted by date asc
                 dd = str(d)[:10]
+                if dd <= inception_date:
+                    continue                         # pre/at-inception funding already in inception_nlv
                 if dd <= date_str:
-                    total += amt
+                    base += amt
                     continue
                 try:
                     gap = (_date.fromisoformat(dd) - _date.fromisoformat(str(date_str)[:10])).days
                 except Exception:
                     break
-                if 0 < gap <= _DEPOSIT_GRACE_DAYS and nlv >= (total + amt) * 0.98:
-                    total += amt
+                if 0 < gap <= _DEPOSIT_GRACE_DAYS and nlv >= (base + amt) * 0.98:
+                    base += amt                      # near-future deposit already reflected in NLV
                 else:
                     break
-            return total if total > 0 else first_nlv
+            return base
 
         # Compute raw returns, then anchor first point to 0%
         raw_returns = []
