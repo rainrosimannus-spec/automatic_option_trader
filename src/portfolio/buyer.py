@@ -566,25 +566,38 @@ class PortfolioBuyer:
         for s in watch:
             if s.exchange in skipped_exch:
                 continue
-            if not self._is_market_open(s.currency):
-                continue
-            try:
-                a = self.analyzer.analyze_stock(s.symbol, s.exchange, s.currency, tier=s.tier)
-            except Exception as e:
-                log.warning("compounder_analyze_error", symbol=s.symbol, error=str(e))
-                a = None
-            if not a or not a.current_price or a.current_price <= 0:
-                continue
-            self._update_watchlist_metrics(s, a)
-            analyses[s.symbol] = (s, a)
+            # Size targets over the FULL universe, but only BUY names whose market is open now. A name
+            # whose market is closed still gets a FRESH analysis only if open; otherwise it keeps its
+            # last STORED watchlist metrics and stays in the ranking/sizing set. CRITICAL: ranking only
+            # the currently-open names splits each tier budget among that handful, ballooning their
+            # per-name targets up to the leader cap — an off-hours scan (US closed, only LSE/EU open)
+            # then over-buys e.g. AZN as if it were the entire growth tier. The full-universe denominator
+            # keeps per-name targets stable; `analyses` (open + freshly priced) gates what we can buy.
+            a = None
+            if self._is_market_open(s.currency):
+                try:
+                    a = self.analyzer.analyze_stock(s.symbol, s.exchange, s.currency, tier=s.tier)
+                except Exception as e:
+                    log.warning("compounder_analyze_error", symbol=s.symbol, error=str(e))
+                    a = None
+                if a and a.current_price and a.current_price > 0:
+                    self._update_watchlist_metrics(s, a)
+                    analyses[s.symbol] = (s, a)        # open + freshly priced → eligible to BUY
+            # Ranking/sizing input: fresh price if we have it, else the last stored watchlist metrics.
+            price = (a.current_price if (a and a.current_price) else s.current_price) or 0.0
+            if price <= 0:
+                continue                                # never priced → can't rank/size
             names.append(cmp.NameInput(
                 symbol=s.symbol, tier=(s.tier or "growth"),
                 growth=s.growth_score or 0.0, forward_growth=s.forward_growth_score or 0.0,
                 quality=s.quality_score or 0.0, valuation=s.valuation_score or 0.0,
                 dividend_total_return=s.dividend_total_return_score or 0.0,
                 risk_penalty=s.risk_total_penalty or 0.0,
-                price=a.current_price, sma200=a.sma_200, high_52w=a.high_52w,
-                momentum_12_1=getattr(a, "momentum_12_1", None),
+                price=price,
+                sma200=(a.sma_200 if a else s.sma_200),
+                high_52w=(a.high_52w if a else s.high_52w),
+                momentum_12_1=(getattr(a, "momentum_12_1", None) if a
+                               else getattr(s, "momentum_12_1", None)),
             ))
         if not names:
             log.info("compounder_no_priceable_names"); return bought
@@ -797,6 +810,8 @@ class PortfolioBuyer:
         # `cur` is FILLED holdings + resting BUY notional so a working name isn't re-laddered/double-counted.
         queue = []
         for r in ranked:
+            if r.symbol not in analyses:
+                continue                          # ranked for sizing, but market closed now → can't buy
             tgt = targets.get(r.symbol, 0.0)
             if tgt <= 0:
                 continue
