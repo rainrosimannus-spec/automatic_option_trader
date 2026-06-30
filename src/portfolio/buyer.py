@@ -1972,7 +1972,8 @@ class PortfolioBuyer:
         # NLV-scaled core-rung floor (the caller's brick already cleared it); fall back to the
         # configured cap if not threaded through, so the method is safe to call standalone.
         core_floor = min_buy if min_buy is not None else cc.min_single_buy
-        plan = cmp.ladder_plan(px, urgency, is_leader, cc)
+        plan = cmp.ladder_plan(px, urgency, is_leader, cc,
+                               sma200=analysis.sma_200, high_52w=analysis.high_52w)
         if not plan:
             return (0.0, 0.0)
 

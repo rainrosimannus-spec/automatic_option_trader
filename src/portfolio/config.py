@@ -97,8 +97,12 @@ class CompounderConfig(BaseModel):
     # at the close and are re-evaluated next day (no GTC/cancellation; portfolio conn can't cancel).
     # In suggestion_mode the ladder collapses to a single core-rung suggestion card.
     ladder_enabled: bool = True
-    entry_base_discount_pct: float = 0.2    # core-rung bid below last price for HIGH-urgency names
-    entry_max_discount_pct: float = 1.5     # core-rung bid for LOW-urgency names (fill cap)
+    entry_base_discount_pct: float = 0.2    # legacy: bid below last when the ladder is DISABLED
+    # Core-rung pricing slides with urgency from a capped marketable PREMIUM (fills now) at full
+    # urgency to a deep DISCOUNT (fine to miss) at zero urgency — but NEVER bids above fair value.
+    entry_marketable_premium_pct: float = 0.5   # max % ABOVE last for an urgent fill (a marketable
+                                                # limit, capped — fills at the ask, won't chase higher)
+    entry_max_discount_pct: float = 1.5     # core-rung bid for LOW-urgency names (deep, fine to miss)
     ladder_rungs: int = 2                   # extra dip-adder rungs below the core (0 = single order)
     ladder_step_pct: float = 1.0            # spacing between dip rungs, % of price
     ladder_rung_frac: float = 0.25          # each dip rung sized at frac x core brick

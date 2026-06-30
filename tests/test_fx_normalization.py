@@ -68,18 +68,19 @@ def test_gbp_brick_sizes_in_base_not_local(monkeypatch):
     buyer, cfg, captured = _make_buyer(monkeypatch)
     cc = cfg.compounder
 
-    px = 142.79                      # AZN, GBP
+    px = 142.79                      # AZN, GBP (green: below the ~145.9 fair line below)
+    sma, hi = 136.0, 157.3           # AZN's real SMA200 / 52w-high → fair ≈ 145.9, so +0.5% binds
     brick_base = 4693.0              # EUR brick
     stock = SimpleNamespace(symbol="AZN", exchange="LSE", currency="GBP", tier="growth")
     analysis = SimpleNamespace(current_price=px, signal_type="compounder_direct",
-                               sma_200=136.0, rsi_14=62.0)
+                               sma_200=sma, high_52w=hi, rsi_14=62.0)
 
     core_base, total_base = buyer._execute_compounder_buy(
         stock, analysis, brick_base, urgency=1.0, is_leader=True, cash_room=1e9,
         rank=1, rank_score=70.0, rationale="t", min_buy=2000.0)
 
-    # The ladder's core rung (price, frac) — so the test isn't coupled to its exact values.
-    core_price, frac0 = cmp.ladder_plan(px, 1.0, True, cc)[0]
+    # The ladder's core rung (price, frac), priced with the SAME fair-value inputs the executor uses.
+    core_price, frac0 = cmp.ladder_plan(px, 1.0, True, cc, sma200=sma, high_52w=hi)[0]
     expected_shares = int((brick_base * frac0) / (core_price * 1.16))   # base brick / BASE per-share
 
     assert captured["quantity"] == expected_shares

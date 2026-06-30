@@ -404,34 +404,59 @@ def single_buy_bounds(nlv: float, cc) -> tuple[float, float]:
     return lo, hi
 
 
+def fair_value_price(sma200: float | None, high_52w: float | None) -> float | None:
+    """The price at which fair_price_attractiveness == 0 — the GREEN/YELLOW boundary.
+
+    Below it the name is green (a 'good buy'); above it it's yellow (extended). Solving
+    attractiveness(P)=0 for the available terms gives the (anti-harmonic) blend P = n / Σ(1/x):
+    both terms → 2/(1/sma + 1/high); one term → that level (sma, or the 52w-high). Returns None
+    when neither input is available (→ caller applies no fair-value cap)."""
+    inv, n = 0.0, 0
+    if sma200 and sma200 > 0:
+        inv += 1.0 / sma200; n += 1
+    if high_52w and high_52w > 0:
+        inv += 1.0 / high_52w; n += 1
+    return (n / inv) if (n and inv > 0) else None
+
+
 def ladder_plan(core_price: float, urgency: float, is_leader: bool,
-                cc) -> list[tuple[float, float]]:
+                cc, sma200: float | None = None, high_52w: float | None = None) -> list[tuple[float, float]]:
     """Conviction-scaled DAY limit-ladder for one direct buy (pure).
 
     Returns a list of (limit_price, size_frac) rungs whose size_frac sum to the total
     bricks to deploy for this name:
-      - The core rung is bid below the last price by a discount that scales INVERSELY with
-        urgency: high-urgency names (underweight / leader / crash, urgency→1) bid near market
-        so the position actually fills; low-urgency names (urgency→0) bid up to the max
-        discount to lower cost (it is fine to miss). Core size_frac is 1.0.
+      - The core rung price slides with urgency from a CAPPED MARKETABLE PREMIUM (last ×
+        (1+entry_marketable_premium_pct), at urgency→1) so an urgent green buy crosses the spread
+        and actually fills this scan — instead of resting just under the last price and missing on
+        any uptick, then blocking the day's budget and possibly drifting green→yellow before the
+        next 4-hourly scan — DOWN to a deep DISCOUNT (last × (1−entry_max_discount_pct), at
+        urgency→0) where missing is fine. The premium is a marketable limit (fills at the ask, won't
+        chase past the cap). Core size_frac is 1.0.
+      - The core is NEVER priced above fair value (fair_value_price): a marketable chase must not pay
+        into 'yellow' — "a good buy at 323 may not be at 324". For a green name fair value is above
+        the market so the premium binds; for a yellow name the core is bid down to fair (patient).
       - Leaders (or, if ladder_leader_only_dips is False, every name) additionally get
         `ladder_rungs` dip-adder rungs stepped `ladder_step_pct` apart below the core, each
         sized `ladder_rung_frac` of the brick. These are *additive* — they raise the total
         deployed for the name above the core brick, and the caller funds them from reserve.
 
-    urgency is clamped to [0, 1]. If ladder is disabled, returns a single rung at the base
-    discount (preserving the legacy flat-under-bid behavior).
+    urgency is clamped to [0, 1]. If ladder is disabled, returns a single rung at the legacy base
+    discount (preserving the old flat-under-bid behavior).
     """
     if core_price <= 0:
         return []
     u = max(0.0, min(1.0, urgency))
-    base = cc.entry_base_discount_pct
     if not getattr(cc, "ladder_enabled", True):
-        return [(round(core_price * (1 - base / 100.0), 2), 1.0)]
+        return [(round(core_price * (1 - cc.entry_base_discount_pct / 100.0), 2), 1.0)]
 
-    span = max(0.0, cc.entry_max_discount_pct - base)
-    core_disc = base + span * (1.0 - u)                       # high urgency → shallow
-    core = round(core_price * (1 - core_disc / 100.0), 2)
+    prem = getattr(cc, "entry_marketable_premium_pct", 0.5)
+    maxd = cc.entry_max_discount_pct
+    core_pct = prem * u - maxd * (1.0 - u)                     # +prem at u=1 → −maxd at u=0 (% of last)
+    core_raw = core_price * (1.0 + core_pct / 100.0)
+    fair = fair_value_price(sma200, high_52w)                 # never bid above fair value (green line)
+    if fair is not None and core_raw > fair:
+        core_raw = fair
+    core = round(core_raw, 2)
     rungs: list[tuple[float, float]] = [(core, 1.0)]
 
     wants_dips = is_leader or not getattr(cc, "ladder_leader_only_dips", True)
