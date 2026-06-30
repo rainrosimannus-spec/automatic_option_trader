@@ -1116,6 +1116,16 @@ class PortfolioBuyer:
                 cancelled_syms.add(sym)
                 log.info("compounder_cancel_stale_buy", symbol=sym,
                          order_id=getattr(o, "orderId", None), status=st)
+                # If the order we're re-pricing NEVER reached the exchange — still 'PendingSubmit'
+                # (IBKR took it but never transmitted, e.g. missing venue rights/market-data) or
+                # 'Inactive' (rejected/held) a full scan-cycle after placement — it can't fill at ANY
+                # price. Mark the name venue-blocked so the deploy queue SKIPS it and routes the budget
+                # to the next fillable buy, instead of churning ever-higher orders that never fill.
+                # Auto-retries after the cooldown and on restart (in case the rights get approved).
+                if st in ("PendingSubmit", "Inactive"):
+                    _mark_permission_blocked(sym, hours=6.0)
+                    log.warning("compounder_order_never_reached_exchange", symbol=sym, status=st,
+                                note="venue rights/market-data likely missing — skipping, budget to next")
             if cancelled:
                 with get_portfolio_lock():
                     self.ib.sleep(2)   # let the cancels settle before the scan reads open orders
