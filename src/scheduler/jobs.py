@@ -641,8 +641,13 @@ def job_health_check():
     except Exception:
         pass
 
-    # Reconcile submitted suggestions against live IBKR orders
-    # Any submitted suggestion with no matching live order is a ghost — expire it
+    # Reconcile submitted OPTIONS suggestions against live IBKR orders on the OPTIONS account.
+    # Any submitted option suggestion with no matching live order is a ghost — expire it.
+    # CRITICAL: this is OPTIONS-ONLY. get_cached_open_orders() is the options account's cache and the
+    # match key is the option right (P/C), so a PORTFOLIO stock buy (separate Winston account, no
+    # right) never matches and was being expired ~2 min after placement — killing every compounder
+    # buy and churning deployment. Portfolio suggestions have their own per-market expiry jobs +
+    # the compounder scan's cancel-and-replace, so they must be excluded here.
     if is_connected():
         try:
             from src.broker.orders import get_cached_open_orders
@@ -656,6 +661,7 @@ def job_health_check():
             with get_db() as db:
                 submitted = db.query(TradeSuggestion).filter(
                     TradeSuggestion.status == "submitted",
+                    TradeSuggestion.source != "portfolio",
                 ).all()
                 for s in submitted:
                     right = "P" if s.action == "sell_put" else "C"
