@@ -54,12 +54,6 @@ def _outside_rth_ok(currency: str | None) -> bool:
 _PERMISSION_BLOCK_HOURS = 24.0
 _permission_blocked: dict[str, datetime] = {}
 
-# Order states that mean the order NEVER reached the exchange book — IBKR accepted it but didn't
-# transmit ('PendingSubmit', e.g. missing venue rights/market-data) or parked/rejected it ('Inactive').
-# Such an order can't fill at ANY price; the name is treated as venue-blocked. ib_insync HIDES
-# 'Inactive' from openTrades(), so callers must read ib.trades() to see it.
-_STUCK_ORDER_STATES = {"PendingSubmit", "Inactive"}
-
 
 def _mark_permission_blocked(symbol: str, hours: float = _PERMISSION_BLOCK_HOURS) -> None:
     if symbol:
@@ -93,59 +87,6 @@ def _order_blocked_by_permission(trade) -> bool:
 
 
 # _ensure_event_loop imported from connection.py
-
-
-def sweep_stuck_compounder_orders(ib) -> int:
-    """Cancel + venue-block portfolio STK BUY orders stuck in a _STUCK_ORDER_STATES state (never
-    reached the exchange — see RACE/BVME). Runs frequently (the 5-min portfolio health check) so an
-    un-fillable order is cleared within minutes instead of waiting for the 4-hourly compounder scan;
-    the deploy queue then skips the blocked name and routes the budget to the next buy. Healthy resting
-    orders ('Submitted') are LEFT alone. Also cancels the orphaned suggestion card. Returns the count
-    of names swept. Safe to call from the health-check thread (NOT the event loop): it takes
-    get_portfolio_lock for the IBKR calls and does its DB work outside the lock."""
-    from src.portfolio.connection import get_portfolio_lock
-    from src.portfolio.models import PortfolioWatchlist
-    from src.core.suggestions import TradeSuggestion
-    swept: set[str] = set()
-    try:
-        with get_db() as db:
-            watch_syms = {w.symbol for w in db.query(PortfolioWatchlist).all()}
-        with get_portfolio_lock():
-            trades = list(ib.trades())          # ib.trades() (NOT openTrades) — includes Inactive
-        for t in trades:
-            c, o = getattr(t, "contract", None), getattr(t, "order", None)
-            st = getattr(getattr(t, "orderStatus", None), "status", "") or ""
-            if c is None or o is None:
-                continue
-            if getattr(c, "secType", "") != "STK" or str(getattr(o, "action", "")).upper() != "BUY":
-                continue
-            sym = getattr(c, "symbol", None)
-            if sym not in watch_syms or st not in _STUCK_ORDER_STATES:
-                continue
-            try:
-                with get_portfolio_lock():
-                    ib.cancelOrder(o)
-            except Exception as ce:
-                log.warning("compounder_stuck_sweep_cancel_failed", symbol=sym, status=st, error=str(ce))
-            _mark_permission_blocked(sym, hours=6.0)
-            swept.add(sym)
-            log.warning("compounder_stuck_order_swept", symbol=sym, status=st,
-                        note="never reached exchange — cancelled + venue-blocked; budget routes to next buy")
-        if swept:
-            with get_db() as db:
-                ghosts = db.query(TradeSuggestion).filter(
-                    TradeSuggestion.source == "portfolio",
-                    TradeSuggestion.action == "buy_stock",
-                    TradeSuggestion.status.in_(("submitted", "approved", "queued")),
-                    TradeSuggestion.symbol.in_(swept),
-                ).all()
-                for g in ghosts:
-                    g.status = "cancelled"
-                    g.review_note = "Order never reached the exchange (venue rights) — auto-cancelled"
-            log.info("compounder_stuck_sweep_done", swept=sorted(swept))
-    except Exception as e:
-        log.warning("compounder_stuck_sweep_failed", error=str(e))
-    return len(swept)
 
 
 class PortfolioBuyer:
@@ -1181,7 +1122,7 @@ class PortfolioBuyer:
                 # price. Mark the name venue-blocked so the deploy queue SKIPS it and routes the budget
                 # to the next fillable buy, instead of churning ever-higher orders that never fill.
                 # Auto-retries after the cooldown and on restart (in case the rights get approved).
-                if st in _STUCK_ORDER_STATES:
+                if st in ("PendingSubmit", "Inactive"):
                     _mark_permission_blocked(sym, hours=6.0)
                     log.warning("compounder_order_never_reached_exchange", symbol=sym, status=st,
                                 note="venue rights/market-data likely missing — skipping, budget to next")
