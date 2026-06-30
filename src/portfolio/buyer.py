@@ -1082,9 +1082,15 @@ class PortfolioBuyer:
         try:
             _ensure_event_loop()
             park_sym = getattr(self.cfg, "cash_yield_symbol", None)
-            _TERMINAL = {"Filled", "Cancelled", "ApiCancelled", "Inactive", "PendingCancel"}
+            # NOTE: read ib.trades() (ALL tracked orders), not ib.openTrades() — ib_insync treats
+            # 'Inactive' as a done-state and HIDES it from openTrades(), so an order that IBKR parked
+            # as Inactive (rejected/held at a foreign venue, e.g. a stuck BVME PendingSubmit) was
+            # invisible to both this sweep AND the pending cache, and could never be cancelled (the
+            # user can't cancel an API order from TWS either). And do NOT skip 'Inactive' — attempt to
+            # cancel it (harmless if already dead). Truly-final states are still skipped.
+            _TERMINAL = {"Filled", "Cancelled", "ApiCancelled", "PendingCancel"}
             with get_portfolio_lock():
-                trades = list(self.ib.openTrades())
+                trades = list(self.ib.trades())
             for t in trades:
                 c = getattr(t, "contract", None)
                 o = getattr(t, "order", None)
@@ -1097,8 +1103,15 @@ class PortfolioBuyer:
                     continue
                 if sym not in watchlist_symbols or sym == park_sym or st in _TERMINAL:
                     continue
-                with get_portfolio_lock():
-                    self.ib.cancelOrder(o)
+                try:
+                    with get_portfolio_lock():
+                        self.ib.cancelOrder(o)
+                except Exception as ce:
+                    # Cancelling an already-dead Inactive order can raise — log and keep sweeping
+                    # the rest rather than aborting the whole pass on one stuck order.
+                    log.warning("compounder_cancel_stale_buy_failed", symbol=sym,
+                                order_id=getattr(o, "orderId", None), status=st, error=str(ce))
+                    continue
                 cancelled += 1
                 cancelled_syms.add(sym)
                 log.info("compounder_cancel_stale_buy", symbol=sym,
