@@ -2233,6 +2233,11 @@ class PortfolioBuyer:
         that much; otherwise (classic path) park all available cash above the 5% reserve."""
         if not self.cfg.cash_yield_enabled:
             return
+        # Stop re-firing a park order the venue keeps rejecting (e.g. a US ETF an EU account can't trade
+        # — Error 201/PRIIPs/KID). Set on the first rejection below; auto-clears after the cooldown / on
+        # restart so a config change to a tradeable ETF gets a fresh attempt.
+        if _is_permission_blocked(self.cfg.cash_yield_symbol):
+            return
         _ensure_event_loop()
         try:
             if amount is not None:
@@ -2276,7 +2281,7 @@ class PortfolioBuyer:
             order.tif = "DAY"
             order.outsideRth = _outside_rth_ok(self.cfg.cash_yield_currency)
             with get_portfolio_lock():
-                self.ib.placeOrder(contract, order)
+                trade = self.ib.placeOrder(contract, order)
                 self.ib.sleep(1)
 
             # Refresh dashboard cache so new order appears immediately
@@ -2286,8 +2291,22 @@ class PortfolioBuyer:
             except Exception:
                 pass
 
+            # Only report parked on a real outcome — a rejection (e.g. EU PRIIPs/KID 201) flips the order
+            # PendingSubmit→Inactive→Cancelled within ~200ms, well inside the sleep above. On rejection,
+            # venue-block the symbol so the scan stops re-placing the doomed order every cycle and the
+            # cash simply stays liquid; don't log it as "parked" (that was the misleading-success bug).
+            status = ""
+            try:
+                status = getattr(getattr(trade, "orderStatus", None), "status", "") or ""
+            except Exception:
+                pass
+            if status in ("Cancelled", "Inactive", "ApiCancelled"):
+                _mark_permission_blocked(self.cfg.cash_yield_symbol, hours=24.0)
+                log.warning("portfolio_cash_park_rejected", symbol=self.cfg.cash_yield_symbol,
+                            status=status, note="venue-blocked; cash stays liquid (check ETF is tradeable)")
+                return
             log.info("portfolio_cash_parked", symbol=self.cfg.cash_yield_symbol,
-                     shares=shares, amount=round(shares * price, 2))
+                     shares=shares, amount=round(shares * price, 2), status=status)
         except Exception as e:
             log.warning("portfolio_park_cash_error", error=str(e))
 

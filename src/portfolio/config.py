@@ -232,11 +232,15 @@ class PortfolioConfig(BaseModel):
     reinvest_dividends: bool = True
     min_dividend_reinvest: float = 50.0
 
-    # Cash yield
+    # Cash yield — park idle EUR in an overnight money-market ETF for ~€STR yield, sellable T+1.
+    # MUST be EU-UCITS (KID-eligible): the account is EUR-base and EU-domiciled, so US ETFs like SGOV
+    # are rejected by IBKR (Error 201, PRIIPs — "no KID in an approved language"). XEON = Xtrackers II
+    # EUR Overnight Rate Swap UCITS ETF 1C (Xetra/IBIS, EUR, accumulating, ~flat NAV). Swap CSH2 or
+    # iShares ERNE here if preferred — same plumbing, just change the symbol/exchange/currency.
     cash_yield_enabled: bool = True
-    cash_yield_symbol: str = "SGOV"
-    cash_yield_exchange: str = "SMART"
-    cash_yield_currency: str = "USD"
+    cash_yield_symbol: str = "XEON"
+    cash_yield_exchange: str = "IBIS"
+    cash_yield_currency: str = "EUR"
 
     # IPO watchlist — tickers to monitor for public listing
     ipo_watchlist: list[str] = []
