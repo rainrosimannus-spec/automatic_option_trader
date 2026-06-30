@@ -649,6 +649,13 @@ class PortfolioBuyer:
         except Exception:
             pass
         open_buy = self._open_buy_map()           # symbol -> notional of resting BUY orders
+        # Expire orphaned buy cards: a 'submitted' suggestion whose order is no longer working (it died
+        # on its own — IBKR-rejected, went Inactive, or filled — NOT cancelled by us above, which the
+        # _cancel_stale orphan-cleanup already handles) would otherwise linger 'submitted' (inflating the
+        # pending count) until the EOD expires_at sweep. The pending cache was just refreshed, so any
+        # working order is in open_buy; a 'submitted' portfolio buy with no working order is a ghost.
+        # Portfolio cleans its OWN cards off its OWN account here (never the options-account reconciler).
+        self._expire_orphan_buy_suggestions(working_syms=set(open_buy.keys()))
         # Net in compounder buy SUGGESTIONS queued but not yet placed at IBKR (suggestion mode): they
         # aren't resting orders yet, so without this a follow-up scan re-creates them and deploys the
         # day's budget twice. Folding them into open_buy makes deployed_eff, deployed_today, the accrual
@@ -1127,6 +1134,36 @@ class PortfolioBuyer:
         if cancelled:
             log.info("compounder_stale_buys_cancelled", count=cancelled)
         return cancelled
+
+    def _expire_orphan_buy_suggestions(self, working_syms: set) -> int:
+        """Expire 'submitted' portfolio buy_stock cards that no longer have a working IBKR order.
+
+        Complements the _cancel_stale orphan-cleanup (which handles orders WE cancelled to re-price):
+        this catches orders that died on their OWN — IBKR-rejected, went Inactive, or filled — which
+        would otherwise leave the card 'submitted' (inflating the pending count) until the EOD
+        expires_at sweep. `working_syms` = symbols with a live BUY order this scan (from the just-
+        refreshed pending cache). A filled buy is normally already marked 'executed' by the fill sync,
+        so it isn't 'submitted' here; expiring the card never cancels the IBKR order or moves budget
+        (open_buy reflects live orders), so a rare timing mismatch is cosmetic and self-corrects."""
+        from src.core.suggestions import TradeSuggestion
+        n = 0
+        try:
+            with get_db() as db:
+                rows = db.query(TradeSuggestion).filter(
+                    TradeSuggestion.source == "portfolio",
+                    TradeSuggestion.action == "buy_stock",
+                    TradeSuggestion.status == "submitted",
+                ).all()
+                for s in rows:
+                    if s.symbol not in working_syms:
+                        s.status = "expired"
+                        s.review_note = "No live order (filled/cancelled/rejected)"
+                        n += 1
+                if n:
+                    log.info("compounder_expired_dead_order_suggestions", count=n)
+        except Exception as e:
+            log.warning("compounder_expire_orphan_suggestions_failed", error=str(e))
+        return n
 
     def _open_buy_map(self) -> dict[str, float]:
         """symbol → notional of currently-RESTING stock BUY orders at IBKR, in the account BASE currency.
