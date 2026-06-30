@@ -133,9 +133,12 @@ def _get_performance_data() -> dict:
         actual_line = []
         target_line = []
 
-        # Time-aware invested capital: cumulative deposits (USD) as of each date.
-        # A deposit raises both NLV and the divisor, so the return % dilutes rather
-        # than jumping — fresh cash hasn't earned anything yet.
+        # Time-aware invested capital, in the account's BASE currency — MUST match net_liquidation,
+        # which get_account_summary takes in BASE (account.py _val prefers currency=='BASE'). The
+        # account is EUR-funded (deposits are EUR, amount_original), so invested = sum(amount_original).
+        # Using amount_USD here was the bug: it divided a EUR NLV by a USD-converted invested (€×~1.14)
+        # → a fake ~10-20% loss the moment real EUR deposits replaced the USD-guess bootstrap. Mirrors
+        # the portfolio chart, which divides EUR NLV by get_total_invested_base (also amount_original).
         from src.portfolio.models import PortfolioCapitalInjection
         with get_db() as db:
             inj_rows = (
@@ -144,7 +147,7 @@ def _get_performance_data() -> dict:
                 .order_by(PortfolioCapitalInjection.date.asc())
                 .all()
             )
-        injections = [(r.date, r.amount_usd or 0.0) for r in inj_rows]
+        injections = [(r.date, r.amount_original or 0.0) for r in inj_rows]
 
         first_nlv = snapshots[0].net_liquidation or 1
         from datetime import date as _date
