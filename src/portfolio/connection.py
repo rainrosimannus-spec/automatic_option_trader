@@ -63,6 +63,14 @@ def _ensure_event_loop():
         asyncio.set_event_loop(loop)
 
 
+# IBKR error codes that mean an ORDER was rejected because the account can't trade that
+# instrument/venue: 200 no-security-definition, 201 order rejected (incl. ineligible/KID), 460 no
+# trading permissions, 10311 precautionary/direct-route reject. Reacting here blocks the symbol the
+# instant IBKR rejects it (vs waiting for the 4-hourly scan). Codes only (NOT a "permission" message
+# match) so market-data permission warnings can't false-trigger a trading block.
+_ORDER_REJECT_CODES = {200, 201, 460, 10311}
+
+
 def _on_error(reqId: int, errorCode: int, errorString: str, contract) -> None:
     if errorCode in _INFO_CODES:
         log.debug("portfolio_ibkr_info", code=errorCode, msg=errorString)
@@ -70,6 +78,21 @@ def _on_error(reqId: int, errorCode: int, errorString: str, contract) -> None:
         log.debug("portfolio_ibkr_warning", code=errorCode, msg=errorString)
     else:
         log.error("portfolio_ibkr_error", code=errorCode, msg=errorString, req_id=reqId)
+
+    # Order rejected for a permissions/definition/route reason → venue-block the symbol immediately so
+    # the next compounder scan skips it and routes the budget to the next buy. Lightweight (in-memory
+    # mark + log only — no DB / no IBKR calls on the event loop). Lazy import avoids the
+    # buyer<->connection circular import. Best-effort; never let a handler error break the error stream.
+    if errorCode in _ORDER_REJECT_CODES and contract is not None:
+        sym = getattr(contract, "symbol", None)
+        if sym:
+            try:
+                from src.portfolio.buyer import _mark_permission_blocked
+                _mark_permission_blocked(sym, hours=6.0)
+                log.warning("portfolio_order_rejected_blocked", symbol=sym,
+                            code=errorCode, msg=(errorString or "")[:120])
+            except Exception:
+                pass
 
 
 def get_portfolio_ib() -> IB:

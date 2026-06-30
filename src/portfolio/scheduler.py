@@ -70,6 +70,16 @@ def job_portfolio_health_check(cfg: PortfolioConfig):
     except Exception as e:
         log.warning("portfolio_health_orders_refresh_failed", error=str(e))
 
+    # Sweep stuck orders every 5 min: a buy left in PendingSubmit/Inactive never reached the exchange
+    # (missing venue rights, e.g. RACE/BVME) and can't fill at any price. Cancel + venue-block it now so
+    # the next compounder scan skips it and deploys the budget to the next buy — instead of letting it
+    # sit and re-price for up to 4h until the next scan's _cancel_stale runs.
+    try:
+        from src.portfolio.buyer import sweep_stuck_compounder_orders
+        sweep_stuck_compounder_orders(get_portfolio_ib())
+    except Exception as e:
+        log.warning("portfolio_health_stuck_sweep_failed", error=str(e))
+
     # Write portfolio_nlv to today's snapshot row so graph stays current
     try:
         from src.portfolio.connection import get_cached_portfolio_account
