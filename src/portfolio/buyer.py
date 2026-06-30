@@ -2301,9 +2301,17 @@ class PortfolioBuyer:
             except Exception:
                 pass
             if status in ("Cancelled", "Inactive", "ApiCancelled"):
-                _mark_permission_blocked(self.cfg.cash_yield_symbol, hours=24.0)
-                log.warning("portfolio_cash_park_rejected", symbol=self.cfg.cash_yield_symbol,
-                            status=status, note="venue-blocked; cash stays liquid (check ETF is tradeable)")
+                if _order_blocked_by_permission(trade):
+                    # Hard venue/permission rejection (e.g. a US ETF on an EU account — Error 201 /
+                    # PRIIPs / no-KID): venue-block so the scan stops re-placing the doomed order.
+                    _mark_permission_blocked(self.cfg.cash_yield_symbol, hours=24.0)
+                    log.warning("portfolio_cash_park_rejected", symbol=self.cfg.cash_yield_symbol,
+                                status=status, note="venue-blocked; cash stays liquid (ETF not tradeable here)")
+                else:
+                    # Transient cancel (e.g. the ETF's market is closed right now, no route) — do NOT
+                    # block; just don't claim it parked. It retries on the next scan when the venue opens.
+                    log.warning("portfolio_cash_park_unfilled", symbol=self.cfg.cash_yield_symbol,
+                                status=status, note="not filled (market closed / transient) — retry next scan")
                 return
             log.info("portfolio_cash_parked", symbol=self.cfg.cash_yield_symbol,
                      shares=shares, amount=round(shares * price, 2), status=status)
