@@ -95,22 +95,43 @@ _pending_submit_since: dict[str, datetime] = {}
 _STUCK_PENDING_SECONDS = 240.0      # PendingSubmit longer than this → never reached the exchange
 
 
-def detect_stuck_orders_from_cache() -> int:
-    """LOOP-SAFE prompt detector for orders that never reach the exchange (RACE/BVME PendingSubmit).
+def _cancel_portfolio_order_id(ib, order_id) -> bool:
+    """Cancel a single portfolio order by id. LOOP-SAFE: ib.trades() is a pure cached-list read and
+    ib.cancelOrder() is fire-and-forget (sends, no await) — NEITHER drives the asyncio loop (the wedge
+    came from the analyzer's reqHistoricalData run_until_complete, not from cancel/trades). Serialized
+    under get_portfolio_lock like every other IBKR call."""
+    from src.portfolio.connection import get_portfolio_lock, _ensure_event_loop
+    try:
+        _ensure_event_loop()
+        with get_portfolio_lock():
+            for t in ib.trades():                       # pure property read — loop-free
+                if getattr(getattr(t, "order", None), "orderId", None) == order_id:
+                    ib.cancelOrder(t.order)             # fire-and-forget — loop-free
+                    return True
+    except Exception as e:
+        log.warning("compounder_stuck_cancel_failed", order_id=order_id, error=str(e))
+    return False
 
-    Reads ONLY the already-refreshed in-memory portfolio pending-orders cache — makes **zero** new IBKR
-    calls, so it adds NO load to the shared asyncio loop (the earlier ib.trades()/cancelOrder sweep in
-    the 5-min health check contended on that loop and wedged it — see commit 14ad4e0 revert; do NOT
-    reintroduce IBKR calls into a frequent job). A compounder STK BUY that stays 'PendingSubmit' for
-    longer than _STUCK_PENDING_SECONDS can't fill at any price → venue-block the name (the deploy queue
-    skips it and routes the budget to the next buy) and cancel its orphaned suggestion card. The actual
-    IBKR order is cancelled by the next compounder scan's _cancel_stale (on the loop, in the established
-    scan context). Runs every ~5 min from job_portfolio_health_check.
+
+def detect_stuck_orders_from_cache(ib=None) -> int:
+    """Prompt detector for orders that never reach the exchange (RACE/BVME PendingSubmit).
+
+    DETECTION is loop-safe — reads ONLY the already-refreshed in-memory portfolio pending-orders cache
+    (no IBKR calls). A compounder STK BUY that stays 'PendingSubmit' longer than _STUCK_PENDING_SECONDS
+    can't fill at any price → venue-block the name (the deploy queue skips it and routes the budget to
+    the next buy) + cancel its orphaned suggestion card. When `ib` is provided, ALSO cancel the stuck
+    IBKR order(s) for the just-blocked names via _cancel_portfolio_order_id (loop-free fire-and-forget
+    cancel — see that helper) so the order leaves the dashboard within ~5 min instead of lingering until
+    the 4h scan. Do NOT reintroduce ib.trades()/cancelOrder into the *detection* path or run them for
+    every order each tick — the earlier sweep that did so contended on the shared loop and wedged it
+    (reverted 14ad4e0); here IBKR is touched only on the rare block event. Runs every ~5 min from
+    job_portfolio_health_check.
     """
     from src.portfolio.connection import get_cached_portfolio_pending_orders
     from src.core.suggestions import TradeSuggestion
     now = datetime.utcnow()
     blocked: list[str] = []
+    stuck_ids: dict[str, list] = {}     # sym -> [order_id] of its stuck PendingSubmit orders
     try:
         pending = get_cached_portfolio_pending_orders() or []
         cur_stuck: set[str] = set()
@@ -121,6 +142,7 @@ def detect_stuck_orders_from_cache() -> int:
                 if not sym:
                     continue
                 cur_stuck.add(sym)
+                stuck_ids.setdefault(sym, []).append(o.get("order_id"))
                 first = _pending_submit_since.setdefault(sym, now)
                 if (now - first).total_seconds() >= _STUCK_PENDING_SECONDS and not _is_permission_blocked(sym):
                     _mark_permission_blocked(sym, hours=6.0)
@@ -140,8 +162,15 @@ def detect_stuck_orders_from_cache() -> int:
                 for g in ghosts:
                     g.status = "cancelled"
                     g.review_note = "Order stuck PendingSubmit (venue rights) — auto-blocked, budget to next"
+            cancelled = 0
+            if ib is not None:                          # targeted loop-free cancel of the stuck order(s)
+                for sym in blocked:
+                    for oid in stuck_ids.get(sym, []):
+                        if oid is not None and _cancel_portfolio_order_id(ib, oid):
+                            cancelled += 1
             log.warning("compounder_stuck_pending_blocked", symbols=sorted(blocked),
-                        note="never reached exchange — venue-blocked; order cancelled at next scan")
+                        cancelled=cancelled,
+                        note="never reached exchange — venue-blocked + order cancelled; budget to next")
     except Exception as e:
         log.warning("compounder_stuck_detect_failed", error=str(e))
     return len(blocked)

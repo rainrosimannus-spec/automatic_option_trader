@@ -40,8 +40,28 @@ def _cache(*orders):
     return list(orders)
 
 
-def _o(symbol, status, sec="STK", action="BUY"):
-    return {"symbol": symbol, "sec_type": sec, "action": action, "status": status}
+def _o(symbol, status, sec="STK", action="BUY", order_id=None):
+    return {"symbol": symbol, "sec_type": sec, "action": action, "status": status, "order_id": order_id}
+
+
+class _FakeOrder:
+    def __init__(self, oid):
+        self.orderId = oid
+
+
+class _FakeTrade:
+    def __init__(self, oid):
+        self.order = _FakeOrder(oid)
+
+
+class _FakeIB:
+    def __init__(self, order_ids):
+        self._trades = [_FakeTrade(i) for i in order_ids]
+        self.cancelled = []
+    def trades(self):
+        return list(self._trades)
+    def cancelOrder(self, order):
+        self.cancelled.append(order.orderId)
 
 
 def test_fresh_pendingsubmit_not_blocked_yet(temp_db, monkeypatch):
@@ -76,10 +96,26 @@ def test_disappeared_order_clears_tracker(temp_db, monkeypatch):
     assert "OLD" not in buyer._pending_submit_since         # forgotten → clean retry later
 
 
-def test_makes_no_ibkr_calls(temp_db, monkeypatch):
-    # The detector must never touch the IB connection (loop-safety). get_portfolio_ib raising proves it.
+def test_detection_path_makes_no_ibkr_calls(temp_db, monkeypatch):
+    # DETECTION (ib=None) must never touch the IB connection — get_portfolio_ib raising proves it.
     monkeypatch.setattr(conn, "get_portfolio_ib",
-                        lambda: (_ for _ in ()).throw(AssertionError("detector must not call IBKR")))
+                        lambda: (_ for _ in ()).throw(AssertionError("detection must not call IBKR")))
     monkeypatch.setattr(conn, "get_cached_portfolio_pending_orders",
                         lambda: _cache(_o("RACE", "PendingSubmit")))
-    buyer.detect_stuck_orders_from_cache()                  # no AssertionError = no IBKR call
+    buyer.detect_stuck_orders_from_cache()                  # ib=None → no IBKR; no AssertionError
+
+
+def test_targeted_cancel_only_on_block(temp_db, monkeypatch):
+    import contextlib
+    monkeypatch.setattr(conn, "get_portfolio_lock", lambda: contextlib.nullcontext())
+    monkeypatch.setattr(conn, "get_cached_portfolio_pending_orders",
+                        lambda: _cache(_o("RACE", "PendingSubmit", order_id=555)))
+    ib = _FakeIB(order_ids=[555])
+    # not stuck long enough yet → recorded, NO block, NO cancel
+    assert buyer.detect_stuck_orders_from_cache(ib=ib) == 0
+    assert ib.cancelled == []
+    # now simulate it stuck past the threshold → block + targeted cancel of order 555
+    buyer._pending_submit_since["RACE"] = datetime.utcnow() - timedelta(seconds=buyer._STUCK_PENDING_SECONDS + 30)
+    assert buyer.detect_stuck_orders_from_cache(ib=ib) == 1
+    assert buyer._is_permission_blocked("RACE")
+    assert ib.cancelled == [555]                            # exactly the stuck order, cancelled once

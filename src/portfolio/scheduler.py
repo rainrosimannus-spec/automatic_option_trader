@@ -72,12 +72,13 @@ def job_portfolio_health_check(cfg: PortfolioConfig):
 
     # Prompt detection of orders that never reach the exchange (e.g. RACE/BVME stuck PendingSubmit,
     # missing venue rights): venue-block the name so the next scan skips it and the budget routes to the
-    # next buy — instead of waiting up to 4h for the scan's _cancel_stale. LOOP-SAFE: reads ONLY the
-    # in-memory pending-orders cache, makes NO IBKR calls (a frequent job must not add load to the
-    # shared asyncio loop — the earlier ib.trades()/cancelOrder sweep here wedged it; reverted 14ad4e0).
+    # next buy — instead of waiting up to 4h for the scan's _cancel_stale. DETECTION reads ONLY the
+    # in-memory pending cache (no IBKR). It touches IBKR (a single fire-and-forget cancelOrder) ONLY on
+    # the rare block event — NOT a per-tick sweep over all orders (that earlier sweep wedged the shared
+    # asyncio loop; reverted 14ad4e0). cancelOrder/trades() don't run_until_complete, so they're loop-safe.
     try:
         from src.portfolio.buyer import detect_stuck_orders_from_cache
-        detect_stuck_orders_from_cache()
+        detect_stuck_orders_from_cache(ib=get_portfolio_ib())
     except Exception as e:
         log.warning("portfolio_health_stuck_detect_failed", error=str(e))
 
