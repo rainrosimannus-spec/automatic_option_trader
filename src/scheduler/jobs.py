@@ -641,13 +641,17 @@ def job_health_check():
     except Exception:
         pass
 
-    # Reconcile submitted OPTIONS suggestions against live IBKR orders on the OPTIONS account.
+    # Reconcile submitted OPTIONS-ACCOUNT suggestions against live IBKR orders on the OPTIONS account.
     # Any submitted option suggestion with no matching live order is a ghost — expire it.
-    # CRITICAL: this is OPTIONS-ONLY. get_cached_open_orders() is the options account's cache and the
-    # match key is the option right (P/C), so a PORTFOLIO stock buy (separate Winston account, no
-    # right) never matches and was being expired ~2 min after placement — killing every compounder
-    # buy and churning deployment. Portfolio suggestions have their own per-market expiry jobs +
-    # the compounder scan's cancel-and-replace, so they must be excluded here.
+    # CRITICAL: scope to source=='options' ONLY (positive whitelist, matching every sibling reconciler).
+    # get_cached_open_orders() is the OPTIONS account's cache and the match key is the option right
+    # (P/C). Suggestions on OTHER sources live on the separate Winston/portfolio account or are review
+    # cards and would never match here: a portfolio stock buy (no right) OR a portfolio/rescreen option
+    # EXIT (covered call source='rescreen', put source='portfolio') — all were being expired ~2 min
+    # after placement, killing compounder buys and churning deployment. Those have their own
+    # lifecycles (per-market expiry, compounder cancel-and-replace, the 720h review TTL), so this
+    # OPTIONS-account reconciler must not touch them. (A blunt source!='portfolio' still wrongly caught
+    # 'rescreen'/'ipo' — the whitelist is the correct fix.)
     if is_connected():
         try:
             from src.broker.orders import get_cached_open_orders
@@ -661,7 +665,7 @@ def job_health_check():
             with get_db() as db:
                 submitted = db.query(TradeSuggestion).filter(
                     TradeSuggestion.status == "submitted",
-                    TradeSuggestion.source != "portfolio",
+                    TradeSuggestion.source == "options",
                 ).all()
                 for s in submitted:
                     right = "P" if s.action == "sell_put" else "C"
