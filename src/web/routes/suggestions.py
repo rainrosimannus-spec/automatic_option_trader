@@ -48,7 +48,7 @@ def _get_suggestions_by_source(source: str):
         from sqlalchemy import or_
         recent = db.query(TradeSuggestion).filter(
             TradeSuggestion.source == source,
-            TradeSuggestion.status.in_(["approved", "rejected", "expired", "executed", "submitted"]),
+            TradeSuggestion.status.in_(["approved", "rejected", "expired", "executed", "submitted", "cancelled"]),
         ).order_by(TradeSuggestion.created_at.desc()).limit(40).all()
         # Force-load all attributes before session closes
         for r in recent:
@@ -129,6 +129,89 @@ def approve(suggestion_id: int, request: Request, note: str = Form(""), source: 
 @router.post("/reject/{suggestion_id}")
 def reject(suggestion_id: int, request: Request, note: str = Form(""), source: str = Form("portfolio")):
     reject_suggestion(suggestion_id, note)
+    if source == "options":
+        return RedirectResponse(url="/suggestions/options", status_code=303)
+    return RedirectResponse(url="/suggestions", status_code=303)
+
+
+def _cancel_live_order_for_suggestion(s: TradeSuggestion) -> int:
+    """Cancel the live IBKR order(s) matching an already-SUBMITTED suggestion. Routes to the right
+    account by source (portfolio = Winston, options = Maggy) and matches the order by symbol + type
+    (+ option right/strike). Reads ib.trades() (incl. Inactive, which openTrades() hides) so a stuck
+    order is reachable. Returns the count cancelled."""
+    sym = (s.symbol or "").upper()
+    act = s.action or ""
+    is_opt = ("put" in act) or ("call" in act)
+    want_right = "P" if "put" in act else ("C" if "call" in act else None)
+    _DONE = {"Filled", "Cancelled", "ApiCancelled", "PendingCancel"}
+    cancelled = 0
+    try:
+        if s.source == "portfolio":
+            from src.portfolio.connection import (get_portfolio_ib, get_portfolio_lock,
+                                                  is_portfolio_connected)
+            if not is_portfolio_connected():
+                log.warning("cancel_order_no_portfolio_conn", id=s.id, symbol=sym)
+                return 0
+            ib, lock = get_portfolio_ib(), get_portfolio_lock()
+        else:
+            from src.broker.connection import get_ib, get_ib_lock, is_connected
+            if not is_connected():
+                log.warning("cancel_order_no_options_conn", id=s.id, symbol=sym)
+                return 0
+            ib, lock = get_ib(), get_ib_lock()
+        with lock:
+            trades = list(ib.trades())
+        for t in trades:
+            c, o = getattr(t, "contract", None), getattr(t, "order", None)
+            st = getattr(getattr(t, "orderStatus", None), "status", "") or ""
+            if c is None or o is None or st in _DONE:
+                continue
+            if (getattr(c, "symbol", "") or "").upper() != sym:
+                continue
+            if is_opt:
+                if getattr(c, "secType", "") != "OPT":
+                    continue
+                if want_right and getattr(c, "right", "") != want_right:
+                    continue
+                if s.strike and abs(float(getattr(c, "strike", 0) or 0) - float(s.strike)) > 1e-6:
+                    continue
+            else:
+                if getattr(c, "secType", "") != "STK" \
+                        or str(getattr(o, "action", "")).upper() != "BUY":
+                    continue
+            try:
+                with lock:
+                    ib.cancelOrder(o)
+                cancelled += 1
+                log.info("suggestion_order_cancelled", id=s.id, symbol=sym,
+                         order_id=getattr(o, "orderId", None), status=st, source=s.source)
+            except Exception as ce:
+                log.warning("suggestion_order_cancel_failed", id=s.id, symbol=sym, error=str(ce))
+    except Exception as e:
+        log.warning("cancel_live_order_for_suggestion_failed", id=s.id, error=str(e))
+    return cancelled
+
+
+@router.post("/cancel/{suggestion_id}")
+def cancel(suggestion_id: int, request: Request, source: str = Form("portfolio")):
+    """Cancel the live IBKR order for a submitted suggestion and mark the card cancelled."""
+    # Copy the fields the cancel helper needs into a detached object before the session closes.
+    data = None
+    with get_db() as db:
+        s = db.query(TradeSuggestion).filter(TradeSuggestion.id == suggestion_id).first()
+        if s:
+            data = type("S", (), {"id": s.id, "symbol": s.symbol, "action": s.action,
+                                  "source": s.source, "strike": s.strike})()
+    if data is not None:
+        n = _cancel_live_order_for_suggestion(data)
+        with get_db() as db:
+            s2 = db.query(TradeSuggestion).filter(TradeSuggestion.id == suggestion_id).first()
+            if s2:
+                s2.status = "cancelled"
+                s2.reviewed_at = datetime.utcnow()
+                s2.review_note = (f"Order cancelled by user — {n} IBKR order(s) cancelled"
+                                  if n else "Cancel requested — no live IBKR order found")
+        log.info("suggestion_cancel_requested", id=suggestion_id, cancelled=n)
     if source == "options":
         return RedirectResponse(url="/suggestions/options", status_code=303)
     return RedirectResponse(url="/suggestions", status_code=303)
