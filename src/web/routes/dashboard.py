@@ -49,6 +49,51 @@ def _get_account_data() -> dict:
         }
 
 
+def _get_parking_data() -> dict:
+    """Cash-parking card for the EUR-base options account: per-currency cash split (EUR vs USD),
+    parked money-market ETF values (XEON/XFFE), and the fx-treasury status. Best-effort — returns
+    safe zeros on any IBKR/loop hiccup so the card never breaks the page. See src/strategy/fx_treasury.py."""
+    from src.core.config import get_settings
+    cfg = get_settings().risk
+    base = (getattr(cfg, "fx_base_currency", "EUR") or "EUR").upper()
+    eur_sym = getattr(cfg, "fx_park_eur_symbol", "XEON")
+    usd_sym = getattr(cfg, "fx_park_usd_symbol", "XFFE")
+    out = {
+        "enabled": bool(getattr(cfg, "fx_treasury_enabled", False)),
+        "dry_run": bool(getattr(cfg, "fx_treasury_dry_run", True)),
+        "base": base, "eur_symbol": eur_sym, "usd_symbol": usd_sym,
+        "eur_annual_pct": 2.0, "usd_annual_pct": 4.5,   # ~€STR / ~SOFR, display only
+        "eur_cash": 0.0, "usd_cash": 0.0, "eur_parked": 0.0, "usd_parked": 0.0,
+    }
+    try:
+        from src.broker.connection import get_ib, get_ib_lock, is_connected
+        if not is_connected():
+            return out
+        ib = get_ib()
+        with get_ib_lock():
+            vals = ib.accountValues()
+            port = ib.portfolio()
+        for v in vals:
+            if v.tag == "CashBalance" and v.currency:
+                cur = v.currency.upper()
+                try:
+                    if cur == base:
+                        out["eur_cash"] = float(v.value)
+                    elif cur == "USD":
+                        out["usd_cash"] = float(v.value)
+                except (ValueError, TypeError):
+                    continue
+        for item in port:
+            sym = getattr(item.contract, "symbol", "")
+            if sym == eur_sym:
+                out["eur_parked"] += float(getattr(item, "marketValue", 0) or 0)
+            elif sym == usd_sym:
+                out["usd_parked"] += float(getattr(item, "marketValue", 0) or 0)
+    except Exception:
+        pass
+    return out
+
+
 def _get_options_start_date() -> str:
     """Inception date for the option-trader performance chart.
 
@@ -483,6 +528,7 @@ def dashboard(request: Request):
 
     # Account data (separate to avoid DB session issues)
     account = _get_account_data()
+    parking = _get_parking_data()
     try:
         performance = _get_performance_data()
     except Exception as e:
@@ -564,6 +610,8 @@ def dashboard(request: Request):
         "margin_used_pct": account["margin_used_pct"],
         "maintenance_margin": account["maintenance_margin"],
         "debt_card": debt_card,
+        # Cash parking (FX treasury: EUR→XEON / USD→XFFE, USD debit auto-close)
+        "parking": parking,
         # Performance chart
         "perf_labels": performance["labels"],
         "perf_actual": performance["actual"],

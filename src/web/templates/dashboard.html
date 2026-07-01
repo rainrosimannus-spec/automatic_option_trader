@@ -88,6 +88,25 @@
         </div>
         <div class="text-xs text-gray-600 mt-0.5">${{ "{:,.0f}".format(maintenance_margin) }}</div>
     </div>
+    {% if parking %}
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 lg:col-span-2" title="FX treasury on this EUR-base account: idle EUR is parked in {{ parking.eur_symbol }} (€STR money-market UCITS ETF) and idle USD in {{ parking.usd_symbol }} (SOFR money-market UCITS ETF). A daily job auto-closes any USD margin debit by converting just-enough EUR→USD (one-directional, self-sizing). Both ETFs are ~95%+ marginable so parking doesn't reduce excess liquidity. See src/strategy/fx_treasury.py.">
+        <div class="text-xs text-gray-500 mb-1 flex items-center gap-1">🏦 Cash Parking
+            {% if parking.enabled and parking.dry_run %}<span class="px-1 rounded bg-amber-900/50 text-amber-300 text-[10px]">DRY-RUN</span>
+            {% elif parking.enabled %}<span class="px-1 rounded bg-emerald-900/50 text-emerald-300 text-[10px]">LIVE</span>
+            {% else %}<span class="px-1 rounded bg-gray-800 text-gray-500 text-[10px]">OFF</span>{% endif %}
+        </div>
+        <div class="flex justify-between items-baseline text-sm">
+            <span class="text-gray-400">EUR · {{ parking.eur_symbol }}</span>
+            <span class="font-mono text-gray-100">€{{ "{:,.0f}".format(parking.eur_parked) }}</span>
+        </div>
+        <div class="text-xs text-gray-600 mb-1.5">liquid €{{ "{:,.0f}".format(parking.eur_cash) }} · ~{{ "%.1f"|format(parking.eur_annual_pct) }}%/yr</div>
+        <div class="flex justify-between items-baseline text-sm">
+            <span class="text-gray-400">USD · {{ parking.usd_symbol }}</span>
+            <span class="font-mono text-gray-100">${{ "{:,.0f}".format(parking.usd_parked) }}</span>
+        </div>
+        <div class="text-xs {% if parking.usd_cash < 0 %}text-red-400{% else %}text-gray-600{% endif %}">liquid ${{ "{:,.0f}".format(parking.usd_cash) }}{% if parking.usd_cash < 0 %} · debit → auto-close{% else %} · ~{{ "%.1f"|format(parking.usd_annual_pct) }}%/yr{% endif %}</div>
+    </div>
+    {% endif %}
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="text-xs text-gray-500 mb-1">Market Regime</div>
         <div class="text-lg font-bold
@@ -635,6 +654,7 @@ document.addEventListener('DOMContentLoaded', function() {
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Market hours gate (±60 min)</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Correlation gate (avg &gt; 0.85 blocked)</span>
         <span class="px-2.5 py-1 rounded bg-gray-800 text-gray-300">Margin cap 80% of NLV (growth-mode ceiling)</span>
+        <span class="px-2.5 py-1 rounded {% if parking and parking.enabled and not parking.dry_run %}bg-blue-900/40 text-blue-300{% else %}bg-gray-800 text-gray-500{% endif %}">FX treasury (EUR-base acct): auto-close USD margin debit (EUR→USD, self-sizing, one-directional) + park idle EUR→XEON / USD→XFFE — all % of NLV{% if parking and parking.enabled %}{% if parking.dry_run %} · dry-run{% else %} · live{% endif %}{% else %} · off{% endif %}</span>
         <!-- Adaptive strategy — emerald -->
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">IV rank ≥ 20 base (VIX-adaptive up to 30%)</span>
         <span class="px-2.5 py-1 rounded bg-emerald-900/40 text-emerald-300">IV-rank position sizing (1/2/4/7/10 ladder, up to 10×)</span>
