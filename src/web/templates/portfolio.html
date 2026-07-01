@@ -749,7 +749,7 @@ function syncInjections() {
                 </div>
                 <div class="bg-gray-800/60 rounded-lg p-3">
                     <span class="text-emerald-400 font-medium block mb-0.5">Parked cash reserve</span>
-                    Deploys 90% of investable; the ~10% crash reserve + slack is parked in a bill ETF (SGOV, USD) for yield and un-parked just-in-time to deploy. Cash reserve is the primary crash dry powder, not margin. Large new deposits average in over ~6 months (lump-stretched DCA) and deployment slows when SPY is extended above its 200-day trend (froth throttle) — never fully deployed right before a crash.
+                    Deploys 90% of investable; the ~10% reserve + slack is parked in a EUR money-market ETF (XEON, €STR overnight) for yield. Each injection leaves a ~10-day deploy runway UN-parked, so routine buys fund from cash first and the ETF is only sold once it has aged past its entry spread (no churn loss); un-parked just-in-time when the runway drains. Cash reserve is the primary crash dry powder, not margin. Large new deposits average in over ~6 months (lump-stretched DCA) and deployment slows when SPY runs &gt;5% above its 200-day trend (froth throttle → 25% floor at +15%) — never fully deployed right before a crash.
                 </div>
                 <div class="bg-gray-800/60 rounded-lg p-3">
                     <span class="text-emerald-400 font-medium block mb-0.5">Concentration caps</span>
@@ -764,7 +764,7 @@ function syncInjections() {
 
         <!-- Row 2: $5M Adaptive Caps (legacy classic dip-buyer path — NOT enforced for the compounder) -->
         <div class="mb-4">
-            <div class="text-xs text-gray-600 uppercase tracking-wider mb-2">Adaptive Deployment Caps — classic dip-buyer path (NLV ${{"{:,.0f}".format(portfolio_nlv)}})</div>
+            <div class="text-xs text-gray-600 uppercase tracking-wider mb-2">Adaptive Deployment Caps — legacy dip-buyer path · <span class="text-gray-500">INACTIVE</span> (the compounder caps above govern) — NLV ${{"{:,.0f}".format(portfolio_nlv)}}</div>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <!-- Per-position cap -->
                 <div class="bg-gray-800/60 rounded-lg p-3">
@@ -793,25 +793,25 @@ function syncInjections() {
             </div>
         </div>
 
-        <!-- Row 3: Buy Signal Criteria -->
+        <!-- Row 3: Compounder selection & buy logic (ACTIVE path) -->
         <div>
-            <div class="text-xs text-gray-600 uppercase tracking-wider mb-2">Buy Signal Criteria</div>
+            <div class="text-xs text-gray-600 uppercase tracking-wider mb-2">Compounder — Selection &amp; Buy Logic (active path)</div>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs text-gray-400">
                 <div class="bg-gray-800/60 rounded-lg p-3">
-                    <span class="text-emerald-400 font-medium block mb-0.5">Below SMA</span>
-                    Growth ≥5% · Dividend ≥7% · Breakthrough ≥3% below tier SMA
+                    <span class="text-emerald-400 font-medium block mb-0.5">Quality ranking</span>
+                    100-name universe ranked by a 10x-return score + 12-1 momentum + quality composite; the top 20% are "leaders" (bought direct, higher cap).
                 </div>
                 <div class="bg-gray-800/60 rounded-lg p-3">
-                    <span class="text-emerald-400 font-medium block mb-0.5">RSI Oversold</span>
-                    Growth ≤30 · Dividend ≤25 · Breakthrough ≤35 — tier-specific thresholds
+                    <span class="text-emerald-400 font-medium block mb-0.5">Conviction targets</span>
+                    Rank drives each name's target weight (rank_score<sup>1.75</sup>), bounded by the 6% / 10%-leader / $750K caps — the accumulation goal per name.
                 </div>
                 <div class="bg-gray-800/60 rounded-lg p-3">
-                    <span class="text-emerald-400 font-medium block mb-0.5">52-Week Low</span>
-                    Within 5–10% of annual low depending on tier volatility profile
+                    <span class="text-emerald-400 font-medium block mb-0.5">Fair-price entry</span>
+                    Green (at/below fair value — blend of 200-DMA &amp; 52-wk high) filled first; yellow (extended) only if budget remains after the greens.
                 </div>
                 <div class="bg-gray-800/60 rounded-lg p-3">
-                    <span class="text-amber-400 font-medium block mb-0.5">Market Guard</span>
-                    Park cash when SPY >15% above 200 SMA — deploy on pullbacks only
+                    <span class="text-emerald-400 font-medium block mb-0.5">Time-in-market</span>
+                    Fills the biggest underweight gap first — NO RSI / 52-wk-low / dip triggers (that was the legacy path). Pace throttled by froth + crash tranches; winners run untrimmed.
                 </div>
             </div>
         </div>
