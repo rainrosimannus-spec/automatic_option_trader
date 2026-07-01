@@ -183,10 +183,12 @@ class RiskConfig(BaseModel):
     max_daily_deployment: float = 500000.0   # hard ceiling new collateral per day
     intraday_loss_halt_pct: float = 0.025    # halt if unrealized loss > 2.5% of NLV (Option C: max of pct or floor)
     intraday_loss_halt_floor: float = 50000.0  # absolute $ floor; halt = max(pct * NLV, floor)
-    # Correlation gate (skip if NLV < 50K or fewer than 3 open positions)
-    max_correlation: float = 0.85        # block if avg pairwise correlation > this
-    correlation_nlv_threshold: float = 50000.0
-    correlation_lookback_days: int = 60
+    # Correlation gate — used ONLY by the MarsWalk resilience sim (src/marswalk/engine.py, which reads
+    # get_settings().risk). The live options-side check_correlation was removed as dead code (its FMP
+    # price-history source src.data.fmp no longer exists). Keep these so MarsWalk's gate still resolves.
+    max_correlation: float = 0.85            # sim: block if avg pairwise correlation > this
+    correlation_nlv_threshold: float = 50000.0  # sim: skip below this NLV
+    correlation_lookback_days: int = 60      # sim: days of price history for correlation
     # Delta exposure gate (skip if NLV < 50K)
     max_portfolio_delta: float = 500.0   # total abs delta units across all open puts
     delta_nlv_threshold: float = 50000.0
