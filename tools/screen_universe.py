@@ -285,7 +285,8 @@ CANDIDATE_POOLS = {
             "ISRG", "VRTX", "REGN", "DXCM", "MRNA", "GILD", "AMGN",
             "JPM", "V", "MA", "GS", "BLK", "SCHW", "AXP", "C", "MS",
             "COST", "WMT", "HD", "NKE", "SBUX", "MCD", "PG", "KO", "PEP",
-            "TGT", "LOW", "BKNG",
+            "TGT", "LOW", "BKNG", "RACE",   # Ferrari — trade the US (NYSE/USD) line; the BVME/EUR line
+                                            # silently stalls PendingSubmit (no Borsa Italiana mkt-data)
             "CAT", "DE", "GE", "RTX", "LMT", "UNP", "HON", "BA",
             "XOM", "CVX", "SLB", "OXY", "COP", "EOG",
         ],
@@ -355,7 +356,7 @@ CANDIDATE_POOLS = {
     },
     "IT": {
         "exchange": "BVME", "currency": "EUR",
-        "symbols": ["ENEL", "ISP", "UCG", "ENI", "STM", "RACE", "CNHI", "TEN", "AMP", "MONC"],
+        "symbols": ["ENEL", "ISP", "UCG", "ENI", "STM", "CNHI", "TEN", "AMP", "MONC"],   # RACE moved to US pool (NYSE)
     },
     "AT": {
         "exchange": "VSE", "currency": "EUR",
