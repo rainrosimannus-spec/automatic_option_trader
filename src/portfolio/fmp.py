@@ -385,3 +385,37 @@ def get_next_earnings_date(symbol: str) -> tuple[Optional[date], bool]:
     except Exception as e:
         log.warning("earnings_cache_read_failed", symbol=symbol, error=str(e))
         return (None, False)
+
+
+# ── Daily price history — for the options correlation risk gate ───────────────────────────────
+_price_hist_cache: dict = {}          # symbol -> (yyyy-mm-dd fetched, [closes oldest→newest])
+_price_hist_lock = threading.Lock()
+
+
+def get_price_history(symbol: str, days: int = 70) -> Optional[list]:
+    """Daily closing prices (oldest→newest) over ~`days` calendar days via FMP historical-price-eod.
+    Cached once per symbol per day to bound FMP calls (correlation runs candidate + open book each scan).
+
+    FAIL-SAFE: returns None on any error/empty and NEVER raises — the correlation gate treats None as
+    'no data → allow', so a data hiccup or rate-limit can never block the trading path."""
+    try:
+        today = date.today().isoformat()
+        with _price_hist_lock:
+            hit = _price_hist_cache.get(symbol)
+            if hit and hit[0] == today:
+                return hit[1]
+        start = (date.today() - timedelta(days=days)).isoformat()
+        data = _get("historical-price-eod/full", symbol, {"from": start, "to": today})
+        if not data or not isinstance(data, list):
+            return None
+        # FMP returns newest→oldest; normalise to oldest→newest closes.
+        closes = [float(r["close"]) for r in reversed(data)
+                  if isinstance(r, dict) and r.get("close") is not None]
+        if len(closes) < 2:
+            return None
+        with _price_hist_lock:
+            _price_hist_cache[symbol] = (today, closes)
+        return closes
+    except Exception as e:
+        log.warning("fmp_price_history_failed", symbol=symbol, error=str(e))
+        return None

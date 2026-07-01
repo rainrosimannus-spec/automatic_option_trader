@@ -1034,6 +1034,75 @@ class RiskManager:
         else:
             return target_pct
 
+    def check_correlation(self, symbol: str) -> RiskCheck:
+        """Block selling a put on a name too correlated with the current open book — correlated puts
+        assign together in a drawdown, concentrating tail risk (a real control MarsWalk already models).
+        Uses ~60d daily closes from FMP (src.portfolio.fmp.get_price_history, cached, fail-safe).
+
+        FAIL-OPEN by construction: any missing data / FMP error / exception returns RiskCheck(True), so a
+        data hiccup can NEVER block the trading path. Skipped when NLV < threshold or < 3 open positions.
+        """
+        try:
+            summary = get_account_summary()
+            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+        except Exception:
+            return RiskCheck(True)
+
+        if net_liq < self.cfg.correlation_nlv_threshold:
+            return RiskCheck(True)
+
+        with get_db() as db:
+            open_positions = (
+                db.query(Position).filter(Position.status == PositionStatus.OPEN).all()
+            )
+        open_symbols = [p.symbol for p in open_positions if p.symbol != symbol]
+        if len(open_symbols) < 3:
+            return RiskCheck(True)
+
+        try:
+            from src.portfolio.fmp import get_price_history
+            lookback = self.cfg.correlation_lookback_days
+            new_prices = get_price_history(symbol, lookback + 10)
+            if not new_prices or len(new_prices) < 20:
+                return RiskCheck(True)          # not enough data → allow (fail open)
+
+            def pct_returns(prices: list) -> list:
+                return [(prices[i] - prices[i-1]) / prices[i-1]
+                        for i in range(1, len(prices)) if prices[i-1] != 0]
+
+            def pearson(x: list, y: list) -> float:
+                n = min(len(x), len(y))
+                if n < 10:
+                    return 0.0
+                x, y = x[-n:], y[-n:]
+                mx, my = sum(x)/n, sum(y)/n
+                num = sum((x[i]-mx)*(y[i]-my) for i in range(n))
+                den = (sum((v-mx)**2 for v in x) * sum((v-my)**2 for v in y)) ** 0.5
+                return num / den if den != 0 else 0.0
+
+            new_returns = pct_returns(new_prices)
+            correlations = []
+            for sym in open_symbols[:10]:           # cap FMP calls (all cached per-day anyway)
+                prices = get_price_history(sym, lookback + 10)
+                if prices and len(prices) >= 20:
+                    correlations.append(abs(pearson(new_returns, pct_returns(prices))))
+
+            if not correlations:
+                return RiskCheck(True)
+
+            avg_corr = sum(correlations) / len(correlations)
+            if avg_corr > self.cfg.max_correlation:
+                return RiskCheck(
+                    False,
+                    f"{symbol} avg correlation {avg_corr:.2f} with open positions "
+                    f"exceeds limit {self.cfg.max_correlation:.2f}",
+                )
+        except Exception as e:
+            log.warning("correlation_check_failed", symbol=symbol, error=str(e))
+            return RiskCheck(True)          # fail open — never block on data errors
+
+        return RiskCheck(True)
+
     def check_delta_exposure(self, symbol: str) -> RiskCheck:
         """
         Block if total portfolio delta would exceed max_portfolio_delta.
@@ -2226,6 +2295,7 @@ class RiskManager:
             self.check_total_exposure(),
             self.check_intraday_loss(),
             self.check_sector_exposure(symbol),
+            self.check_correlation(symbol),
             self.check_delta_exposure(symbol),
             self.check_buying_power(),
             self.check_earnings(symbol),
