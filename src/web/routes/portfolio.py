@@ -303,6 +303,16 @@ async def portfolio_page(request: Request):
     _base_ccy = _portfolio_base_ccy(fx_rates)
     total_invested = get_total_invested_base(account_id=_pacct)
     total_value = sum(_to_base(h.market_value or 0, h.currency, fx_rates, _base_ccy) for h in holdings)
+
+    # Parked-cash card (top of page): idle cash swept into the money-market ETF (XEON) for ~€STR yield.
+    # Amount is the ETF holding's market value in BASE ccy (0 when nothing is parked); the annual % is the
+    # configured displayed rate. Reads the holdings already loaded — no IBKR call.
+    _pcfg = get_settings().portfolio
+    _park_symbol = getattr(_pcfg, "cash_yield_symbol", "XEON")
+    _park_annual_pct = float(getattr(_pcfg, "cash_yield_annual_pct", 0.0) or 0.0)
+    _park_h = next((h for h in holdings if h.symbol == _park_symbol), None)
+    parked_amount = _to_base(_park_h.market_value or 0, _park_h.currency, fx_rates, _base_ccy) if _park_h else 0.0
+    parked_base_sym = {"EUR": "€", "USD": "$", "GBP": "£"}.get(_base_ccy, "")
     ibkr_unrealized_pnl = None
     try:
         from src.portfolio.connection import get_cached_portfolio_account
@@ -585,6 +595,11 @@ async def portfolio_page(request: Request):
         # Slots = target names already held / total target names (accumulation progress)
         "compounder_slots_allowed": sum(1 for s in _compounder_signals if (s.get("target") or 0) > 0),
         "compounder_slots_filled": sum(1 for s in _compounder_signals if (s.get("target") or 0) > 0 and (s.get("current") or 0) > 0),
+        # Parked cash (money-market ETF reserve) — top-of-page card
+        "parked_symbol": _park_symbol,
+        "parked_amount": parked_amount,
+        "parked_annual_pct": _park_annual_pct,
+        "parked_base_sym": parked_base_sym,
     })
 
 

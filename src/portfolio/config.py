@@ -241,6 +241,9 @@ class PortfolioConfig(BaseModel):
     cash_yield_symbol: str = "XEON"
     cash_yield_exchange: str = "IBIS"
     cash_yield_currency: str = "EUR"
+    cash_yield_annual_pct: float = 2.0      # displayed annual yield of the park ETF (~€STR / ECB
+                                            # deposit rate); shown on the Portfolio parked-cash card.
+                                            # Set to the current overnight rate XEON tracks.
 
     # IPO watchlist — tickers to monitor for public listing
     ipo_watchlist: list[str] = []

@@ -65,6 +65,25 @@ function syncInjections() {
         </div>
     </div>
 
+    <!-- ═══ Parked Cash (idle cash swept into the money-market ETF for yield) ═══ -->
+    <div class="bg-gray-900/60 border border-gray-800 rounded-lg p-4 mb-6 flex flex-wrap items-center justify-between gap-4">
+        <div class="flex items-center gap-3">
+            <span class="text-2xl">🏦</span>
+            <div>
+                <div class="text-xs text-gray-500">Parked Cash · {{ parked_symbol }}</div>
+                <div class="text-2xl font-bold">{{ parked_base_sym }}{{ "{:,.0f}".format(parked_amount) }}</div>
+                <div class="text-xs text-gray-400 mt-0.5">
+                    {% if parked_amount > 0 %}Idle cash earning yield — sellable T+1{% else %}No cash parked right now{% endif %}
+                </div>
+            </div>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-500">Annual Yield</div>
+            <div class="text-2xl font-bold text-emerald-400">{{ "{:.2f}".format(parked_annual_pct) }}%</div>
+            <div class="text-xs text-gray-400 mt-0.5">≈ {{ parked_base_sym }}{{ "{:,.0f}".format(parked_amount * parked_annual_pct / 100) }}/yr</div>
+        </div>
+    </div>
+
     {% if is_compounder %}
     <!-- ═══ Compounder: Cash Reserve & Deployment ═══ -->
     <div class="bg-gradient-to-r from-gray-900 to-gray-900/60 border border-indigo-900/50 rounded-lg p-4 mb-6">
