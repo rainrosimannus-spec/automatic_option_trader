@@ -78,7 +78,31 @@ def job_portfolio_health_check(cfg: PortfolioConfig):
     # asyncio loop; reverted 14ad4e0). cancelOrder/trades() don't run_until_complete, so they're loop-safe.
     try:
         from src.portfolio.buyer import detect_stuck_orders_from_cache
-        detect_stuck_orders_from_cache(ib=get_portfolio_ib())
+        _n_blocked = detect_stuck_orders_from_cache(ib=get_portfolio_ib())
+        # A stuck order was just cancelled → its deploy budget is now free. Pull the recurring compounder
+        # scan EARLIER (≈90s) instead of waiting up to 4h, so the freed budget flows to the next fillable,
+        # underweight name. SAFETY: we re-run the SAME scan — which re-evaluates budget/caps/per-name
+        # targets from scratch and is budget-capped every run — so this can NEVER over-deploy or "serial
+        # buy"; it just tries the next candidate. It only ever pulls the scan sooner (never delays it),
+        # only fires when a block actually happened, and modifies the existing job (no pile-up). This also
+        # fixes the after-restart wasted cycle: RACE grabs the startup scan, gets blocked, and the freed
+        # budget redeploys within minutes rather than 4h.
+        if _n_blocked:
+            try:
+                import pytz
+                from datetime import datetime as _dt, timedelta as _td
+                from src.scheduler.jobs import get_scheduler
+                _sched = get_scheduler()
+                if _sched:
+                    _soon = _dt.now(pytz.UTC) + _td(seconds=90)
+                    for _j in _sched.get_jobs():
+                        if _j.name == "Portfolio Buy Scan (24/7)":
+                            if _j.next_run_time is None or _j.next_run_time > _soon:
+                                _j.modify(next_run_time=_soon)
+                                log.info("compounder_redeploy_triggered", blocked=_n_blocked, run_in_s=90)
+                            break
+            except Exception as _re:
+                log.warning("compounder_redeploy_trigger_failed", error=str(_re))
     except Exception as e:
         log.warning("portfolio_health_stuck_detect_failed", error=str(e))
 
