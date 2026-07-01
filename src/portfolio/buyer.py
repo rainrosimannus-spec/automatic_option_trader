@@ -968,7 +968,7 @@ class PortfolioBuyer:
         # Park any standing idle cash (the crash reserve + undeployed slack) into the bill ETF for yield;
         # the executor un-parks it just-in-time when it's time to deploy. Cash backing this scan's intended
         # buys (`spent`) and still-working orders is left liquid so fills don't open a margin loan.
-        self._park_compounder_excess(nlv, spent)
+        self._park_compounder_excess(nlv, spent, daily_budget=budget)
 
         self._store_state("compounder_last_spent", str(round(spent)))
         # deployed_today is computed live from actual fills each scan (see above) — just persist the
@@ -1142,7 +1142,7 @@ class PortfolioBuyer:
             ).first()
             return pfx.to_base(float(h.market_value or h.total_invested or 0.0), h.currency) if h else 0.0
 
-    def _park_compounder_excess(self, nlv: float, spent_this_scan: float) -> None:
+    def _park_compounder_excess(self, nlv: float, spent_this_scan: float, daily_budget: float = 0.0) -> None:
         """Park standing idle cash (the crash reserve + undeployed slack) into the bill ETF for yield.
         Parks only cash that is genuinely idle: settled cash above the operational buffer, minus cash
         committed to still-working BUY orders and minus this scan's intended deployment (`spent`), so a
@@ -1154,7 +1154,14 @@ class PortfolioBuyer:
         try:
             settled = self._get_settled_cash() or 0.0
             open_buy_now = sum(self._open_buy_map().values())
-            excess = settled - nlv * cc.cash_buffer_pct - open_buy_now - max(0.0, spent_this_scan)
+            # Keep a cash RUNWAY un-parked so routine daily buys fund from cash (via _unpark_yield's
+            # cash-first path) rather than selling the ETF each time. By the time the runway drains and
+            # the ETF must be sold, its NAV has accrued past the buy-side spread, so the sale isn't at a
+            # loss. Runway = park_reserve_days × the day's deploy budget, floored by the NLV buffer.
+            _reserve_days = int(getattr(cc, "park_reserve_days", 10) or 0)
+            _deploy_runway = _reserve_days * max(0.0, daily_budget)
+            _reserve = max(nlv * cc.cash_buffer_pct, _deploy_runway)
+            excess = settled - _reserve - open_buy_now - max(0.0, spent_this_scan)
             if excess < getattr(cc, "cash_park_min", 5000.0):
                 return
             self._park_cash(amount=excess)
@@ -2959,18 +2966,27 @@ def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool
     # Authoritative only when the ETF's proceeds settle the buy directly (same currency, no FX leg).
     fatal_on_fail = (settle_ccy or "").upper() == park_ccy
     try:
+        # Fund from LIQUID CASH in the relevant currency FIRST — only sell the ETF for the genuine
+        # shortfall, so routine buys draw the un-parked cash runway (left for exactly this) instead of
+        # churning the reserve on every buy. Same-ccy buy → the ETF/settlement currency; a foreign buy's
+        # FX leg draws BASE-ccy cash, so check that. (Was gated on fatal_on_fail, so foreign USD buys
+        # always sold XEON even with ample EUR cash — needless spread churn.) Cash is compared to `needed`
+        # without an FX-rate haircut, which only errs toward keeping slightly more cash un-sold.
         shortfall = needed
-        if fatal_on_fail:
-            have = 0.0
+        _cash_ccy = park_ccy if fatal_on_fail else (getattr(cfg, "base_currency", park_ccy) or park_ccy).upper()
+        have = 0.0
+        try:
             with get_portfolio_lock():
                 vals = ib.accountValues()
             for v in vals:
-                if v.tag == "CashBalance" and (v.currency or "").upper() == park_ccy:
+                if v.tag == "CashBalance" and (v.currency or "").upper() == _cash_ccy:
                     have = float(v.value)
                     break
-            if have >= needed:
-                return True               # settlement-currency cash already covers it — no sell needed
-            shortfall = needed - have
+        except Exception:
+            have = 0.0
+        if have >= needed:
+            return True                   # liquid cash already covers it — don't sell the ETF
+        shortfall = max(0.0, needed - have)
         with get_portfolio_lock():
             positions = ib.positions()
         pos = next((p for p in positions

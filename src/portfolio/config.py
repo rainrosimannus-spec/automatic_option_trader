@@ -119,6 +119,9 @@ class CompounderConfig(BaseModel):
     # (true capitulation) only — not every -10% dip. The parked bill-ETF reserve is the primary dry powder.
     margin_capitulation_only: bool = True   # crash-margin only in the deepest tranche (capitulation), not any dip
     cash_park_min: float = 5000.0           # only park idle cash into the bill ETF above this (avoid churn)
+    park_reserve_days: int = 10             # keep this many days of deploy budget UN-parked as cash, so
+                                            # routine buys fund from cash (no ETF sale) and the ETF is only
+                                            # sold once it's aged past its entry spread (no realised loss)
     margin_hard_limit_pct: float = 40.0     # block ALL new compounder buys above this maint-margin/NLV
     margin_hard_limit_crash_pct: float = 55.0  # relaxed cap while a crash tranche is active (~15% NLV loan)
     margin_soft_floor_pct: float = 25.0     # above this maint-margin level, linearly de-rate deployment
