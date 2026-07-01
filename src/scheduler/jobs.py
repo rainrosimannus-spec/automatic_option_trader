@@ -1048,6 +1048,21 @@ def job_margin_monitor():
         log.error("margin_monitor_error", error=str(e))
 
 
+def job_fx_treasury():
+    """Daily FX treasury on the EUR-base options account: close any USD margin debit
+    (self-sizing EUR→USD, one-directional) and park idle cash per currency (EUR→XEON,
+    USD→XFFE). No-op unless risk.fx_treasury_enabled; places no orders while dry_run.
+    See src/strategy/fx_treasury.py."""
+    _ensure_event_loop()
+    if not is_connected():
+        return
+    try:
+        from src.strategy.fx_treasury import manage_fx_treasury
+        manage_fx_treasury()
+    except Exception as e:
+        log.error("fx_treasury_job_error", error=str(e))
+
+
 def job_db_cleanup():
     """Weekly database cleanup — purge old suggestions, vacuum SQLite."""
     try:
@@ -1412,6 +1427,17 @@ def create_scheduler() -> BackgroundScheduler:
                 max_instances=1,
             )
         log.info("cc_timing_logger_enabled", checkpoints=["10:00ET", "11:30ET", "14:00ET"])
+
+    # FX treasury — once daily at 14:00 UTC (London/NY overlap: tightest EUR.USD spreads,
+    # overnight assignment debits already settled, and Xetra+LSE open for the park ETFs).
+    # Double-gated in the job/module: no-op unless fx_treasury_enabled, no orders while dry_run.
+    scheduler.add_job(
+        job_fx_treasury,
+        CronTrigger(hour="14", minute="0", day_of_week="mon-fri", timezone=utc_tz),
+        id="fx_treasury",
+        name="FX Treasury (USD debit-close + cash parking)",
+        max_instances=1,
+    )
 
     # Japan/Australia close ~06:00 UTC
     scheduler.add_job(

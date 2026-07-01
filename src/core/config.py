@@ -335,6 +335,32 @@ class RiskConfig(BaseModel):
     cash_carry_on_days_required: int = 15             # consecutive raw-True days to flip ON
     cash_carry_off_days_required: int = 5             # consecutive raw-False days to flip OFF
     cash_carry_min_cash_buffer: float = 25_000.0      # don't tie up cash below this in SGOV
+    # ── FX treasury: auto-close USD margin debit + two-currency cash parking (2026-07-01) ──
+    # The options account is EUR-base but wheels in USD; assignments run it into a USD margin
+    # loan (negative carry). A daily job mints JUST-ENOUGH USD to clear the debit — one-directional
+    # (never USD→EUR), so the USD float SELF-SIZES to the wheel's footprint at any account size —
+    # and parks idle cash per-currency in money-market UCITS ETFs (EUR→XEON, USD→XFFE, both have a
+    # KID so they clear the PRIIPs wall that blocks SGOV). ALL knobs are % of NLV (no dollar
+    # constants) so it scales when NLV changes. Currency policy: match-the-business, DON'T yield-chase
+    # (the USD>EUR rate gap is an FX-risk premium, not free alpha). DOUBLE-GATED and safe: does nothing
+    # unless fx_treasury_enabled, and even then places NO orders while fx_treasury_dry_run (burn-in:
+    # logs + alerts what it WOULD do). Both default OFF/dry so existing live behavior is unchanged.
+    fx_treasury_enabled: bool = False            # master switch (compute + act; still respects dry_run)
+    fx_treasury_dry_run: bool = True             # True = log+alert only, place NO orders (burn-in)
+    fx_base_currency: str = "EUR"                # options account base currency (confirmed EUR at IBKR)
+    fx_debit_close_threshold_pct: float = 0.005  # act only when USD debit exceeds this % of NLV (skip trivial/transient)
+    fx_settlement_buffer_pct: float = 0.005      # after a close, leave USD at this small positive % of NLV
+    fx_eur_working_pct: float = 0.02             # keep this % of NLV as liquid (unparked) EUR for conversions/settlement
+    fx_usd_working_pct: float = 0.01             # keep this % of NLV as liquid (unparked) USD for settlement
+    fx_park_eur_symbol: str = "XEON"             # EUR overnight-rate money-market UCITS ETF (accumulating, marginable)
+    fx_park_eur_exchange: str = "SMART"
+    fx_park_eur_currency: str = "EUR"
+    fx_park_usd_symbol: str = "XFFE"             # USD overnight-rate money-market UCITS ETF — LSE USD line ONLY
+    fx_park_usd_exchange: str = "LSE"            # Xetra/Milan trade XFFE in EUR (would convert); LSE line is USD
+    fx_park_usd_currency: str = "USD"
+    fx_idealpro_min_base: float = 22000.0        # IDEALPRO min in base ccy; a smaller leg → let IBKR auto-FX
+    fx_min_park_amount: float = 5000.0           # skip an ETF order below this (avoid dust round-trips)
+    fx_fill_wait_secs: float = 12.0              # seconds to wait for an FX/ETF order to fill before giving up
     # ── Strangle mode (mirror of MarsWalk Params.strangle_when_grind) ──
     # When True AND the high-vol-grind detector is active, sell a symmetric-
     # delta call alongside each put (naked short call). Mutually exclusive

@@ -120,6 +120,14 @@ class AlertManager:
             return
         self._send(f"💰 {action}: {symbol}\n{details}", tags="moneybag")
 
+    def treasury_alert(self, title: str, message: str, dry_run: bool = False):
+        """💱 FX-treasury notification — USD-debit auto-close or cash parking.
+        Always sent (real-money FX visibility). Dry-run runs are tagged and low priority."""
+        prefix = "💱 [DRY-RUN] " if dry_run else "💱 "
+        self._send(f"{prefix}{title}\n{message}",
+                   priority="low" if dry_run else "high",
+                   tags="currency_exchange")
+
     def assignment_alert(self, symbol: str, shares: int, strike: float,
                          effective_cost: float, account: str = "options"):
         """📌 Put assignment notification."""
