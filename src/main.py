@@ -578,12 +578,12 @@ def main():
             ))
             conn.commit()
         # account_snapshots lives in the main DB.
-        with get_engine().connect() as conn:
-            # Remove snapshots with wrong NLV (portfolio NLV leaked)
-            conn.execute(text(
-                "DELETE FROM account_snapshots WHERE net_liquidation > 100000 OR net_liquidation = 0.0"
-            ))
-            conn.commit()
+        # NOTE: a startup DELETE used to purge `net_liquidation > 100000 OR = 0.0` here — a stale
+        # pre-split cleanup for "leaked portfolio NLV" back when the option account was ~€20k. It is
+        # REMOVED: post-split the options account legitimately exceeds €100k (deposits), so on EVERY
+        # restart it was wiping every recent options snapshot (reverting the options return chart to a
+        # ~2-week-old +2% point and gapping the series), and net_liq=0 rows still carry the portfolio_nlv
+        # the portfolio chart reads. trade_sync/health-check keep the series correct; no purge needed.
         # NOTE: the old hardcoded U23886415 historical-trade seeding was removed —
         # the option trader starts fresh on its own account/DB; trade_sync populates
         # the live ledger from real fills.
