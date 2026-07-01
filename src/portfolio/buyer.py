@@ -784,6 +784,9 @@ class PortfolioBuyer:
             ).filter(
                 PortfolioTransaction.action == "buy",
                 PortfolioTransaction.created_at >= _today + " 00:00:00",
+                # Parking idle cash into the yield ETF is NOT compounder deployment — exclude it or a
+                # single ~€400k park would swamp the day's pace and zero the stock-buy budget.
+                PortfolioTransaction.symbol != (self.cfg.cash_yield_symbol or "__none__"),
             ).group_by(PortfolioTransaction.currency).all()
             _fills_today = _pfx.sum_base(_fills_rows, _fx_rates)
         # deployed_today = committed capital today = today's FILLS + still-working BUY orders. Counting
@@ -1914,6 +1917,8 @@ class PortfolioBuyer:
                 txns = db.query(PortfolioTransaction).filter(
                     PortfolioTransaction.action == "buy",
                     PortfolioTransaction.created_at >= today_start,
+                    # Exclude the cash-yield ETF — a cash-reserve park isn't deployment (see _fills_today).
+                    PortfolioTransaction.symbol != (self.cfg.cash_yield_symbol or "__none__"),
                 ).all()
                 stock_deployed = sum(t.amount for t in txns)
                 puts = db.query(PortfolioPutEntry).filter(

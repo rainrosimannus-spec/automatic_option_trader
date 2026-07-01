@@ -476,7 +476,10 @@ async def portfolio_page(request: Request):
                     PortfolioTransaction.currency,
                     _func2.coalesce(_func2.sum(PortfolioTransaction.amount), 0.0),
                 ).filter(PortfolioTransaction.action == "buy",
-                         PortfolioTransaction.created_at >= _start
+                         PortfolioTransaction.created_at >= _start,
+                         # Parking cash into the yield ETF isn't deployment — exclude it (mirrors the
+                         # engine's _fills_today) so a ~€400k park doesn't zero the displayed budget.
+                         PortfolioTransaction.symbol != _park_symbol,
                          ).group_by(PortfolioTransaction.currency).all()
                 _fills_today = sum(_to_base(_amt, _ccy, fx_rates, _base_ccy)
                                    for _ccy, _amt in _fills_rows)
@@ -580,7 +583,7 @@ async def portfolio_page(request: Request):
             # Live deployed = current market value of holdings (base ccy). Was read from the persisted
             # compounder_deployed state, which only the periodic scan refreshes — so it lagged behind
             # fills/price updates. total_value is recomputed every page load from the holdings table.
-            "deployed": total_value,
+            "deployed": total_value - parked_amount,   # parked cash-yield ETF is a reserve, not deployed stock
             "live_target": float(_get_state("compounder_live_target") or 0),
             "investable": float(_get_state("compounder_investable") or 0),
             "daily_budget": _live_daily_budget,
