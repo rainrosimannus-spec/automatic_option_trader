@@ -240,9 +240,16 @@ def _to_base(amount: float, currency: str, fx_rates: dict = None, base_ccy: str 
     return amount * rate if rate else amount
 
 def _build_tier_breakdown(holdings, fx_rates=None) -> dict:
-    """Build tier allocation data for pie/bar chart."""
-    tiers = {"dividend": 0, "growth": 0, "breakthrough": 0}
+    """Build tier allocation data for pie/bar chart. The cash-yield ETF (the parked cash reserve, e.g.
+    XEON, which carries tier='growth') is bucketed as 'cash' — it's not a compounder tier holding, so it
+    must not inflate the Growth slice."""
+    from src.core.config import get_settings
+    _park = getattr(get_settings().portfolio, "cash_yield_symbol", None)
+    tiers = {"dividend": 0, "growth": 0, "breakthrough": 0, "cash": 0}
     for h in holdings:
+        if _park and h.symbol == _park:
+            tiers["cash"] += _to_usd(h.market_value or 0, h.currency, fx_rates)
+            continue
         tier = h.tier or "growth"
         tiers[tier] = tiers.get(tier, 0) + _to_usd(h.market_value or 0, h.currency, fx_rates)
     return tiers
@@ -566,6 +573,7 @@ async def portfolio_page(request: Request):
         "tier_dividend": tiers.get("dividend", 0),
         "tier_growth": tiers.get("growth", 0),
         "tier_breakthrough": tiers.get("breakthrough", 0),
+        "tier_cash": tiers.get("cash", 0),
         # Top performers (gainers) vs underperformers (losers), split by SIGN — not a fixed
         # top-5/bottom-5 slice (which hid the losers card entirely with <=5 holdings and could show
         # a name that's actually down as a "top performer"). `performers` is sorted P&L%-desc.

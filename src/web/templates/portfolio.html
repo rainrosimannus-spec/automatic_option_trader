@@ -225,7 +225,7 @@ function syncInjections() {
         <!-- Tier Allocation -->
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <h2 class="text-sm font-semibold text-gray-200 mb-4">Tier Allocation</h2>
-            {% set tier_total = tier_dividend + tier_growth + tier_breakthrough %}
+            {% set tier_total = tier_dividend + tier_growth + tier_breakthrough + tier_cash %}
             {% if tier_total > 0 %}
             <div style="height: 180px;">
                 <canvas id="tierChart"></canvas>
@@ -243,6 +243,12 @@ function syncInjections() {
                     <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-purple-400"></span> Breakthrough</span>
                     <span class="text-gray-300">${{"{:,.0f}".format(tier_breakthrough)}} · {{"{:.0f}".format(tier_breakthrough / tier_total * 100)}}%</span>
                 </div>
+                {% if tier_cash > 0 %}
+                <div class="flex items-center justify-between">
+                    <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span> Cash (parked)</span>
+                    <span class="text-gray-300">${{"{:,.0f}".format(tier_cash)}} · {{"{:.0f}".format(tier_cash / tier_total * 100)}}%</span>
+                </div>
+                {% endif %}
             </div>
             <div class="mt-3 pt-2 border-t border-gray-800 text-xs text-gray-500">
                 Target: 25% / 50% / 25%
@@ -378,7 +384,7 @@ function syncInjections() {
     {% endif %}
 
     <!-- Tier chart renders independently -->
-    {% set tier_total = tier_dividend + tier_growth + tier_breakthrough %}
+    {% set tier_total = tier_dividend + tier_growth + tier_breakthrough + tier_cash %}
     {% if tier_total > 0 %}
     <script>
     document.addEventListener('DOMContentLoaded', function() {
@@ -387,11 +393,11 @@ function syncInjections() {
             new Chart(tierCtx, {
                 type: 'doughnut',
                 data: {
-                    labels: ['Dividend', 'Growth', 'Breakthrough'],
+                    labels: ['Dividend', 'Growth', 'Breakthrough', 'Cash'],
                     datasets: [{
-                        data: [{{ tier_dividend }}, {{ tier_growth }}, {{ tier_breakthrough }}],
-                        backgroundColor: ['#60a5fa', '#34d399', '#a78bfa'],
-                        borderColor: ['#1e3a5f', '#134e4a', '#3b1f7a'],
+                        data: [{{ tier_dividend }}, {{ tier_growth }}, {{ tier_breakthrough }}, {{ tier_cash }}],
+                        backgroundColor: ['#60a5fa', '#34d399', '#a78bfa', '#fbbf24'],
+                        borderColor: ['#1e3a5f', '#134e4a', '#3b1f7a', '#78350f'],
                         borderWidth: 2,
                     }],
                 },
