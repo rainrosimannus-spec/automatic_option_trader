@@ -1431,12 +1431,18 @@ def create_scheduler() -> BackgroundScheduler:
     # FX treasury — once daily at 14:00 UTC (London/NY overlap: tightest EUR.USD spreads,
     # overnight assignment debits already settled, and Xetra+LSE open for the park ETFs).
     # Double-gated in the job/module: no-op unless fx_treasury_enabled, no orders while dry_run.
+    from datetime import timedelta as _timedelta
     scheduler.add_job(
         job_fx_treasury,
         CronTrigger(hour="14", minute="0", day_of_week="mon-fri", timezone=utc_tz),
         id="fx_treasury",
         name="FX Treasury (USD debit-close + cash parking)",
         max_instances=1,
+        # Run ~180s after every restart too (mirrors the Portfolio Buy Scan's startup nudge), so idle
+        # cash parks promptly instead of waiting for the daily 14:00 slot. The debit-close runs 24/5;
+        # the parking legs self-guard on ETF market hours (see manage_fx_treasury). (`timedelta` is
+        # shadowed as a function-local further down, so alias it locally to avoid an UnboundLocalError.)
+        next_run_time=datetime.now(pytz.UTC) + _timedelta(seconds=180),
     )
 
     # Japan/Australia close ~06:00 UTC

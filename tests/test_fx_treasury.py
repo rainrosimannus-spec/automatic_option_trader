@@ -5,7 +5,34 @@ which is the "what if I add €1M tomorrow" case; (2) it skips trivial debits an
 USD (one-directional); (3) parking keeps a working buffer and skips dust; (4) the FX BUY/SELL+qty plan
 picks the right side of the canonical pair.
 """
-from src.strategy.fx_treasury import plan_debit_close, plan_park, fx_conversion_plan
+from datetime import datetime, timezone
+
+from src.strategy.fx_treasury import (
+    plan_debit_close, plan_park, fx_conversion_plan, etf_market_open,
+)
+
+
+def _utc(y, mo, d, h, mi):
+    return datetime(y, mo, d, h, mi, tzinfo=timezone.utc)
+
+
+# ── etf_market_open (parking gates on Xetra+LSE hours; debit-close does not) ──
+
+def test_market_open_weekday_in_window():
+    assert etf_market_open(_utc(2026, 7, 2, 14, 0)) is True   # Thu 14:00 UTC (the daily slot)
+
+
+def test_market_open_edges():
+    assert etf_market_open(_utc(2026, 7, 2, 8, 0)) is True     # 08:00 open
+    assert etf_market_open(_utc(2026, 7, 2, 16, 30)) is True   # 16:30 LSE close
+    assert etf_market_open(_utc(2026, 7, 2, 7, 59)) is False   # before open
+    assert etf_market_open(_utc(2026, 7, 2, 16, 31)) is False  # after LSE close
+
+
+def test_market_closed_evening_and_weekend():
+    assert etf_market_open(_utc(2026, 7, 2, 22, 0)) is False   # Thu 22:00 UTC (restart-outside-hours case)
+    assert etf_market_open(_utc(2026, 7, 4, 14, 0)) is False   # Saturday
+    assert etf_market_open(_utc(2026, 7, 5, 14, 0)) is False   # Sunday
 
 
 # ── plan_debit_close ─────────────────────────────────────────────────────────

@@ -30,6 +30,8 @@ unit-tested directly.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from ib_insync import Forex, MarketOrder, Stock
 
 from src.core.config import get_settings
@@ -58,6 +60,20 @@ def plan_debit_close(usd_cash: float, nlv: float,
     buffer = nlv * max(0.0, buffer_pct)
     need_usd = (-usd_cash) + buffer          # cover the debit + leave a small positive cushion
     return {"act": True, "need_usd": need_usd, "reason": "debit"}
+
+
+def etf_market_open(now: datetime | None = None) -> bool:
+    """True when Xetra + LSE are both open (weekday, ~08:00–16:30 UTC) so the park ETFs can fill.
+
+    Only the parking legs gate on this — the USD debit-close (IDEALPRO FX) runs 24/5 and ignores it.
+    Used so a restart-triggered run outside market hours does the debit-close but defers parking to the
+    daily 14:00 UTC slot (which is inside this window) instead of firing orders that can't fill.
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.weekday() >= 5:                       # Sat/Sun
+        return False
+    minutes = now.hour * 60 + now.minute
+    return 8 * 60 <= minutes <= 16 * 60 + 30     # 08:00–16:30 UTC (LSE window ⊂ Xetra window)
 
 
 def plan_park(liquid_cash: float, nlv: float,
@@ -336,7 +352,12 @@ def manage_fx_treasury() -> None:
                  else alerts.critical("FX treasury: USD debit close FAILED", msg))
             return   # act once per pass; park next run
 
-        # ── 2. Park idle cash per currency (EUR→XEON, USD→XFFE) ──
+        # ── 2. Park idle cash per currency (EUR→XEON, USD→XFFE) — only when the ETF markets are open ──
+        # (a restart-triggered run at, say, 22:00 UTC skips parking and lets the daily 14:00 slot do it,
+        # rather than firing orders that can't fill; the debit-close above already ran regardless.)
+        if not etf_market_open():
+            log.info("fx_treasury_park_skipped_market_closed")
+            return
         parked_notes = []
         legs = [
             (base, eur_cash, cfg.fx_eur_working_pct, cfg.fx_park_eur_symbol,
