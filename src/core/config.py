@@ -356,6 +356,7 @@ class RiskConfig(BaseModel):
     fx_park_eur_exchange: str = "SMART"
     fx_park_eur_currency: str = "EUR"
     fx_park_eur_primary: str = ""                # XEON SMART-routes without a primaryExchange
+    fx_park_usd_enabled: bool = False            # USD park OFF: XFFE needs a live LSEETF data sub to route (sticks PendingSubmit); ~$55/yr < IBKR's own USD credit, so USD stays cash
     fx_park_usd_symbol: str = "XFFE"             # USD overnight-rate money-market UCITS ETF — LSE USD line ONLY
     fx_park_usd_exchange: str = "SMART"          # SMART-route (like AZN) so it fills without an LSE-ETF live-data sub
     fx_park_usd_primary: str = "LSEETF"          # ...disambiguated to the LSE ETF listing; plain SMART/USD won't qualify, direct LSEETF sticks in PendingSubmit

@@ -381,10 +381,15 @@ def manage_fx_treasury() -> None:
             (base, eur_cash, cfg.fx_eur_working_pct, cfg.fx_park_eur_symbol,
              cfg.fx_park_eur_exchange, cfg.fx_park_eur_currency,
              getattr(cfg, "fx_park_eur_primary", "") or None),
-            ("USD", usd_cash, cfg.fx_usd_working_pct, cfg.fx_park_usd_symbol,
-             cfg.fx_park_usd_exchange, cfg.fx_park_usd_currency,
-             getattr(cfg, "fx_park_usd_primary", "") or None),
         ]
+        # USD leg (XFFE) DISABLED 2026-07-02: XFFE can't be validated/routed without a live LSEETF
+        # market-data subscription — orders place then stick in PendingSubmit (whyHeld='', filled=0),
+        # same wall as RACE/BVME. The park is worth only ~$55/yr over IBKR's own ~4.3% credit on idle USD,
+        # so USD simply stays as cash. The EUR→XEON leg and the USD debit-close (IDEALPRO FX) are unaffected.
+        if getattr(cfg, "fx_park_usd_enabled", True):
+            legs.append(("USD", usd_cash, cfg.fx_usd_working_pct, cfg.fx_park_usd_symbol,
+                         cfg.fx_park_usd_exchange, cfg.fx_park_usd_currency,
+                         getattr(cfg, "fx_park_usd_primary", "") or None))
         for ccy, liquid, working_pct, sym, exch, etf_ccy, primary in legs:
             amount = plan_park(liquid, nlv, working_pct, cfg.fx_min_park_amount)
             if amount <= 0:
@@ -401,10 +406,12 @@ def manage_fx_treasury() -> None:
             log.info("fx_treasury_park", dry_run=dry, ccy=ccy, symbol=sym,
                      amount=round(amount), shares=shares)
             if not dry:
-                # Marketable limit (0.5% through the last price) + SMART route via primary so LSE ETFs
-                # (XFFE) actually fill instead of sticking in PendingSubmit.
+                # Marketable limit 1.5% THROUGH the last daily close + SMART route via primary. The wide
+                # cap is needed because thin LSE ETFs (XFFE) quote well above the stale daily-close we size
+                # from — a 0.5% cap didn't cross the live ask and stuck in PendingSubmit. A limit fills at
+                # the touch (ask), not the cap, so this doesn't overpay; it just guarantees it crosses.
                 _place_etf_order(ib, "BUY", sym, exch, etf_ccy, shares, cfg.fx_fill_wait_secs,
-                                 limit_price=price * 1.005, primary=primary)
+                                 limit_price=price * 1.015, primary=primary)
 
         if parked_notes and alerts:
             alerts.treasury_alert("Cash parked", "\n".join(parked_notes), dry_run=dry)
