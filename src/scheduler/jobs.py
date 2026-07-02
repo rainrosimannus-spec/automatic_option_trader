@@ -1959,7 +1959,11 @@ def create_scheduler() -> BackgroundScheduler:
 
     scheduler.add_job(
         _job_portfolio_injection_sync,
-        CronTrigger(hour=16, minute=10, timezone=us_tz),  # staggered after options sync
+        # 17:00 ET — a FULL HOUR after the options sync (16:00 ET). At 16:10 it inherited the options
+        # sync's IP-scoped Flex throttle (cure ~30-40 min) and failed "still throttled" every night, so
+        # the portfolio deposit ledger never synced. The IP lockout is shared across Flex tokens, so the
+        # gap must exceed the cure window, not just stagger by minutes.
+        CronTrigger(hour=17, minute=0, timezone=us_tz),
         id="portfolio_injection_sync",
         name="Portfolio Deposit/Withdrawal Sync (Flex)",
         max_instances=1,
