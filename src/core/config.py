@@ -317,6 +317,7 @@ class RiskConfig(BaseModel):
     cc_rescue_repair_enabled: bool = True         # rescue lots write 30-60 DTE above breakeven vs nothing; False = legacy 1-7 DTE band
     cc_rescue_repair_dte_min: int = 30            # rescue repair: time-value OTM call DTE window floor
     cc_rescue_repair_dte_max: int = 60            # rescue repair: time-value OTM call DTE window ceiling
+    cc_token_rescue_enabled: bool = True          # 2026-07-02 (Lever 3a): if a deep lot has no ≥-breakeven call in the 0.05Δ rescue band, retry at 0.01Δ so a far-OTM strike with a real fee-clearing bid still gets written (never below breakeven) instead of leaving the lot uncovered/dead-capital (e.g. IREN −20%)
     # ── Cash-and-carry mode (high-vol-grind detector + SGOV rotation) ──
     # Ported 2026-05-28 from MarsWalk after the high-vol-grind detector + parameter-
     # override experiment (memory: stagflation-strategy-attempted-2026-05-28) showed

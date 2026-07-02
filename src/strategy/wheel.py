@@ -691,6 +691,30 @@ class WheelManager:
                 min_dte_override=dte_min_override,
             )
 
+        # Lever 3a — token rescue (2026-07-02): a lot too deep underwater (e.g. IREN at −20%) whose only
+        # ≥-breakeven strikes sit below the 0.05Δ rescue floor gets NO call at all above → dead capital,
+        # zero premium. Retry once with the delta floor dropped to ~0.01 so we grab the nearest
+        # ≥-breakeven strike that still carries a real, fee-clearing bid (screen_calls keeps min_strike =
+        # breakeven and the fee floor, so this NEVER writes below breakeven and never writes sub-fee dross;
+        # a truly hopeless lot with no fee-clearing strike stays uncovered by design). Live-only fix —
+        # MarsWalk has no fee/liquidity floor so it can't score it ([[live-marswalk-parity-rule]] exempt).
+        if (not candidate and in_rescue and min_strike
+                and getattr(risk_cfg, "cc_token_rescue_enabled", True)):
+            candidate = screen_calls(
+                symbol,
+                exchange=exchange,
+                currency=currency,
+                min_strike=min_strike,
+                delta_min_override=0.01,
+                delta_max_override=cc_delta_max,
+                max_dte_override=dte_max_override,
+                min_dte_override=dte_min_override,
+            )
+            if candidate:
+                log.info("cc_token_rescue", symbol=symbol, strike=candidate.strike,
+                         delta=round(candidate.delta, 3), bid=candidate.bid,
+                         note="token far-OTM CC on deep-underwater lot that had no standard candidate")
+
         if not candidate:
             log.debug("no_call_candidate", symbol=symbol)
             return False
