@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from ib_insync import Forex, MarketOrder, Stock
+from ib_insync import Forex, LimitOrder, MarketOrder, Stock
 
 from src.core.config import get_settings
 from src.core.logger import get_logger
@@ -210,14 +210,19 @@ def _etf_last_price(ib, symbol: str, exchange: str, currency: str) -> float | No
 
 
 def _place_etf_order(ib, action: str, symbol: str, exchange: str, currency: str,
-                     shares: int, wait_secs: float) -> bool:
-    """Place a market BUY/SELL on a park ETF (options connection). True if it filled."""
+                     shares: int, wait_secs: float, limit_price: float | None = None) -> bool:
+    """Place a BUY/SELL on a park ETF (options connection). True if it filled.
+
+    Uses a marketable LIMIT when limit_price is given — LSE-listed ETFs (e.g. XFFE on LSEETF) reject
+    plain market orders and cancel unfilled; a limit that crosses the spread is accepted and fills at
+    the touch. Falls back to a market order when no price is available (e.g. liquid XEON on SMART)."""
     from src.broker.connection import get_ib_lock
     try:
         with get_ib_lock():
             contract = Stock(symbol, exchange, currency)
             ib.qualifyContracts(contract)
-            order = MarketOrder(action, shares)
+            order = (LimitOrder(action, shares, round(limit_price, 2))
+                     if limit_price and limit_price > 0 else MarketOrder(action, shares))
             order.tif = "DAY"
             order.outsideRth = False
             trade = ib.placeOrder(contract, order)
@@ -270,7 +275,8 @@ def _convert_to_usd(ib, cfg, base: str, need_usd: float, eur_liquid: float, dry:
             park_note = f"; sell {shares} {cfg.fx_park_eur_symbol} to free €{short_eur:,.0f}"
             if not dry:
                 _place_etf_order(ib, "SELL", cfg.fx_park_eur_symbol, cfg.fx_park_eur_exchange,
-                                 cfg.fx_park_eur_currency, shares, cfg.fx_fill_wait_secs)
+                                 cfg.fx_park_eur_currency, shares, cfg.fx_fill_wait_secs,
+                                 limit_price=price * 0.995)
         else:
             park_note = f"; WARN could not price {cfg.fx_park_eur_symbol} to free €{short_eur:,.0f}"
 
@@ -381,7 +387,9 @@ def manage_fx_treasury() -> None:
             log.info("fx_treasury_park", dry_run=dry, ccy=ccy, symbol=sym,
                      amount=round(amount), shares=shares)
             if not dry:
-                _place_etf_order(ib, "BUY", sym, exch, etf_ccy, shares, cfg.fx_fill_wait_secs)
+                # Marketable limit (0.5% through the last price) so LSE ETFs (XFFE) actually fill.
+                _place_etf_order(ib, "BUY", sym, exch, etf_ccy, shares, cfg.fx_fill_wait_secs,
+                                 limit_price=price * 1.005)
 
         if parked_notes and alerts:
             alerts.treasury_alert("Cash parked", "\n".join(parked_notes), dry_run=dry)
