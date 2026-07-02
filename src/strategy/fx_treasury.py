@@ -191,12 +191,22 @@ def _wait_fill(ib, trade, wait_secs: float) -> tuple:
     return (trade.orderStatus.status or "", float(trade.orderStatus.filled or 0.0))
 
 
-def _etf_last_price(ib, symbol: str, exchange: str, currency: str) -> float | None:
+def _park_contract(symbol: str, exchange: str, currency: str, primary: str | None):
+    """Build the park-ETF contract. A primaryExchange makes IBKR SMART-route to that listing (e.g. XFFE
+    on LSEETF) instead of direct-routing — direct routes need a live market-data subscription and stick
+    in PendingSubmit; SMART fills without one (same path AZN uses)."""
+    if primary:
+        return Stock(symbol, exchange, currency, primaryExchange=primary)
+    return Stock(symbol, exchange, currency)
+
+
+def _etf_last_price(ib, symbol: str, exchange: str, currency: str,
+                    primary: str | None = None) -> float | None:
     """Best-effort last price for a park ETF (2-day daily bar). None on failure."""
     from src.broker.connection import get_ib_lock
     try:
         with get_ib_lock():
-            contract = Stock(symbol, exchange, currency)
+            contract = _park_contract(symbol, exchange, currency, primary)
             ib.qualifyContracts(contract)
             bars = ib.reqHistoricalData(
                 contract, endDateTime="", durationStr="2 D", barSizeSetting="1 day",
@@ -210,16 +220,17 @@ def _etf_last_price(ib, symbol: str, exchange: str, currency: str) -> float | No
 
 
 def _place_etf_order(ib, action: str, symbol: str, exchange: str, currency: str,
-                     shares: int, wait_secs: float, limit_price: float | None = None) -> bool:
+                     shares: int, wait_secs: float, limit_price: float | None = None,
+                     primary: str | None = None) -> bool:
     """Place a BUY/SELL on a park ETF (options connection). True if it filled.
 
-    Uses a marketable LIMIT when limit_price is given — LSE-listed ETFs (e.g. XFFE on LSEETF) reject
-    plain market orders and cancel unfilled; a limit that crosses the spread is accepted and fills at
-    the touch. Falls back to a market order when no price is available (e.g. liquid XEON on SMART)."""
+    SMART-routes via `primary` (primaryExchange) so LSE-listed ETFs (XFFE) fill without a direct-route
+    market-data subscription. Uses a marketable LIMIT when limit_price is given (crosses the spread),
+    else a market order."""
     from src.broker.connection import get_ib_lock
     try:
         with get_ib_lock():
-            contract = Stock(symbol, exchange, currency)
+            contract = _park_contract(symbol, exchange, currency, primary)
             ib.qualifyContracts(contract)
             order = (LimitOrder(action, shares, round(limit_price, 2))
                      if limit_price and limit_price > 0 else MarketOrder(action, shares))
@@ -268,15 +279,16 @@ def _convert_to_usd(ib, cfg, base: str, need_usd: float, eur_liquid: float, dry:
     park_note = ""
     if eur_liquid < need_eur:
         short_eur = need_eur - eur_liquid
+        _eur_primary = getattr(cfg, "fx_park_eur_primary", "") or None
         price = _etf_last_price(ib, cfg.fx_park_eur_symbol,
-                                cfg.fx_park_eur_exchange, cfg.fx_park_eur_currency)
+                                cfg.fx_park_eur_exchange, cfg.fx_park_eur_currency, primary=_eur_primary)
         if price and price > 0:
             shares = int(short_eur / price) + 1
             park_note = f"; sell {shares} {cfg.fx_park_eur_symbol} to free €{short_eur:,.0f}"
             if not dry:
                 _place_etf_order(ib, "SELL", cfg.fx_park_eur_symbol, cfg.fx_park_eur_exchange,
                                  cfg.fx_park_eur_currency, shares, cfg.fx_fill_wait_secs,
-                                 limit_price=price * 0.995)
+                                 limit_price=price * 0.995, primary=_eur_primary)
         else:
             park_note = f"; WARN could not price {cfg.fx_park_eur_symbol} to free €{short_eur:,.0f}"
 
@@ -367,15 +379,17 @@ def manage_fx_treasury() -> None:
         parked_notes = []
         legs = [
             (base, eur_cash, cfg.fx_eur_working_pct, cfg.fx_park_eur_symbol,
-             cfg.fx_park_eur_exchange, cfg.fx_park_eur_currency),
+             cfg.fx_park_eur_exchange, cfg.fx_park_eur_currency,
+             getattr(cfg, "fx_park_eur_primary", "") or None),
             ("USD", usd_cash, cfg.fx_usd_working_pct, cfg.fx_park_usd_symbol,
-             cfg.fx_park_usd_exchange, cfg.fx_park_usd_currency),
+             cfg.fx_park_usd_exchange, cfg.fx_park_usd_currency,
+             getattr(cfg, "fx_park_usd_primary", "") or None),
         ]
-        for ccy, liquid, working_pct, sym, exch, etf_ccy in legs:
+        for ccy, liquid, working_pct, sym, exch, etf_ccy, primary in legs:
             amount = plan_park(liquid, nlv, working_pct, cfg.fx_min_park_amount)
             if amount <= 0:
                 continue
-            price = _etf_last_price(ib, sym, exch, etf_ccy)
+            price = _etf_last_price(ib, sym, exch, etf_ccy, primary=primary)
             if not price or price <= 0:
                 log.warning("fx_treasury_park_no_price", symbol=sym)
                 continue
@@ -387,9 +401,10 @@ def manage_fx_treasury() -> None:
             log.info("fx_treasury_park", dry_run=dry, ccy=ccy, symbol=sym,
                      amount=round(amount), shares=shares)
             if not dry:
-                # Marketable limit (0.5% through the last price) so LSE ETFs (XFFE) actually fill.
+                # Marketable limit (0.5% through the last price) + SMART route via primary so LSE ETFs
+                # (XFFE) actually fill instead of sticking in PendingSubmit.
                 _place_etf_order(ib, "BUY", sym, exch, etf_ccy, shares, cfg.fx_fill_wait_secs,
-                                 limit_price=price * 1.005)
+                                 limit_price=price * 1.005, primary=primary)
 
         if parked_notes and alerts:
             alerts.treasury_alert("Cash parked", "\n".join(parked_notes), dry_run=dry)
