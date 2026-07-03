@@ -255,7 +255,8 @@ def _place_etf_order(ib, action: str, symbol: str, exchange: str, currency: str,
         return False
 
 
-def _convert_to_usd(ib, cfg, base: str, need_usd: float, eur_liquid: float, dry: bool) -> tuple:
+def _convert_to_usd(ib, cfg, base: str, need_usd: float, eur_liquid: float,
+                    eur_working: float, dry: bool) -> tuple:
     """Raise `need_usd` of USD by converting EUR (selling XEON first if liquid EUR is short).
 
     Returns (ok, detail_str, deferred).
@@ -281,34 +282,37 @@ def _convert_to_usd(ib, cfg, base: str, need_usd: float, eur_liquid: float, dry:
         return (True, plan["reason"], False)
 
     need_eur = plan["base_value"]
-    # Fund the WHOLE conversion by selling the XEON park — NOT just the shortfall over liquid EUR — so the
-    # liquid working pool is left intact ("stays as is") AND the freed euros fully cover the FX order. The
-    # order sells base_value × the plan's 1.01 buffer, so we raise that plus the ETF sale's 0.5% limit
-    # haircut (×1.02). The old "top up only the shortfall" left the freed EUR ~1% short after the haircut,
-    # and IBKR rejected the conversion as currency leverage (Error 201) — which there's no toggle to allow
-    # in Client Portal, so the euros simply have to be present. XEON only trades in European hours; if the
-    # sale can't be placed or filled, DEFER (don't place the FX leg against euros we haven't freed) and
-    # retry next in-hours pass. `eur_liquid` is intentionally NOT drawn down (it's the settlement reserve).
-    fx_eur = need_eur * 1.02
+    # The FX order sells base_value × the plan's 1.01 buffer — that many euros must be PRESENT or IBKR
+    # rejects the leg as currency leverage (Error 201; no Client-Portal toggle enables it). Fund it from
+    # the EUR that's ALREADY liquid above the working buffer first, then free only the REMAINDER by selling
+    # XEON. This keeps the working pool at its target ("stays as is"), NEVER double-sells euros a prior
+    # (failed) pass already freed to liquid, and never tries to sell more XEON than is parked. XEON trades
+    # European hours only; if the top-up sale can't be placed/filled, DEFER (don't place the FX leg against
+    # euros we haven't freed) and retry next in-hours pass.
+    fx_eur = need_eur * 1.01                             # euros the plan's SELL order actually moves
+    xeon_to_raise = fx_eur + eur_working - eur_liquid    # remainder after spending liquid down to the buffer
     park_note = ""
-    _eur_primary = getattr(cfg, "fx_park_eur_primary", "") or None
-    if not etf_market_open():
-        return (False, f"need to sell {cfg.fx_park_eur_symbol} to fund €{need_eur:,.0f}, but ETF market "
-                       f"closed — deferred to next in-hours pass", True)
-    price = _etf_last_price(ib, cfg.fx_park_eur_symbol,
-                            cfg.fx_park_eur_exchange, cfg.fx_park_eur_currency, primary=_eur_primary)
-    if not (price and price > 0):
-        return (False, f"could not price {cfg.fx_park_eur_symbol} to fund €{fx_eur:,.0f} — deferred", True)
-    shares = int(fx_eur / price) + 1
-    if not dry:
-        freed = _place_etf_order(ib, "SELL", cfg.fx_park_eur_symbol, cfg.fx_park_eur_exchange,
-                                 cfg.fx_park_eur_currency, shares, cfg.fx_fill_wait_secs,
-                                 limit_price=price * 0.995, primary=_eur_primary)
-        if not freed:
-            return (False, f"{cfg.fx_park_eur_symbol} sale to fund €{fx_eur:,.0f} did not fill "
+    if xeon_to_raise > 1.0:
+        if not etf_market_open():
+            return (False, f"need €{xeon_to_raise:,.0f} more from {cfg.fx_park_eur_symbol}, but ETF market "
+                           f"closed — deferred to next in-hours pass", True)
+        _eur_primary = getattr(cfg, "fx_park_eur_primary", "") or None
+        price = _etf_last_price(ib, cfg.fx_park_eur_symbol,
+                                cfg.fx_park_eur_exchange, cfg.fx_park_eur_currency, primary=_eur_primary)
+        if not (price and price > 0):
+            return (False, f"could not price {cfg.fx_park_eur_symbol} to free €{xeon_to_raise:,.0f} "
                            f"— deferred", True)
-    park_note = (f"; sold {shares} {cfg.fx_park_eur_symbol} (≈€{shares * price:,.0f}) to fund the whole "
-                 f"conversion — liquid pool untouched")
+        # Size for the 0.5% marketable-limit haircut so the freed euros fully cover the shortfall.
+        shares = int(xeon_to_raise * 1.005 / (price * 0.995)) + 1
+        if not dry:
+            freed = _place_etf_order(ib, "SELL", cfg.fx_park_eur_symbol, cfg.fx_park_eur_exchange,
+                                     cfg.fx_park_eur_currency, shares, cfg.fx_fill_wait_secs,
+                                     limit_price=price * 0.995, primary=_eur_primary)
+            if not freed:
+                return (False, f"{cfg.fx_park_eur_symbol} sale to free €{xeon_to_raise:,.0f} did not fill "
+                               f"— deferred", True)
+        park_note = (f"; sold {shares} {cfg.fx_park_eur_symbol} (≈€{shares * price:,.0f}) to top up — "
+                     f"liquid working pool €{eur_working:,.0f} kept")
 
     detail = (f"{plan['action']} {plan['qty']} {pair.symbol}{pair.currency} "
               f"(≈€{need_eur:,.0f} → ${need_usd:,.0f}){park_note}")
@@ -375,7 +379,9 @@ def manage_fx_treasury() -> None:
         dc = plan_debit_close(usd_cash, nlv, cfg.fx_debit_close_threshold_pct,
                               cfg.fx_settlement_buffer_pct)
         if dc["act"]:
-            ok, detail, deferred = _convert_to_usd(ib, cfg, base, dc["need_usd"], eur_cash, dry)
+            eur_working = nlv * cfg.fx_eur_working_pct   # liquid EUR buffer to preserve (the "as is" pool)
+            ok, detail, deferred = _convert_to_usd(ib, cfg, base, dc["need_usd"], eur_cash,
+                                                   eur_working, dry)
             log.info("fx_treasury_debit_close", dry_run=dry, ok=ok, deferred=deferred,
                      usd_cash=round(usd_cash), need_usd=round(dc["need_usd"]),
                      nlv=round(nlv), detail=detail)
