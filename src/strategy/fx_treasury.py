@@ -281,31 +281,34 @@ def _convert_to_usd(ib, cfg, base: str, need_usd: float, eur_liquid: float, dry:
         return (True, plan["reason"], False)
 
     need_eur = plan["base_value"]
-    # If liquid EUR can't cover the conversion, the shortfall has to come from selling the XEON park —
-    # which only trades in European hours. If that sale can't be placed or doesn't fill, DEFER the whole
-    # conversion rather than place the FX leg against euros we haven't actually freed (→ Error 201 reject
-    # + false-alarm alert). Enough liquid EUR (no XEON needed) still converts 24/5 as before.
+    # Fund the WHOLE conversion by selling the XEON park — NOT just the shortfall over liquid EUR — so the
+    # liquid working pool is left intact ("stays as is") AND the freed euros fully cover the FX order. The
+    # order sells base_value × the plan's 1.01 buffer, so we raise that plus the ETF sale's 0.5% limit
+    # haircut (×1.02). The old "top up only the shortfall" left the freed EUR ~1% short after the haircut,
+    # and IBKR rejected the conversion as currency leverage (Error 201) — which there's no toggle to allow
+    # in Client Portal, so the euros simply have to be present. XEON only trades in European hours; if the
+    # sale can't be placed or filled, DEFER (don't place the FX leg against euros we haven't freed) and
+    # retry next in-hours pass. `eur_liquid` is intentionally NOT drawn down (it's the settlement reserve).
+    fx_eur = need_eur * 1.02
     park_note = ""
-    if eur_liquid < need_eur:
-        short_eur = need_eur - eur_liquid
-        if not etf_market_open():
-            return (False, f"need €{short_eur:,.0f} from {cfg.fx_park_eur_symbol}, but ETF market closed "
-                           f"— deferred to next in-hours pass", True)
-        _eur_primary = getattr(cfg, "fx_park_eur_primary", "") or None
-        price = _etf_last_price(ib, cfg.fx_park_eur_symbol,
-                                cfg.fx_park_eur_exchange, cfg.fx_park_eur_currency, primary=_eur_primary)
-        if not (price and price > 0):
-            return (False, f"could not price {cfg.fx_park_eur_symbol} to free €{short_eur:,.0f} "
+    _eur_primary = getattr(cfg, "fx_park_eur_primary", "") or None
+    if not etf_market_open():
+        return (False, f"need to sell {cfg.fx_park_eur_symbol} to fund €{need_eur:,.0f}, but ETF market "
+                       f"closed — deferred to next in-hours pass", True)
+    price = _etf_last_price(ib, cfg.fx_park_eur_symbol,
+                            cfg.fx_park_eur_exchange, cfg.fx_park_eur_currency, primary=_eur_primary)
+    if not (price and price > 0):
+        return (False, f"could not price {cfg.fx_park_eur_symbol} to fund €{fx_eur:,.0f} — deferred", True)
+    shares = int(fx_eur / price) + 1
+    if not dry:
+        freed = _place_etf_order(ib, "SELL", cfg.fx_park_eur_symbol, cfg.fx_park_eur_exchange,
+                                 cfg.fx_park_eur_currency, shares, cfg.fx_fill_wait_secs,
+                                 limit_price=price * 0.995, primary=_eur_primary)
+        if not freed:
+            return (False, f"{cfg.fx_park_eur_symbol} sale to fund €{fx_eur:,.0f} did not fill "
                            f"— deferred", True)
-        shares = int(short_eur / price) + 1
-        if not dry:
-            freed = _place_etf_order(ib, "SELL", cfg.fx_park_eur_symbol, cfg.fx_park_eur_exchange,
-                                     cfg.fx_park_eur_currency, shares, cfg.fx_fill_wait_secs,
-                                     limit_price=price * 0.995, primary=_eur_primary)
-            if not freed:
-                return (False, f"{cfg.fx_park_eur_symbol} sale to free €{short_eur:,.0f} did not fill "
-                               f"— deferred", True)
-        park_note = f"; sold {shares} {cfg.fx_park_eur_symbol} to free €{short_eur:,.0f}"
+    park_note = (f"; sold {shares} {cfg.fx_park_eur_symbol} (≈€{shares * price:,.0f}) to fund the whole "
+                 f"conversion — liquid pool untouched")
 
     detail = (f"{plan['action']} {plan['qty']} {pair.symbol}{pair.currency} "
               f"(≈€{need_eur:,.0f} → ${need_usd:,.0f}){park_note}")
