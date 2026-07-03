@@ -357,6 +357,69 @@ def refresh_accrued_interest_from_flex():
     except Exception as e:
         log.warning('accrued_interest_flex_failed', error=str(e))
 
+# Currencies the compounder universe may trade in. IBKR only reports an ExchangeRate for a currency
+# the account actually HOLDS (cash/position), so a never-held currency (HKD/JPY/AUD/…) is missing from
+# the account values → rate_to_base() falls back to 1.0 → foreign compounder orders are under-sized ~Nx
+# and silently dropped below the min-buy floor (deployment into that currency never happens → the account
+# never holds it → the rate stays missing: a deadlock). We backfill the missing ones from the IDEALPRO FX
+# pair so every supported currency has a real LOCAL→BASE rate. CHF/NOK/SEK/DKK are included proactively
+# for when the monthly screener rotates in Swiss/Scandinavian names (already in the market-hours map).
+_FX_BACKFILL_CURRENCIES = (
+    "USD", "GBP", "CAD", "CHF", "NOK", "SEK", "DKK", "JPY", "AUD", "HKD", "SGD", "ZAR",
+)
+
+
+def _backfill_missing_fx_rates(ib: IB, fx_rates: dict, base: str = "EUR") -> None:
+    """Add a LOCAL→BASE rate (base units per 1 local) for every supported currency IBKR didn't report.
+
+    Uses the canonical IDEALPRO pair (tried base-first, then ccy-first) and normalises the mid to the
+    same convention IBKR's ExchangeRate tag uses (base per 1 local). Best-effort: any currency that
+    can't be qualified/priced is left absent (rate_to_base then falls back to 1.0, same as before).
+    """
+    from ib_insync import Forex
+    base_u = (base or "EUR").upper()
+    for ccy in _FX_BACKFILL_CURRENCIES:
+        if ccy == base_u or ccy in fx_rates:
+            continue
+        pair = None
+        for sym, cur in ((base_u, ccy), (ccy, base_u)):
+            cand = Forex(sym + cur)
+            try:
+                with _portfolio_lock:
+                    ib.qualifyContracts(cand)
+            except Exception:
+                cand = None
+            if cand is not None and getattr(cand, "conId", 0):
+                pair = cand
+                break
+        if pair is None:
+            continue
+        try:
+            with _portfolio_lock:
+                t = ib.reqMktData(pair, "", True, False)
+                ib.sleep(2)
+            px = None
+            for cand in (t.midpoint(), t.marketPrice(), t.last, t.close):
+                if cand and cand == cand and cand > 0:   # cand == cand rejects NaN
+                    px = float(cand)
+                    break
+            try:
+                with _portfolio_lock:
+                    ib.cancelMktData(pair)
+            except Exception:
+                pass
+            if not px:
+                continue
+            # pair.symbol == base  → pair is base.ccy → px = ccy per 1 base → LOCAL→BASE = 1/px
+            # pair.symbol == ccy   → pair is ccy.base → px = base per 1 ccy → LOCAL→BASE = px
+            rate = (1.0 / px) if (pair.symbol or "").upper() == base_u else px
+            if rate > 0:
+                fx_rates[ccy] = rate
+                log.info("fx_rate_backfilled", ccy=ccy, rate=round(rate, 6))
+        except Exception:
+            continue
+
+
 def refresh_portfolio_account_cache_from(ib: IB):
     global _cached_portfolio_account
     try:
@@ -388,6 +451,12 @@ def refresh_portfolio_account_cache_from(ib: IB):
                     fx_rates[v.currency] = float(v.value)
                 except Exception:
                     pass
+        # IBKR only reports rates for held currencies; backfill the rest so foreign compounder orders
+        # size correctly (see _backfill_missing_fx_rates — fixes the never-held-currency deadlock).
+        try:
+            _backfill_missing_fx_rates(ib, fx_rates, base="EUR")
+        except Exception as e:
+            log.warning("fx_rate_backfill_failed", error=str(e))
         data["fx_rates"] = fx_rates
 
         try:
