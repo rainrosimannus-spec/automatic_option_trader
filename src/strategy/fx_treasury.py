@@ -258,57 +258,72 @@ def _place_etf_order(ib, action: str, symbol: str, exchange: str, currency: str,
 def _convert_to_usd(ib, cfg, base: str, need_usd: float, eur_liquid: float, dry: bool) -> tuple:
     """Raise `need_usd` of USD by converting EUR (selling XEON first if liquid EUR is short).
 
-    Returns (ok, detail_str). ok=False only when a real, above-minimum conversion could not be placed
-    or did not fill (fail-closed — caller alerts; nothing worse than the pre-existing debit happens).
+    Returns (ok, detail_str, deferred).
+      - ok=True                    → converted (or a sub-minimum leg intentionally left to IBKR auto-FX).
+      - ok=False, deferred=True    → NOT a failure: the EUR is parked in XEON and that sale can't free it
+                                     right now (ETF market closed / didn't fill), so the whole conversion
+                                     is postponed to the next pass. The FX leg is NOT placed — selling EUR
+                                     we haven't freed just earns an Error 201 "currency leverage" rejection
+                                     and reads as a false alarm. A restart in European hours retries it.
+      - ok=False, deferred=False   → a real failure (caller alerts).
     """
     pair = _qualify_fx_pair(ib, base, "USD")
     if pair is None:
-        return (False, "no EUR.USD pair (FX permission?)")
+        return (False, "no EUR.USD pair (FX permission?)", False)
     rate = _fx_rate_ccy_per_base(ib, pair, base, "USD")   # USD per 1 EUR
     plan = fx_conversion_plan(base, "USD", need_usd, rate, pair.symbol,
                               cfg.fx_idealpro_min_base)
     if not plan["place"]:
         if plan["reason"] == "below_min":
-            return (True, f"leg €{plan['base_value']:,.0f} < IDEALPRO min — left to IBKR auto-FX")
+            return (True, f"leg €{plan['base_value']:,.0f} < IDEALPRO min — left to IBKR auto-FX", False)
         if plan["reason"] == "no_rate":
-            return (True, "unpriced — left to IBKR auto-FX")
-        return (True, plan["reason"])
+            return (True, "unpriced — left to IBKR auto-FX", False)
+        return (True, plan["reason"], False)
 
     need_eur = plan["base_value"]
-    # If liquid EUR can't cover the conversion, sell XEON to raise the shortfall first.
+    # If liquid EUR can't cover the conversion, the shortfall has to come from selling the XEON park —
+    # which only trades in European hours. If that sale can't be placed or doesn't fill, DEFER the whole
+    # conversion rather than place the FX leg against euros we haven't actually freed (→ Error 201 reject
+    # + false-alarm alert). Enough liquid EUR (no XEON needed) still converts 24/5 as before.
     park_note = ""
     if eur_liquid < need_eur:
         short_eur = need_eur - eur_liquid
+        if not etf_market_open():
+            return (False, f"need €{short_eur:,.0f} from {cfg.fx_park_eur_symbol}, but ETF market closed "
+                           f"— deferred to next in-hours pass", True)
         _eur_primary = getattr(cfg, "fx_park_eur_primary", "") or None
         price = _etf_last_price(ib, cfg.fx_park_eur_symbol,
                                 cfg.fx_park_eur_exchange, cfg.fx_park_eur_currency, primary=_eur_primary)
-        if price and price > 0:
-            shares = int(short_eur / price) + 1
-            park_note = f"; sell {shares} {cfg.fx_park_eur_symbol} to free €{short_eur:,.0f}"
-            if not dry:
-                _place_etf_order(ib, "SELL", cfg.fx_park_eur_symbol, cfg.fx_park_eur_exchange,
-                                 cfg.fx_park_eur_currency, shares, cfg.fx_fill_wait_secs,
-                                 limit_price=price * 0.995, primary=_eur_primary)
-        else:
-            park_note = f"; WARN could not price {cfg.fx_park_eur_symbol} to free €{short_eur:,.0f}"
+        if not (price and price > 0):
+            return (False, f"could not price {cfg.fx_park_eur_symbol} to free €{short_eur:,.0f} "
+                           f"— deferred", True)
+        shares = int(short_eur / price) + 1
+        if not dry:
+            freed = _place_etf_order(ib, "SELL", cfg.fx_park_eur_symbol, cfg.fx_park_eur_exchange,
+                                     cfg.fx_park_eur_currency, shares, cfg.fx_fill_wait_secs,
+                                     limit_price=price * 0.995, primary=_eur_primary)
+            if not freed:
+                return (False, f"{cfg.fx_park_eur_symbol} sale to free €{short_eur:,.0f} did not fill "
+                               f"— deferred", True)
+        park_note = f"; sold {shares} {cfg.fx_park_eur_symbol} to free €{short_eur:,.0f}"
 
     detail = (f"{plan['action']} {plan['qty']} {pair.symbol}{pair.currency} "
               f"(≈€{need_eur:,.0f} → ${need_usd:,.0f}){park_note}")
     if dry:
-        return (True, detail)
+        return (True, detail, False)
 
     from src.broker.connection import get_ib_lock
     with get_ib_lock():
         trade = ib.placeOrder(pair, MarketOrder(plan["action"], plan["qty"]))
     status, filled = _wait_fill(ib, trade, cfg.fx_fill_wait_secs)
     if status == "Filled" or filled >= plan["qty"] * 0.9:
-        return (True, detail + f" [filled {status}]")
+        return (True, detail + f" [filled {status}]", False)
     try:
         with get_ib_lock():
             ib.cancelOrder(trade.order)
     except Exception:
         pass
-    return (False, detail + f" [UNFILLED {status}]")
+    return (False, detail + f" [UNFILLED {status}]", False)
 
 
 # ─────────────────────────── orchestrator (scheduler entry point) ───────────────────────────
@@ -357,12 +372,14 @@ def manage_fx_treasury() -> None:
         dc = plan_debit_close(usd_cash, nlv, cfg.fx_debit_close_threshold_pct,
                               cfg.fx_settlement_buffer_pct)
         if dc["act"]:
-            eur_working = nlv * cfg.fx_eur_working_pct
-            ok, detail = _convert_to_usd(ib, cfg, base, dc["need_usd"], eur_cash, dry)
-            log.info("fx_treasury_debit_close", dry_run=dry, ok=ok,
+            ok, detail, deferred = _convert_to_usd(ib, cfg, base, dc["need_usd"], eur_cash, dry)
+            log.info("fx_treasury_debit_close", dry_run=dry, ok=ok, deferred=deferred,
                      usd_cash=round(usd_cash), need_usd=round(dc["need_usd"]),
                      nlv=round(nlv), detail=detail)
-            if alerts:
+            if deferred:
+                # Expected pre-open condition (EUR still parked in XEON) — retry next pass, no alarm.
+                log.info("fx_treasury_debit_close_deferred", detail=detail)
+            elif alerts:
                 title = "USD debit auto-close"
                 msg = (f"USD balance ${usd_cash:,.0f} (debit) → target +${nlv * cfg.fx_settlement_buffer_pct:,.0f}\n"
                        f"{detail}\n{'OK' if ok else 'FAILED — check manually'}")
