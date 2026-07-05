@@ -58,17 +58,30 @@ def get_ib_lock() -> threading.RLock:
 def ensure_main_event_loop():
     """Set the current thread's event loop to the main IB connection's loop.
     This is critical — ib_insync processes responses via the event loop,
-    so ALL threads must use the same loop as the connection."""
+    so ALL threads must use the same loop as the connection.
+
+    When _main_loop is None (startup, or after reconnect() cleared it), reuse
+    the current loop ONLY if it's open and we're on the main thread; otherwise
+    create a FRESH loop. Without this branch a reconnect driven by the
+    APScheduler health-check WORKER thread reused the stale/wedged shared loop,
+    and ib.connect()'s run_until_complete raised "This event loop is already
+    running" — so the options side never recovered after the nightly 02:00
+    gateway auto-restart (the portfolio side did, because its _connect() has
+    always called this same guard). Mirrors src/portfolio/connection.py
+    :_ensure_event_loop — the half of the fix that commit 813ec6a missed."""
     import asyncio
     global _main_loop
     if _main_loop is not None:
         asyncio.set_event_loop(_main_loop)
-    else:
-        try:
-            asyncio.get_event_loop()
-        except RuntimeError:
+        return
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed() or threading.current_thread() is not threading.main_thread():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
 
 def initial_connect() -> IB:
@@ -81,6 +94,11 @@ def initial_connect() -> IB:
 def _connect(max_retries: int = 3) -> IB:
     """Establish connection to IBKR TWS / Gateway."""
     cfg = get_settings().ibkr
+    # Bind a usable event loop BEFORE ib.connect() — mirrors the portfolio
+    # _connect(). On a reconnect running on the health-check worker thread,
+    # _main_loop is None and this creates a FRESH loop so run_until_complete
+    # doesn't collide with the wedged shared loop ("event loop already running").
+    ensure_main_event_loop()
 
     if not is_port_open(cfg.host, cfg.port):
         raise ConnectionError(
