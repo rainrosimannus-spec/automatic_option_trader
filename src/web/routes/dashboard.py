@@ -17,6 +17,72 @@ from src.strategy.risk import adaptive_max_positions
 
 router = APIRouter()
 
+# ── Dashboard IB reads, decoupled from the scan lock ───────────────────────────
+# The options + portfolio scans share ONE IB RLock (src/portfolio/connection.py:37)
+# and hold it for SECONDS while probing foreign market data (VSE/EUREX/SEHK/ENEXT
+# names with no data subscription — the compounder now scores the FULL global
+# universe, commit 669f541). The dashboard's account-summary and cash-parking cards
+# read live IB state under that SAME lock, so a page load used to queue behind a scan
+# and "almost not load". Fix: a NON-BLOCKING acquire of the shared RLock — got it →
+# read fresh (accountValues()/portfolio() are cheap local in-memory reads) and refresh
+# a last-good cache; a scan holds it → serve the cached snapshot instantly. The live
+# read still happens only while we HOLD the lock, so we never read wrapper state the
+# scan's event loop is mutating. No asyncio, no new threads, shared broker code
+# untouched — only this render path changes.
+import time as _time
+
+_ACCT_CACHE: dict = {"summary": None, "ts": 0.0}
+_PARK_CACHE: dict = {"parking": None, "ts": 0.0}
+
+
+def _cached_account_summary(max_age: float = 2.0):
+    """AccountSummary for the dashboard without ever blocking on a scan. Returns the
+    last good summary (or None if none fetched yet — callers already handle that as
+    zeros). Re-reads live only when the shared IB RLock is free; a scan holding it
+    yields the cached value instantly. See the module note above."""
+    if _ACCT_CACHE["summary"] is not None and (_time.time() - _ACCT_CACHE["ts"]) < max_age:
+        return _ACCT_CACHE["summary"]
+    from src.broker.connection import get_ib_lock, is_connected
+    from src.broker.account import get_account_summary
+    lock = get_ib_lock()
+    # Steady state: non-blocking, so a running scan never stalls the page. Cold start (no cached
+    # value yet — e.g. right after a restart): briefly BLOCK with a timeout so the FIRST render
+    # populates real numbers instead of zeros. A scan holds the lock only in bursts, so a few
+    # seconds catches it between cycles. Bounded wait; no asyncio, no new threads.
+    cold = _ACCT_CACHE["summary"] is None
+    got = False
+    try:
+        if is_connected():
+            got = lock.acquire(timeout=4.0) if cold else lock.acquire(blocking=False)
+    except Exception:
+        got = False
+    if got:
+        try:
+            s = get_account_summary()  # re-enters the RLock on THIS thread — safe (RLock)
+            if s and (s.net_liquidation or 0) > 0:
+                _ACCT_CACHE["summary"] = s
+                _ACCT_CACHE["ts"] = _time.time()
+        finally:
+            lock.release()
+    return _ACCT_CACHE["summary"]
+
+
+def _last_snapshot_nlv() -> float:
+    """Last persisted options-account NLV from the snapshot table — a cold-start fallback so the
+    cards show the real last-known figure instead of zeros while the live summary is still loading
+    (e.g. right after a restart, before the IBKR connection/lock yields a fresh read)."""
+    try:
+        from src.core.models import AccountSnapshot
+        from src.core.database import get_db as _get_db
+        with _get_db() as db:
+            row = (db.query(AccountSnapshot)
+                   .filter(AccountSnapshot.net_liquidation.isnot(None),
+                           AccountSnapshot.net_liquidation > 0)
+                   .order_by(AccountSnapshot.date.desc()).first())
+            return float(row.net_liquidation) if row and row.net_liquidation else 0.0
+    except Exception:
+        return 0.0
+
 
 def _get_state_val(db, key: str) -> str | None:
     state = db.query(SystemState).filter(SystemState.key == key).first()
@@ -24,10 +90,12 @@ def _get_state_val(db, key: str) -> str | None:
 
 
 def _get_account_data() -> dict:
-    """Safely fetch account data — returns zeros if unavailable."""
+    """Safely fetch account data — returns zeros if unavailable.
+    Reads via the non-blocking cache so a running scan can't stall the page."""
     try:
-        from src.broker.account import get_account_summary
-        summary = get_account_summary()
+        summary = _cached_account_summary()
+        if summary is None:
+            raise ValueError("no cached account summary yet")
         return {
             "net_liquidation": summary.net_liquidation,
             "buying_power": summary.buying_power,
@@ -42,42 +110,60 @@ def _get_account_data() -> dict:
             ),
         }
     except Exception:
-        return {
-            "net_liquidation": 0, "buying_power": 0, "excess_liquidity": 0, "cash_balance": 0,
-            "unrealized_pnl": 0, "realized_pnl": 0, "maintenance_margin": 0,
-            "margin_used_pct": 0,
-        }
+        pass
+    # Persistent fallback: show the last-known options NLV from the snapshot table rather than a
+    # zeroed card while the live summary is still loading (cold start / connection warming up).
+    return {
+        "net_liquidation": _last_snapshot_nlv(), "buying_power": 0, "excess_liquidity": 0,
+        "cash_balance": 0, "unrealized_pnl": 0, "realized_pnl": 0, "maintenance_margin": 0,
+        "margin_used_pct": 0,
+    }
 
 
-def _get_parking_data() -> dict:
-    """Cash-parking card for the EUR-base options account: per-currency cash split (EUR vs USD),
-    parked money-market ETF values (XEON/XFFE), and the fx-treasury status. Best-effort — returns
-    safe zeros on any IBKR/loop hiccup so the card never breaks the page. See src/strategy/fx_treasury.py."""
+def _parking_defaults() -> dict:
+    """IB-free defaults for the cash-parking card (config only, never touches the lock)."""
     from src.core.config import get_settings
     cfg = get_settings().risk
     base = (getattr(cfg, "fx_base_currency", "EUR") or "EUR").upper()
     eur_sym = getattr(cfg, "fx_park_eur_symbol", "XEON")
     usd_sym = getattr(cfg, "fx_park_usd_symbol", "XFFE")
-    out = {
+    return {
         "enabled": bool(getattr(cfg, "fx_treasury_enabled", False)),
         "dry_run": bool(getattr(cfg, "fx_treasury_dry_run", True)),
         "base": base, "eur_symbol": eur_sym, "usd_symbol": usd_sym,
         "eur_annual_pct": 2.0, "usd_annual_pct": 4.5,   # ~€STR / ~SOFR, display only
         "eur_cash": 0.0, "usd_cash": 0.0, "eur_parked": 0.0, "usd_parked": 0.0,
     }
+
+
+def _get_parking_data() -> dict:
+    """Cash-parking card for the EUR-base options account: per-currency cash split (EUR vs USD),
+    parked money-market ETF values (XEON/XFFE), and the fx-treasury status. Best-effort — returns
+    safe zeros on any IBKR/loop hiccup so the card never breaks the page. See src/strategy/fx_treasury.py.
+
+    Decoupled from the scan lock (see the module note above): a non-blocking acquire of the shared
+    IB RLock — free → fresh read + refresh cache; a scan holds it → last-good cache (or defaults)."""
+    out = _parking_defaults()
+    if _PARK_CACHE["parking"] is not None and (_time.time() - _PARK_CACHE["ts"]) < 2.0:
+        return _PARK_CACHE["parking"]
+    from src.broker.connection import get_ib, get_ib_lock, is_connected
+    lock = get_ib_lock()
+    got = False
     try:
-        from src.broker.connection import get_ib, get_ib_lock, is_connected
-        if not is_connected():
-            return out
+        got = is_connected() and lock.acquire(blocking=False)
+    except Exception:
+        got = False
+    if not got:
+        return _PARK_CACHE["parking"] or out
+    try:
         ib = get_ib()
-        with get_ib_lock():
-            vals = ib.accountValues()
-            port = ib.portfolio()
+        vals = ib.accountValues()
+        port = ib.portfolio()
         for v in vals:
             if v.tag == "CashBalance" and v.currency:
                 cur = v.currency.upper()
                 try:
-                    if cur == base:
+                    if cur == out["base"]:
                         out["eur_cash"] = float(v.value)
                     elif cur == "USD":
                         out["usd_cash"] = float(v.value)
@@ -85,12 +171,16 @@ def _get_parking_data() -> dict:
                     continue
         for item in port:
             sym = getattr(item.contract, "symbol", "")
-            if sym == eur_sym:
+            if sym == out["eur_symbol"]:
                 out["eur_parked"] += float(getattr(item, "marketValue", 0) or 0)
-            elif sym == usd_sym:
+            elif sym == out["usd_symbol"]:
                 out["usd_parked"] += float(getattr(item, "marketValue", 0) or 0)
+        _PARK_CACHE["parking"] = out
+        _PARK_CACHE["ts"] = _time.time()
     except Exception:
-        pass
+        return _PARK_CACHE["parking"] or out
+    finally:
+        lock.release()
     return out
 
 
@@ -287,8 +377,7 @@ def _get_performance_data() -> dict:
         }
 
     try:
-        from src.broker.account import get_account_summary
-        summary = get_account_summary()
+        summary = _cached_account_summary()
         net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 100000
     except Exception:
         net_liq = 100000
