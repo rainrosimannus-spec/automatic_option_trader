@@ -1176,9 +1176,15 @@ class PortfolioBuyer:
             nlv = self._get_net_liquidation() or 0.0
             if nlv <= 0:
                 return
-            cash = self._per_currency_cash()
 
-            from src.strategy.fx_treasury import plan_debit_close
+            from src.strategy.fx_treasury import plan_debit_close, crash_regime_active
+            # SUSPENDED during a crash regime (Rain: only close debt when there's NO crash) — a foreign
+            # loan carried into a drawdown is intentional leverage; don't de-lever against the crash-buy.
+            if crash_regime_active():
+                log.info("portfolio_fx_treasury_suspended_crash")
+                return
+
+            cash = self._per_currency_cash()
             thr = float(getattr(cfg, "fx_debit_close_threshold_pct", 0.005) or 0.0)
             buf_pct = float(getattr(cfg, "fx_settlement_buffer_pct", 0.005) or 0.0)
 

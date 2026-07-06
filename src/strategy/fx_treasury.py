@@ -333,6 +333,24 @@ def _convert_to_ccy(ib, cfg, base: str, ccy: str, need_ccy: float, eur_liquid: f
     return (False, detail + f" [UNFILLED {status}]", False)
 
 
+def crash_regime_active() -> bool:
+    """True when the system crash detector is currently flagged active (persisted SystemState
+    'crash_active' in the shared trades.db, written daily by the options RiskManager and mirrored
+    in MarsWalk). Used ONLY by the PORTFOLIO/compounder debit-close (buyer.manage_fx_treasury): in a
+    crash the compounder INTENTIONALLY levers up (capitulation margin) to buy the drawdown, so its
+    debt must not be paid down — that would de-lever exactly at the leverage-buy moment. The OPTIONS
+    debit-close does NOT use this (its debit is negative carry to clear regardless of regime).
+    Fail-safe: any read error → treat as NOT a crash (portfolio closes debt as normal)."""
+    try:
+        from src.core.database import get_db
+        from src.core.models import SystemState
+        with get_db() as db:
+            row = db.query(SystemState).filter(SystemState.key == "crash_active").first()
+            return bool(row and str(row.value).strip().lower() == "true")
+    except Exception:
+        return False
+
+
 # ─────────────────────────── orchestrator (scheduler entry point) ───────────────────────────
 
 def manage_fx_treasury() -> None:
@@ -381,6 +399,10 @@ def manage_fx_treasury() -> None:
         # per-pass (the next daily run takes the next currency), so `eur_cash`/`eur_working` never
         # need re-reading mid-pass. Sizes EUR→ccy to bring the debit up to a small positive buffer;
         # never converts ccy→EUR, so each currency float grows to exactly the book's footprint.
+        # NOTE: the options debit-close runs even in a crash — the USD (or other non-base) debit here is
+        # negative carry (borrow USD ~5.5% financed by idle EUR ~2%), and idle EUR is NOT the wheel's
+        # crash fuel, so clearing it is always correct. (The PORTFOLIO debit-close DOES stand down in a
+        # crash — there the debt is intentional capitulation leverage; see buyer.manage_fx_treasury.)
         debits = []
         for _ccy, _bal in cash.items():
             if _ccy == base:
