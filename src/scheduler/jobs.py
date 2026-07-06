@@ -1615,6 +1615,7 @@ def create_scheduler() -> BackgroundScheduler:
             job_portfolio_scan, job_portfolio_update_prices,
             job_portfolio_update_metrics, job_portfolio_monthly_screen,
             job_portfolio_monthly_review, job_portfolio_sync_trades, job_portfolio_trailing_stop_monitor,
+            job_portfolio_fx_treasury,
         )
         from src.portfolio.forecaster import job_portfolio_chronos_forecast
 
@@ -1646,6 +1647,18 @@ def create_scheduler() -> BackgroundScheduler:
             misfire_grace_time=1800,
             coalesce=True,
             next_run_time=prices_first_run,
+        )
+
+        # Foreign-debit auto-close (FX treasury) — daily, offset from the options 14:00 UTC pass to
+        # avoid shared-lock contention. Closes any standing non-base ccy margin loan (dry-run by default).
+        scheduler.add_job(
+            partial(job_portfolio_fx_treasury, portfolio_cfg),
+            CronTrigger(hour=13, minute=30, day_of_week="mon-fri", timezone=pytz.UTC),
+            id="portfolio_fx_treasury",
+            name="Portfolio FX Treasury (foreign-debit close)",
+            max_instances=1,
+            misfire_grace_time=1800,
+            coalesce=True,
         )
 
         # Trade sync — import IBKR put/stock trades for watchlist symbols

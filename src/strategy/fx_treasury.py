@@ -255,9 +255,9 @@ def _place_etf_order(ib, action: str, symbol: str, exchange: str, currency: str,
         return False
 
 
-def _convert_to_usd(ib, cfg, base: str, need_usd: float, eur_liquid: float,
+def _convert_to_ccy(ib, cfg, base: str, ccy: str, need_ccy: float, eur_liquid: float,
                     eur_working: float, dry: bool) -> tuple:
-    """Raise `need_usd` of USD by converting EUR (selling XEON first if liquid EUR is short).
+    """Raise `need_ccy` of `ccy` by converting EUR (selling XEON first if liquid EUR is short).
 
     Returns (ok, detail_str, deferred).
       - ok=True                    → converted (or a sub-minimum leg intentionally left to IBKR auto-FX).
@@ -268,11 +268,11 @@ def _convert_to_usd(ib, cfg, base: str, need_usd: float, eur_liquid: float,
                                      and reads as a false alarm. A restart in European hours retries it.
       - ok=False, deferred=False   → a real failure (caller alerts).
     """
-    pair = _qualify_fx_pair(ib, base, "USD")
+    pair = _qualify_fx_pair(ib, base, ccy)
     if pair is None:
-        return (False, "no EUR.USD pair (FX permission?)", False)
-    rate = _fx_rate_ccy_per_base(ib, pair, base, "USD")   # USD per 1 EUR
-    plan = fx_conversion_plan(base, "USD", need_usd, rate, pair.symbol,
+        return (False, f"no {base}.{ccy} pair (FX permission?)", False)
+    rate = _fx_rate_ccy_per_base(ib, pair, base, ccy)   # ccy per 1 base
+    plan = fx_conversion_plan(base, ccy, need_ccy, rate, pair.symbol,
                               cfg.fx_idealpro_min_base)
     if not plan["place"]:
         if plan["reason"] == "below_min":
@@ -315,7 +315,7 @@ def _convert_to_usd(ib, cfg, base: str, need_usd: float, eur_liquid: float,
                      f"liquid working pool €{eur_working:,.0f} kept")
 
     detail = (f"{plan['action']} {plan['qty']} {pair.symbol}{pair.currency} "
-              f"(≈€{need_eur:,.0f} → ${need_usd:,.0f}){park_note}")
+              f"(≈€{need_eur:,.0f} → {ccy} {need_ccy:,.0f}){park_note}")
     if dry:
         return (True, detail, False)
 
@@ -365,7 +365,6 @@ def manage_fx_treasury() -> None:
             return
 
         cash = _per_currency_cash(ib)
-        usd_cash = cash.get("USD", 0.0)
         eur_cash = cash.get(base, 0.0)
 
         alerts = None
@@ -375,25 +374,40 @@ def manage_fx_treasury() -> None:
         except Exception:
             pass
 
-        # ── 1. USD debit-close (self-sizing, one-directional) ──
-        dc = plan_debit_close(usd_cash, nlv, cfg.fx_debit_close_threshold_pct,
-                              cfg.fx_settlement_buffer_pct)
-        if dc["act"]:
+        # ── 1. Debit auto-close for ANY non-base currency (self-sizing, one-directional) ──
+        # The wheel settles in USD but the options universe also holds CAD/GBP/HKD/AUD names; a
+        # foreign assignment draws that currency negative into a margin loan financed by idle EUR
+        # (the un-closed CAD loan). Close the LARGEST such debit this pass and return — act-once-
+        # per-pass (the next daily run takes the next currency), so `eur_cash`/`eur_working` never
+        # need re-reading mid-pass. Sizes EUR→ccy to bring the debit up to a small positive buffer;
+        # never converts ccy→EUR, so each currency float grows to exactly the book's footprint.
+        debits = []
+        for _ccy, _bal in cash.items():
+            if _ccy == base:
+                continue
+            _dc = plan_debit_close(_bal, nlv, cfg.fx_debit_close_threshold_pct,
+                                   cfg.fx_settlement_buffer_pct)
+            if _dc["act"]:
+                debits.append((_ccy, _bal, _dc))
+        if debits:
+            debits.sort(key=lambda x: x[1])          # most-negative balance (largest debit) first
+            ccy, ccy_cash, dc = debits[0]
             eur_working = nlv * cfg.fx_eur_working_pct   # liquid EUR buffer to preserve (the "as is" pool)
-            ok, detail, deferred = _convert_to_usd(ib, cfg, base, dc["need_usd"], eur_cash,
+            ok, detail, deferred = _convert_to_ccy(ib, cfg, base, ccy, dc["need_usd"], eur_cash,
                                                    eur_working, dry)
-            log.info("fx_treasury_debit_close", dry_run=dry, ok=ok, deferred=deferred,
-                     usd_cash=round(usd_cash), need_usd=round(dc["need_usd"]),
-                     nlv=round(nlv), detail=detail)
+            log.info("fx_treasury_debit_close", dry_run=dry, ccy=ccy, ok=ok, deferred=deferred,
+                     ccy_cash=round(ccy_cash), need_ccy=round(dc["need_usd"]),
+                     nlv=round(nlv), detail=detail,
+                     other_debits=[c for c, _, _ in debits[1:]])
             if deferred:
                 # Expected pre-open condition (EUR still parked in XEON) — retry next pass, no alarm.
-                log.info("fx_treasury_debit_close_deferred", detail=detail)
+                log.info("fx_treasury_debit_close_deferred", ccy=ccy, detail=detail)
             elif alerts:
-                title = "USD debit auto-close"
-                msg = (f"USD balance ${usd_cash:,.0f} (debit) → target +${nlv * cfg.fx_settlement_buffer_pct:,.0f}\n"
+                title = f"{ccy} debit auto-close"
+                msg = (f"{ccy} balance {ccy_cash:,.0f} (debit) → target +{nlv * cfg.fx_settlement_buffer_pct:,.0f}\n"
                        f"{detail}\n{'OK' if ok else 'FAILED — check manually'}")
                 (alerts.treasury_alert(title, msg, dry_run=dry) if ok
-                 else alerts.critical("FX treasury: USD debit close FAILED", msg))
+                 else alerts.critical(f"FX treasury: {ccy} debit close FAILED", msg))
             return   # act once per pass; park next run
 
         # ── 2. Park idle cash per currency (EUR→XEON, USD→XFFE) — only when the ETF markets are open ──
@@ -413,7 +427,7 @@ def manage_fx_treasury() -> None:
         # same wall as RACE/BVME. The park is worth only ~$55/yr over IBKR's own ~4.3% credit on idle USD,
         # so USD simply stays as cash. The EUR→XEON leg and the USD debit-close (IDEALPRO FX) are unaffected.
         if getattr(cfg, "fx_park_usd_enabled", True):
-            legs.append(("USD", usd_cash, cfg.fx_usd_working_pct, cfg.fx_park_usd_symbol,
+            legs.append(("USD", cash.get("USD", 0.0), cfg.fx_usd_working_pct, cfg.fx_park_usd_symbol,
                          cfg.fx_park_usd_exchange, cfg.fx_park_usd_currency,
                          getattr(cfg, "fx_park_usd_primary", "") or None))
         for ccy, liquid, working_pct, sym, exch, etf_ccy, primary in legs:

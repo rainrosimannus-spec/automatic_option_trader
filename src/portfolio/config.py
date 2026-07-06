@@ -178,6 +178,17 @@ class PortfolioConfig(BaseModel):
     fx_fill_wait_secs: float = 12.0         # poll this long for the FX conversion to fill before failing
     fx_funding_max_attempts: int = 6        # expire+alert an approved buy after this many failed FX tries
 
+    # Standing foreign-DEBIT auto-close (2026-07-06): the pre-buy funder above prevents most loans, but
+    # sub-IDEALPRO-min / unpriceable / no-permission legs still fall into a foreign margin loan nothing
+    # sweeps. This daily pass converts base→ccy to bring any non-base debit back to a small buffer
+    # (one-directional, never ccy→base) so we don't pay FX-loan interest on a CAD/GBP/etc. balance.
+    # Mirrors src.strategy.fx_treasury (options account). Double-gated: no-op unless enabled; places NO
+    # orders while dry_run (burn-in — logs+alerts exactly what it WOULD convert). Acts on largest debit/pass.
+    fx_treasury_enabled: bool = True             # compute + act (still respects dry_run)
+    fx_treasury_dry_run: bool = False            # ARMED (parity with the options acct); True = log/alert only, no orders
+    fx_debit_close_threshold_pct: float = 0.005  # act only when a ccy debit exceeds this % of NLV (skip dust)
+    fx_settlement_buffer_pct: float = 0.005      # after a close, leave the ccy at a small positive cushion
+
     # Tier allocation (must sum to 1.0)
     tier_allocation: TierAllocation = TierAllocation()
 

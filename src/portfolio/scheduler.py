@@ -183,6 +183,19 @@ def job_portfolio_scan(cfg: PortfolioConfig):
             log.error("portfolio_scan_job_error", error=str(e))
 
 
+def job_portfolio_fx_treasury(cfg: PortfolioConfig):
+    """Close any standing non-base foreign-currency debit (FX margin loan) on the portfolio account,
+    so we don't pay borrow interest on a CAD/GBP/etc. balance. No-op unless enabled; dry-run by default."""
+    if not cfg.enabled:
+        return
+    with get_portfolio_lock():
+        try:
+            ib = get_portfolio_ib()
+            PortfolioBuyer(ib, cfg).manage_fx_treasury()
+        except Exception as e:
+            log.error("portfolio_fx_treasury_job_error", error=str(e))
+
+
 def job_portfolio_update_prices(cfg: PortfolioConfig):
     """Update holdings with current market prices."""
 

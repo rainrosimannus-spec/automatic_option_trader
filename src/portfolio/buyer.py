@@ -717,9 +717,9 @@ class PortfolioBuyer:
         # blocked deployment below ~$4M. See compounder.single_buy_bounds.
         min_buy, max_buy = cmp.single_buy_bounds(nlv, cc)
 
-        held = self._get_holdings_map()           # symbol -> FILLED market value (excludes the bill-ETF)
+        held = self._get_holdings_map()           # symbol -> FILLED market value (excludes the park ETF)
         deployed = sum(held.values())
-        parked = self._get_parked_value()         # cash reserve parked in the bill ETF (sellable T+1)
+        parked = self._get_parked_value()         # cash reserve parked in the park ETF (XEON, sellable on demand)
         # Re-price every scan: cancel the prior scan's still-resting compounder BUY orders so each
         # green name is re-evaluated and re-placed at the CURRENT price. Prices move between the
         # 4-hourly scans — a stale DAY limit may no longer fill, or the name may have risen above
@@ -759,7 +759,7 @@ class PortfolioBuyer:
         buffer_amt = nlv * cc.cash_buffer_pct
         deployable_cash = max(0.0, base_cash - buffer_amt)
         already_borrowed = max(0.0, -base_cash)
-        # The cash reserve is PARKED in the bill ETF for yield; it's sellable on demand, so count it as
+        # The cash reserve is PARKED in the park ETF (XEON) for yield; it's sellable on demand, so count it as
         # deployable (the executor un-parks it just-in-time before placing). Without this the cash-first
         # gate would read the parked reserve as "no cash" and starve deployment.
         margin_ok = capitulation if cc.margin_capitulation_only else crash_active
@@ -965,7 +965,7 @@ class PortfolioBuyer:
                 spent += core_placed        # throttle base pace by the core rung only
                 cash_room -= total_placed    # dips draw extra cash/reserve, not the base budget
 
-        # Park any standing idle cash (the crash reserve + undeployed slack) into the bill ETF for yield;
+        # Park any standing idle cash (the crash reserve + undeployed slack) into the park ETF (XEON) for yield;
         # the executor un-parks it just-in-time when it's time to deploy. Cash backing this scan's intended
         # buys (`spent`) and still-working orders is left liquid so fills don't open a margin loan.
         self._park_compounder_excess(nlv, spent, daily_budget=budget)
@@ -1112,7 +1112,7 @@ class PortfolioBuyer:
 
     def _get_holdings_map(self) -> dict[str, float]:
         """Get symbol → market value map for all holdings, in the account BASE currency. Excludes the
-        cash-yield ETF (SGOV) — that's a parked cash RESERVE, not a deployed compounder position, so it
+        cash-yield ETF (XEON) — that's a parked cash RESERVE, not a deployed compounder position, so it
         must not count toward targets. Market value is stored in the holding's LOCAL currency (£ for an
         LSE name); targets are base-ccy, so FX-normalise here or a foreign holding is mis-measured
         against its target by the FX rate (see src.portfolio.fx)."""
@@ -1129,9 +1129,10 @@ class PortfolioBuyer:
             }
 
     def _get_parked_value(self) -> float:
-        """Market value of the cash reserve parked in the bill ETF (SGOV), in the account BASE currency
+        """Market value of the cash reserve parked in the park ETF (XEON), in the account BASE currency
         — sellable on demand, so it counts as deployable cash (the executor un-parks it just-in-time
-        before placing a buy). SGOV is USD-denominated; free_cash is base-ccy, so FX-normalise."""
+        before placing a buy). FX-normalise from the holding's stored currency to base (XEON is
+        EUR-denominated = base, so this is a no-op today, but stays correct if the park ETF changes)."""
         from src.portfolio import fx as pfx
         park = getattr(self.cfg, "cash_yield_symbol", None)
         if not park or not getattr(self.cfg, "cash_yield_enabled", False):
@@ -1142,8 +1143,103 @@ class PortfolioBuyer:
             ).first()
             return pfx.to_base(float(h.market_value or h.total_invested or 0.0), h.currency) if h else 0.0
 
+    def _per_currency_cash(self) -> dict:
+        """Map {CCY: cash balance} for the portfolio account (skips the BASE roll-up row). Mirrors
+        src.strategy.fx_treasury._per_currency_cash for the options account."""
+        out: dict[str, float] = {}
+        try:
+            with get_portfolio_lock():
+                vals = self.ib.accountValues()
+            for v in vals:
+                if v.tag == "CashBalance" and v.currency and v.currency != "BASE":
+                    try:
+                        out[v.currency.upper()] = float(v.value)
+                    except (ValueError, TypeError):
+                        continue
+        except Exception as e:
+            log.warning("portfolio_per_currency_cash_failed", error=str(e))
+        return out
+
+    def manage_fx_treasury(self) -> None:
+        """Close any standing NON-BASE currency debit (foreign margin loan) by converting base→ccy, so
+        a foreign buy/settlement never leaves us borrowing that currency at margin rates. One-directional
+        (never ccy→base) and self-sizing; acts on the LARGEST debit per pass (the next daily run takes the
+        next one). Double-gated: no-op unless fx_treasury_enabled; places NO orders while fx_treasury_dry_run
+        (burn-in). Reuses the pre-buy funder `_ensure_currency_funding` (target = a small positive buffer,
+        so with a negative `have` it converts |debit|+buffer). Mirrors src.strategy.fx_treasury."""
+        cfg = self.cfg
+        if not getattr(cfg, "fx_treasury_enabled", False) or getattr(cfg, "readonly", False):
+            return
+        dry = bool(getattr(cfg, "fx_treasury_dry_run", True))
+        base = (getattr(cfg, "base_currency", "EUR") or "EUR").upper()
+        try:
+            nlv = self._get_net_liquidation() or 0.0
+            if nlv <= 0:
+                return
+            cash = self._per_currency_cash()
+
+            from src.strategy.fx_treasury import plan_debit_close
+            thr = float(getattr(cfg, "fx_debit_close_threshold_pct", 0.005) or 0.0)
+            buf_pct = float(getattr(cfg, "fx_settlement_buffer_pct", 0.005) or 0.0)
+
+            debits = []
+            for ccy, bal in cash.items():
+                if ccy == base:
+                    continue
+                dc = plan_debit_close(bal, nlv, thr, buf_pct)
+                if dc["act"]:
+                    debits.append((ccy, bal, dc))
+            if not debits:
+                return
+            debits.sort(key=lambda x: x[1])           # most-negative balance (largest debit) first
+            ccy, ccy_cash, _dc = debits[0]
+
+            # Target a small POSITIVE ccy cushion after the close (rate-free: a fraction of the debit),
+            # so _ensure_currency_funding converts |debit| + cushion and lands slightly positive.
+            target_ccy = abs(ccy_cash) * buf_pct
+            # EUR to free from the XEON park before the SELL-EUR leg (est. from cached FX; 0 if unknown).
+            import src.portfolio.fx as pfx
+            base_per_ccy = pfx.to_base(1.0, ccy)
+            need_base = (abs(ccy_cash) + target_ccy) * base_per_ccy if base_per_ccy > 0 else 0.0
+
+            alerts = None
+            try:
+                from src.core.alerts import get_alert_manager
+                alerts = get_alert_manager()
+            except Exception:
+                pass
+
+            log.info("portfolio_fx_treasury_debit", dry_run=dry, ccy=ccy,
+                     ccy_cash=round(ccy_cash), target_ccy=round(target_ccy),
+                     est_eur=round(need_base), nlv=round(nlv),
+                     other_debits=[c for c, _, _ in debits[1:]])
+
+            if dry:
+                if alerts:
+                    alerts.treasury_alert(
+                        f"{ccy} debit auto-close (dry-run)",
+                        f"{ccy} balance {ccy_cash:,.0f} (debit) → would convert ≈€{need_base:,.0f} "
+                        f"EUR→{ccy} to clear it (+ small buffer). No order placed (burn-in).",
+                        dry_run=True,
+                    )
+                return
+
+            # ARMED: free EUR from the XEON park first (best-effort), then convert base→ccy (fail-closed).
+            if need_base > 0:
+                _unpark_yield(self.ib, cfg, need_base, settle_ccy=base)
+            ok = _ensure_currency_funding(self.ib, ccy, base, target_ccy, cfg=cfg)
+            log.info("portfolio_fx_treasury_debit_close", ccy=ccy, ok=ok,
+                     ccy_cash=round(ccy_cash), nlv=round(nlv))
+            if alerts:
+                msg = (f"{ccy} balance {ccy_cash:,.0f} (debit) → convert EUR→{ccy} to clear "
+                       f"(target +{target_ccy:,.0f}).\n{'OK' if ok else 'FAILED — check manually'}")
+                (alerts.treasury_alert(f"{ccy} debit auto-close", msg, dry_run=False) if ok
+                 else alerts.critical(f"Portfolio FX: {ccy} debit close FAILED", msg))
+        except Exception as e:
+            log.error("portfolio_fx_treasury_error", error=str(e))
+
     def _park_compounder_excess(self, nlv: float, spent_this_scan: float, daily_budget: float = 0.0) -> None:
-        """Park standing idle cash (the crash reserve + undeployed slack) into the bill ETF for yield.
+        """Park standing idle cash (the crash reserve + undeployed slack) into the park ETF (XEON) for yield.
         Parks only cash that is genuinely idle: settled cash above the operational buffer, minus cash
         committed to still-working BUY orders and minus this scan's intended deployment (`spent`), so a
         resting/approved buy never has its funding parked out from under it (which would open a loan).
@@ -2183,12 +2279,12 @@ class PortfolioBuyer:
             with get_portfolio_lock():
                 self.ib.qualifyContracts(contract)
 
-            # Un-park the bill-ETF reserve, then fund the FX leg, then GATE on the authoritative funding
-            # path for this currency: the FX conversion for a foreign buy, or the SGOV unpark for a
+            # Un-park the park-ETF (XEON) reserve, then fund the FX leg, then GATE on the authoritative
+            # funding path for this currency: the FX conversion for a foreign buy, or the XEON unpark for a
             # same-currency buy. If that path could not be funded, SKIP this name rather than silently
             # open a margin loan (fail-closed). The 4-hourly scan re-creates the buy when cash is ready.
             # Funding is settled in the instrument's LOCAL currency (the FX leg converts base→local to
-            # buy the foreign stock; the SGOV unpark frees USD), so size the funding ask in LOCAL.
+            # buy the foreign stock; the XEON unpark frees the park ETF's EUR), so size the ask in LOCAL.
             total_notional = sum(price * shares for price, shares in rungs)
             base_ccy = getattr(self.cfg, "base_currency", "EUR") or "EUR"
             unpark_ok = _unpark_yield(self.ib, self.cfg, total_notional, settle_ccy=ccy)
@@ -2947,9 +3043,9 @@ def _ensure_currency_funding(ib, stock_ccy: str, base_ccy: str, notional_ccy: fl
 
 
 def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool:
-    """Sell enough of the cash-yield ETF (SGOV) to raise ~`needed` of cash BEFORE a stock buy, so the
-    buy is funded from the parked reserve instead of opening a margin loan. SGOV is a 0–3mo T-bill ETF
-    (penny spreads, ~flat NAV) so a market sell is effectively a cash withdrawal.
+    """Sell enough of the cash-yield ETF (XEON) to raise ~`needed` of cash BEFORE a stock buy, so the
+    buy is funded from the parked reserve instead of opening a margin loan. XEON is a EUR overnight-rate
+    (€STR) money-market ETF (tight spreads, ~flat accruing NAV) so a sell is effectively a cash withdrawal.
 
     Returns True if the buy MAY proceed (disabled/readonly, nothing parked, ETF-currency cash already
     covers the need, or the sell filled). Returns False ONLY when this unpark is the AUTHORITATIVE
@@ -3127,7 +3223,7 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         # Fund the foreign-currency leg up front (settlement amount: GBP order_price is in pence → ÷100
         # for pounds) so the buy doesn't silently open a margin loan in the foreign ccy.
         notional_settle = shares * (order_price / 100.0 if (ccy or "").upper() == "GBP" else order_price)
-        # Un-park the bill-ETF reserve, then convert the FX leg, then GATE on the authoritative funding
+        # Un-park the park-ETF (XEON) reserve, then convert the FX leg, then GATE on the authoritative funding
         # path for this currency. If it could not be funded, leave the suggestion 'approved' (retry next
         # cycle) rather than place an order that silently opens a margin loan (fail-closed).
         pcfg = get_settings().portfolio
