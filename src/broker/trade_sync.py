@@ -207,6 +207,12 @@ def sync_ibkr_trades() -> int:
 
             if existing_trade:
                 existing_trade.order_status = OrderStatus.FILLED
+                # This execution is ONE fill. Overwrite the placeholder quantity (the full submitted
+                # order size) with THIS execution's share count — otherwise a multi-partial-fill order
+                # keeps the first row at the full size while each later partial inserts its own row
+                # (ELSE branch, same per-exec size), double-counting the order. Each exec_id is unique,
+                # so subsequent partials no longer match this now-FILLED row and insert correctly.
+                existing_trade.quantity = abs(int(execution.shares))
                 existing_trade.fill_price = fill_price
                 existing_trade.premium = premium
                 existing_trade.commission = commission
