@@ -367,86 +367,108 @@ class WheelManager:
                 if lots_to_cover <= 0:
                     continue  # has CC coverage — wheel handles this
 
-                # Recover the called-away level. With multiple assignments of the
-                # same name blended into one lot (e.g. 215 + 105 → 160), a single
-                # trade's strike is wrong — using the latest (105) would dump the
-                # whole 200-share lot at a loss. Share-weight the most-recent
-                # assignment trades up to the currently-held lot count.
-                assignment_trades = db.query(Trade).filter(
-                    Trade.symbol == symbol,
-                    Trade.trade_type == TradeType.ASSIGNMENT,
-                ).order_by(Trade.created_at.desc()).all()
-
-                acc_lots = 0
-                strike_num = 0.0
-                for t in assignment_trades:
-                    if not t.strike or not t.quantity:
-                        continue
-                    take = min(t.quantity, lots_needed - acc_lots)
-                    if take <= 0:
-                        break
-                    strike_num += t.strike * take
-                    acc_lots += take
-                    if acc_lots >= lots_needed:
-                        break
-
-                if acc_lots <= 0:
-                    log.warning("wheel_exit_no_assignment_strike",
-                                symbol=symbol,
-                                note="cannot compute threshold without strike")
-                    continue
-
-                strike = round(strike_num / acc_lots, 2)  # share-weighted called-away level
-                threshold = strike + sell_fee
-
-                # Fetch live quote with bid/ask/last
-                quote = get_stock_live_quote(symbol)
-                if quote is None:
-                    log.info("wheel_exit_no_quote", symbol=symbol)
-                    continue
-
-                bid, ask, last = quote
-                mid = (bid + ask) / 2
-                spread_pct = (ask - bid) / mid if mid > 0 else 1.0
-
-                if spread_pct >= 0.02:
-                    log.info("wheel_exit_spread_too_wide",
-                             symbol=symbol, bid=bid, ask=ask,
-                             spread_pct=round(spread_pct, 4))
-                    continue
-
-                if mid < threshold:
-                    log.info("wheel_exit_below_threshold",
-                             symbol=symbol, mid=round(mid, 2),
-                             threshold=round(threshold, 2),
-                             strike=strike)
-                    continue
-
-                # Conditions met — create suggestion
-                create_suggestion(
-                    symbol=symbol,
-                    action="sell_stock",
-                    quantity=total_shares,
-                    limit_price=bid,  # conservative — guarantees fill at bid or better
-                    source="wheel_exit",
-                    signal=f"mid={round(mid, 2)} strike={strike} fee={sell_fee}",
-                    rationale=(
-                        f"Pre-market exit opportunity: mid ${round(mid, 2)} "
-                        f">= strike ${strike} + fee ${sell_fee}. "
-                        f"Sell {total_shares} shares of {symbol} to exit wheel "
-                        f"at or above called-away level."
-                    ),
-                    current_price=mid,
-                    order_type="LMT",
-                    funding_source="wheel",
-                )
-                log.info("wheel_exit_suggestion_fired",
-                         symbol=symbol, mid=round(mid, 2),
-                         strike=strike, shares=total_shares)
-                fired.append(symbol)
+                # Live-price exit decision (shared with the covered-call writer): sell the
+                # shares directly when the live mid is at/above the share-weighted called-away
+                # (assignment) level + fee. One source of truth so the CC writer and this
+                # pre-market job can never disagree.
+                if self._live_exit_opportunity(db, symbol, total_shares, lots_needed):
+                    fired.append(symbol)
 
         log.info("wheel_exit_scan_completed", symbols=fired)
         return fired
+
+    def _live_exit_opportunity(self, db, symbol: str, total_shares: int, lots_needed: int) -> bool:
+        """True when a LIVE quote shows the stock is already at/above its share-weighted
+        called-away (assignment) level + sell fee — i.e. selling the shares directly beats
+        writing a covered call. Creates a `sell_stock` suggestion (once) and returns True so
+        the caller sells directly instead of writing a CC.
+
+        Shared by `check_pre_market_exit` and `write_covered_calls` so both use ONE threshold
+        and quote rule (no divergence). The threshold uses the original ASSIGNMENT strike —
+        the price the shares were put to us at — NOT the stored cost_basis (strike − premium);
+        accumulated CC premium is bonus, not part of the exit bar. Requires a two-sided quote
+        with (ask − bid)/mid < 2% to reject phantom pre-market oddlot prints. This uses a fresh
+        live price, unlike the CC screener which reads the stale daily-close.
+        """
+        from src.core.config import get_settings as _gs
+        from src.core.suggestions import create_suggestion, TradeSuggestion
+        from src.broker.market_data import get_stock_live_quote
+        from src.core.models import Trade, TradeType
+
+        # Dedup: an exit sale already queued for this name → sell directly (skip CC), don't duplicate.
+        already = db.query(TradeSuggestion).filter(
+            TradeSuggestion.symbol == symbol,
+            TradeSuggestion.action == "sell_stock",
+            TradeSuggestion.source == "wheel_exit",
+            TradeSuggestion.status == "submitted",
+        ).count()
+        if already:
+            return True
+
+        # Share-weighted called-away level across the most-recent assignments up to the held lot
+        # count. With blended lots (e.g. 215 + 105 → 160) a single trade's strike is wrong — using
+        # the latest would dump the whole lot at a loss.
+        assignment_trades = db.query(Trade).filter(
+            Trade.symbol == symbol,
+            Trade.trade_type == TradeType.ASSIGNMENT,
+        ).order_by(Trade.created_at.desc()).all()
+        acc_lots = 0
+        strike_num = 0.0
+        for t in assignment_trades:
+            if not t.strike or not t.quantity:
+                continue
+            take = min(t.quantity, lots_needed - acc_lots)
+            if take <= 0:
+                break
+            strike_num += t.strike * take
+            acc_lots += take
+            if acc_lots >= lots_needed:
+                break
+        if acc_lots <= 0:
+            log.warning("wheel_exit_no_assignment_strike", symbol=symbol,
+                        note="cannot compute threshold without strike")
+            return False
+
+        strike = round(strike_num / acc_lots, 2)          # share-weighted called-away level
+        sell_fee = _gs().risk.wheel_sell_fee_per_share
+        threshold = strike + sell_fee
+
+        quote = get_stock_live_quote(symbol)
+        if quote is None:
+            log.info("wheel_exit_no_quote", symbol=symbol)
+            return False
+        bid, ask, last = quote
+        mid = (bid + ask) / 2
+        spread_pct = (ask - bid) / mid if mid > 0 else 1.0
+        if spread_pct >= 0.02:
+            log.info("wheel_exit_spread_too_wide", symbol=symbol, bid=bid, ask=ask,
+                     spread_pct=round(spread_pct, 4))
+            return False
+        if mid < threshold:
+            log.info("wheel_exit_below_threshold", symbol=symbol, mid=round(mid, 2),
+                     threshold=round(threshold, 2), strike=strike)
+            return False
+
+        # Conditions met — sell the stock directly instead of writing a covered call.
+        create_suggestion(
+            symbol=symbol,
+            action="sell_stock",
+            quantity=total_shares,
+            limit_price=bid,  # conservative — guarantees fill at bid or better
+            source="wheel_exit",
+            signal=f"mid={round(mid, 2)} strike={strike} fee={sell_fee}",
+            rationale=(
+                f"Exit opportunity: live mid ${round(mid, 2)} >= assignment ${strike} + fee "
+                f"${sell_fee}. Sell {total_shares} shares of {symbol} directly at/above the "
+                f"called-away level instead of writing a covered call."
+            ),
+            current_price=mid,
+            order_type="LMT",
+            funding_source="wheel",
+        )
+        log.info("wheel_exit_suggestion_fired", symbol=symbol, mid=round(mid, 2),
+                 strike=strike, shares=total_shares)
+        return True
 
     def write_covered_calls(self) -> list[str]:
         """
@@ -467,6 +489,9 @@ class WheelManager:
         except Exception as e:
             log.warning("cc_crash_detector_error", error=str(e))
             crash_active = False
+
+        from src.core.config import get_settings as _gs
+        risk_cfg = _gs().risk
 
         with get_db() as db:
             stock_positions = (
@@ -546,6 +571,17 @@ class WheelManager:
                          symbol=symbol, lots_needed=lots_needed,
                          covered=covered_contracts, pending=pending_contracts,
                          to_cover=lots_to_cover)
+
+                # Pre-CC live-price exit: if a FRESH live quote shows the stock is already at/above
+                # its assignment (called-away) level + fee, sell the shares directly instead of
+                # writing a deep-ITM call. This overrides the stale daily-close the CC screener reads
+                # — the exact gap that let a deep-ITM CC be written on ANET while it traded above its
+                # $165 assignment. Gated so it can be toggled without a code change.
+                if risk_cfg.cc_sell_above_assignment_enabled and \
+                        self._live_exit_opportunity(db, symbol, total_shares, lots_needed):
+                    log.info("covered_call_skipped_live_exit", symbol=symbol,
+                             note="stock at/above assignment level — sold directly instead of writing CC")
+                    continue
 
                 try:
                     result = self._write_call(db, stock_pos, contracts=lots_to_cover, crash_active=crash_active)
