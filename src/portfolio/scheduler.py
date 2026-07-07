@@ -833,6 +833,11 @@ def _review_existing_holdings(
     # Analyze each holding
     for holding in holdings:
         symbol = holding.symbol
+        # The cash-yield PARK ETF (XEON) is a parked cash reserve, not a compounder position — never
+        # review it as an over-concentrated / dropped holding (it's legitimately ~all of the book when
+        # deployment is mid-DCA). Its share falls naturally as cash redeploys into real names.
+        if getattr(cfg, "cash_yield_symbol", None) and symbol == cfg.cash_yield_symbol:
+            continue
         shares = holding.shares
         avg_cost = holding.avg_cost
         market_value = holding.market_value or (shares * (holding.current_price or avg_cost))
@@ -1102,6 +1107,11 @@ def _review_existing_holdings_monthly(
 
     for holding in holdings:
         symbol = holding.symbol
+        # The cash-yield PARK ETF (XEON) is a parked cash reserve, not a compounder position — never
+        # review it as an over-concentrated / dropped holding (it's legitimately ~all of the book when
+        # deployment is mid-DCA). Its share falls naturally as cash redeploys into real names.
+        if getattr(cfg, "cash_yield_symbol", None) and symbol == cfg.cash_yield_symbol:
+            continue
         shares = holding.shares
         avg_cost = holding.avg_cost
         market_value = holding.market_value or (

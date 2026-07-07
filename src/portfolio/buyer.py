@@ -2513,6 +2513,15 @@ class PortfolioBuyer:
     def _get_watchlist(self) -> list[PortfolioWatchlist]:
         with get_db() as db:
             all_stocks = db.query(PortfolioWatchlist).all()
+            # CRITICAL: never let the cash-yield PARK ETF (XEON) into the ranked/buyable universe. It
+            # can land in portfolio_watchlist because the holdings-sync auto-adds every held position
+            # (the parked reserve IS a holding) as an 'existing_holding' growth name. If ranked, its
+            # smooth money-market uptrend reads as a permanently-"green" underweight target (its park
+            # holdings are excluded from _get_holdings_map), so the deploy loop buys it as a STOCK and
+            # monopolises the daily budget — starving the real names. Park logic uses cfg.cash_yield_symbol
+            # directly and does NOT need a watchlist row, so filtering here is always safe.
+            park = getattr(self.cfg, "cash_yield_symbol", None)
+            all_stocks = [s for s in all_stocks if s.symbol != park]
             # Sort: non-SMART exchanges first (European/Asian available now),
             # then SMART (US) — so we get prices for available markets quickly
             non_us = [s for s in all_stocks if s.exchange != "SMART"]

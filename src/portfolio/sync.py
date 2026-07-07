@@ -124,10 +124,15 @@ def sync_ibkr_holdings(ib: IB) -> int:
             h.unrealized_pnl_pct = 0
 
         # Auto-add holdings to watchlist if not already there
+        from src.core.config import get_settings
+        park_sym = getattr(get_settings().portfolio, "cash_yield_symbol", None)
         wl_added = 0
         for h in db.query(PortfolioHolding).all():
             if h.shares <= 0:
                 continue
+            if park_sym and h.symbol == park_sym:
+                continue  # the cash-yield PARK ETF (XEON) is a parked cash reserve, NOT a compounder
+                          # name — never enrol it as a rankable/buyable watchlist target
             if not db.query(PortfolioWatchlist).filter(PortfolioWatchlist.symbol == h.symbol).first():
                 db.add(PortfolioWatchlist(
                     symbol=h.symbol, name=h.name, exchange=h.exchange,
