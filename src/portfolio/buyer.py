@@ -835,7 +835,11 @@ class PortfolioBuyer:
                         PortfolioTransaction.currency,
                         _func.coalesce(_func.sum(PortfolioTransaction.amount), 0.0),
                     ).filter(PortfolioTransaction.action == "buy",
-                             PortfolioTransaction.created_at >= _wstart
+                             PortfolioTransaction.created_at >= _wstart,
+                             # Exclude park-ETF (XEON) fills like the daily _fills_today query — else
+                             # recent multi-million parking buys poison deployed_window and suppress the
+                             # accrual top-up that funds a single min-size order.
+                             PortfolioTransaction.symbol != (self.cfg.cash_yield_symbol or "__none__"),
                              ).group_by(PortfolioTransaction.currency).all()
                     _fills_window = _pfx.sum_base(_window_rows, _fx_rates)   # FX-normalise (local→base)
                 deployed_window = _fills_window + sum(open_buy.values())
@@ -1399,10 +1403,17 @@ class PortfolioBuyer:
         from src.portfolio.connection import get_cached_portfolio_pending_orders
         from src.portfolio import fx as pfx
         rates = pfx.load_fx_rates()
+        park = getattr(self.cfg, "cash_yield_symbol", None)
         out: dict[str, float] = {}
         for o in get_cached_portfolio_pending_orders() or []:
             try:
                 if o.get("sec_type") != "STK" or o.get("action") != "BUY":
+                    continue
+                # A resting BUY of the cash-yield PARK ETF (XEON) is idle-cash parking, NOT compounder
+                # deployment — mirror the fills-side exclusion (see the _fills_today query). Counting it
+                # would inflate deployed_today / deployed_eff and zero the stock-buy budget: a single
+                # ~€1.9M resting park order (or the leftover XEON target-bug order) starves real names.
+                if park and o.get("symbol") == park:
                     continue
                 rem = float(o.get("remaining") or 0)
                 px = float(o.get("limit_price") or 0)
@@ -1432,6 +1443,7 @@ class PortfolioBuyer:
         from src.core.suggestions import TradeSuggestion
         from src.portfolio import fx as pfx
         rates = pfx.load_fx_rates()
+        park = getattr(self.cfg, "cash_yield_symbol", None)
         out: dict[str, float] = {}
         try:
             with get_db() as db:
@@ -1443,6 +1455,9 @@ class PortfolioBuyer:
                     TradeSuggestion.source == "portfolio",
                     TradeSuggestion.action == "buy_stock",
                     TradeSuggestion.status.in_(("pending", "approved", "queued", "executing")),
+                    # Parking the cash-yield ETF (XEON) is not compounder deployment — exclude it from the
+                    # budget gate exactly like resting park orders and filled park buys (line ~789).
+                    TradeSuggestion.symbol != (park or "__none__"),
                 ).all()
                 for s in rows:
                     notional = float(s.est_cost or 0.0)
