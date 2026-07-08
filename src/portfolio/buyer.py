@@ -3230,20 +3230,37 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         except Exception as e:
             log.debug("portfolio_exec_dedup_check_failed", error=str(e))
 
-        # Route via SMART (with the listing exchange as a hint) for SMART-eligible markets. A raw
-        # direct-route to e.g. NASDAQ is rejected by IBKR's Precautionary Settings (error 10311 —
-        # "directly routed orders may result in higher fees"), which silently cancels the order.
-        # Only the genuinely non-SMART venues keep their native exchange.
-        # Route EVERY order via SMART with the listing exchange as a hint. IBKR's Precautionary
-        # Settings reject direct-routed orders (error 10311 — GOOG/NASDAQ, XRO/ASX), so SMART is the
-        # only path that fills, and SMART supports the venues in this universe (ASX, SEHK, LSE, AEB,
-        # BVME, ...). Don't special-case "non-SMART" exchanges to direct routing — that was the XRO bug.
+        # Qualify on the NATIVE listing exchange FIRST, then route via SMART. Building the contract
+        # directly on SMART (the previous behaviour) makes qualifyContracts fail with Error 200 "No
+        # security definition has been found" for any symbol SMART can't resolve by ticker — numeric
+        # HK/Japan tickers (3690, 2318 on SEHK; 4385 on TSEJ), NSE names, etc. — so the order silently
+        # never places (the compounder has never bought a single SEHK/TSEJ name). The analyzer/price
+        # path already qualifies this way successfully (analyzer.py:123), which is why those names get
+        # ranked but never filled. Native qualification resolves the conId for every venue; routing the
+        # resolved (conId-bearing) contract via SMART then still avoids the 10311 direct-route rejection
+        # (the XRO/ASX case) because SMART routing keys off the conId. US names (exch == SMART) qualify
+        # on SMART as before. This ALSO disambiguates dual-listed European names (ASML on AEB vs NASDAQ,
+        # AZN on LSE vs its US ADR): SMART-qualifying by ticker could resolve the wrong listing and leave
+        # the order stuck in PendingSubmit; native qualification pins the correct venue's conId.
         if exch and exch != "SMART":
-            contract = Stock(symbol, "SMART", ccy, primaryExchange=exch)
+            contract = Stock(symbol, exch, ccy)
+            with get_portfolio_lock():
+                qualified = ib.qualifyContracts(contract)
+            if not qualified:
+                log.warning("portfolio_order_qualify_failed", id=suggestion_id, symbol=symbol,
+                            exchange=exch, currency=ccy)
+                with get_db() as db:
+                    s = db.query(TradeSuggestion).filter(
+                        TradeSuggestion.id == suggestion_id).first()
+                    if s:
+                        s.status = "approved"   # transient — leave for the next cycle to retry
+                        s.review_note = f"Contract not resolved on {exch} yet — will retry"
+                return "approved"
+            contract.exchange = "SMART"   # route via SMART using the resolved conId (avoids 10311)
         else:
             contract = Stock(symbol, "SMART", ccy)
-        with get_portfolio_lock():
-            ib.qualifyContracts(contract)
+            with get_portfolio_lock():
+                ib.qualifyContracts(contract)
 
         # LSE/GBP stocks quote in PENCE (GBX). The analyzer normalises IBKR's pence quotes to pounds
         # (÷100, analyzer.py), so the suggestion's limit_price is in pounds — but an LSE order must be
