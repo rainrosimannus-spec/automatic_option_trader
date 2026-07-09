@@ -3096,10 +3096,16 @@ def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool
         # shortfall, so routine buys draw the un-parked cash runway (left for exactly this) instead of
         # churning the reserve on every buy. Same-ccy buy → the ETF/settlement currency; a foreign buy's
         # FX leg draws BASE-ccy cash, so check that. (Was gated on fatal_on_fail, so foreign USD buys
-        # always sold XEON even with ample EUR cash — needless spread churn.) Cash is compared to `needed`
-        # without an FX-rate haircut, which only errs toward keeping slightly more cash un-sold.
-        shortfall = needed
+        # always sold XEON even with ample EUR cash — needless spread churn.)
         _cash_ccy = park_ccy if fatal_on_fail else (getattr(cfg, "base_currency", park_ccy) or park_ccy).upper()
+        # `needed` arrives in the stock's SETTLEMENT (local) currency (£ for AZN, ¥ for 4385, HK$ for
+        # SEHK …), but `have` below and the XEON price used to size the sale are in the park/base currency
+        # (EUR). Convert to base FIRST — otherwise a high-value ccy is sized as if it were EUR and the
+        # ENTIRE park gets dumped: the 4385 case sent ¥11.8M through int(needed/€149) → 71,098 shares
+        # (the whole park), which never fills, so no EUR is freed and the downstream FX leg goes Inactive.
+        # to_base passes an unknown/missing rate through unscaled (same-ccy EUR buys are a no-op).
+        from src.portfolio import fx as _pfx
+        needed_base = _pfx.to_base(needed, settle_ccy, _pfx.load_fx_rates()) if settle_ccy else needed
         have = 0.0
         try:
             with get_portfolio_lock():
@@ -3110,9 +3116,9 @@ def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool
                     break
         except Exception:
             have = 0.0
-        if have >= needed:
+        if have >= needed_base:
             return True                   # liquid cash already covers it — don't sell the ETF
-        shortfall = max(0.0, needed - have)
+        shortfall = max(0.0, needed_base - have)
         with get_portfolio_lock():
             positions = ib.positions()
         pos = next((p for p in positions
