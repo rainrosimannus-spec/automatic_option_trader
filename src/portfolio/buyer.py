@@ -3230,23 +3230,22 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         except Exception as e:
             log.debug("portfolio_exec_dedup_check_failed", error=str(e))
 
-        # Qualify on the NATIVE listing exchange FIRST, then route via SMART. Building the contract
-        # directly on SMART (the previous behaviour) makes qualifyContracts fail with Error 200 "No
-        # security definition has been found" for any symbol SMART can't resolve by ticker — numeric
-        # HK/Japan tickers (3690, 2318 on SEHK; 4385 on TSEJ), NSE names, etc. — so the order silently
-        # never places (the compounder has never bought a single SEHK/TSEJ name). The analyzer/price
-        # path already qualifies this way successfully (analyzer.py:123), which is why those names get
-        # ranked but never filled. Native qualification resolves the conId for every venue; routing the
-        # resolved (conId-bearing) contract via SMART then still avoids the 10311 direct-route rejection
-        # (the XRO/ASX case) because SMART routing keys off the conId. US names (exch == SMART) qualify
-        # on SMART as before. This ALSO disambiguates dual-listed European names (ASML on AEB vs NASDAQ,
-        # AZN on LSE vs its US ADR): SMART-qualifying by ticker could resolve the wrong listing and leave
-        # the order stuck in PendingSubmit; native qualification pins the correct venue's conId.
+        # Qualify on the NATIVE listing exchange, then route where IBKR SAYS this contract can route
+        # (its validExchanges) — don't hardcode a rule. Two independent failure modes forced this:
+        #   1. Qualifying directly on SMART returns Error 200 "No security definition" for symbols SMART
+        #      can't resolve by ticker (numeric HK/Japan tickers 3690/2318/4385, NSE, ...) — order never
+        #      places. Native qualification resolves the conId AND pins the correct listing for dual-listed
+        #      names (ASML on AEB vs NASDAQ, AZN on LSE vs its US ADR).
+        #   2. Routing is venue-specific and CONTRADICTORY: SMART fills LSE/AEB but HANGS on TSEJ (Tokyo)
+        #      and Error-200s on TASE (Tel Aviv) at placement; native/direct fills those but is rejected on
+        #      ASX with Error 10311. No blanket "always SMART" / "always native" rule works (each breaks the
+        #      other set). So ask IBKR: route SMART iff it lists SMART in validExchanges for THIS contract,
+        #      else route on the native exchange. reqContractDetails returns both the qualified contract
+        #      (conId) and validExchanges in one call. US names (exch == SMART) are unchanged.
         if exch and exch != "SMART":
-            contract = Stock(symbol, exch, ccy)
             with get_portfolio_lock():
-                qualified = ib.qualifyContracts(contract)
-            if not qualified:
+                details = ib.reqContractDetails(Stock(symbol, exch, ccy))
+            if not details:
                 log.warning("portfolio_order_qualify_failed", id=suggestion_id, symbol=symbol,
                             exchange=exch, currency=ccy)
                 with get_db() as db:
@@ -3256,7 +3255,12 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                         s.status = "approved"   # transient — leave for the next cycle to retry
                         s.review_note = f"Contract not resolved on {exch} yet — will retry"
                 return "approved"
-            contract.exchange = "SMART"   # route via SMART using the resolved conId (avoids 10311)
+            contract = details[0].contract                          # qualified: conId + correct listing
+            valid = [e.strip() for e in (details[0].validExchanges or "").split(",") if e.strip()]
+            contract.exchange = "SMART" if "SMART" in valid else exch
+            log.info("portfolio_order_routing", id=suggestion_id, symbol=symbol,
+                     route=contract.exchange, native=exch, smart_valid=("SMART" in valid),
+                     valid_exchanges=details[0].validExchanges)
         else:
             contract = Stock(symbol, "SMART", ccy)
             with get_portfolio_lock():
