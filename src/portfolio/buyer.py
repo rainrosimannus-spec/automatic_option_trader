@@ -3402,12 +3402,21 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         #      and Error-200s on TASE (Tel Aviv) at placement; native/direct fills those but is rejected on
         #      ASX with Error 10311. No blanket "always SMART" / "always native" rule works (each breaks the
         #      other set). So ask IBKR: route SMART iff it lists SMART in validExchanges for THIS contract,
-        #      else route on the native exchange. reqContractDetails returns both the qualified contract
-        #      (conId) and validExchanges in one call. US names (exch == SMART) are unchanged.
+        #      else route on the native exchange. US names (exch == SMART) are unchanged.
+        #
+        # The ORDER CONTRACT comes from qualifyContracts — the only construction IBKR has ever accepted
+        # here. Placing the `ContractDetails.contract` object instead (2026-07-09 .. 07-10) got every
+        # foreign order silently dropped: IBKR resolved the conId, then never acknowledged the order —
+        # permId stayed 0, status stuck PendingSubmit, whyHeld empty, and cancelling it returned Error
+        # 10147 "OrderId not found". Zero foreign fills for that whole window (AZN, ASML, NICE, 4385),
+        # while US orders on qualifyContracts filled normally on the same connection. reqContractDetails
+        # is now used ONLY to read validExchanges for the routing decision.
         if exch and exch != "SMART":
+            contract = Stock(symbol, exch, ccy)                     # NATIVE listing — resolves conId
             with get_portfolio_lock():
+                qualified = ib.qualifyContracts(contract)
                 details = ib.reqContractDetails(Stock(symbol, exch, ccy))
-            if not details:
+            if not qualified or not details:
                 log.warning("portfolio_order_qualify_failed", id=suggestion_id, symbol=symbol,
                             exchange=exch, currency=ccy)
                 with get_db() as db:
@@ -3417,7 +3426,6 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                         s.status = "approved"   # transient — leave for the next cycle to retry
                         s.review_note = f"Contract not resolved on {exch} yet — will retry"
                 return "approved"
-            contract = details[0].contract                          # qualified: conId + correct listing
             valid = [e.strip() for e in (details[0].validExchanges or "").split(",") if e.strip()]
             contract.exchange = "SMART" if "SMART" in valid else exch
             log.info("portfolio_order_routing", id=suggestion_id, symbol=symbol,
