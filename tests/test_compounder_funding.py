@@ -68,17 +68,35 @@ class _Pos:
         self.position = position
 
 
+class _DelayedTrade:
+    """Order that stays 'Submitted' for `polls` event-loop turns, then fills — the real behaviour of
+    a market sell whose fill callback lands a beat after placeOrder returns."""
+    def __init__(self, qty, polls):
+        self._qty, self._left = qty, polls
+        self.orderStatus = _OrderStatus("Submitted", 0.0)
+        self.order = SimpleNamespace()
+
+    def tick(self):
+        self._left -= 1
+        if self._left <= 0:
+            self.orderStatus.status = "Filled"
+            self.orderStatus.filled = self._qty
+
+
 class FakeIB:
     """Configurable IB stub. fill_status drives the placed order's resulting status."""
     def __init__(self, cash=None, sgov_shares=0, sgov_price=100.0, fill_status="Filled",
-                 fx_rate=1.0):
+                 fx_rate=1.0, fill_after_polls=0):
         self._cash = cash or []                       # list of (tag, ccy, value)
         self._sgov_shares = sgov_shares
         self._sgov_price = sgov_price
         self._fill_status = fill_status
         self._fx_rate = fx_rate                       # ccy-per-base for the FX-rate snapshot
+        self._fill_after_polls = fill_after_polls     # >0 → order fills only after N ib.sleep() turns
+        self._live = []                               # delayed trades awaiting their fill
         self.orders_placed = 0
         self.orders_cancelled = 0
+        self.polls = 0
 
     def accountValues(self):
         return [_Val(t, c, v) for (t, c, v) in self._cash]
@@ -111,10 +129,17 @@ class FakeIB:
 
     def placeOrder(self, contract, order):
         self.orders_placed += 1
+        if self._fill_after_polls:
+            t = _DelayedTrade(order.totalQuantity, self._fill_after_polls)
+            self._live.append(t)
+            return t
         filled = order.totalQuantity if self._fill_status == "Filled" else 0.0
         return _Trade(self._fill_status, filled)
 
     def sleep(self, *a, **k):
+        self.polls += 1
+        for t in self._live:
+            t.tick()
         return None
 
 
@@ -251,6 +276,35 @@ def test_unpark_unfilled_sell_is_cancelled(park_open):
     assert ib.orders_cancelled == 1
 
 
+def test_unpark_waits_for_a_late_fill_instead_of_cancelling(park_open):
+    """Regression 2026-07-10: the sell was judged after ~2s and cancelled while still 'Submitted'.
+    Live, the market sell was seconds from trading — so the un-park raised nothing on three
+    consecutive scans and the EUR runway never refilled. Poll; don't cancel a fill in flight."""
+    ib = FakeIB(cash=[("CashBalance", "USD", 0)], sgov_shares=1000,
+                sgov_price=100.0, fill_after_polls=3)
+    assert _unpark_yield(ib, _cfg(), 50_000, settle_ccy="USD") is True
+    assert ib.orders_placed == 1
+    assert ib.orders_cancelled == 0, "cancelled a sell that was about to fill"
+    assert ib.polls >= 3, "returned before the fill could land"
+
+
+def test_unpark_gives_up_only_after_the_full_wait(park_open):
+    """A sell that never trades is still cancelled — but only after the poll window, not at 2s."""
+    ib = FakeIB(cash=[("CashBalance", "USD", 0)], sgov_shares=1000,
+                sgov_price=100.0, fill_status="Submitted")
+    assert _unpark_yield(ib, _cfg(), 50_000, settle_ccy="USD") is False
+    assert ib.orders_cancelled == 1
+    assert ib.polls >= 10, "gave up too early — this is what killed the live fills"
+
+
+def test_unpark_terminal_state_is_not_cancelled_again(park_open):
+    """An order IBKR already rejected/cancelled must not be cancelled a second time (Error 10148)."""
+    ib = FakeIB(cash=[("CashBalance", "USD", 0)], sgov_shares=1000,
+                sgov_price=100.0, fill_status="Inactive")
+    assert _unpark_yield(ib, _cfg(), 50_000, settle_ccy="USD") is False
+    assert ib.orders_cancelled == 0
+
+
 def test_unpark_filled_sell_is_not_cancelled(park_open):
     ib = FakeIB(cash=[("CashBalance", "USD", 0)], sgov_shares=1000,
                 sgov_price=100.0, fill_status="Filled")
@@ -282,3 +336,49 @@ def test_gate_picks_fx_for_foreign_buy():
 def test_gate_picks_unpark_for_same_currency_buy():
     assert _funded("EUR", "EUR", fx_ok=True, unpark_ok=False) is False
     assert _funded("EUR", "EUR", fx_ok=False, unpark_ok=True) is True
+
+
+# ── order acknowledgement (the AZN/ASML/NICE/4385 ghost-order signature) ─────────────────
+
+def test_ack_wait_returns_as_soon_as_a_resting_order_is_live():
+    """A non-marketable limit is SUPPOSED to rest. Acknowledgement (Submitted), not a fill, ends the
+    wait — otherwise every resting buy would burn the whole timeout."""
+    ib = FakeIB()
+    trade = _Trade("Submitted", 0.0)
+    until = _buyer._ORDER_DONE_STATES + ("Submitted", "PreSubmitted")
+    status, filled = _buyer._await_order_outcome(ib, trade, 100, timeout=8.0, until=until)
+    assert status == "Submitted"
+    assert ib.polls == 0, "should not have slept at all — it was already live"
+
+
+def test_ack_wait_times_out_on_a_ghost_order():
+    """PendingSubmit forever = IBKR never took the order. The wait must end, not hang."""
+    ib = FakeIB()
+    trade = _Trade("PendingSubmit", 0.0)
+    until = _buyer._ORDER_DONE_STATES + ("Submitted", "PreSubmitted")
+    status, _ = _buyer._await_order_outcome(ib, trade, 100, timeout=4.0, until=until)
+    assert status == "PendingSubmit"
+    assert ib.polls >= 4
+
+
+def test_order_ack_fields_expose_perm_id():
+    trade = _Trade("PendingSubmit", 0.0)
+    trade.orderStatus.permId = 0
+    trade.orderStatus.whyHeld = ""
+    trade.order = SimpleNamespace(orderId=14325)
+    trade.contract = SimpleNamespace(conId=909330, exchange="SMART",
+                                     primaryExchange="LSE", tradingClass="SET1")
+    f = _buyer._order_ack_fields(trade)
+    assert f["perm_id"] == 0          # the tell: IBKR never accepted it
+    assert f["order_id"] == 14325
+    assert f["route"] == "SMART" and f["primary"] == "LSE"
+
+
+def test_order_ack_fields_on_an_accepted_order():
+    trade = _Trade("Submitted", 0.0)
+    trade.orderStatus.permId = 1771057849
+    trade.orderStatus.whyHeld = ""
+    trade.order = SimpleNamespace(orderId=14574)
+    trade.contract = SimpleNamespace(conId=1, exchange="IDEALPRO",
+                                     primaryExchange="", tradingClass="")
+    assert _buyer._order_ack_fields(trade)["perm_id"] == 1771057849

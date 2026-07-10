@@ -3135,6 +3135,61 @@ def _ensure_currency_funding(ib, stock_ccy: str, base_ccy: str, notional_ccy: fl
         return False
 
 
+# A resting order needs longer than one placeOrder round-trip to reach a terminal state. Checking
+# after ~2s and cancelling on "not filled yet" cancelled XEON sells that were seconds from trading:
+# the un-park raised nothing on three consecutive scans (EUR cash line unchanged at €549,754) so the
+# runway never refilled. Poll instead, and only give up on a genuine timeout.
+_ORDER_FILL_WAIT_SECONDS = 20.0
+_ORDER_POLL_SECONDS = 1.0
+_ORDER_DONE_STATES = ("Filled", "Cancelled", "ApiCancelled", "Inactive", "Rejected")
+
+
+def _await_order_outcome(ib, trade, shares: float,
+                         timeout: float = _ORDER_FILL_WAIT_SECONDS,
+                         until: tuple = _ORDER_DONE_STATES) -> tuple[str, float]:
+    """Pump the event loop until `trade` reaches one of `until`, fills, or `timeout` elapses.
+
+    `until` defaults to the terminal states — right when the caller needs the order DONE (an un-park
+    sell). A caller that only needs to know IBKR ACKNOWLEDGED the order passes the resting states too,
+    so a legitimately-resting limit returns as soon as it is live rather than burning the timeout.
+
+    Returns (status, filled). The IB lock is taken per poll and released between polls — holding it
+    for the whole wait would stall every other job sharing this connection's loop."""
+    status, filled = "", 0.0
+    waited = 0.0
+    while True:
+        try:
+            status = trade.orderStatus.status or ""
+            filled = float(trade.orderStatus.filled or 0.0)
+        except Exception:
+            status, filled = "", 0.0
+        if status in until or filled >= shares * 0.9 or waited >= timeout:
+            return status, filled
+        with get_portfolio_lock():
+            ib.sleep(_ORDER_POLL_SECONDS)
+        waited += _ORDER_POLL_SECONDS
+
+
+def _order_ack_fields(trade) -> dict:
+    """IBKR's acknowledgement evidence for an order.
+
+    `perm_id` is the tell: IBKR stamps a non-zero permId the moment it ACCEPTS an order. An order
+    that stays PendingSubmit with perm_id=0, and whose cancel comes back Error 10147 ('OrderId not
+    found'), never reached IBKR at all — it is our ghost, not a resting order. Logged at placement so
+    this is answerable from the log instead of by inference."""
+    try:
+        st = trade.orderStatus
+        return {"perm_id": int(getattr(st, "permId", 0) or 0),
+                "why_held": getattr(st, "whyHeld", "") or "",
+                "order_id": int(getattr(trade.order, "orderId", 0) or 0),
+                "con_id": int(getattr(trade.contract, "conId", 0) or 0),
+                "route": getattr(trade.contract, "exchange", "") or "",
+                "primary": getattr(trade.contract, "primaryExchange", "") or "",
+                "trading_class": getattr(trade.contract, "tradingClass", "") or ""}
+    except Exception:
+        return {}
+
+
 def _ccy_cash(ib, ccy: str) -> float | None:
     """Settled CashBalance in ONE currency (can be negative on a margin debit). None if unreadable.
 
@@ -3237,25 +3292,26 @@ def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool
         order.tif = "DAY"
         with get_portfolio_lock():
             trade = ib.placeOrder(contract, order)
-            ib.sleep(2)
-        status, filled = "", 0.0
-        try:
-            status = trade.orderStatus.status or ""
-            filled = float(trade.orderStatus.filled or 0.0)
-        except Exception:
-            pass
+        # Wait for a real outcome. A market sell into an open Xetra normally trades in well under a
+        # second, but the fill callback does not always land inside a single short sleep — deciding
+        # after ~2s and cancelling killed sells that were about to trade.
+        status, filled = _await_order_outcome(ib, trade, shares)
         if status == "Filled" or filled >= shares * 0.9:
-            log.info("portfolio_unparked", symbol=sym, shares=shares,
-                     raised=round(shares * price), status=status)
+            log.info("portfolio_unparked", symbol=sym, shares=shares, filled=filled,
+                     raised=round(filled * price) or round(shares * price), status=status)
             return True
-        # Didn't fill — cancel the leftover so it can't rest and fill later against a buy that has
-        # long since expired (see the market-closed note above). Mirrors _ensure_currency_funding.
-        try:
-            with get_portfolio_lock():
-                ib.cancelOrder(trade.order)
-        except Exception:
-            pass
-        log.warning("portfolio_unpark_unfilled", symbol=sym, shares=shares, status=status, filled=filled)
+        # Still not done after the wait. Cancel the leftover so it can't rest and fill later against a
+        # buy that has long since expired (see the market-closed note above), then fail closed if this
+        # unpark was the authoritative funding path. Mirrors _ensure_currency_funding.
+        if status not in _ORDER_DONE_STATES:
+            try:
+                with get_portfolio_lock():
+                    ib.cancelOrder(trade.order)
+            except Exception:
+                pass
+        # A partial fill still raised cash; report it so the shortfall is visible.
+        log.warning("portfolio_unpark_unfilled", symbol=sym, shares=shares, status=status,
+                    filled=filled, raised=round(filled * price))
         return not fatal_on_fail
     except Exception as e:
         log.warning("portfolio_unpark_error", error=str(e))
@@ -3423,18 +3479,29 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
 
         with get_portfolio_lock():
             trade = ib.placeOrder(contract, order)
-            ib.sleep(2)
+        # Wait only until IBKR ACKNOWLEDGES the order (Submitted/PreSubmitted) or it reaches a terminal
+        # state — a non-marketable limit is SUPPOSED to rest, so acknowledgement, not a fill, is the
+        # success condition here. Never cancel from this path. If it is still PendingSubmit when the
+        # wait ends, IBKR has not taken the order (see _order_ack_fields).
+        # Short wait: an ack is a round-trip, not a fill. The executor re-fires every ~30s, so it must
+        # not sit here for a ghost order that will never be acknowledged.
+        _ack_states = _ORDER_DONE_STATES + ("Submitted", "PreSubmitted")
+        fill_status, _filled = _await_order_outcome(ib, trade, shares, timeout=8.0, until=_ack_states)
+        fill_status = fill_status or "Submitted"
 
         try:
             refresh_portfolio_pending_orders_cache()
         except Exception:
             pass
 
-        fill_status = "Submitted"
-        try:
-            fill_status = trade.orderStatus.status or "Submitted"
-        except Exception:
-            pass
+        _ack = _order_ack_fields(trade)
+        if fill_status != "Filled" and (fill_status == "PendingSubmit" or not _ack.get("perm_id")):
+            # Unacknowledged after the wait. This is the AZN/ASML/NICE/4385 signature: the order never
+            # reached IBKR (perm_id=0), so the stuck-detector later cancels our own ghost and blames the
+            # venue. Log the full contract/route so the cause is diagnosable without a live test order.
+            log.warning("portfolio_order_not_acknowledged", id=suggestion_id, symbol=symbol,
+                        status=fill_status, currency=ccy, limit=order_price,
+                        outside_rth=order.outsideRth, **_ack)
 
         with get_db() as db:
             s = db.query(TradeSuggestion).filter(
@@ -3464,7 +3531,8 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                     s.review_note = f"Order {fill_status} — awaiting fill"
         log.info("portfolio_suggestion_order_placed", id=suggestion_id, symbol=symbol,
                  shares=shares, price=limit_price, exchange=exch, currency=ccy,
-                 order_status=fill_status)
+                 order_status=fill_status, perm_id=_ack.get("perm_id"),
+                 why_held=_ack.get("why_held"))
         return fill_status
 
     except Exception as e:
