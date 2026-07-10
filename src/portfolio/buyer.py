@@ -43,6 +43,44 @@ def _outside_rth_ok(currency: str | None) -> bool:
     return (currency or "USD").upper() in _OUTSIDE_RTH_CCY
 
 
+# (timezone, open_hour, close_hour, trading_weekdays) — weekday() is Mon=0 … Sun=6.
+# A currency MISSING from this map used to mean "scan anyway" (always open), which is how NICE (ILS)
+# got ordered into a shut Tel Aviv exchange at 00:09 UTC on a Friday: the order can't reach the venue,
+# sits PendingSubmit, and our own stuck-detector cancels it + venue-blocks the symbol for 6h. Every
+# currency the watchlist can hold must be listed here. TASE trades Sun–Thu, not Mon–Fri.
+_MON_FRI = (0, 1, 2, 3, 4)
+_MARKET_HOURS = {
+    "USD": ("US/Eastern", 9, 16, _MON_FRI),
+    "CAD": ("US/Eastern", 9, 16, _MON_FRI),
+    "EUR": ("Europe/Berlin", 9, 17, _MON_FRI),
+    "CHF": ("Europe/Berlin", 9, 17, _MON_FRI),
+    "GBP": ("Europe/London", 8, 16, _MON_FRI),
+    "NOK": ("Europe/Berlin", 9, 17, _MON_FRI),
+    "SEK": ("Europe/Berlin", 9, 17, _MON_FRI),
+    "DKK": ("Europe/Berlin", 9, 17, _MON_FRI),
+    "JPY": ("Asia/Tokyo", 9, 15, _MON_FRI),
+    "AUD": ("Australia/Sydney", 10, 16, _MON_FRI),
+    "HKD": ("Asia/Hong_Kong", 9, 16, _MON_FRI),
+    "SGD": ("Asia/Singapore", 9, 17, _MON_FRI),
+    "ZAR": ("Africa/Johannesburg", 9, 17, _MON_FRI),
+    "ILS": ("Asia/Jerusalem", 10, 17, (6, 0, 1, 2, 3)),   # TASE: Sun–Thu
+}
+
+
+def _market_open(currency: str | None) -> bool:
+    """True when the venue that settles `currency` is in its regular session right now.
+
+    Unknown currency → True (scan anyway), matching the long-standing behaviour for names whose
+    venue we haven't mapped. Prefer adding the currency above over relying on that fallback."""
+    import pytz
+    hours = _MARKET_HOURS.get((currency or "").upper())
+    if not hours:
+        return True
+    tz_name, open_h, close_h, days = hours
+    now = datetime.now(pytz.timezone(tz_name))
+    return now.weekday() in days and open_h <= now.hour < close_h
+
+
 # ── Permission-block registry ────────────────────────────────────────────────────────────
 # When an order is rejected because the account isn't permissioned to trade that exchange yet
 # (IBKR Error 200 "No security definition" / "no trading permission" — e.g. Hong Kong/3690
@@ -1249,17 +1287,30 @@ class PortfolioBuyer:
             log.error("portfolio_fx_treasury_error", error=str(e))
 
     def _park_compounder_excess(self, nlv: float, spent_this_scan: float, daily_budget: float = 0.0) -> None:
-        """Park standing idle cash (the crash reserve + undeployed slack) into the park ETF (XEON) for yield.
-        Parks only cash that is genuinely idle: settled cash above the operational buffer, minus cash
-        committed to still-working BUY orders and minus this scan's intended deployment (`spent`), so a
-        resting/approved buy never has its funding parked out from under it (which would open a loan).
-        Best-effort and gated on cash_yield_enabled + not-readonly; un-parking is JIT in the executor."""
+        """Hold the base-currency cash line at the deploy runway, parking or un-parking the ETF to suit.
+
+        Idle cash above the runway is parked for yield; a runway that has drained below it is refilled
+        out of the park. Cash committed to in-flight buys (resting orders + suggestion cards) is never
+        parked out from under them, which would open a margin loan.
+
+        Un-parking here — not only just-in-time in the executor — is what makes non-European sessions
+        tradeable at all: the park's venue (Xetra) is shut while Tokyo/HK/Sydney trade, so a JIT sale
+        during those sessions can never fill. Both legs are no-ops when the park venue is closed.
+
+        `spent_this_scan` is retained for the log line only; it is already inside the in-flight total.
+        Best-effort, gated on cash_yield_enabled + not-readonly."""
         cc = self.cfg.compounder
         if not getattr(self.cfg, "cash_yield_enabled", False) or getattr(self.cfg, "readonly", False):
             return
         try:
-            settled = self._get_settled_cash() or 0.0
-            open_buy_now = sum(self._open_buy_map().values())
+            # In-flight buys must be composed EXACTLY as the budget gate composes them (resting IBKR
+            # orders + queued/approved/executing suggestion cards). Reading only _open_buy_map here was
+            # blind to suggestion cards, so in suggestion_mode this parked the very cash an approved buy
+            # was about to draw — the loan this function's docstring promises to avoid — and, now that
+            # the same figure drives the un-park, it would under-restore the runway. Same lesson as the
+            # park-symbol exclusion: every path feeding one gate has to agree.
+            open_buy_now = sum(self._open_buy_map().values()) \
+                + sum(self._pending_buy_suggestion_map().values())
             # Keep a cash RUNWAY un-parked so routine daily buys fund from cash (via _unpark_yield's
             # cash-first path) rather than selling the ETF each time. By the time the runway drains and
             # the ETF must be sold, its NAV has accrued past the buy-side spread, so the sale isn't at a
@@ -1267,10 +1318,39 @@ class PortfolioBuyer:
             _reserve_days = int(getattr(cc, "park_reserve_days", 10) or 0)
             _deploy_runway = _reserve_days * max(0.0, daily_budget)
             _reserve = max(nlv * cc.cash_buffer_pct, _deploy_runway)
-            excess = settled - _reserve - open_buy_now - max(0.0, spent_this_scan)
-            if excess < getattr(cc, "cash_park_min", 5000.0):
+            _park_min = getattr(cc, "cash_park_min", 5000.0)
+
+            # Both legs key off the BASE-CURRENCY CASH LINE, never TotalCashValue. The park ETF is
+            # bought and sold in EUR, and a foreign buy's IDEALPRO conversion sells EUR — so EUR is the
+            # only balance that matters here. Reading the base-converted total instead let the parker
+            # see "excess" that lived in the USD/GBP lines and buy XEON with EUR on margin.
+            base_ccy = (getattr(self.cfg, "base_currency", "EUR") or "EUR").upper()
+            base_cash = _ccy_cash(self.ib, base_ccy)
+            if base_cash is None:
+                return                     # cash line unreadable — never park or un-park on a guess
+            # `spent_this_scan` is NOT added: every buy it counts was just written as a suggestion card
+            # (suggestion_mode) or placed as a resting order (direct mode), so it is already inside
+            # open_buy_now. Adding it again inflated `target` by up to a full day's deployment, which the
+            # new un-park leg would have answered by selling park shares to raise cash nothing needed.
+            target = _reserve + open_buy_now
+
+            excess = base_cash - target
+            if excess >= _park_min:
+                self._park_cash(amount=excess)
                 return
-            self._park_cash(amount=excess)
+
+            # Runway is SHORT — top it back up out of the park. Without this the pair is one-way: cash
+            # only ever flows INTO the ETF, and the runway is rebuilt solely by JIT sales in the
+            # executor. A JIT sale can't work outside Xetra hours, so once the runway drained the EUR
+            # line sat near zero (~€3.5k) all night and every Asian buy died at the FX leg with Error
+            # 201 — Tokyo/HK/Sydney all close before Xetra opens, so those sessions can never fund
+            # themselves JIT. Restoring the runway during EU hours is what makes them fundable at all.
+            # The `_park_min` deadband on both sides stops a park→un-park round-trip on small drifts.
+            if excess > -_park_min or not _market_open(base_ccy):
+                return
+            log.info("compounder_runway_restore", base_ccy=base_ccy, target=round(target),
+                     cash=round(base_cash), short=round(-excess), spent=round(spent_this_scan))
+            _unpark_yield(self.ib, self.cfg, target, settle_ccy=base_ccy)
         except Exception as e:
             log.warning("compounder_park_excess_error", error=str(e))
 
@@ -2367,6 +2447,11 @@ class PortfolioBuyer:
         # restart so a config change to a tradeable ETF gets a fresh attempt.
         if _is_permission_blocked(self.cfg.cash_yield_symbol):
             return
+        # Same venue rule as the un-park: the ETF trades on one exchange. A park BUY placed while it's
+        # shut rests overnight instead of filling — and a resting BUY counts against deployed_today,
+        # which is how a €1.9M overnight parking order once zeroed the 00:00-04:00 deploy budget.
+        if not _market_open(self.cfg.cash_yield_currency):
+            return
         _ensure_event_loop()
         try:
             if amount is not None:
@@ -2832,32 +2917,10 @@ class PortfolioBuyer:
             else:
                 db.add(PortfolioState(key=key, value=value))
 
-    # Market hours by currency for portfolio scan filtering
-    _MARKET_HOURS = {
-        # (timezone, open_hour, close_hour)
-        "USD": ("US/Eastern", 9, 16),
-        "CAD": ("US/Eastern", 9, 16),
-        "EUR": ("Europe/Berlin", 9, 17),
-        "CHF": ("Europe/Berlin", 9, 17),
-        "GBP": ("Europe/London", 8, 16),
-        "NOK": ("Europe/Berlin", 9, 17),
-        "SEK": ("Europe/Berlin", 9, 17),
-        "DKK": ("Europe/Berlin", 9, 17),
-        "JPY": ("Asia/Tokyo", 9, 15),
-        "AUD": ("Australia/Sydney", 10, 16),
-        "HKD": ("Asia/Hong_Kong", 9, 16),
-    }
-
     def _is_market_open(self, currency: str) -> bool:
-        """Check if the market for a given currency is currently open."""
-        import pytz
-        hours = self._MARKET_HOURS.get(currency)
-        if not hours:
-            return True  # unknown currency — scan anyway
-        tz_name, open_h, close_h = hours
-        tz = pytz.timezone(tz_name)
-        now = datetime.now(tz)
-        return now.weekday() < 5 and open_h <= now.hour < close_h
+        """Check if the market for a given currency is currently open (see module-level _market_open,
+        which the funding path shares — the table must not fork)."""
+        return _market_open(currency)
 
     def update_holdings_prices(self):
         """Update current prices and P&L for all holdings."""
@@ -3072,6 +3135,29 @@ def _ensure_currency_funding(ib, stock_ccy: str, base_ccy: str, notional_ccy: fl
         return False
 
 
+def _ccy_cash(ib, ccy: str) -> float | None:
+    """Settled CashBalance in ONE currency (can be negative on a margin debit). None if unreadable.
+
+    Distinct from TotalCashValue, which is the base-converted sum across every currency: the account
+    can hold a healthy base-currency total while the EUR line is ~zero, and it is the EUR line that an
+    IDEALPRO EUR→foreign conversion draws on. Selling EUR you don't hold is what IBKR rejects with
+    Error 201 'FX trade would expose account to currency leverage'. Treating TotalCashValue as the EUR
+    line is also how the park drained: it read 'excess cash' off other currencies' balances and bought
+    XEON with EUR it did not have, on margin, until the EUR line sat near zero.
+
+    Returns None rather than 0.0 on a read failure so callers fail closed — a transient
+    accountValues() error must never be mistaken for 'no cash' and trigger a park liquidation."""
+    try:
+        with get_portfolio_lock():
+            vals = ib.accountValues()
+        for v in vals:
+            if v.tag == "CashBalance" and (v.currency or "").upper() == (ccy or "").upper():
+                return float(v.value)
+        return 0.0                        # connected, no line for this ccy → genuinely zero
+    except Exception:
+        return None
+
+
 def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool:
     """Sell enough of the cash-yield ETF (XEON) to raise ~`needed` of cash BEFORE a stock buy, so the
     buy is funded from the parked reserve instead of opening a margin loan. XEON is a EUR overnight-rate
@@ -3106,16 +3192,12 @@ def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool
         # to_base passes an unknown/missing rate through unscaled (same-ccy EUR buys are a no-op).
         from src.portfolio import fx as _pfx
         needed_base = _pfx.to_base(needed, settle_ccy, _pfx.load_fx_rates()) if settle_ccy else needed
-        have = 0.0
-        try:
-            with get_portfolio_lock():
-                vals = ib.accountValues()
-            for v in vals:
-                if v.tag == "CashBalance" and (v.currency or "").upper() == _cash_ccy:
-                    have = float(v.value)
-                    break
-        except Exception:
-            have = 0.0
+        have = _ccy_cash(ib, _cash_ccy)
+        if have is None:
+            # Couldn't read the cash line — don't guess. Guessing 0.0 here would sell park shares we
+            # may not need to sell; guessing "plenty" would open a margin loan. Fail closed.
+            log.warning("portfolio_unpark_cash_unreadable", symbol=sym, ccy=_cash_ccy)
+            return not fatal_on_fail
         if have >= needed_base:
             return True                   # liquid cash already covers it — don't sell the ETF
         shortfall = max(0.0, needed_base - have)
@@ -3128,6 +3210,17 @@ def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool
             # Nothing parked. The upstream free_cash gate already bounds deployment to settled cash +
             # parked, so 'nothing parked' means settled cash is the funding source — proceed.
             return True
+        # A sale is genuinely required. The park ETF trades on ONE venue (XEON/Xetra) and a sell placed
+        # while it is shut cannot fill, so it frees no cash for THIS buy — and because every ~30s
+        # executor retry placed a fresh MarketOrder that nothing ever cancelled, twenty queued overnight
+        # and all filled at the 07:00 UTC open: 7,394 shares (~€1.1M) liquidated for buys that never
+        # happened, then re-parked an hour later. Never place into a closed venue. This check sits AFTER
+        # the cash-first and nothing-parked returns above so an already-funded buy is never blocked
+        # merely because the park is shut — it doesn't need the park at all.
+        if not _market_open(park_ccy):
+            log.info("portfolio_unpark_skipped_market_closed", symbol=sym, park_ccy=park_ccy,
+                     settle_ccy=settle_ccy, needed=round(needed), shortfall=round(shortfall))
+            return not fatal_on_fail
         contract = Stock(sym, "SMART", cfg.cash_yield_currency)
         with get_portfolio_lock():
             ib.qualifyContracts(contract)
@@ -3155,6 +3248,13 @@ def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool
             log.info("portfolio_unparked", symbol=sym, shares=shares,
                      raised=round(shares * price), status=status)
             return True
+        # Didn't fill — cancel the leftover so it can't rest and fill later against a buy that has
+        # long since expired (see the market-closed note above). Mirrors _ensure_currency_funding.
+        try:
+            with get_portfolio_lock():
+                ib.cancelOrder(trade.order)
+        except Exception:
+            pass
         log.warning("portfolio_unpark_unfilled", symbol=sym, shares=shares, status=status, filled=filled)
         return not fatal_on_fail
     except Exception as e:
