@@ -331,12 +331,23 @@ def refresh_portfolio_account_cache():
 
 
 def refresh_accrued_interest_from_flex():
-    """Dedicated daily job: always fetches accrued interest from IBKR Flex,
-    regardless of IBKR connection state, and updates the cache file."""
+    """Dedicated daily job: fetch the portfolio Flex statement ONCE and, from that single
+    statement, sync deposits/withdrawals AND refresh accrued interest + YTD dividends.
+
+    Consolidated (2026-07-11) so the portfolio account makes ONE Flex SendRequest per day
+    instead of three competing ones (deposit sync + interest + dividends). IBKR throttles
+    Flex per IP (Error 1001); the competing requests kept the deposit sync perpetually locked
+    out, so Total Invested silently fell back to hand-seeded rows. Runs regardless of IBKR
+    socket connection state (Flex is a REST service)."""
     try:
-        from src.portfolio.capital_injections import fetch_accrued_interest_usd, fetch_dividends_ytd_usd
-        interest = fetch_accrued_interest_usd()
-        dividends_ytd = fetch_dividends_ytd_usd()
+        from src.portfolio.capital_injections import sync_portfolio_flex
+        try:
+            result = sync_portfolio_flex(include_withdrawals=True)
+        except ValueError:
+            log.info('portfolio_flex_sync_skipped', reason='flex creds unset')
+            return
+        interest = result.get("interest", 0.0)
+        dividends_ytd = result.get("dividends_ytd", 0.0)
         if interest == 0.0 and dividends_ytd == 0.0:
             log.warning('accrued_interest_flex_returned_zero')
             return

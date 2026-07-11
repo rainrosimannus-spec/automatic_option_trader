@@ -1721,14 +1721,16 @@ def create_scheduler() -> BackgroundScheduler:
             coalesce=True,
         )
 
-        # Daily accrued interest refresh — 8 AM ET
-        # IBKR overnight statements reliably settled by 8 AM ET
+        # Daily portfolio Flex sync — 8 AM ET (IBKR overnight statements reliably settled by then,
+        # and 8h clear of the 16:00 ET options sync so it never inherits that IP throttle).
+        # ONE Flex fetch does everything: deposits/withdrawals → invested base, accrued interest,
+        # and YTD dividends (see refresh_accrued_interest_from_flex → sync_portfolio_flex).
         from src.portfolio.connection import refresh_accrued_interest_from_flex
         scheduler.add_job(
             refresh_accrued_interest_from_flex,
             CronTrigger(hour=8, minute=0, timezone=us_tz),
             id="portfolio_interest_refresh",
-            name="Portfolio Accrued Interest Refresh",
+            name="Portfolio Flex Sync (deposits + interest + dividends)",
             max_instances=1,
             misfire_grace_time=3600,
             coalesce=True,
@@ -1954,33 +1956,13 @@ def create_scheduler() -> BackgroundScheduler:
         max_instances=1,
     )
 
-    def _job_portfolio_injection_sync():
-        """Pull the PORTFOLIO account's deposit/withdrawal history from IBKR Flex and
-        record it as signed capital injections, so Total Invested tracks the NET cash
-        actually put in (deposits add, withdrawals deduct). No-op until the portfolio
-        Flex creds are set in settings.yaml."""
-        _ensure_event_loop()
-        try:
-            from src.portfolio.capital_injections import sync_injections_from_ibkr
-            added = sync_injections_from_ibkr(include_withdrawals=True)
-            if added:
-                log.info("portfolio_injections_synced", added=added)
-        except ValueError:
-            log.info("portfolio_injection_sync_skipped", reason="flex creds unset")
-        except Exception as e:
-            log.error("portfolio_injection_sync_error", error=str(e))
-
-    scheduler.add_job(
-        _job_portfolio_injection_sync,
-        # 17:00 ET — a FULL HOUR after the options sync (16:00 ET). At 16:10 it inherited the options
-        # sync's IP-scoped Flex throttle (cure ~30-40 min) and failed "still throttled" every night, so
-        # the portfolio deposit ledger never synced. The IP lockout is shared across Flex tokens, so the
-        # gap must exceed the cure window, not just stagger by minutes.
-        CronTrigger(hour=17, minute=0, timezone=us_tz),
-        id="portfolio_injection_sync",
-        name="Portfolio Deposit/Withdrawal Sync (Flex)",
-        max_instances=1,
-    )
+    # NOTE (2026-07-11): the standalone portfolio deposit sync that used to run at 17:00 ET was
+    # REMOVED. It ran its own Flex SendRequest an hour after the 16:00 options sync and inherited
+    # IBKR's IP-scoped Flex throttle (Error 1001), failing "still throttled" every night — so the
+    # portfolio deposit ledger never synced and Total Invested fell back to hand-seeded rows.
+    # Deposit sync now happens inside the 08:00 ET "Portfolio Flex Sync" job (refresh_accrued_
+    # interest_from_flex → sync_portfolio_flex), which fetches the statement ONCE and extracts
+    # deposits + accrued interest + dividends together — one request per day, no self-contention.
 
     # Snapshot at market open and market close (to catch both)
     scheduler.add_job(

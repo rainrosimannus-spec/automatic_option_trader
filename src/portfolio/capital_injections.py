@@ -150,15 +150,21 @@ def parse_deposits_from_flex(xml_content: str, include_withdrawals: bool = False
     """
     root = ET.fromstring(xml_content)
     rows = []
-    seen = set()  # (date, rounded amount, currency) — dedupe across both element forms
+    seen = set()  # dedupe key — transactionID when present, else (date, amount, currency)
 
-    def _add(amount: float, currency: str, date_str: str, notes: str):
+    def _add(amount: float, currency: str, date_str: str, notes: str, txid: str = ""):
         if amount == 0:
             return
         if amount < 0 and not include_withdrawals:
             return
         date_str = _norm_flex_date(date_str)
-        key = (date_str, round(amount, 2), currency)
+        # Prefer IBKR's unique transactionID as the dedupe key: several DISTINCT same-day,
+        # same-amount deposits (e.g. multiple €100k wires funding the account on one day) are
+        # SEPARATE cash flows and must not collapse into one — the (date, amount, currency) key
+        # silently merged them, under-counting invested capital by millions. Fall back to the
+        # composite key only for rows with no transactionID (the DepositWithdrawal form), which
+        # still dedupes the same flow appearing in both element forms.
+        key = ("tx", txid) if txid else (date_str, round(amount, 2), currency)
         if key in seen:
             return
         seen.add(key)
@@ -167,6 +173,7 @@ def parse_deposits_from_flex(xml_content: str, include_withdrawals: bool = False
             "amount_original": amount,
             "currency": currency,
             "notes": notes[:200],
+            "transaction_id": txid or "",
         })
 
     # Form 1: dedicated DepositWithdrawal elements.
@@ -176,7 +183,7 @@ def parse_deposits_from_flex(xml_content: str, include_withdrawals: bool = False
         date_str = dw.get("reportDate") or dw.get("settleDate") or dw.get("date") or ""
         default_note = "deposit" if amount > 0 else "withdrawal"
         notes = dw.get("description") or dw.get("type") or default_note
-        _add(amount, currency, date_str, notes)
+        _add(amount, currency, date_str, notes, dw.get("transactionID") or "")
 
     # Form 2: CashTransaction rows whose type is the deposits/withdrawals category. Other
     # CashTransaction types (dividends, interest, fees, withholding) are NOT capital flows and
@@ -197,7 +204,7 @@ def parse_deposits_from_flex(xml_content: str, include_withdrawals: bool = False
         )
         default_note = "deposit" if amount > 0 else "withdrawal"
         notes = ct.get("description") or ctype or default_note
-        _add(amount, currency, date_str, notes)
+        _add(amount, currency, date_str, notes, ct.get("transactionID") or "")
 
     log.info("flex_cashflows_parsed", count=len(rows), include_withdrawals=include_withdrawals)
     return rows
@@ -268,8 +275,19 @@ def sync_injections_from_ibkr(
 
     xml_content = fetch_flex_statement(flex_token, flex_query_id)
     deposits = parse_deposits_from_flex(xml_content, include_withdrawals=include_withdrawals)
+    return _upsert_injections(deposits, account_id)
 
+
+def _upsert_injections(deposits: List[Dict], account_id: str | None) -> int:
+    """Upsert parsed Flex cash-flow rows into the injections table and return the count added.
+
+    Shared by `sync_injections_from_ibkr` and the consolidated `sync_portfolio_flex`, so a
+    statement fetched once can feed the deposit sync without a second Flex request. Dedupes on
+    IBKR's transactionID (stored in `notes` as `txid:<id>`) so distinct same-day, same-amount
+    deposits each land; falls back to the (date, currency, amount) match for rows with no
+    transactionID (the DepositWithdrawal form / hand-seeded rows)."""
     added = 0
+    fx_cache: Dict[tuple, float] = {}  # (currency, date) → rate, so N same-date rows fetch FX once
     pending_bridge_bumps = []  # collect (amount_usd, account_id) tuples for Bridge benchmark
     with get_db() as db:
         # Flex is the authoritative cash-flow source: once it returns real deposits, drop any
@@ -294,24 +312,36 @@ def sync_injections_from_ibkr(
             ).delete(synchronize_session=False)
 
         for dep in deposits:
-            existing = db.query(PortfolioCapitalInjection).filter(
-                PortfolioCapitalInjection.date == dep["date"],
-                PortfolioCapitalInjection.currency == dep["currency"],
-                PortfolioCapitalInjection.amount_original == dep["amount_original"],
-                PortfolioCapitalInjection.account_id == account_id,
-            ).first()
+            txid = dep.get("transaction_id") or ""
+            if txid:
+                # trailing space in both stored value and pattern prevents txid:12 matching txid:123
+                existing = db.query(PortfolioCapitalInjection).filter(
+                    PortfolioCapitalInjection.account_id == account_id,
+                    PortfolioCapitalInjection.notes.like(f"txid:{txid} %"),
+                ).first()
+            else:
+                existing = db.query(PortfolioCapitalInjection).filter(
+                    PortfolioCapitalInjection.date == dep["date"],
+                    PortfolioCapitalInjection.currency == dep["currency"],
+                    PortfolioCapitalInjection.amount_original == dep["amount_original"],
+                    PortfolioCapitalInjection.account_id == account_id,
+                ).first()
             if existing:
                 continue
 
-            rate = _get_fx_rate_to_usd(dep["currency"], dep["date"])
+            fx_key = (dep["currency"], dep["date"])
+            if fx_key not in fx_cache:
+                fx_cache[fx_key] = _get_fx_rate_to_usd(dep["currency"], dep["date"])
+            rate = fx_cache[fx_key]
             amount_usd = dep["amount_original"] * rate
+            notes = f"txid:{txid} {dep['notes']}" if txid else dep["notes"]
             inj = PortfolioCapitalInjection(
                 date=dep["date"],
                 amount_original=dep["amount_original"],
                 currency=dep["currency"],
                 eur_usd_rate=rate if dep["currency"] == "EUR" else None,
                 amount_usd=amount_usd,
-                notes=dep["notes"],
+                notes=notes[:200],
                 source="ibkr_flex",
                 account_id=account_id,
             )
@@ -502,45 +532,23 @@ def get_capital_ledger_base(account_id: str | None = None) -> "list[tuple[str, f
     return ledger
 
 
-def fetch_accrued_interest_usd() -> float:
-    """
-    Fetch today's accrued interest from IBKR Flex Query.
-    Returns the BASE_SUMMARY value (already in USD).
-    """
+def parse_accrued_interest_usd(xml_content: str) -> float:
+    """Accrued interest (BASE_SUMMARY, already in USD) from an already-fetched Flex statement."""
     try:
-        from src.core.config import get_settings
-        cfg = get_settings()
-        token = cfg.portfolio.flex_token
-        qid = cfg.portfolio.flex_query_id
-        if not token or not qid:
-            return 0.0
-        import xml.etree.ElementTree as ET
-        xml_content = fetch_flex_statement(token, qid)
         root = ET.fromstring(xml_content)
         for el in root.iter("InterestAccrualsCurrency"):
             if el.attrib.get("currency") == "BASE_SUMMARY":
                 return float(el.attrib.get("interestAccrued", 0))
     except Exception as e:
-        log.warning("fetch_accrued_interest_failed", error=str(e))
+        log.warning("parse_accrued_interest_failed", error=str(e))
     return 0.0
 
 
-def fetch_dividends_ytd_usd() -> float:
-    """
-    Fetch dividends paid YTD from IBKR Flex Query.
-    Uses ChangeInDividendAccrual entries with code='Re' (reversal = cash paid out).
-    Returns sum of abs(netAmount) for current calendar year, in USD.
-    """
+def parse_dividends_ytd_usd(xml_content: str) -> float:
+    """Dividends paid YTD (USD) from an already-fetched Flex statement.
+    Uses ChangeInDividendAccrual entries with code='Re' (reversal = cash paid out)."""
     try:
-        from src.core.config import get_settings
         from datetime import date
-        cfg = get_settings()
-        token = cfg.portfolio.flex_token
-        qid = cfg.portfolio.flex_query_id
-        if not token or not qid:
-            return 0.0
-        import xml.etree.ElementTree as ET
-        xml_content = fetch_flex_statement(token, qid)
         root = ET.fromstring(xml_content)
         current_year = str(date.today().year)
         total = 0.0
@@ -556,5 +564,81 @@ def fetch_dividends_ytd_usd() -> float:
                         pass
         return total
     except Exception as e:
+        log.warning("parse_dividends_ytd_failed", error=str(e))
+    return 0.0
+
+
+def fetch_accrued_interest_usd() -> float:
+    """Fetch today's accrued interest from IBKR Flex (BASE_SUMMARY, already in USD).
+
+    Thin fetch+parse wrapper kept for the IBKR-disconnected account-cache fallback. The daily
+    scheduled path uses `sync_portfolio_flex`, which fetches the statement ONCE and parses
+    deposits + interest + dividends from it (avoiding the self-throttling triple fetch)."""
+    try:
+        from src.core.config import get_settings
+        cfg = get_settings()
+        token = cfg.portfolio.flex_token
+        qid = cfg.portfolio.flex_query_id
+        if not token or not qid:
+            return 0.0
+        return parse_accrued_interest_usd(fetch_flex_statement(token, qid))
+    except Exception as e:
+        log.warning("fetch_accrued_interest_failed", error=str(e))
+    return 0.0
+
+
+def fetch_dividends_ytd_usd() -> float:
+    """Fetch dividends paid YTD from IBKR Flex (USD). Thin wrapper — see fetch_accrued_interest_usd."""
+    try:
+        from src.core.config import get_settings
+        cfg = get_settings()
+        token = cfg.portfolio.flex_token
+        qid = cfg.portfolio.flex_query_id
+        if not token or not qid:
+            return 0.0
+        return parse_dividends_ytd_usd(fetch_flex_statement(token, qid))
+    except Exception as e:
         log.warning("fetch_dividends_ytd_failed", error=str(e))
     return 0.0
+
+
+def sync_portfolio_flex(
+    account_id: str | None = None,
+    flex_token: str | None = None,
+    flex_query_id: str | None = None,
+    include_withdrawals: bool = True,
+) -> Dict:
+    """Fetch the PORTFOLIO Flex statement ONCE and extract everything from it: deposit/withdrawal
+    injections, accrued interest, and YTD dividends.
+
+    This replaces three separate `fetch_flex_statement` calls (injection sync + accrued-interest +
+    dividends), each of which was its own SendRequest on the same IP/token. IBKR throttles Flex
+    per-IP (Error 1001), so the competing requests kept the portfolio deposit sync locked out — it
+    never synced a deposit for weeks and the invested base fell back to hand-seeded rows. One fetch
+    per day removes the contention entirely.
+
+    Returns {"added": int, "interest": float, "dividends_ytd": float}. Raises ValueError if the
+    portfolio Flex creds are unset (same contract as `sync_injections_from_ibkr`)."""
+    from src.core.config import get_settings
+
+    cfg = get_settings().portfolio
+    if account_id is None:
+        account_id = getattr(cfg, "ibkr_account", "") or None
+    if flex_token is None:
+        flex_token = getattr(cfg, "flex_token", None)
+    if flex_query_id is None:
+        flex_query_id = getattr(cfg, "flex_query_id", None)
+    if not flex_token or not flex_query_id:
+        raise ValueError(
+            "flex_token and flex_query_id are not set in config/settings.yaml. "
+            "See the docstring at the top of src/portfolio/capital_injections.py."
+        )
+
+    xml_content = fetch_flex_statement(flex_token, flex_query_id)  # the ONE fetch
+    deposits = parse_deposits_from_flex(xml_content, include_withdrawals=include_withdrawals)
+    added = _upsert_injections(deposits, account_id)
+    interest = parse_accrued_interest_usd(xml_content)
+    dividends_ytd = parse_dividends_ytd_usd(xml_content)
+    log.info("portfolio_flex_synced", added=added,
+             interest=round(interest, 2), dividends_ytd=round(dividends_ytd, 2))
+    return {"added": added, "interest": interest, "dividends_ytd": dividends_ytd}
