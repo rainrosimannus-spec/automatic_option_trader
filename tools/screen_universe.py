@@ -660,32 +660,127 @@ Verify all of:
 Return raw JSON array only. No markdown, no surrounding prose, no commentary."""
 
 
+def _anthropic_messages(prompt: str, max_tokens: int, label: str) -> str:
+    """Send a single-user-message request to Claude and return the concatenated text.
+
+    STREAMS the response (Server-Sent Events). Streaming makes the read timeout apply
+    PER CHUNK instead of to the whole response body, so a long generation can't trip a
+    fixed wall-clock read timeout the way a non-streaming request does. The 2026-07-06
+    breakthrough scan died on exactly that: a non-streaming 8000-token generation behind
+    a 120s read timeout, tipped over by normal latency variance — NOT an API outage (the
+    selection + augmentation calls in the same run succeeded seconds apart). Streaming is
+    also Anthropic's own guidance for any high-max_tokens request.
+
+    Transient timeout / connection errors are bounded-retried (3 attempts, short backoff);
+    a 4xx/5xx or a stream `error` event is raised immediately (retrying won't help). On the
+    final failed attempt the underlying error is re-raised so each caller's ❌ path logs it.
+    """
+    from src.core.config import get_settings
+    _ant_key = get_settings().raw.get("anthropic", {}).get("api_key", "")
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": _ant_key,
+        "anthropic-version": "2023-06-01",
+    }
+    payload = {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": max_tokens,
+        "stream": True,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    last_err: Exception | None = None
+    for attempt in range(3):
+        if attempt:
+            time.sleep(5 * attempt)  # 5s, 10s backoff
+            print(f"  ↻ {label}: retry {attempt}/2 after {type(last_err).__name__}")
+        try:
+            parts: list[str] = []
+            stop_reason = None
+            with requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers, json=payload, stream=True,
+                timeout=(10, 60),  # (connect, per-chunk read) — resets on every SSE chunk
+            ) as resp:
+                resp.raise_for_status()
+                for raw in resp.iter_lines(decode_unicode=True):
+                    if not raw or not raw.startswith("data:"):
+                        continue
+                    chunk = raw[len("data:"):].strip()
+                    if chunk == "[DONE]":
+                        break
+                    try:
+                        ev = json.loads(chunk)
+                    except Exception:
+                        continue
+                    etype = ev.get("type")
+                    if etype == "content_block_delta":
+                        delta = ev.get("delta") or {}
+                        if delta.get("type") == "text_delta":
+                            parts.append(delta.get("text", ""))
+                    elif etype == "message_delta":
+                        stop_reason = (ev.get("delta") or {}).get("stop_reason") or stop_reason
+                    elif etype == "error":
+                        raise RuntimeError(f"anthropic stream error: {ev.get('error')}")
+                    elif etype == "message_stop":
+                        break
+            # A max_tokens stop truncates the JSON mid-string → the caller's json.loads fails with a
+            # cryptic "Unterminated string". Surface it plainly so the fix (raise max_tokens) is obvious.
+            if stop_reason == "max_tokens":
+                print(f"  ⚠️  {label}: response hit max_tokens ({max_tokens}) — output truncated; "
+                      f"raise max_tokens for this call")
+            return "".join(parts)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_err = e  # transient — back off and retry
+    raise last_err  # exhausted retries; surface to the caller's ❌ path
+
+
+def _loads_json_array_salvage(text: str) -> list:
+    """Parse a JSON array, salvaging the complete leading elements if the array was
+    truncated mid-element. The breakthrough scan asks for ~30 candidates each with
+    multi-year rationale and can exceed even a large max_tokens, cutting off the final
+    object — which fails a strict json.loads and loses every candidate. Candidate objects
+    are flat (string fields only), so the last complete top-level '}' is an element
+    boundary: close the array there and parse. Returns [] only if nothing parses."""
+    text = text.strip()
+    try:
+        v = json.loads(text)
+        return v if isinstance(v, list) else []
+    except Exception:
+        pass
+    start = text.find("[")
+    if start == -1:
+        return []
+    end = len(text)
+    while True:
+        cut = text.rfind("}", start, end)
+        if cut == -1:
+            return []
+        try:
+            v = json.loads(text[start:cut + 1].rstrip().rstrip(",") + "]")
+            if isinstance(v, list):
+                return v
+        except Exception:
+            pass
+        end = cut  # walk back to the previous element boundary
+
+
 def _get_breakthrough_candidates() -> list[dict]:
     try:
-        from src.core.config import get_settings
-        _ant_key = get_settings().raw.get("anthropic", {}).get("api_key", "")
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": _ant_key,
-                "anthropic-version": "2023-06-01",
-            },
-            json={
-                "model": "claude-sonnet-4-6",
-                "max_tokens": 8000,
-                "messages": [{"role": "user", "content": _build_breakthrough_prompt()}],
-            },
-            timeout=120,  # new BREAKTHROUGH_PROMPT response is ~80s
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        text = data["content"][0]["text"].strip()
+        # ~30 candidates each with multi-year rationale run well past 8000 output tokens (that cap
+        # truncated the JSON and failed the scan even when it didn't time out). Streaming means a
+        # larger cap costs nothing on latency, so give real headroom; the salvage parse below then
+        # tolerates any residual truncation in an unusually verbose month.
+        text = _anthropic_messages(
+            _build_breakthrough_prompt(), max_tokens=24000, label="breakthrough scan"
+        ).strip()
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]
-        candidates = json.loads(text.strip())
+        candidates = _loads_json_array_salvage(text)
+        if not candidates:
+            print("  ❌ Breakthrough scan: no parseable candidates in response")
+            return []
         # Collapse share-class aliases (e.g. GOOGL -> GOOG) so a megacap can't slip back in
         # under a second ticker.
         for c in candidates:
@@ -918,25 +1013,9 @@ def _call_claude_for_swaps(prompt: str, label: str) -> list[dict]:
     """Shared helper: send prompt to Claude, parse JSON array, return list of dicts.
     Empty list on failure. Matches _get_breakthrough_candidates pattern."""
     try:
-        from src.core.config import get_settings
-        _ant_key = get_settings().raw.get("anthropic", {}).get("api_key", "")
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": _ant_key,
-                "anthropic-version": "2023-06-01",
-            },
-            json={
-                "model": "claude-sonnet-4-6",
-                "max_tokens": 4000,  # smaller than breakthrough — only 5-10 names
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        text = data["content"][0]["text"].strip()
+        text = _anthropic_messages(
+            prompt, max_tokens=4000, label=label  # smaller than breakthrough — only 5-10 names
+        ).strip()
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
@@ -1397,25 +1476,9 @@ def _call_claude_for_selection(prompt: str) -> dict:
        "group_reasoning": "..."}
     """
     try:
-        from src.core.config import get_settings
-        _ant_key = get_settings().raw.get("anthropic", {}).get("api_key", "")
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": _ant_key,
-                "anthropic-version": "2023-06-01",
-            },
-            json={
-                "model": "claude-sonnet-4-6",
-                "max_tokens": 8000,  # 25 picks with reasoning + group paragraph
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        text = data["content"][0]["text"].strip()
+        text = _anthropic_messages(
+            prompt, max_tokens=8000, label="breakthrough selection"  # 25 picks + group paragraph
+        ).strip()
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
