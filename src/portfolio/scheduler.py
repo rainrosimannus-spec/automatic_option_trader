@@ -677,6 +677,21 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
             from pathlib import Path as _Path
             _log_path = _Path("data/screener_last_run.json")
             _log_path.parent.mkdir(parents=True, exist_ok=True)
+            # Breakthrough-scan visibility: what the AI proposed, what made the tier, and what was
+            # dropped (with the stage — qualify/fundamentals vs. the eligibility gate — and reason).
+            _ELIG_STAGE = {"etf", "market_cap_floor", "reverse_split"}
+            _bt_scan = {
+                "proposed": getattr(screener, "_breakthrough_proposed", []),
+                "accepted": sorted(s.symbol for s in portfolio_universe if s.tier == "breakthrough"),
+                "dropped": [
+                    {"symbol": r.get("symbol"),
+                     "stage": "eligibility" if r.get("category") in _ELIG_STAGE else "qualify/fundamentals",
+                     "reason": r.get("category"),
+                     "detail": r.get("detail")}
+                    for r in getattr(screener, "_rejects", [])
+                    if r.get("tier") == "breakthrough"
+                ],
+            }
             _log_path.write_text(_json.dumps({
                 "status": "success",
                 "run_date": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
@@ -697,6 +712,7 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                 ],
                 "flagged_removal": flagged_removal,
                 "reclassified": reclassified,
+                "breakthrough_scan": _bt_scan,
                 "suggestions_created": [],
             }, indent=2))
 

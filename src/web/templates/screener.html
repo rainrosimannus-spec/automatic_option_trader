@@ -188,6 +188,48 @@
     </div>
     {% endif %}
 
+    <!-- ═══ Breakthrough Scan (proposed vs. dropped) ═══ -->
+    {% set bt = run_log.get('breakthrough_scan', {}) %}
+    {% if bt.get('proposed') or bt.get('dropped') %}
+    {% set bt_accepted = bt.get('accepted', []) %}
+    {% set bt_dropped = bt.get('dropped', []) %}
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-1">Breakthrough Scan</h2>
+        <div class="text-xs text-gray-500 mb-4">
+            AI proposed {{ bt.get('proposed', [])|length }} · accepted {{ bt_accepted|length }} · dropped {{ bt_dropped|length }}
+        </div>
+
+        {% if bt_accepted %}
+        <div class="mb-4">
+            <div class="text-xs font-medium text-purple-400 uppercase tracking-wider mb-2">✅ Accepted into tier ({{ bt_accepted|length }})</div>
+            <div class="flex flex-wrap gap-1.5">
+                {% for sym in bt_accepted %}
+                <span class="px-2 py-0.5 rounded text-xs font-mono bg-purple-900/50 text-purple-300">{{ sym }}</span>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if bt_dropped %}
+        <div>
+            <div class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">⛔ Proposed but dropped ({{ bt_dropped|length }})</div>
+            <div class="space-y-1">
+                {% for d in bt_dropped %}
+                <div class="flex items-start gap-3 text-sm border-b border-gray-800/50 pb-1">
+                    <span class="font-mono font-bold text-white w-16 shrink-0">{{ d.symbol }}</span>
+                    <span class="px-1.5 py-0.5 rounded text-xs shrink-0
+                        {% if d.stage == 'eligibility' %}bg-amber-900/50 text-amber-300{% else %}bg-gray-800 text-gray-400{% endif %}">
+                        {{ d.stage }}
+                    </span>
+                    <span class="text-gray-500 text-xs">{{ d.detail or d.reason }}</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
     <!-- ═══ Suggestions Created ═══ -->
     {% set suggestions = run_log.get('suggestions_created', []) %}
     {% if suggestions %}

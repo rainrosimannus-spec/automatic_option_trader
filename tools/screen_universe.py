@@ -683,7 +683,7 @@ def _anthropic_messages(prompt: str, max_tokens: int, label: str) -> str:
         "anthropic-version": "2023-06-01",
     }
     payload = {
-        "model": "claude-sonnet-4-6",
+        "model": "claude-opus-4-8",
         "max_tokens": max_tokens,
         "stream": True,
         "messages": [{"role": "user", "content": prompt}],
@@ -2944,6 +2944,11 @@ class UniverseScreener:
         qualify_empty, etf, market_cap_floor, reverse_split, no_ibkr_data, …);
         fields carry the deciding value(s) (market_cap, threshold, price, tier)."""
         self._reject_counts[category] = self._reject_counts.get(category, 0) + 1
+        # Retain the per-symbol record too (not just the count) so the run-log can show WHICH
+        # names the scan proposed but the scorer/eligibility gate dropped, and why.
+        if hasattr(self, "_rejects"):
+            self._rejects.append(
+                {"symbol": symbol, "category": category, "detail": detail or None, **fields})
         log.info("screener_reject", symbol=symbol, category=category,
                  detail=detail or None, **fields)
 
@@ -2964,6 +2969,7 @@ class UniverseScreener:
 
         all_scores: list[StockScore] = []
         self._reject_counts = {}  # reset per-run rejection tally
+        self._rejects = []        # per-symbol reject records (for the run-log breakthrough_scan block)
 
         print(f"\n{'='*60}")
         print(f"PHASE 1: Screening regular universe ({len(regions)} regions)")
@@ -3032,6 +3038,8 @@ class UniverseScreener:
         print(f"{'='*60}")
 
         breakthrough_candidates = _get_breakthrough_candidates()
+        # What the AI scan proposed this run — retained for the run-log so proposed-vs-dropped is visible.
+        self._breakthrough_proposed = [c.get("symbol") for c in breakthrough_candidates if c.get("symbol")]
         breakthrough_scores: list[StockScore] = []
         # 4b: accumulate metadata for call B; persist hook deferred to post-loop
         breakthrough_fresh_meta: list[dict] = []
