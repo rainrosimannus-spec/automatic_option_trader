@@ -80,17 +80,25 @@ def _build_portfolio_performance() -> dict:
                               # one-day return spike (NLV up, base not yet — the 6/23 +100% artifact).
 
     def _invested_asof(day: str, nlv: float) -> float:
-        """Cumulative net deposits in effect on `day`. A deposit dated up to _DEPOSIT_GRACE_DAYS in the
-        FUTURE is recognised early ONLY when this day's NLV already reflects that cash (nlv >= the
-        cumulative incl. that deposit, minus a small tolerance). That removes the deposit-date-vs-NLV
-        lag spike without ever pulling a deposit in before the money is actually there (which would
-        invert it into a negative spike on the days before)."""
+        """Cumulative net deposits in effect on `day`, recognised into the invested base only when
+        this day's NLV actually reflects the cash — in BOTH directions:
+          • a deposit dated up to _DEPOSIT_GRACE_DAYS in the FUTURE is pulled in early once NLV
+            already holds it (settle-date lag);
+          • a deposit dated on/just before `day` is HELD BACK while it is still inside the settlement
+            window AND this day's NLV has not yet caught up — e.g. a weekend deposit measured against a
+            Friday-frozen snapshot. Without this a €2M Saturday deposit divided a stale Friday NLV and
+            printed a fake −30/−47% one-weekend dip.
+        Deposits OLDER than the grace window are always counted, so a genuine later drawdown (NLV
+        legitimately below invested) still shows in full and is never clipped."""
         base = 0.0
         for d, cum in ledger:
-            if d <= day:
-                base = cum
-                continue
             try:
+                if d <= day:
+                    gap_past = (_date.fromisoformat(day) - _date.fromisoformat(d)).days
+                    if gap_past > _DEPOSIT_GRACE_DAYS or nlv >= cum * 0.98:
+                        base = cum      # settled long ago, or NLV already reflects this deposit
+                        continue
+                    break               # recent deposit not yet in this day's NLV → hold the base
                 gap = (_date.fromisoformat(d) - _date.fromisoformat(day)).days
             except Exception:
                 break
