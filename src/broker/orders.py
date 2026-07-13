@@ -94,12 +94,16 @@ def _is_permission_blocked(symbol: str) -> bool:
 
 
 def _order_blocked_by_permission(trade) -> bool:
-    """True if a rejection was a permission / no-security-definition error (Error 200)."""
+    """True if a rejection means the account can't trade this contract yet, so the symbol should
+    cool down rather than re-attempt every scan: permission / no-security-definition (Error 200),
+    or the Montréal Exchange 'MXShortCode is required' (Error 201) that CDE options hit until the
+    MX client identifier is provisioned."""
     try:
         for entry in (getattr(trade, "log", None) or []):
             code = getattr(entry, "errorCode", 0) or 0
             msg = (getattr(entry, "message", "") or "").lower()
-            if code == 200 or "no security definition" in msg or "permission" in msg:
+            if (code == 200 or "no security definition" in msg or "permission" in msg
+                    or "mxshortcode" in msg):
                 return True
     except Exception:
         pass
