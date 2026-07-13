@@ -313,18 +313,29 @@ def _upsert_injections(deposits: List[Dict], account_id: str | None) -> int:
 
         for dep in deposits:
             txid = dep.get("transaction_id") or ""
+            existing = None
             if txid:
                 # trailing space in both stored value and pattern prevents txid:12 matching txid:123
                 existing = db.query(PortfolioCapitalInjection).filter(
                     PortfolioCapitalInjection.account_id == account_id,
                     PortfolioCapitalInjection.notes.like(f"txid:{txid} %"),
                 ).first()
-            else:
+            if existing is None:
+                # (date, currency, amount) fallback against LEGACY rows only — runs even when the
+                # incoming row HAS a txid. A txid-only lookup could not see rows written before the
+                # parser captured transactionID (their notes carry no `txid:` prefix), so it re-inserted
+                # every real deposit as a duplicate — the bug that doubled the options invested base and
+                # sank the return chart to a fake −49%. The `NOT LIKE 'txid:%'` guard is critical: it
+                # matches ONLY pre-txid legacy rows, so genuinely distinct same-day/same-amount deposits
+                # (each already carrying its own txid) still land separately instead of being collapsed.
                 existing = db.query(PortfolioCapitalInjection).filter(
                     PortfolioCapitalInjection.date == dep["date"],
                     PortfolioCapitalInjection.currency == dep["currency"],
                     PortfolioCapitalInjection.amount_original == dep["amount_original"],
                     PortfolioCapitalInjection.account_id == account_id,
+                    # null-safe: a legacy row may have NULL notes; NOT(NULL LIKE ..) is NULL (falsy)
+                    (PortfolioCapitalInjection.notes.is_(None)
+                     | ~PortfolioCapitalInjection.notes.like("txid:%")),
                 ).first()
             if existing:
                 continue
