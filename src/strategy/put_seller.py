@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from src.broker.orders import sell_put
+from src.broker.orders import sell_put, _is_permission_blocked
 from src.broker.market_data import get_stock_price
 from src.core.config import get_settings
 from src.core.database import get_db
@@ -224,6 +224,10 @@ class PutSeller:
             log.info("risk_blocked", symbol=symbol, reason=risk_check.reason)
             return None
 
+        if _is_permission_blocked(symbol):
+            log.info("scan_skip_permission_blocked", symbol=symbol)
+            return None
+
         exchange = self.universe.get_exchange(symbol)
         opt_exchange = self.universe.get_options_exchange(symbol)
         currency = self.universe.get_currency(symbol)
@@ -338,6 +342,10 @@ class PutSeller:
         risk_check = self.risk.can_open_put(symbol, market=market)
         if not risk_check.allowed:
             log.info("risk_blocked", symbol=symbol, reason=risk_check.reason)
+            return False
+
+        if _is_permission_blocked(symbol):
+            log.info("scan_skip_permission_blocked", symbol=symbol)
             return False
 
         # Get exchange/currency for this stock

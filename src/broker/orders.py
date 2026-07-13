@@ -7,6 +7,7 @@ All access serialized through get_ib_lock() to prevent conflicts.
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timedelta
 from typing import Optional
 
 from ib_insync import (
@@ -17,6 +18,130 @@ from src.broker.connection import get_ib, get_ib_lock, is_connected
 from src.core.logger import get_logger
 
 log = get_logger(__name__)
+
+
+# ── Foreign-venue option routing + guards ──────────────────────────────────────────────────
+# US options place on SMART/USD and fill fine; EVERYTHING below is gated on a non-SMART
+# exchange so the US path stays byte-for-byte unchanged. Foreign option orders were failing
+# because the order was built on the underlying's EQUITY exchange (e.g. WKL on AEB) instead of
+# the DERIVATIVES exchange IBKR actually lists the option on (FTA/EUREX) → Error 200
+# "No security definition", perm_id=0. We re-resolve the real option exchange + tradingClass
+# that IBKR reports (reqSecDefOptParams) and qualify the contract before placing. Mirrors the
+# portfolio buyer's foreign fixes (src/portfolio/buyer.py:36-129).
+
+_OUTSIDE_RTH_CCY = {"USD", "CAD", "EUR", "GBP", "CHF", "NOK", "SEK", "DKK"}
+
+
+def _outside_rth_ok(currency: str | None) -> bool:
+    return (currency or "USD").upper() in _OUTSIDE_RTH_CCY
+
+
+# (timezone, open_hour, close_hour, trading_weekdays) — weekday() Mon=0 … Sun=6. Mirrors
+# buyer._MARKET_HOURS: never send a foreign order into a shut venue (it can't reach the
+# exchange, sits PendingSubmit, gets cancelled). TASE (ILS) trades Sun–Thu.
+_MON_FRI = (0, 1, 2, 3, 4)
+_MARKET_HOURS = {
+    "USD": ("US/Eastern", 9, 16, _MON_FRI),
+    "CAD": ("US/Eastern", 9, 16, _MON_FRI),
+    "EUR": ("Europe/Berlin", 9, 17, _MON_FRI),
+    "CHF": ("Europe/Berlin", 9, 17, _MON_FRI),
+    "GBP": ("Europe/London", 8, 16, _MON_FRI),
+    "NOK": ("Europe/Berlin", 9, 17, _MON_FRI),
+    "SEK": ("Europe/Berlin", 9, 17, _MON_FRI),
+    "DKK": ("Europe/Berlin", 9, 17, _MON_FRI),
+    "JPY": ("Asia/Tokyo", 9, 15, _MON_FRI),
+    "AUD": ("Australia/Sydney", 10, 16, _MON_FRI),
+    "HKD": ("Asia/Hong_Kong", 9, 16, _MON_FRI),
+    "SGD": ("Asia/Singapore", 9, 17, _MON_FRI),
+    "ZAR": ("Africa/Johannesburg", 9, 17, _MON_FRI),
+    "ILS": ("Asia/Jerusalem", 10, 17, (6, 0, 1, 2, 3)),
+}
+
+
+def _market_open(currency: str | None) -> bool:
+    """True when the venue that settles `currency` is in its regular session. Unknown ccy → True."""
+    import pytz
+    hours = _MARKET_HOURS.get((currency or "").upper())
+    if not hours:
+        return True
+    tz_name, open_h, close_h, days = hours
+    now = datetime.now(pytz.timezone(tz_name))
+    return now.weekday() in days and open_h <= now.hour < close_h
+
+
+# Permission-block registry: after IBKR rejects a foreign order for no-trading-permission /
+# no-security-definition (Error 200), pause the SYMBOL so the scanner stops re-creating doomed
+# suggestions. In-memory (a restart clears it → one fresh attempt post-restart). US never hits
+# Error 200, so US names are never blocked.
+_PERMISSION_BLOCK_HOURS = 24.0
+_permission_blocked: dict[str, datetime] = {}
+
+
+def _mark_permission_blocked(symbol: str, hours: float = _PERMISSION_BLOCK_HOURS) -> None:
+    if symbol:
+        _permission_blocked[symbol] = datetime.utcnow() + timedelta(hours=hours)
+        log.warning("option_symbol_permission_blocked", symbol=symbol, hours=hours)
+
+
+def _is_permission_blocked(symbol: str) -> bool:
+    until = _permission_blocked.get(symbol)
+    if not until:
+        return False
+    if datetime.utcnow() < until:
+        return True
+    _permission_blocked.pop(symbol, None)
+    return False
+
+
+def _order_blocked_by_permission(trade) -> bool:
+    """True if a rejection was a permission / no-security-definition error (Error 200)."""
+    try:
+        for entry in (getattr(trade, "log", None) or []):
+            code = getattr(entry, "errorCode", 0) or 0
+            msg = (getattr(entry, "message", "") or "").lower()
+            if code == 200 or "no security definition" in msg or "permission" in msg:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _resolve_foreign_option(
+    ib, symbol: str, expiry: str, strike: float, right: str,
+    exchange: str, currency: str,
+) -> Optional[Option]:
+    """Build a QUALIFIED Option on the real derivatives exchange IBKR reports for a foreign name.
+
+    The `exchange` passed in is the underlying's EQUITY venue (e.g. AEB), which usually has no
+    option listing → Error 200. IBKR's reqSecDefOptParams lists the real option exchanges
+    (e.g. FTA/EUREX). Prefer the native venue, then any NON-SMART venue (foreign options live on
+    their local derivatives exchange; SMART is avoided because it hangs at placement on some
+    venues, e.g. TSEJ), then whatever's left. Returns a qualified Option (conId>0) or None.
+
+    Caller already holds get_ib_lock(); get_option_chains is lock-free."""
+    from src.broker.market_data import get_option_chains
+
+    chains = get_option_chains(symbol, exchange, currency)
+    if not chains:
+        log.warning("option_exchange_unresolved", symbol=symbol, exchange=exchange, currency=currency)
+        return None
+    chain = (
+        next((c for c in chains if c.exchange == exchange), None)
+        or next((c for c in chains if c.exchange != "SMART"), None)
+        or chains[0]
+    )
+    opt = Option(symbol, expiry, strike, right, chain.exchange, currency=currency)
+    opt.multiplier = "100"
+    if chain.exchange != "SMART" and getattr(chain, "tradingClass", None):
+        opt.tradingClass = chain.tradingClass
+    ib.qualifyContracts(opt)
+    if not getattr(opt, "conId", 0):
+        log.error("option_qualify_failed", symbol=symbol, exchange=chain.exchange, currency=currency)
+        return None
+    log.info("option_exchange_resolved", symbol=symbol, requested=exchange,
+             routed=chain.exchange, trading_class=getattr(opt, "tradingClass", None),
+             con_id=opt.conId)
+    return opt
 
 
 def get_whatif_margin(
@@ -65,8 +190,21 @@ def sell_put(
     """Sell to open a put option."""
     with get_ib_lock():
         ib = get_ib()
-        contract = Option(symbol, expiry, strike, "P", exchange, currency=currency)
-        contract.multiplier = "100"
+        if exchange and exchange != "SMART":
+            if not _market_open(currency):
+                log.info("option_market_closed_skip", symbol=symbol, exchange=exchange,
+                         currency=currency, action="sell_put")
+                return None
+            contract = _resolve_foreign_option(ib, symbol, expiry, strike, "P", exchange, currency)
+            if contract is None:
+                log.error("order_rejected", symbol=symbol, strike=strike, expiry=expiry,
+                          status="unresolved", reason="foreign option contract not resolved")
+                return None
+            rth = _outside_rth_ok(currency)
+        else:
+            contract = Option(symbol, expiry, strike, "P", exchange, currency=currency)
+            contract.multiplier = "100"
+            rth = False
 
         if limit_price:
             order = LimitOrder("SELL", quantity, limit_price)
@@ -74,7 +212,7 @@ def sell_put(
             order = MarketOrder("SELL", quantity)
 
         order.tif = "DAY"
-        order.outsideRth = False
+        order.outsideRth = rth
 
         log.info("placing_sell_put",
                  symbol=symbol, strike=strike, expiry=expiry,
@@ -95,6 +233,8 @@ def sell_put(
         if status in ("Cancelled", "Inactive"):
             log.error("order_rejected", symbol=symbol, strike=strike,
                       expiry=expiry, status=status, reason=log_msg[:200])
+            if exchange != "SMART" and _order_blocked_by_permission(trade):
+                _mark_permission_blocked(symbol)
             return None
 
         if status == "PreSubmitted":
@@ -126,15 +266,28 @@ def sell_call_to_open_naked(
     Requires IBKR portfolio margin (the broker must accept naked short calls)."""
     with get_ib_lock():
         ib = get_ib()
-        contract = Option(symbol, expiry, strike, "C", exchange, currency=currency)
-        contract.multiplier = "100"
+        if exchange and exchange != "SMART":
+            if not _market_open(currency):
+                log.info("option_market_closed_skip", symbol=symbol, exchange=exchange,
+                         currency=currency, action="sell_call_naked")
+                return None
+            contract = _resolve_foreign_option(ib, symbol, expiry, strike, "C", exchange, currency)
+            if contract is None:
+                log.error("naked_call_rejected", symbol=symbol, strike=strike, expiry=expiry,
+                          status="unresolved", reason="foreign option contract not resolved")
+                return None
+            rth = _outside_rth_ok(currency)
+        else:
+            contract = Option(symbol, expiry, strike, "C", exchange, currency=currency)
+            contract.multiplier = "100"
+            rth = False
 
         if limit_price:
             order = LimitOrder("SELL", quantity, limit_price)
         else:
             order = MarketOrder("SELL", quantity)
         order.tif = "DAY"
-        order.outsideRth = False
+        order.outsideRth = rth
 
         log.info("placing_sell_call_naked",
                  symbol=symbol, strike=strike, expiry=expiry,
@@ -152,6 +305,8 @@ def sell_call_to_open_naked(
         if status in ("Cancelled", "Inactive"):
             log.error("naked_call_rejected", symbol=symbol, strike=strike,
                       expiry=expiry, status=status, reason=log_msg[:200])
+            if exchange != "SMART" and _order_blocked_by_permission(trade):
+                _mark_permission_blocked(symbol)
             return None
         return trade
 
@@ -411,8 +566,21 @@ def sell_covered_call(
     """Sell to open a covered call."""
     with get_ib_lock():
         ib = get_ib()
-        contract = Option(symbol, expiry, strike, "C", exchange, currency=currency)
-        ib.qualifyContracts(contract)
+        if exchange and exchange != "SMART":
+            if not _market_open(currency):
+                log.info("option_market_closed_skip", symbol=symbol, exchange=exchange,
+                         currency=currency, action="sell_call")
+                return None
+            contract = _resolve_foreign_option(ib, symbol, expiry, strike, "C", exchange, currency)
+            if contract is None:
+                log.error("order_rejected", symbol=symbol, strike=strike, expiry=expiry,
+                          status="unresolved", reason="foreign option contract not resolved")
+                return None
+            rth = _outside_rth_ok(currency)
+        else:
+            contract = Option(symbol, expiry, strike, "C", exchange, currency=currency)
+            ib.qualifyContracts(contract)
+            rth = False
 
         if limit_price:
             order = LimitOrder("SELL", quantity, limit_price)
@@ -420,7 +588,7 @@ def sell_covered_call(
             order = MarketOrder("SELL", quantity)
 
         order.tif = "DAY"
-        order.outsideRth = False
+        order.outsideRth = rth
 
         log.info("placing_sell_call",
                  symbol=symbol, strike=strike, expiry=expiry,
@@ -441,6 +609,8 @@ def sell_covered_call(
         if status in ("Cancelled", "Inactive"):
             log.error("order_rejected", symbol=symbol, strike=strike,
                       expiry=expiry, status=status, reason=log_msg[:200])
+            if exchange != "SMART" and _order_blocked_by_permission(trade):
+                _mark_permission_blocked(symbol)
             return None
 
         return trade
