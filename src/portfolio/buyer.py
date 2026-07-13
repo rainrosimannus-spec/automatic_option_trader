@@ -38,6 +38,11 @@ log = get_logger(__name__)
 # — their orders rest and transmit when the local market opens.
 _OUTSIDE_RTH_CCY = {"USD", "CAD", "EUR", "GBP", "CHF", "NOK", "SEK", "DKK"}
 
+# Venues that advertise SMART in validExchanges but where SMART does NOT work at placement:
+# Tokyo (TSEJ) lists SMART yet SMART silently hangs (permId=0, PendingSubmit, cancel→Error 10147),
+# never a fill in 22 attempts. Force these to their native book regardless of validExchanges.
+_SMART_HANGS_EXCH = {"TSEJ"}
+
 
 def _outside_rth_ok(currency: str | None) -> bool:
     return (currency or "USD").upper() in _OUTSIDE_RTH_CCY
@@ -3427,9 +3432,11 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                         s.review_note = f"Contract not resolved on {exch} yet — will retry"
                 return "approved"
             valid = [e.strip() for e in (details[0].validExchanges or "").split(",") if e.strip()]
-            contract.exchange = "SMART" if "SMART" in valid else exch
+            force_native = exch in _SMART_HANGS_EXCH
+            contract.exchange = exch if force_native else ("SMART" if "SMART" in valid else exch)
             log.info("portfolio_order_routing", id=suggestion_id, symbol=symbol,
                      route=contract.exchange, native=exch, smart_valid=("SMART" in valid),
+                     forced_native=force_native,
                      valid_exchanges=details[0].validExchanges)
         else:
             contract = Stock(symbol, "SMART", ccy)
