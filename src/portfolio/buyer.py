@@ -3108,6 +3108,23 @@ def _ensure_currency_funding(ib, stock_ccy: str, base_ccy: str, notional_ccy: fl
                 log.warning("portfolio_fx_no_rate", ccy=ccy, base=base)
             return True                   # proceed; IBKR auto-FX funds the sub-min / unpriced leg
 
+        # EUR-liquidity precheck (mirrors the options twin fx_treasury._convert_to_ccy). The leg
+        # SELLs `pair.symbol` — for the canonical EUR.<local> pair that's the base (EUR), qty in EUR.
+        # If the account doesn't actually HOLD those euros (everything parked in XEON, and an Asian-
+        # session buy can't unwind the park because Xetra is shut) the SELL opens a leveraged/negative
+        # EUR balance that IBKR rejects with Error 201 'FX trade would expose account to currency
+        # leverage'. Defer (fail-closed) rather than fire the doomed order — the caller's
+        # funding_attempts/expire logic then handles it (no order spam). _ccy_cash returns None on a
+        # read error, so we only defer on a POSITIVE shortfall, never on an unreadable balance.
+        if plan["action"] == "SELL":
+            liquid_sold = _ccy_cash(ib, pair.symbol)
+            if liquid_sold is not None and liquid_sold < plan["qty"]:
+                log.warning("portfolio_fx_deferred_insufficient_liquidity",
+                            ccy=ccy, base=base, sold_ccy=pair.symbol,
+                            need=round(plan["qty"]), have=round(liquid_sold),
+                            pair=pair.symbol + pair.currency)
+                return False
+
         # Above the IDEALPRO minimum → place the real conversion and verify the fill (fail-closed).
         with get_portfolio_lock():
             trade = ib.placeOrder(pair, MarketOrder(plan["action"], plan["qty"]))
