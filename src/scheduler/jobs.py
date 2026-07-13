@@ -401,7 +401,7 @@ def job_execute_queued():
         with get_db() as db:
             candidates = db.query(TradeSuggestion).filter(
                 TradeSuggestion.status.in_(["queued", "pending"]),
-                TradeSuggestion.source == "options",
+                TradeSuggestion.source.in_(["options", "wheel_exit"]),
             ).order_by(TradeSuggestion.rank.asc()).limit(3).all()
 
             for s in candidates:
@@ -412,6 +412,25 @@ def job_execute_queued():
                 if headroom is not None:
                     # Covered calls are fully covered by held stock — zero margin required
                     if s.action == "sell_call":
+                        selected = s
+                        break
+
+                    # Wheel-exit stock sell reduces exposure — no option whatif applies. Claim
+                    # it here (queued/pending → executing) so _execute_approved_order_inner,
+                    # which only runs approved/executing rows, actually executes it rather than
+                    # skipping (the sell_call fast-path above relies on manual approval instead).
+                    if s.action == "sell_stock":
+                        from sqlalchemy import update as _sa_update
+                        claimed = db.execute(
+                            _sa_update(TradeSuggestion)
+                            .where(TradeSuggestion.id == s.id,
+                                   TradeSuggestion.status.in_(["queued", "pending"]))
+                            .values(status="executing")
+                        )
+                        db.commit()
+                        if claimed.rowcount != 1:
+                            log.info("execute_queued_claim_lost", id=s.id, symbol=s.symbol)
+                            continue
                         selected = s
                         break
                     try:
