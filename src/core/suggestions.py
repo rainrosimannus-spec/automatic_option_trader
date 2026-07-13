@@ -652,6 +652,36 @@ def _execute_approved_order_inner(suggestion_id: int):
                     log.warning("suggestion_order_rejected", id=suggestion_id,
                                 symbol=s.symbol)
 
+            elif s.action == "sell_stock" and s.source == "wheel_exit" and s.quantity:
+                # Wheel exit: an assigned lot recovered to/above its assignment strike,
+                # so the wheel sells the stock directly instead of writing a CC. Without
+                # this branch the suggestion just expired and the lot was never sold.
+                log.info("executing_wheel_exit_sell", id=suggestion_id, symbol=s.symbol,
+                         shares=s.quantity, limit=s.limit_price, currency=currency)
+                from src.broker.orders import sell_stock
+                trade = sell_stock(
+                    symbol=s.symbol,
+                    shares=s.quantity,
+                    limit_price=s.limit_price,
+                    currency=currency,
+                )
+                if trade:
+                    fill_status = trade.orderStatus.status
+                    if fill_status == "Filled":
+                        s.status = "executed"
+                        log.info("suggestion_executed", id=suggestion_id,
+                                 symbol=s.symbol, action=s.action)
+                    else:
+                        s.status = "submitted"
+                        s.review_note = f"Order {fill_status} — awaiting fill"
+                        log.info("suggestion_submitted", id=suggestion_id,
+                                 symbol=s.symbol, action=s.action, order_status=fill_status)
+                    _record_trade(db, s, "sell_stock")
+                else:
+                    s.status = "approved"
+                    s.review_note = "Stock sell rejected by IBKR"
+                    log.warning("suggestion_order_rejected", id=suggestion_id, symbol=s.symbol)
+
             elif s.action == "buy_stock":
                 from src.broker.orders import sell_put  # placeholder
                 log.info("buy_stock_approved_manual_execution",

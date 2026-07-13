@@ -412,6 +412,47 @@ def sell_treasury_etf(
         return trade
 
 
+def sell_stock(
+    symbol: str,
+    shares: int,
+    limit_price: Optional[float] = None,
+    currency: str = "USD",
+) -> Optional[IBTrade]:
+    """Liquidate a held stock lot — the wheel exit for an assigned put whose stock
+    has recovered to/above its assignment strike (`wheel_exit`). US/SMART only for
+    now (matches the working wheel path; foreign stock exits are out of scope until
+    the foreign order path is proven end-to-end). Mirror of sell_treasury_etf:
+    ib_lock, qualify, LIMIT when a price is given else MARKET, returns IBTrade/None."""
+    with get_ib_lock():
+        ib = get_ib()
+        contract = Stock(symbol, "SMART", currency)
+        ib.qualifyContracts(contract)
+
+        if limit_price:
+            order = LimitOrder("SELL", shares, limit_price)
+            # Wheel EXIT: allow extended-hours fills. Safe because it's a LIMIT (fills only
+            # at the exit price or better) — gives the recovered lot more chance to clear and
+            # goes live the instant RTH opens. A market order can't run outsideRth, so keep RTH.
+            order.outsideRth = True
+        else:
+            order = MarketOrder("SELL", shares)
+            order.outsideRth = False
+        order.tif = "DAY"
+
+        log.info("placing_sell_stock", symbol=symbol, shares=shares, limit=limit_price)
+        trade = ib.placeOrder(contract, order)
+        ib.sleep(2)
+
+        status = trade.orderStatus.status
+        log_msg = trade.log[-1].message if trade.log and trade.log[-1].message else ""
+        log.info("sell_stock_status", symbol=symbol, status=status, message=log_msg[:200])
+
+        if status in ("Cancelled", "Inactive"):
+            log.error("sell_stock_rejected", symbol=symbol, status=status, reason=log_msg[:200])
+            return None
+        return trade
+
+
 def _verify_short_position(symbol: str, expiry: str, strike: float,
                            right: str, quantity: int) -> bool:
     """
