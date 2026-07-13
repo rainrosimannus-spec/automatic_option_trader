@@ -327,8 +327,13 @@ class PutSeller:
             rank=rank,
             rank_score=cand["score"],
             funding_source="cash",
-            opt_exchange=cand.get("opt_exchange"),
+            # Persist the SCAN-resolved option identity: the qualified contract already carries
+            # the real derivatives exchange (e.g. FTA/EUREX, not the AEB stock exchange), its
+            # conId, and tradingClass. The executor places from these with no IBKR lookup.
+            opt_exchange=(getattr(candidate.contract, "exchange", None) or cand.get("opt_exchange")),
             opt_currency=cand.get("currency"),
+            opt_con_id=(getattr(candidate.contract, "conId", None) or None),
+            trading_class=(getattr(candidate.contract, "tradingClass", None) or None),
         )
         log.info("options_ranked_suggestion",
                  rank=rank, symbol=symbol,
@@ -492,6 +497,10 @@ class PutSeller:
                 bid_at_entry=getattr(candidate, "bid", None),
                 ask_at_entry=getattr(candidate, "ask", None),
                 mid_at_entry=getattr(candidate, "mid", None),
+                opt_exchange=(getattr(candidate.contract, "exchange", None) or opt_exchange),
+                opt_currency=currency,
+                opt_con_id=(getattr(candidate.contract, "conId", None) or None),
+                trading_class=(getattr(candidate.contract, "tradingClass", None) or None),
             )
             if suggestion:
                 log.info("options_put_suggestion_created",
@@ -507,8 +516,10 @@ class PutSeller:
             strike=candidate.strike,
             quantity=quantity,
             limit_price=round(candidate.bid, 2),
-            exchange=opt_exchange,
+            exchange=(getattr(candidate.contract, "exchange", None) or opt_exchange),
             currency=currency,
+            trading_class=getattr(candidate.contract, "tradingClass", None),
+            con_id=getattr(candidate.contract, "conId", None),
         )
 
         if trade is None:
@@ -612,8 +623,10 @@ class PutSeller:
             strike=call_cand.strike,
             quantity=quantity,
             limit_price=round(call_cand.bid, 2),
-            exchange=opt_exchange,
+            exchange=(getattr(call_cand.contract, "exchange", None) or opt_exchange),
             currency=currency,
+            trading_class=getattr(call_cand.contract, "tradingClass", None),
+            con_id=getattr(call_cand.contract, "conId", None),
         )
         if trade is None:
             log.warning("strangle_call_order_failed",

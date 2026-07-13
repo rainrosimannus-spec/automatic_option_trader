@@ -764,8 +764,10 @@ class WheelManager:
             strike=candidate.strike,
             quantity=contracts,
             limit_price=round(candidate.bid, 2),
-            exchange=exchange,
+            exchange=(getattr(candidate.contract, "exchange", None) or exchange),
             currency=currency,
+            trading_class=getattr(candidate.contract, "tradingClass", None),
+            con_id=getattr(candidate.contract, "conId", None),
         )
 
         if not trade:
@@ -821,8 +823,10 @@ class WheelManager:
             rank=1,
             rank_score=1.0,
             funding_source="wheel",
-            opt_exchange=exchange,
+            opt_exchange=(getattr(candidate.contract, "exchange", None) or exchange),
             opt_currency=currency,
+            opt_con_id=(getattr(candidate.contract, "conId", None) or None),
+            trading_class=(getattr(candidate.contract, "tradingClass", None) or None),
             expires_at=datetime.utcnow() + timedelta(days=30),
         )
         db.add(suggestion)

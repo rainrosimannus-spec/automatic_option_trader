@@ -101,6 +101,11 @@ class TradeSuggestion(Base):
     # Exchange/currency for order execution (options may differ from stock exchange)
     opt_exchange: Mapped[Optional[str]] = mapped_column(String(15), nullable=True)
     opt_currency: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
+    # Foreign-option identity resolved AT SCAN TIME (real derivatives exchange e.g. FTA/EUREX).
+    # Lets the executor place a foreign option with NO placement-time IBKR lookup (no event-loop
+    # race). conId makes the contract unambiguous; tradingClass disambiguates venue option classes.
+    opt_con_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    trading_class: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     # Trailing stop (for sell_stock_review and reduce_position_review)
     trailing_stop_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -194,6 +199,8 @@ def create_suggestion(
     funding_source: str = "cash",
     opt_exchange: str | None = None,
     opt_currency: str | None = None,
+    opt_con_id: int | None = None,
+    trading_class: str | None = None,
     trailing_stop_pct: float | None = None,
     trailing_peak_price: float | None = None,
     bid_at_entry: float | None = None,
@@ -265,6 +272,8 @@ def create_suggestion(
         funding_source=funding_source,
         opt_exchange=opt_exchange,
         opt_currency=opt_currency,
+        opt_con_id=opt_con_id,
+        trading_class=trading_class,
         trailing_stop_pct=trailing_stop_pct,
         trailing_peak_price=trailing_peak_price,
         bid_at_entry=bid_at_entry,
@@ -580,6 +589,8 @@ def _execute_approved_order_inner(suggestion_id: int):
                     limit_price=s.limit_price,
                     exchange=opt_exchange,
                     currency=currency,
+                    trading_class=s.trading_class,
+                    con_id=s.opt_con_id,
                 )
                 if trade:
                     # Check if the order actually filled or is just submitted/queued
@@ -616,6 +627,8 @@ def _execute_approved_order_inner(suggestion_id: int):
                     limit_price=s.limit_price,
                     exchange=opt_exchange,
                     currency=currency,
+                    trading_class=s.trading_class,
+                    con_id=s.opt_con_id,
                 )
                 if trade:
                     fill_status = trade.orderStatus.status

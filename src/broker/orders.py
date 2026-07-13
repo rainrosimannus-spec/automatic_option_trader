@@ -106,41 +106,25 @@ def _order_blocked_by_permission(trade) -> bool:
     return False
 
 
-def _resolve_foreign_option(
-    ib, symbol: str, expiry: str, strike: float, right: str,
-    exchange: str, currency: str,
-) -> Optional[Option]:
-    """Build a QUALIFIED Option on the real derivatives exchange IBKR reports for a foreign name.
+def _build_foreign_option(
+    symbol: str, expiry: str, strike: float, right: str,
+    exchange: str, currency: str, con_id: int | None, trading_class: str | None,
+) -> Option:
+    """Build a foreign option contract from identity RESOLVED AT SCAN TIME (the real derivatives
+    exchange e.g. FTA/EUREX, conId, tradingClass) and passed in via the suggestion.
 
-    The `exchange` passed in is the underlying's EQUITY venue (e.g. AEB), which usually has no
-    option listing → Error 200. IBKR's reqSecDefOptParams lists the real option exchanges
-    (e.g. FTA/EUREX). Prefer the native venue, then any NON-SMART venue (foreign options live on
-    their local derivatives exchange; SMART is avoided because it hangs at placement on some
-    venues, e.g. TSEJ), then whatever's left. Returns a qualified Option (conId>0) or None.
-
-    Caller already holds get_ib_lock(); get_option_chains is lock-free."""
-    from src.broker.market_data import get_option_chains
-
-    chains = get_option_chains(symbol, exchange, currency)
-    if not chains:
-        log.warning("option_exchange_unresolved", symbol=symbol, exchange=exchange, currency=currency)
-        return None
-    chain = (
-        next((c for c in chains if c.exchange == exchange), None)
-        or next((c for c in chains if c.exchange != "SMART"), None)
-        or chains[0]
-    )
-    opt = Option(symbol, expiry, strike, right, chain.exchange, currency=currency)
+    Deliberately does NO IBKR calls — no qualify, no reqSecDefOptParams — so it never touches the
+    event loop (lock-only). The scan already qualified this exact contract, so conId makes the
+    placement unambiguous; IBKR resolves it the same way it resolves the unqualified US SMART
+    contracts the wheel has always placed."""
+    opt = Option(symbol, expiry, strike, right, exchange, currency=currency)
     opt.multiplier = "100"
-    if chain.exchange != "SMART" and getattr(chain, "tradingClass", None):
-        opt.tradingClass = chain.tradingClass
-    ib.qualifyContracts(opt)
-    if not getattr(opt, "conId", 0):
-        log.error("option_qualify_failed", symbol=symbol, exchange=chain.exchange, currency=currency)
-        return None
-    log.info("option_exchange_resolved", symbol=symbol, requested=exchange,
-             routed=chain.exchange, trading_class=getattr(opt, "tradingClass", None),
-             con_id=opt.conId)
+    if con_id:
+        opt.conId = con_id
+    if trading_class:
+        opt.tradingClass = trading_class
+    log.info("option_foreign_route", symbol=symbol, exchange=exchange,
+             con_id=con_id, trading_class=trading_class)
     return opt
 
 
@@ -186,6 +170,8 @@ def sell_put(
     limit_price: Optional[float] = None,
     exchange: str = "SMART",
     currency: str = "USD",
+    trading_class: str | None = None,
+    con_id: int | None = None,
 ) -> Optional[IBTrade]:
     """Sell to open a put option."""
     with get_ib_lock():
@@ -195,11 +181,8 @@ def sell_put(
                 log.info("option_market_closed_skip", symbol=symbol, exchange=exchange,
                          currency=currency, action="sell_put")
                 return None
-            contract = _resolve_foreign_option(ib, symbol, expiry, strike, "P", exchange, currency)
-            if contract is None:
-                log.error("order_rejected", symbol=symbol, strike=strike, expiry=expiry,
-                          status="unresolved", reason="foreign option contract not resolved")
-                return None
+            contract = _build_foreign_option(symbol, expiry, strike, "P", exchange, currency,
+                                             con_id, trading_class)
             rth = _outside_rth_ok(currency)
         else:
             contract = Option(symbol, expiry, strike, "P", exchange, currency=currency)
@@ -253,6 +236,8 @@ def sell_call_to_open_naked(
     limit_price: Optional[float] = None,
     exchange: str = "SMART",
     currency: str = "USD",
+    trading_class: str | None = None,
+    con_id: int | None = None,
 ) -> Optional[IBTrade]:
     """Sell to open a NAKED short call — strangle leg (no underlying stock).
 
@@ -271,11 +256,8 @@ def sell_call_to_open_naked(
                 log.info("option_market_closed_skip", symbol=symbol, exchange=exchange,
                          currency=currency, action="sell_call_naked")
                 return None
-            contract = _resolve_foreign_option(ib, symbol, expiry, strike, "C", exchange, currency)
-            if contract is None:
-                log.error("naked_call_rejected", symbol=symbol, strike=strike, expiry=expiry,
-                          status="unresolved", reason="foreign option contract not resolved")
-                return None
+            contract = _build_foreign_option(symbol, expiry, strike, "C", exchange, currency,
+                                             con_id, trading_class)
             rth = _outside_rth_ok(currency)
         else:
             contract = Option(symbol, expiry, strike, "C", exchange, currency=currency)
@@ -562,6 +544,8 @@ def sell_covered_call(
     limit_price: Optional[float] = None,
     exchange: str = "SMART",
     currency: str = "USD",
+    trading_class: str | None = None,
+    con_id: int | None = None,
 ) -> Optional[IBTrade]:
     """Sell to open a covered call."""
     with get_ib_lock():
@@ -571,11 +555,8 @@ def sell_covered_call(
                 log.info("option_market_closed_skip", symbol=symbol, exchange=exchange,
                          currency=currency, action="sell_call")
                 return None
-            contract = _resolve_foreign_option(ib, symbol, expiry, strike, "C", exchange, currency)
-            if contract is None:
-                log.error("order_rejected", symbol=symbol, strike=strike, expiry=expiry,
-                          status="unresolved", reason="foreign option contract not resolved")
-                return None
+            contract = _build_foreign_option(symbol, expiry, strike, "C", exchange, currency,
+                                             con_id, trading_class)
             rth = _outside_rth_ok(currency)
         else:
             contract = Option(symbol, expiry, strike, "C", exchange, currency=currency)

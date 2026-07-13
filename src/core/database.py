@@ -134,6 +134,11 @@ def _migrate_columns(engine):
         # Foreign-currency FX funding — count failed pre-buy conversion attempts so an unfundable
         # foreign buy expires+alerts instead of churning 'approved' forever (June 2026)
         ("trade_suggestions", "funding_attempts", "INTEGER DEFAULT 0"),
+        # Foreign-option identity resolved AT SCAN TIME (real derivatives exchange e.g. FTA/EUREX
+        # + conId + tradingClass) so the executor places a foreign option with no placement-time
+        # IBKR lookup / event-loop race (July 2026)
+        ("trade_suggestions", "opt_con_id", "INTEGER"),
+        ("trade_suggestions", "trading_class", "VARCHAR(20)"),
     ]
     from sqlalchemy import text
     with engine.connect() as conn:
