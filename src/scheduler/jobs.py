@@ -140,6 +140,20 @@ def job_scan_market(market: str):
                                  market=market, symbol=sym,
                                  order_id=oo.order.orderId, action=action)
                         continue
+                    # Never sweep stock orders: the option scan only ever
+                    # places short-option *entry* orders, so any STK order on
+                    # a scanned symbol belongs to another path. A stock SELL
+                    # here is a wheel_exit lot sale (an assigned lot sold
+                    # at/above the called-away level) that we WANT to fill —
+                    # cancelling it strands the lot uncovered AND unsold, and
+                    # leaves the wheel_exit suggestion stuck 'submitted' so no
+                    # retry ever fires (the ISRG case, 2026-07-13).
+                    sec_type = str(getattr(oo.contract, 'secType', '')).upper()
+                    if sec_type == 'STK':
+                        log.info("scan_skip_stock_order",
+                                 market=market, symbol=sym,
+                                 order_id=oo.order.orderId, action=action)
+                        continue
                     log.info("scan_cancelling_stale_order",
                              market=market, symbol=sym,
                              order_id=oo.order.orderId)
