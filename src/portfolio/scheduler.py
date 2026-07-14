@@ -420,7 +420,8 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
             # PHASE 1: Screen universe
             # ══════════════════════════════════════════════════════
             from tools.screen_universe import (
-                UniverseScreener, write_screened_universe, write_options_universe
+                UniverseScreener, write_screened_universe, write_options_universe,
+                substitute_us_twins,
             )
             from pathlib import Path
 
@@ -459,6 +460,10 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
                 portfolio_universe,
                 Path("config/screened_universe.yaml"),
             )
+            # Reroute foreign names whose native option venue doesn't fill
+            # (Montréal/CDE, TSEJ, SEHK, NSE, ASX) to their US-listed twin
+            # before persisting — Amsterdam (AEB) and London (LSE) stay native.
+            substitute_us_twins(options_universe, ib)
             write_options_universe(
                 options_universe,
                 Path("config/options_universe.yaml"),

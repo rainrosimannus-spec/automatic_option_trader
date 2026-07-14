@@ -3542,6 +3542,65 @@ def write_screened_universe(stocks: list[StockScore], path: Path) -> None:
     print(f"\n✅ Screened universe written to {path}")
 
 
+# ── US-twin substitution ────────────────────────────────────────────────────
+# Verified-filling non-US option venues. A name whose native option venue is NOT
+# one of these (and isn't already USD) reroutes to its US-listed twin when one
+# exists: the Montréal MXShortCode (Error 201), the TSEJ/OSE PendingSubmit hang,
+# and the SEHK/NSE/ASX rejects never fill, so a dual-listed US option is traded
+# instead. Extend this set as new native venues are verified to fill live.
+WORKING_OPTION_VENUES = {"AEB", "LSE"}
+US_PRIMARY_EXCHANGES = {"NYSE", "NASDAQ", "ARCA", "AMEX", "BATS", "ISLAND",
+                        "NASDAQOM", "PINK", "PSE"}
+
+
+def option_venue_works(exchange: str, currency: str) -> bool:
+    """True when a name's native option venue is known to fill: US (USD) or a
+    verified non-US derivatives venue (Amsterdam AEB, London LSE)."""
+    return currency == "USD" or (exchange or "") in WORKING_OPTION_VENUES
+
+
+def resolve_us_twin(ib, symbol: str) -> Optional[str]:
+    """Return the US primary exchange when `symbol` has a US-listed twin with
+    tradable options (same ticker on SMART/USD), else None. NO orders — a
+    qualifyContracts + reqSecDefOptParams probe only."""
+    try:
+        stk = Stock(symbol, "SMART", "USD")
+        q = ib.qualifyContracts(stk)
+        if not q or not stk.conId:
+            return None
+        prim = (stk.primaryExchange or "").upper()
+        if prim not in US_PRIMARY_EXCHANGES:
+            return None
+        chains = ib.reqSecDefOptParams(stk.symbol, "", stk.secType, stk.conId)
+        if not chains:
+            return None
+        return prim
+    except Exception as e:  # pragma: no cover — IBKR hiccup, treat as no twin
+        log.warning("us_twin_lookup_failed", symbol=symbol, error=str(e)[:120])
+        return None
+
+
+def substitute_us_twins(stocks: list[StockScore], ib) -> None:
+    """Reroute foreign option names whose native venue doesn't fill to their
+    US-listed twin (SMART/USD) IN PLACE. Names on working venues (US/AEB/LSE)
+    are never touched; names with no US twin are left native (may not fill).
+    Call right before write_options_universe so the persisted universe already
+    carries the US listing — no scan-time IBKR round-trip needed."""
+    for s in stocks:
+        if option_venue_works(s.exchange, s.currency):
+            continue
+        prim = resolve_us_twin(ib, s.symbol)
+        if prim:
+            log.info("options_us_twin_substituted", symbol=s.symbol,
+                     was_currency=s.currency, was_exchange=s.exchange, us_primary=prim)
+            s.exchange = "SMART"
+            s.currency = "USD"
+        else:
+            log.info("options_no_us_twin", symbol=s.symbol,
+                     currency=s.currency, exchange=s.exchange,
+                     note="native venue not verified-working and no US twin — kept native")
+
+
 def write_options_universe(stocks: list[StockScore], path: Path) -> None:
     entries = []
     for rank, s in enumerate(stocks, 1):
@@ -3612,6 +3671,7 @@ def main():
             breakthrough_count=args.breakthrough,
             options_count=args.options_count,
         )
+        substitute_us_twins(options_universe, ib)
         print_results(portfolio_universe, options_universe)
         if not args.dry_run:
             write_screened_universe(portfolio_universe, Path(args.universe_output))
