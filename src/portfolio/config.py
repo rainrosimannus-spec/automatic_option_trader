@@ -72,6 +72,16 @@ class CompounderConfig(BaseModel):
     deploy_throttle_start_pct: float = 5.0    # SPY % over 200-DMA where slowing begins
     deploy_throttle_full_pct: float = 15.0    # …where the throttle hits its floor (matches overbought guard)
     deploy_throttle_floor: float = 0.25       # min pace fraction at extreme froth (never fully stop)
+    # Late-session execution window. GREEN (below-fair, pulling-back) names drift DOWN intraday — measured
+    # ≈ −1.8% close-vs-open and ≈ −1.0% close-vs-actual-fill across the 29 real compounder buys, and
+    # confirmed on the 5-regime OHLC backtest — so their buys are DEFERRED to the last `late_session_minutes`
+    # of each name's own session for a materially better entry, instead of firing on the first post-open scan.
+    # YELLOW (extended, near-52w-high) names are NOT deferred: their intraday drift is regime-dependent (up
+    # in melt-ups), so they keep immediate execution (they also rarely fill under the strict-fair cap). Crash
+    # tranches bypass the gate entirely (urgent deploy). With the 2h buy-scan cadence a 120-min window catches
+    # exactly one in-window pass per market per day. Set late_session_only_green=False to restore all-day buying.
+    late_session_only_green: bool = True
+    late_session_minutes: int = 120
     drawdown_tranches: list[float] = [0.10, 0.20, 0.30]  # 20% reserve fires at these SPY drawdowns
     backstop_start_days: int = 90      # if no crash within ~3mo, start bleeding the reserve in
     backstop_bleed_days: int = 180     # ...fully deployed over the following ~6mo (never idle long)

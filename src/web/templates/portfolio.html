@@ -759,6 +759,10 @@ function syncInjections() {
                     <span class="text-emerald-400 font-medium block mb-0.5">Fill policy &amp; auto-FX</span>
                     Fills the biggest underweight gap first (gap-to-target) — green (at/below fair) first, then yellow (extended) only if budget remains. Foreign legs pre-funded via IDEALPRO FX so no foreign margin loan accrues.
                 </div>
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <span class="text-emerald-400 font-medium block mb-0.5">Late-session entry (green)</span>
+                    Green (below-fair, pulling-back) buys are held to the last 120 min of each name's own session — those names drift down intraday, so late entry runs ≈1% cheaper than an at-open fill (measured across the real buys + a 5-regime backtest). Yellow (extended) names are NOT deferred (their intraday drift is regime-dependent), and a crash tranche never waits.
+                </div>
             </div>
         </div>
 

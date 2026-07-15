@@ -86,6 +86,27 @@ def _market_open(currency: str | None) -> bool:
     return now.weekday() in days and open_h <= now.hour < close_h
 
 
+def _late_session(currency: str | None, minutes: int) -> bool:
+    """True when the venue that settles `currency` is within its FINAL `minutes` of the regular session.
+
+    Used to defer GREEN compounder buys to the late session — those below-fair, pulling-back names drift
+    down intraday, so a late entry is measurably cheaper. Shares the _MARKET_HOURS table with _market_open
+    (the table must not fork). Unknown currency → True (no venue map ⇒ don't gate, matching _market_open's
+    scan-anyway fallback). minutes<=0 also returns True (gate disabled) so callers can no-op it via config."""
+    if minutes <= 0:
+        return True
+    import pytz
+    hours = _MARKET_HOURS.get((currency or "").upper())
+    if not hours:
+        return True
+    tz_name, open_h, close_h, days = hours
+    now = datetime.now(pytz.timezone(tz_name))
+    if now.weekday() not in days:
+        return False
+    close_dt = now.replace(hour=close_h, minute=0, second=0, microsecond=0)
+    return (close_dt - timedelta(minutes=minutes)) <= now < close_dt
+
+
 # ── Permission-block registry ────────────────────────────────────────────────────────────
 # When an order is rejected because the account isn't permissioned to trade that exchange yet
 # (IBKR Error 200 "No security definition" / "no trading permission" — e.g. Hong Kong/3690
@@ -991,6 +1012,17 @@ class PortfolioBuyer:
             idx = rank_idx.get(r.symbol, 0)
             is_leader = r.symbol in leaders
             green = attractiveness >= 0
+            # Late-session gate: GREEN (below-fair, pulling-back) names drift DOWN intraday, so hold their
+            # buys until the last cc.late_session_minutes of the name's OWN session for a better entry
+            # (≈ −1% vs immediate fills across the 29 real buys + the 5-regime sim). YELLOW names are NOT
+            # deferred (their intraday sign is regime-dependent — up in melt-ups) and a crash tranche never
+            # waits. Skipping just defers: the name stays ranked and the in-window scan buys it, with the
+            # full day's budget intact (spent/budget are untouched by a skip). See CompounderConfig.
+            if (green and cc.late_session_only_green and not crash_active
+                    and not _late_session(stock.currency, cc.late_session_minutes)):
+                log.debug("compounder_defer_green_to_late_session",
+                          symbol=stock.symbol, currency=stock.currency)
+                continue
             a.signal_type = "compounder_direct"
             # Conviction: green-underweight names, leaders, and crash tranches bid near market so the
             # position actually fills (Rain is stagnation-averse); extended (yellow) names that aren't
