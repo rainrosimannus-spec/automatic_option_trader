@@ -21,6 +21,7 @@ from typing import Optional
 
 from ib_insync import IB, Stock
 
+from src.core import quote_units as qu
 from src.core.logger import get_logger
 from src.portfolio.connection import _ensure_event_loop, get_portfolio_lock
 
@@ -148,15 +149,15 @@ class PortfolioAnalyzer:
             lows = [b.low for b in bars]
             volumes = [b.volume for b in bars]
 
-            # IBKR returns LSE/GBP prices in pence — normalize to pounds at the
-            # source so all downstream metrics (SMAs, 52w high/low, share-count
-            # math in buyer.py) are in consistent units. Same pattern as the
-            # seven other GBP-handling sites in the codebase
-            # (screener.py:35, put_seller.py:440, trade_sync.py:321, etc.).
-            if currency == "GBP":
-                closes = [c / 100.0 for c in closes]
-                highs = [h / 100.0 for h in highs]
-                lows = [l / 100.0 for l in lows]
+            # IBKR quotes some venues in the currency's MINOR unit (LSE in pence, JSE in cents)
+            # while reporting the major code — normalize at the source so all downstream metrics
+            # (SMAs, 52w high/low, share-count math in buyer.py) are in consistent units. Reversed
+            # when an order is priced (buyer.py `major_to_quote`). See src.core.quote_units.
+            if qu.is_minor_unit_quoted(currency):
+                _f = qu.minor_unit_factor(currency)
+                closes = [c / _f for c in closes]
+                highs = [h / _f for h in highs]
+                lows = [l / _f for l in lows]
                 # volumes are share-counts, NOT prices — leave untouched
 
             # Current price

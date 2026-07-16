@@ -104,10 +104,17 @@
                     <td class="px-3 py-2 text-right font-medium">{{"{:.1f}".format(s.rank_score)}}</td>
                     <td class="px-3 py-2 text-right text-gray-300">{{"{:.0f}".format(s.s10x)}}</td>
                     <td class="px-3 py-2 text-right text-gray-300">{% if s.mom_pct is not none %}{{"{:.0f}".format(s.mom_pct)}}{% else %}<span class="text-gray-600">—</span>{% endif %}</td>
-                    <td class="px-3 py-2 text-right text-gray-300">${{"{:,.2f}".format(s.price)}}</td>
+                    {# Price is the LOCAL quote (CAD for a TSX name), NOT base — label it or a
+                       60.49 CAD quote reads as $60.49. Base-ccy rows stay unsuffixed. #}
+                    {% set row_ccy = (w.currency if w and w.currency else base_ccy) %}
+                    <td class="px-3 py-2 text-right text-gray-300 whitespace-nowrap">
+                        {{"{:,.2f}".format(s.price)}}{% if row_ccy != base_ccy %}<span class="text-xs text-amber-500/80 ml-1">{{row_ccy}}</span>{% else %}<span class="text-xs text-gray-600 ml-1">{{base_ccy}}</span>{% endif %}
+                    </td>
                     <td class="px-3 py-2 text-right {% if s.attractiveness >= 0 %}text-emerald-400{% else %}text-amber-400{% endif %}">{{"{:+.3f}".format(s.attractiveness)}}</td>
-                    <td class="px-3 py-2 text-right text-gray-200">${{"{:,.0f}".format(s.target)}}</td>
-                    <td class="px-3 py-2 text-right text-gray-400">${{"{:,.0f}".format(s.current)}}</td>
+                    {# Target/Holding are account BASE currency (targets are a slice of base NLV;
+                       holdings are FX-normalised in the route) — never the row's local ccy. #}
+                    <td class="px-3 py-2 text-right text-gray-200">{{base_sym}}{{"{:,.0f}".format(s.target)}}</td>
+                    <td class="px-3 py-2 text-right text-gray-400">{{base_sym}}{{"{:,.0f}".format(s.current)}}</td>
                     <td class="px-3 py-2 text-right text-gray-400">{{"{:.0f}".format(s.underweight_pct)}}%</td>
                     <td class="px-3 py-2 text-center">
                         {% if s.action == 'direct' %}<span class="text-xs px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300">buy</span>

@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from src.broker.connection import get_ib, get_ib_lock, is_connected
 from src.core.database import get_db
 from src.core.models import Trade, TradeType, OrderStatus, Position, PositionStatus
+from src.core.quote_units import quote_to_major
 from src.core.logger import get_logger
 
 log = get_logger(__name__)
@@ -353,10 +354,10 @@ def _sync_stock_to_portfolio(fills) -> int:
             action = "buy" if side == "BOT" else "sell"
             shares = abs(int(execution.shares))
             price = execution.price
-            # IBKR reports GBP stock prices in pence — convert to pounds
+            # IBKR quotes minor units on some venues (LSE pence, JSE cents) — normalise to
+            # major units so `amount` is a real settlement figure (see src.core.quote_units).
             currency = contract.currency or "USD"
-            if currency == "GBP":
-                price = price / 100.0
+            price = quote_to_major(price, currency)
             amount = shares * price
 
             commission = 0.0

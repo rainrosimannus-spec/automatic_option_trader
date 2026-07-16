@@ -3387,10 +3387,10 @@ class UniverseScreener:
             print(f"  🔎 {symbol}: no price from IBKR or FMP -> None (final price={price})")
             self._reject(symbol, "no_price", price=price)
             return None
-        # IBKR reports GBP stock prices in pence — convert to pounds
-        # (same convention as src/broker/trade_sync.py:318-321)
-        if currency == "GBP":
-            price = price / 100.0
+        # IBKR quotes minor units on some venues (LSE pence, JSE cents) — normalise to major
+        # units (same convention as the analyzer / trade_sync; see src.core.quote_units).
+        from src.core.quote_units import quote_to_major
+        price = quote_to_major(price, currency)
         score.price = float(price)
         score.market_cap = self._estimate_market_cap(contract, price)
 

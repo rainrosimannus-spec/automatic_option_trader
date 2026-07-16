@@ -16,6 +16,7 @@ from typing import Optional
 
 from ib_insync import IB, Stock, Option, LimitOrder, MarketOrder, Forex
 
+from src.core import quote_units as qu
 from src.core.logger import get_logger
 from src.core.database import get_db
 from src.portfolio.models import (
@@ -2146,14 +2147,18 @@ class PortfolioBuyer:
 
     def _get_daily_deployed(self) -> float:
         """
-        Sum of capital deployed today — stock buys + put collateral.
-        Used for daily deployment cap enforcement.
+        Sum of capital deployed today — stock buys + put collateral, in the account BASE
+        currency. Both `amount` and `strike` are stored in each row's LOCAL currency, so a
+        raw SUM mixes currencies and mis-measures the cap against a base-ccy daily_cap
+        (see src.portfolio.fx / _fills_today).
         """
         try:
             from src.core.database import get_db
             from src.portfolio.models import PortfolioTransaction, PortfolioPutEntry
+            from src.portfolio import fx as pfx
             from datetime import date, datetime
             today_start = datetime.combine(date.today(), datetime.min.time())
+            rates = pfx.load_fx_rates()
             with get_db() as db:
                 txns = db.query(PortfolioTransaction).filter(
                     PortfolioTransaction.action == "buy",
@@ -2161,12 +2166,16 @@ class PortfolioBuyer:
                     # Exclude the cash-yield ETF — a cash-reserve park isn't deployment (see _fills_today).
                     PortfolioTransaction.symbol != (self.cfg.cash_yield_symbol or "__none__"),
                 ).all()
-                stock_deployed = sum(t.amount for t in txns)
+                stock_deployed = pfx.sum_base(
+                    ((t.currency, t.amount or 0) for t in txns), rates
+                )
                 puts = db.query(PortfolioPutEntry).filter(
                     PortfolioPutEntry.status == "open",
                     PortfolioPutEntry.opened_at >= today_start,
                 ).all()
-                put_collateral = sum((p.strike * p.contracts * 100) for p in puts)
+                put_collateral = pfx.sum_base(
+                    ((p.currency, p.strike * p.contracts * 100) for p in puts), rates
+                )
             return stock_deployed + put_collateral
         except Exception as e:
             log.warning("portfolio_daily_deployed_check_failed", error=str(e))
@@ -2178,7 +2187,12 @@ class PortfolioBuyer:
         net_liq: float | None,
         deployable: float,
     ) -> float:
-        """Calculate how much to buy, respecting tier allocation and limits."""
+        """Calculate how much to buy, respecting tier allocation and limits.
+
+        Returns an amount in the account BASE currency — the caller compares it against
+        min_single_buy_eur and decrements a base-ccy `deployable`.
+        """
+        from src.portfolio import fx as pfx
         max_buy = min(self.cfg.max_single_buy_eur, deployable)
 
         # Check portfolio concentration limit
@@ -2191,23 +2205,27 @@ class PortfolioBuyer:
         strength_factor = 0.3 + (analysis.signal_strength / 100) * 0.7
         buy_amount = max_buy * strength_factor
 
+        # Per-share cost in the account BASE currency. `current_price` is in the instrument's
+        # LOCAL currency (CAD for a TSX name) while buy_amount is base — dividing a base brick
+        # by a LOCAL price under-sizes every foreign name by its FX rate (the AZN bug). Same
+        # LOCAL→BASE conversion as the compounder ladder in _execute_compounder_buy; the rate
+        # is 1.0 for base-ccy names, so US/EUR sizing is unchanged.
+        price_base = (analysis.current_price or 0) * pfx.rate_to_base(analysis.currency or "USD")
+
         # Round to whole shares
-        if analysis.current_price and analysis.current_price > 0:
-            shares = int(buy_amount / analysis.current_price)
-            buy_amount = shares * analysis.current_price
+        if price_base > 0:
+            buy_amount = int(buy_amount / price_base) * price_base
 
         # Deep discount or extreme oversold → full allocation
         if analysis.discount_pct and analysis.discount_pct > 15:
             buy_amount = min(self.cfg.max_single_buy_eur, deployable)
-            if analysis.current_price and analysis.current_price > 0:
-                shares = int(buy_amount / analysis.current_price)
-                buy_amount = shares * analysis.current_price
+            if price_base > 0:
+                buy_amount = int(buy_amount / price_base) * price_base
 
         if analysis.rsi_14 and analysis.rsi_14 < 20:
             buy_amount = min(self.cfg.max_single_buy_eur, deployable)
-            if analysis.current_price and analysis.current_price > 0:
-                shares = int(buy_amount / analysis.current_price)
-                buy_amount = shares * analysis.current_price
+            if price_base > 0:
+                buy_amount = int(buy_amount / price_base) * price_base
 
         return round(buy_amount, 2)
 
@@ -2222,14 +2240,24 @@ class PortfolioBuyer:
         rank_score: float = 0.0,
         rationale: str | None = None,
     ) -> bool:
-        """Place a limit buy order or create a suggestion if in suggestion_mode."""
+        """Place a limit buy order or create a suggestion if in suggestion_mode.
+
+        `buy_amount` is in the account BASE currency (see _calculate_buy_amount).
+        """
+        from src.portfolio import fx as pfx
         _ensure_event_loop()
 
         if not analysis.current_price or analysis.current_price <= 0:
             return False
 
         try:
-            shares = int(buy_amount / analysis.current_price)
+            # Size off the BASE per-share cost (price × LOCAL→BASE rate) — a base amount ÷ a
+            # LOCAL price under-buys a foreign name by its FX rate. The order itself still
+            # prices in LOCAL currency, which is what IBKR expects.
+            price_base = analysis.current_price * pfx.rate_to_base(analysis.currency or "USD")
+            if price_base <= 0:
+                return False
+            shares = int(buy_amount / price_base)
             if shares <= 0:
                 return False
 
@@ -2281,7 +2309,10 @@ class PortfolioBuyer:
             with get_portfolio_lock():
                 self.ib.qualifyContracts(contract)
 
-            order = LimitOrder("BUY", shares, limit_price)
+            # limit_price is in MAJOR units (the analyzer normalised the quote at ingest); a
+            # minor-unit venue must be ordered in the unit IBKR quotes — same reversal as the
+            # suggestion executor below. See src.core.quote_units.
+            order = LimitOrder("BUY", shares, round(qu.major_to_quote(limit_price, stock.currency), 2))
             order.tif = "DAY"
             order.outsideRth = _outside_rth_ok(stock.currency)
 
@@ -3492,14 +3523,15 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
             with get_portfolio_lock():
                 ib.qualifyContracts(contract)
 
-        # LSE/GBP stocks quote in PENCE (GBX). The analyzer normalises IBKR's pence quotes to pounds
-        # (÷100, analyzer.py), so the suggestion's limit_price is in pounds — but an LSE order must be
-        # priced in pence. Multiply back by 100 (this exactly reverses the analyzer's ÷100, so it
-        # equals IBKR's original quote). Share count is unit-independent, so only the price changes.
-        order_price = round(limit_price * 100.0, 2) if (ccy or "").upper() == "GBP" else limit_price
-        # Fund the foreign-currency leg up front (settlement amount: GBP order_price is in pence → ÷100
-        # for pounds) so the buy doesn't silently open a margin loan in the foreign ccy.
-        notional_settle = shares * (order_price / 100.0 if (ccy or "").upper() == "GBP" else order_price)
+        # Minor-unit venues (LSE quotes GBP in pence, JSE quotes ZAR in cents) must be ORDERED in the
+        # same unit IBKR quotes. The analyzer normalised the quote to major units at ingest, so the
+        # suggestion's limit_price is in pounds/rand — convert back here (exactly reverses the ingest
+        # division, so it equals IBKR's original quote). Share count is unit-independent; only the
+        # price changes. See src.core.quote_units.
+        order_price = round(qu.major_to_quote(limit_price, ccy), 2)
+        # Fund the foreign-currency leg up front (settlement is in MAJOR units — order_price is back in
+        # the quoted minor unit) so the buy doesn't silently open a margin loan in the foreign ccy.
+        notional_settle = shares * qu.quote_to_major(order_price, ccy)
         # Un-park the park-ETF (XEON) reserve, then convert the FX leg, then GATE on the authoritative funding
         # path for this currency. If it could not be funded, leave the suggestion 'approved' (retry next
         # cycle) rather than place an order that silently opens a margin loan (fail-closed).

@@ -49,6 +49,15 @@ async def watchlist_page(request: Request):
         "growth": cc.tier_growth,
     }
 
+    # Price is quoted in each name's LOCAL currency while target/holding are in the account BASE
+    # currency — the table has to label both or a TSX quote reads as dollars (MFC 60.49 CAD looked
+    # like a $60.49 US price next to its 43.07 NYSE twin). Resolved outside the try so the labels
+    # survive a signals failure; symbol map mirrors routes/portfolio.py.
+    from src.portfolio import fx as _pfx
+    _rates = _pfx.load_fx_rates()
+    base_ccy = _pfx.base_ccy(_rates)
+    base_sym = {"EUR": "€", "USD": "$", "GBP": "£"}.get(base_ccy, "")
+
     signals, wl_map = [], {}
     try:
         with get_db() as db:
@@ -57,8 +66,6 @@ async def watchlist_page(request: Request):
         wl_map = {w.symbol: w for w in rows}
         # FX-normalise holdings to the account BASE currency (investable/nlv are base) so a foreign
         # holding isn't measured against its base-ccy target unconverted (see src.portfolio.fx).
-        from src.portfolio import fx as _pfx
-        _rates = _pfx.load_fx_rates()
         held = {h.symbol: _pfx.to_base(h.market_value or h.total_invested or 0, h.currency, _rates)
                 for h in holds}
         inv = _num("compounder_investable")
@@ -93,6 +100,8 @@ async def watchlist_page(request: Request):
         "request": request,
         "signals": signals,
         "wl_map": wl_map,
+        "base_ccy": base_ccy,
+        "base_sym": base_sym,
         "tier_summary": tier_summary,
         "reserve": reserve,
         "strategy": strategy,
