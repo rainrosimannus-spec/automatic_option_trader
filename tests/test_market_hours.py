@@ -10,7 +10,7 @@ import datetime as dt
 import pytest
 
 from src.portfolio import buyer as _buyer
-from src.portfolio.buyer import _MARKET_HOURS, _market_open
+from src.portfolio.buyer import _MARKET_HOURS, _late_session, _market_open
 
 
 @pytest.fixture
@@ -32,7 +32,10 @@ def at(monkeypatch):
 
 
 # Every currency the portfolio watchlist can hold. An unmapped one silently trades 24/7.
-WATCHLIST_CURRENCIES = ["USD", "CAD", "EUR", "GBP", "JPY", "AUD", "HKD", "SGD", "ZAR", "ILS"]
+# Keep this in step with the live universe — INR (ITC/NSE) sat in the watchlist while missing from
+# BOTH this list and _MARKET_HOURS, so the guard below could not see the gap: ITC traded around the
+# clock and skipped the late-session green deferral every other foreign name gets.
+WATCHLIST_CURRENCIES = ["USD", "CAD", "EUR", "GBP", "JPY", "AUD", "HKD", "SGD", "ZAR", "INR", "ILS"]
 
 
 @pytest.mark.parametrize("ccy", WATCHLIST_CURRENCIES)
@@ -98,7 +101,32 @@ def test_all_venues_shut_at_weekend(at):
     ("ZAR", "2026-07-10T00:17:00", False),
     ("USD", "2026-07-10T14:30:00", True),    # 10:30 New York
     ("USD", "2026-07-10T00:17:00", False),
+    ("INR", "2026-07-10T06:00:00", True),    # 11:30 Mumbai — NSE mid-session
+    ("INR", "2026-07-10T03:00:00", False),   # 08:30 Mumbai — pre-open
+    ("INR", "2026-07-10T10:30:00", False),   # 16:00 Mumbai — shut
 ])
 def test_session_boundaries(at, ccy, utc, expected):
     at(utc)
     assert _market_open(ccy) is expected
+
+
+# ── Late-session green deferral (compounder buys the intraday drift, not the open) ────────
+
+def test_inr_defers_green_buys_to_its_own_late_session(at):
+    """ITC (NSE) must defer like every other foreign name. NSE runs 09:15–15:30 IST; the table
+    truncates the close to 15:00 (same convention as JPY 15:30 / GBP 16:30), so the last-120min
+    window is 13:00–15:00 IST — NOT the US late session."""
+    at("2026-07-10T06:00:00")             # 11:30 Mumbai — mid-session, too early
+    assert _late_session("INR", 120) is False
+    at("2026-07-10T08:00:00")             # 13:30 Mumbai — inside the window
+    assert _late_session("INR", 120) is True
+    at("2026-07-10T09:35:00")             # 15:05 Mumbai — past the truncated close
+    assert _late_session("INR", 120) is False
+
+
+def test_late_session_is_per_venue_not_us_clock(at):
+    """The gate keys off each name's OWN session: at 13:30 Mumbai the NSE window is open while
+    New York has not even opened, so a green US name is still deferred."""
+    at("2026-07-10T08:00:00")
+    assert _late_session("INR", 120) is True
+    assert _late_session("USD", 120) is False

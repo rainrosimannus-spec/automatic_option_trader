@@ -69,6 +69,7 @@ _MARKET_HOURS = {
     "HKD": ("Asia/Hong_Kong", 9, 16, _MON_FRI),
     "SGD": ("Asia/Singapore", 9, 17, _MON_FRI),
     "ZAR": ("Africa/Johannesburg", 9, 17, _MON_FRI),
+    "INR": ("Asia/Kolkata", 9, 15, _MON_FRI),            # NSE: 09:15–15:30 IST (hours truncate, as for JPY/GBP)
     "ILS": ("Asia/Jerusalem", 10, 17, (6, 0, 1, 2, 3)),   # TASE: Sun–Thu
 }
 
