@@ -1002,6 +1002,24 @@ class PortfolioBuyer:
         # cur=x[4]; gap = tgt - cur.)
         queue.sort(key=lambda x: (0 if x[0] >= 0 else 1, -(x[3] - x[4])))
 
+        # Is ANY green still short of its target? Greens outrank yellows absolutely: a yellow (extended,
+        # above fair) name may only be bought once the whole GREEN list has reached target — never before,
+        # no matter how much budget is free. Judged over the FULL ranked list, not `queue`, because queue
+        # only holds names whose market is open right now: a US green that is underweight but closed must
+        # still block an EU yellow, or the priority inverts across time zones. Greens that can NEVER fill
+        # (no permission yet, or an open put on the name) are excluded — else they'd block yellow forever.
+        greens_outstanding = False
+        for _r in ranked:
+            _tgt = targets.get(_r.symbol, 0.0)
+            if _tgt <= 0 or _r.symbol in open_put_syms or _is_permission_blocked(_r.symbol):
+                continue
+            _cur = held.get(_r.symbol, 0.0) + open_buy.get(_r.symbol, 0.0)
+            if _cur >= _tgt * 0.98:
+                continue                          # this green is at target
+            if cmp.fair_price_attractiveness(_r.price, _r.sma200, _r.high_52w) >= 0:
+                greens_outstanding = True
+                break
+
         spent = 0.0
         cash_room = free_cash          # bounds total resting notional placed this scan
         for attractiveness, uw, r, tgt, cur in queue:
@@ -1014,17 +1032,26 @@ class PortfolioBuyer:
             idx = rank_idx.get(r.symbol, 0)
             is_leader = r.symbol in leaders
             green = attractiveness >= 0
-            # Late-session gate: GREEN (below-fair, pulling-back) names drift DOWN intraday, so hold their
-            # buys until the last cc.late_session_minutes of the name's OWN session for a better entry
-            # (≈ −1% vs immediate fills across the 29 real buys + the 5-regime sim). YELLOW names are NOT
-            # deferred (their intraday sign is regime-dependent — up in melt-ups) and a crash tranche never
-            # waits. Skipping just defers: the name stays ranked and the in-window scan buys it, with the
-            # full day's budget intact (spent/budget are untouched by a skip). See CompounderConfig.
-            if (green and cc.late_session_only_green and not crash_active
-                    and not _late_session(stock.currency, cc.late_session_minutes)):
-                log.debug("compounder_defer_green_to_late_session",
-                          symbol=stock.symbol, currency=stock.currency)
-                continue
+            # Buy order is PRIORITY first, timing second — timing must never invert the priority:
+            #   GREEN: bought by rank/underweight, but only in the last cc.late_session_minutes of the
+            #          name's OWN session — these pulling-back names drift down intraday, so a late entry
+            #          is ≈1% cheaper (29 real buys + the 5-regime sim).
+            #   YELLOW: only ever bought once the ENTIRE green list has reached target (greens_outstanding
+            #          is False) — and then with no late gate, so it fills early in the day. A yellow must
+            #          never take budget a still-underweight green has a claim on.
+            # Gating green alone is what broke this: greens got skipped all morning and the loop fell
+            # through to yellow, which took the day's budget with an order resting under the fair cap that
+            # could not fill — and open_buy still charged it against deployed_today, starving the greens in
+            # their own window. A crash tranche bypasses both gates (urgent deploy).
+            if not crash_active and cc.late_session_only_green:
+                if green:
+                    if not _late_session(stock.currency, cc.late_session_minutes):
+                        log.info("compounder_defer_green_to_late_session",
+                                 symbol=stock.symbol, currency=stock.currency)
+                        continue
+                elif greens_outstanding:
+                    log.info("compounder_hold_yellow_greens_underweight", symbol=stock.symbol)
+                    continue
             a.signal_type = "compounder_direct"
             # Conviction: green-underweight names, leaders, and crash tranches bid near market so the
             # position actually fills (Rain is stagnation-averse); extended (yellow) names that aren't
