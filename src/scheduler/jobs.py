@@ -1648,7 +1648,7 @@ def create_scheduler() -> BackgroundScheduler:
             job_portfolio_scan, job_portfolio_update_prices,
             job_portfolio_update_metrics, job_portfolio_monthly_screen,
             job_portfolio_monthly_review, job_portfolio_sync_trades, job_portfolio_trailing_stop_monitor,
-            job_portfolio_fx_treasury,
+            job_portfolio_fx_treasury, job_portfolio_late_session_reprice,
         )
         from src.portfolio.forecaster import job_portfolio_chronos_forecast
 
@@ -1669,6 +1669,23 @@ def create_scheduler() -> BackgroundScheduler:
             coalesce=True,
             next_run_time=scan_first_run,
         )
+
+        # Late-session reprice sub-grid — every N min, but a cheap no-op unless a venue is inside its
+        # final late_session_minutes (the job self-gates on _late_session before touching IBKR/FMP).
+        # Reprices a green limit the fast market left behind and redeploys budget freed by a cancel,
+        # before the close — the single 2h in-window pass can't. Serializes on get_portfolio_lock, so
+        # it's safe alongside the 2h grid. Disabled when late_session_reprice_minutes <= 0.
+        if portfolio_cfg.late_session_reprice_minutes > 0:
+            scheduler.add_job(
+                partial(job_portfolio_late_session_reprice, portfolio_cfg),
+                IntervalTrigger(minutes=portfolio_cfg.late_session_reprice_minutes),
+                id="portfolio_late_session_reprice",
+                name="Portfolio Late-Session Reprice (in-window)",
+                max_instances=1,
+                misfire_grace_time=300,
+                coalesce=True,
+                next_run_time=scan_first_run + timedelta(seconds=90),
+            )
 
         # Price updates — every hour, 24/7
         scheduler.add_job(

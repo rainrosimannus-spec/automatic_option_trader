@@ -282,6 +282,13 @@ class PortfolioConfig(BaseModel):
 
     # Schedule
     check_interval_hours: int = 2   # buy-scan cadence; re-prices resting orders to the current market
+    # Late-session reprice sub-grid: inside the last CompounderConfig.late_session_minutes of any open
+    # venue, run the SAME buy scan every this-many minutes (on top of the 2h grid). The 2h grid gives
+    # exactly one in-window pass/market/day, so a green limit left behind by a fast move — or budget
+    # freed by a manual cancel — could not be repriced/redeployed before the close. This closes that
+    # gap: each sub-grid pass cancels-and-reprices resting compounder buys to the current market and
+    # redeploys freed budget. Pure-datetime no-op outside every window (no IBKR/FMP touch). 0 disables.
+    late_session_reprice_minutes: int = 15
     scan_hour: int = 10
     scan_minute: int = 30
 

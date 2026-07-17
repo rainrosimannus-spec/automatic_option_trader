@@ -183,6 +183,39 @@ def job_portfolio_scan(cfg: PortfolioConfig):
             log.error("portfolio_scan_job_error", error=str(e))
 
 
+def job_portfolio_late_session_reprice(cfg: PortfolioConfig):
+    """Sub-grid reprice/redeploy pass — runs the SAME buy scan as the 2h grid, but ONLY while some
+    venue is inside its late-session window (the last CompounderConfig.late_session_minutes).
+
+    Why: the 2h grid lands exactly one in-window pass per market per day. If that single pass places a
+    green limit that a fast market then runs away from — or the operator cancels an order — the freed
+    budget/left-behind limit cannot be repriced or redeployed before the close (the next grid tick is
+    hours away, after the market shuts). Running the full scan every cfg.late_session_reprice_minutes
+    inside the window fixes both: run_compounder_scan cancels-and-reprices every resting compounder buy
+    to the current market and redeploys any freed budget. The buy accounting is self-protecting
+    (deployed_today counts fills + resting notional), so extra in-window passes never over-deploy.
+
+    Cheap no-op outside every window: gated purely on _late_session (datetime math over the venue map),
+    so it touches no IBKR/FMP until an actual window is open. 0 minutes disables it entirely."""
+    if not cfg.enabled or cfg.late_session_reprice_minutes <= 0:
+        return
+    try:
+        from src.portfolio.config import CompounderConfig
+        from src.portfolio.buyer import _late_session, _MARKET_HOURS
+        cc = CompounderConfig()
+        if cc.late_session_minutes <= 0:
+            return
+        # Any mapped venue currently in its final late_session_minutes? (unknown ccys aren't in the map,
+        # so this only ever sees known venues — no accidental always-on from the _late_session fallback.)
+        if not any(_late_session(ccy, cc.late_session_minutes) for ccy in _MARKET_HOURS):
+            return
+    except Exception as e:
+        log.warning("portfolio_late_reprice_gate_failed", error=str(e))
+        return
+    log.info("portfolio_late_session_reprice_pass")
+    job_portfolio_scan(cfg)          # serialized via get_portfolio_lock — safe alongside the 2h grid
+
+
 def job_portfolio_fx_treasury(cfg: PortfolioConfig):
     """Close any standing non-base foreign-currency debit (FX margin loan) on the portfolio account,
     so we don't pay borrow interest on a CAD/GBP/etc. balance. No-op unless enabled; dry-run by default."""
