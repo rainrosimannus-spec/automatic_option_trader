@@ -1648,7 +1648,7 @@ def create_scheduler() -> BackgroundScheduler:
             job_portfolio_scan, job_portfolio_update_prices,
             job_portfolio_update_metrics, job_portfolio_monthly_screen,
             job_portfolio_monthly_review, job_portfolio_sync_trades, job_portfolio_trailing_stop_monitor,
-            job_portfolio_fx_treasury, job_portfolio_late_session_reprice,
+            job_portfolio_fx_treasury, job_portfolio_aftermarket_fill,
         )
         from src.portfolio.forecaster import job_portfolio_chronos_forecast
 
@@ -1670,17 +1670,18 @@ def create_scheduler() -> BackgroundScheduler:
             next_run_time=scan_first_run,
         )
 
-        # Late-session reprice sub-grid — every N min, but a cheap no-op unless a venue is inside its
-        # final late_session_minutes (the job self-gates on _late_session before touching IBKR/FMP).
-        # Reprices a green limit the fast market left behind and redeploys budget freed by a cancel,
-        # before the close — the single 2h in-window pass can't. Serializes on get_portfolio_lock, so
-        # it's safe alongside the 2h grid. Disabled when late_session_reprice_minutes <= 0.
-        if portfolio_cfg.late_session_reprice_minutes > 0:
+        # After-market fallback fill — every 15 min, but a cheap no-op unless a venue is in its first
+        # aftermarket_deploy_minutes after close (the job self-gates on _aftermarket before touching
+        # IBKR/FMP). If a green's daily budget did NOT fill during regular hours, this re-prices and
+        # re-places it (the compounder order carries outsideRth) so it fills in the after-market instead
+        # of rolling to tomorrow. Self-conditioned on "no fill during RTH" by the budget math (deployed
+        # budget → scan no-ops). Serializes on get_portfolio_lock — safe alongside the 2h grid.
+        if portfolio_cfg.compounder.aftermarket_deploy_minutes > 0:
             scheduler.add_job(
-                partial(job_portfolio_late_session_reprice, portfolio_cfg),
-                IntervalTrigger(minutes=portfolio_cfg.late_session_reprice_minutes),
-                id="portfolio_late_session_reprice",
-                name="Portfolio Late-Session Reprice (in-window)",
+                partial(job_portfolio_aftermarket_fill, portfolio_cfg),
+                IntervalTrigger(minutes=15),
+                id="portfolio_aftermarket_fill",
+                name="Portfolio After-Market Fill (post-close)",
                 max_instances=1,
                 misfire_grace_time=300,
                 coalesce=True,

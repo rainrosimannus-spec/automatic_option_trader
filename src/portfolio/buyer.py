@@ -109,6 +109,33 @@ def _late_session(currency: str | None, minutes: int) -> bool:
     return (close_dt - timedelta(minutes=minutes)) <= now < close_dt
 
 
+def _aftermarket(currency: str | None, minutes: int) -> bool:
+    """True in the first `minutes` AFTER a venue's regular close — the after-hours fill window.
+
+    _late_session lets a GREEN compounder buy fill in the last minutes BEFORE the close; this is the
+    fallback for budget that STILL didn't fill by the bell: keep the name buyable for `minutes` into
+    the after-hours session so a limit the market ran past intraday (or a cancel-and-reprice) gets
+    another chance to fill after close, instead of the day's budget rolling to tomorrow. The compounder
+    order already carries order.outsideRth (_outside_rth_ok), so it can transact in extended hours.
+
+    Gated to outside-RTH-capable venues ONLY (US/CA/EU/UK — see _OUTSIDE_RTH_CCY): Asia/AU/ZA reject
+    out-of-hours orders, so an after-hours window there would just rest unfillable. Shares the
+    _MARKET_HOURS close_h with _late_session (the table must not fork). minutes<=0 disables it. Note
+    the seamless handoff from _market_open (hour-granular, goes False at close_h:00) to this window."""
+    if minutes <= 0 or not _outside_rth_ok(currency):
+        return False
+    import pytz
+    hours = _MARKET_HOURS.get((currency or "").upper())
+    if not hours:
+        return False
+    tz_name, open_h, close_h, days = hours
+    now = datetime.now(pytz.timezone(tz_name))
+    if now.weekday() not in days:
+        return False
+    close_dt = now.replace(hour=close_h, minute=0, second=0, microsecond=0)
+    return close_dt <= now < close_dt + timedelta(minutes=minutes)
+
+
 # ── Permission-block registry ────────────────────────────────────────────────────────────
 # When an order is rejected because the account isn't permissioned to trade that exchange yet
 # (IBKR Error 200 "No security definition" / "no trading permission" — e.g. Hong Kong/3690
@@ -727,7 +754,11 @@ class PortfolioBuyer:
             # then over-buys e.g. AZN as if it were the entire growth tier. The full-universe denominator
             # keeps per-name targets stable; `analyses` (open + freshly priced) gates what we can buy.
             a = None
-            if self._is_market_open(s.currency):
+            # Eligible to BUY when the venue is open OR (fallback) in its first
+            # cc.aftermarket_deploy_minutes after close — so a green whose budget didn't fill during
+            # regular hours gets re-priced and re-placed in the after-market (outsideRth order) instead
+            # of the budget rolling to tomorrow. Outside-RTH venues only (baked into _aftermarket).
+            if self._is_market_open(s.currency) or _aftermarket(s.currency, cc.aftermarket_deploy_minutes):
                 try:
                     a = self.analyzer.analyze_stock(s.symbol, s.exchange, s.currency, tier=s.tier)
                 except Exception as e:
@@ -1045,7 +1076,11 @@ class PortfolioBuyer:
             # their own window. A crash tranche bypasses both gates (urgent deploy).
             if not crash_active and cc.late_session_only_green:
                 if green:
-                    if not _late_session(stock.currency, cc.late_session_minutes):
+                    # Green buys in the last cc.late_session_minutes before close; if that pass didn't
+                    # fill (fast market / cancel), the _aftermarket fallback keeps it buyable for the
+                    # first cc.aftermarket_deploy_minutes after close so it can still fill (outsideRth).
+                    if not (_late_session(stock.currency, cc.late_session_minutes)
+                            or _aftermarket(stock.currency, cc.aftermarket_deploy_minutes)):
                         log.info("compounder_defer_green_to_late_session",
                                  symbol=stock.symbol, currency=stock.currency)
                         continue

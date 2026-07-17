@@ -85,6 +85,13 @@ class CompounderConfig(BaseModel):
     # the plain green-before-yellow queue order (the pre-2026-07-15 behaviour).
     late_session_only_green: bool = True
     late_session_minutes: int = 120
+    # After-hours fallback: if a green buy's budget did NOT fill by the close, keep the name buyable for
+    # this many minutes AFTER the close (the US after-market). Only outside-RTH-capable venues (US/CA/
+    # EU/UK) — orders already carry outsideRth, and Asia/AU/ZA reject out-of-hours. So a limit the market
+    # ran past intraday gets another chance to fill in the after-market instead of the budget rolling to
+    # tomorrow. Runs on the same 15-min reprice sub-grid, extended past the bell. 0 disables. See
+    # buyer._aftermarket. This is the "fill before close, else fill in the 60 min after" behaviour.
+    aftermarket_deploy_minutes: int = 60
     drawdown_tranches: list[float] = [0.10, 0.20, 0.30]  # 20% reserve fires at these SPY drawdowns
     backstop_start_days: int = 90      # if no crash within ~3mo, start bleeding the reserve in
     backstop_bleed_days: int = 180     # ...fully deployed over the following ~6mo (never idle long)
@@ -282,13 +289,6 @@ class PortfolioConfig(BaseModel):
 
     # Schedule
     check_interval_hours: int = 2   # buy-scan cadence; re-prices resting orders to the current market
-    # Late-session reprice sub-grid: inside the last CompounderConfig.late_session_minutes of any open
-    # venue, run the SAME buy scan every this-many minutes (on top of the 2h grid). The 2h grid gives
-    # exactly one in-window pass/market/day, so a green limit left behind by a fast move — or budget
-    # freed by a manual cancel — could not be repriced/redeployed before the close. This closes that
-    # gap: each sub-grid pass cancels-and-reprices resting compounder buys to the current market and
-    # redeploys freed budget. Pure-datetime no-op outside every window (no IBKR/FMP touch). 0 disables.
-    late_session_reprice_minutes: int = 15
     scan_hour: int = 10
     scan_minute: int = 30
 
