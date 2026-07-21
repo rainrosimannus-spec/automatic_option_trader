@@ -16,7 +16,6 @@ Market guard:
 """
 from __future__ import annotations
 
-import time
 from datetime import datetime
 from typing import Optional
 
@@ -329,12 +328,7 @@ class PortfolioAnalyzer:
                     break
             except Exception:
                 pass
-            # Pacing gap between historical-data requests. Use a plain thread sleep,
-            # NOT self.ib.sleep() — the latter drives the shared IB event loop while
-            # OUTSIDE get_portfolio_lock(), which raced concurrent scans and raised
-            # "This event loop is already running" (the 20:34 startup burst). A pacing
-            # delay needs wall-clock only, no loop-drive and no lock.
-            time.sleep(2)  # IBKR pacing: max 60 requests per 10 min
+            self.ib.sleep(2)  # IBKR pacing: max 60 requests per 10 min
         return bars
 
     @staticmethod
