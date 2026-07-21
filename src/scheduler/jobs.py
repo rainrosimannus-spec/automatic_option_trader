@@ -2042,10 +2042,14 @@ def create_scheduler() -> BackgroundScheduler:
         """Scan for newly tradeable IPO tickers."""
         _ensure_event_loop()
         try:
-            from src.broker.connection import get_ib
+            from src.broker.connection import get_ib, get_ib_lock
             ib = get_ib()
             trader = IpoTrader(ib)
-            trader.scan_for_new_ipos()
+            # Serialize IB access through the single shared RLock — IpoTrader drives the
+            # event loop directly and MUST NOT race a concurrent scan/CC/put fetch
+            # ("This event loop is already running").
+            with get_ib_lock():
+                trader.scan_for_new_ipos()
         except Exception as e:
             log.error("ipo_scan_error", error=str(e))
 
@@ -2053,10 +2057,11 @@ def create_scheduler() -> BackgroundScheduler:
         """Check if any IPO flip orders have filled."""
         _ensure_event_loop()
         try:
-            from src.broker.connection import get_ib
+            from src.broker.connection import get_ib, get_ib_lock
             ib = get_ib()
             trader = IpoTrader(ib)
-            trader.check_flip_exits()
+            with get_ib_lock():
+                trader.check_flip_exits()
         except Exception as e:
             log.error("ipo_exit_check_error", error=str(e))
 
@@ -2064,10 +2069,12 @@ def create_scheduler() -> BackgroundScheduler:
         """Phase 2 lockup re-entries on portfolio account (port 7496)."""
         _ensure_event_loop()
         try:
-            from src.portfolio.connection import get_portfolio_ib
+            from src.portfolio.connection import get_portfolio_ib, get_portfolio_lock
             ib = get_portfolio_ib()
             trader = IpoTrader(ib)
-            trader.check_lockup_entries()
+            # get_portfolio_lock() is the SAME shared RLock as get_ib_lock().
+            with get_portfolio_lock():
+                trader.check_lockup_entries()
         except Exception as e:
             log.error("ipo_lockup_check_error", error=str(e))
 

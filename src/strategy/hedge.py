@@ -17,7 +17,7 @@ from typing import Optional
 
 from ib_insync import Stock, Option as IBOption
 
-from src.broker.connection import get_ib
+from src.broker.connection import get_ib, get_ib_lock
 from src.broker.market_data import get_stock_price, get_put_contracts
 from src.core.config import get_settings
 from src.core.database import get_db
@@ -134,72 +134,77 @@ class TailHedge:
 
         target_strike = round(spy_price * (1 - self.cfg.hedge_otm_pct))
 
-        # Find option chains
-        contract = Stock("SPY", "SMART", "USD")
-        ib.qualifyContracts(contract)
-        chains = ib.reqSecDefOptParams(contract.symbol, "", contract.secType, contract.conId)
+        # Serialize ALL IB access through get_ib_lock() — same rule as every other
+        # option-side IB caller (market_data, orders, greeks). Held across the whole
+        # qualify→reqSecDefOptParams→reqMktData→sleep sequence so no other thread can
+        # drive the shared event loop mid-sequence ("This event loop is already running").
+        with get_ib_lock():
+            # Find option chains
+            contract = Stock("SPY", "SMART", "USD")
+            ib.qualifyContracts(contract)
+            chains = ib.reqSecDefOptParams(contract.symbol, "", contract.secType, contract.conId)
 
-        if not chains:
-            return None
+            if not chains:
+                return None
 
-        chain = None
-        for c in chains:
-            if c.exchange == "SMART":
-                chain = c
-                break
-        if not chain:
-            chain = chains[0]
+            chain = None
+            for c in chains:
+                if c.exchange == "SMART":
+                    chain = c
+                    break
+            if not chain:
+                chain = chains[0]
 
-        # Find expiry closest to target DTE
-        today = datetime.now().date()
-        best_exp = None
-        best_dte_diff = 999
+            # Find expiry closest to target DTE
+            today = datetime.now().date()
+            best_exp = None
+            best_dte_diff = 999
 
-        for exp_str in chain.expirations:
-            exp_date = datetime.strptime(exp_str, "%Y%m%d").date()
-            dte = (exp_date - today).days
-            if dte < 14:  # don't buy too short
-                continue
-            diff = abs(dte - self.cfg.hedge_dte_target)
-            if diff < best_dte_diff:
-                best_dte_diff = diff
-                best_exp = exp_str
+            for exp_str in chain.expirations:
+                exp_date = datetime.strptime(exp_str, "%Y%m%d").date()
+                dte = (exp_date - today).days
+                if dte < 14:  # don't buy too short
+                    continue
+                diff = abs(dte - self.cfg.hedge_dte_target)
+                if diff < best_dte_diff:
+                    best_dte_diff = diff
+                    best_exp = exp_str
 
-        if not best_exp:
-            return None
+            if not best_exp:
+                return None
 
-        # Find strike closest to target
-        best_strike = min(chain.strikes, key=lambda s: abs(s - target_strike))
+            # Find strike closest to target
+            best_strike = min(chain.strikes, key=lambda s: abs(s - target_strike))
 
-        opt = IBOption("SPY", best_exp, best_strike, "P", "SMART")
-        qualified = ib.qualifyContracts(opt)
-        if not qualified:
-            return None
+            opt = IBOption("SPY", best_exp, best_strike, "P", "SMART")
+            qualified = ib.qualifyContracts(opt)
+            if not qualified:
+                return None
 
-        ticker = ib.reqMktData(opt, "", False, False)
-        ib.sleep(2)
-        ib.cancelMktData(opt)
+            ticker = ib.reqMktData(opt, "", False, False)
+            ib.sleep(2)
+            ib.cancelMktData(opt)
 
-        # Live ask only -- no BS fallback
-        ask = ticker.ask if ticker.ask and ticker.ask > 0 else None
-        if not ask:
-            log.info("hedge_no_live_ask", strike=best_strike, expiry=best_exp)
-            return None
+            # Live ask only -- no BS fallback
+            ask = ticker.ask if ticker.ask and ticker.ask > 0 else None
+            if not ask:
+                log.info("hedge_no_live_ask", strike=best_strike, expiry=best_exp)
+                return None
 
-        exp_date = datetime.strptime(best_exp, "%Y%m%d").date()
-        actual_dte = (exp_date - today).days
+            exp_date = datetime.strptime(best_exp, "%Y%m%d").date()
+            actual_dte = (exp_date - today).days
 
-        log.info(
-            "hedge_candidate_found",
-            strike=best_strike,
-            expiry=best_exp,
-            dte=actual_dte,
-            ask=round(ask, 2),
-            spy_price=round(spy_price, 2),
-            otm_pct=f"{(spy_price - best_strike) / spy_price:.1%}",
-        )
+            log.info(
+                "hedge_candidate_found",
+                strike=best_strike,
+                expiry=best_exp,
+                dte=actual_dte,
+                ask=round(ask, 2),
+                spy_price=round(spy_price, 2),
+                otm_pct=f"{(spy_price - best_strike) / spy_price:.1%}",
+            )
 
-        return (opt, ask)
+            return (opt, ask)
 
     def _buy_hedge(self) -> bool:
         """Buy a new SPY hedge put."""
@@ -215,8 +220,10 @@ class TailHedge:
         order = LimitOrder("BUY", self.cfg.hedge_contracts, round(ask_price, 2))
         order.tif = "DAY"
 
-        trade = ib.placeOrder(contract, order)
-        ib.sleep(1)
+        # Serialize order placement through the shared IB lock (see _find_hedge_contract).
+        with get_ib_lock():
+            trade = ib.placeOrder(contract, order)
+            ib.sleep(1)
 
         if not trade:
             return False
