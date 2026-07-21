@@ -546,7 +546,26 @@ async def portfolio_page(request: Request):
     except Exception as _e:
         log.warning("flex_stale_check_failed", error=str(_e))
 
+    # Tier target %s for the pie caption — read live from the ACTIVE strategy's config so the caption
+    # never drifts from the engine. Compounder trimmed dividend (5/65/30) vs the classic TierAllocation
+    # (15/60/25); pick whichever is driving the book.
+    try:
+        from src.core.config import get_settings as _gs2
+        _pc = _gs2().portfolio
+        if _get_state("strategy") == "compounder":
+            _cc2 = _pc.compounder
+            tier_targets = {"dividend": _cc2.tier_dividend, "growth": _cc2.tier_growth,
+                            "breakthrough": _cc2.tier_breakthrough}
+        else:
+            _ta = _pc.tier_allocation
+            tier_targets = {"dividend": _ta.dividend, "growth": _ta.growth,
+                            "breakthrough": _ta.breakthrough}
+    except Exception as _e:
+        log.warning("tier_targets_failed", error=str(_e))
+        tier_targets = {"dividend": 0.05, "growth": 0.65, "breakthrough": 0.30}
+
     return templates.TemplateResponse("portfolio.html", {
+        "tier_targets": tier_targets,
         "flex_stale": flex_stale,
         "flex_stale_msg": flex_stale_msg,
         "request": request,

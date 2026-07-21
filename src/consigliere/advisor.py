@@ -167,8 +167,10 @@ class Consigliere:
         if total_value <= 0:
             return memos
 
-        # Tier allocation vs targets
-        tier_targets = {"dividend": 0.25, "growth": 0.50, "breakthrough": 0.25}
+        # Tier allocation vs targets — read live from the ACTIVE strategy's config so the drift
+        # check never lags the engine. Compounder trimmed dividend (5/65/30) vs the classic
+        # TierAllocation (15/60/25); pick whichever is driving the book.
+        tier_targets = self._live_tier_targets()
         tier_values: dict[str, float] = {}
         for h in holdings:
             tier = h.tier or "growth"
@@ -753,6 +755,30 @@ class Consigliere:
             return acct.net_liquidation if acct and acct.net_liquidation > 0 else None
         except Exception:
             return None
+
+    def _live_tier_targets(self) -> dict[str, float]:
+        """Tier target proportions from the ACTIVE strategy's live config (compounder 5/65/30 vs
+        classic TierAllocation 15/60/25). Falls back to the compounder defaults if config/state read
+        fails, so the drift check never reverts to a stale hardcoded 25/50/25."""
+        try:
+            from src.core.config import get_settings
+            from src.portfolio.models import PortfolioState
+            pc = get_settings().portfolio
+            strategy = ""
+            try:
+                with get_db() as db:
+                    s = db.query(PortfolioState).filter(PortfolioState.key == "strategy").first()
+                    strategy = s.value if s else ""
+            except Exception:
+                pass
+            if strategy == "compounder":
+                cc = pc.compounder
+                return {"dividend": cc.tier_dividend, "growth": cc.tier_growth,
+                        "breakthrough": cc.tier_breakthrough}
+            ta = pc.tier_allocation
+            return {"dividend": ta.dividend, "growth": ta.growth, "breakthrough": ta.breakthrough}
+        except Exception:
+            return {"dividend": 0.05, "growth": 0.65, "breakthrough": 0.30}
 
     def _live_cap_pct(self, nlv: float) -> float:
         """Mirror risk._effective_total_exposure_pct: NLV-ramp 20/25/30%."""
