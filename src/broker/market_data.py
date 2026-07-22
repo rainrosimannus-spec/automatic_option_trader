@@ -258,15 +258,64 @@ def get_option_chains(
     return chains
 
 
-def _find_best_option_exchange(chains: list[OptionChain], preferred: str = "SMART") -> OptionChain | None:
-    """Pick the best option chain exchange — prefer SMART, then the stock's own exchange."""
+class _MergedChain:
+    """Duck-type stand-in for ib_insync's OptionChain holding the UNION of every chain
+    IBKR returned for one exchange. Exposes the same four attributes the callers use."""
+    __slots__ = ("exchange", "expirations", "strikes", "tradingClass")
+
+    def __init__(self, exchange, expirations, strikes, tradingClass):
+        self.exchange = exchange
+        self.expirations = expirations
+        self.strikes = strikes
+        self.tradingClass = tradingClass
+
+
+def _find_best_option_exchange(chains: list[OptionChain], preferred: str = "SMART",
+                               symbol: str | None = None):
+    """Merge ALL chains for the preferred exchange into one view.
+
+    reqSecDefOptParams returns ONE entry per (exchange, tradingClass, multiplier), so a
+    single exchange appears MANY times: the standard class carries the monthly expiries
+    while the weekly/short-dated classes carry the near-dated ones. The old code returned
+    the FIRST match, which made expiry availability a lottery on IBKR's non-deterministic
+    ordering — one scan saw the weeklies, the next saw monthlies only. That silently
+    starved the 0-3 DTE put window (no_expiries_in_range -> no_put_contracts -> 0
+    candidates) even though the identical config had produced suggestions hours earlier.
+
+    Union the expirations/strikes so the whole ladder is always visible. Widening is safe:
+    the callers qualify every contract and drop anything with conId <= 0, so an
+    (expiry, strike) pair that doesn't exist is simply filtered out.
+    """
     if not chains:
         return None
-    for c in chains:
-        if c.exchange == preferred:
-            return c
-    # Fallback: first available
-    return chains[0]
+    matching = [c for c in chains if c.exchange == preferred] or [chains[0]]
+    exch = matching[0].exchange
+
+    # tradingClass is only stamped onto contracts for NON-SMART venues (to disambiguate
+    # e.g. EUREX NESE vs NESN). Merging across different classes there could mint an
+    # invalid contract, so off-SMART we merge only the chosen class. On SMART the field
+    # is never used by the callers, so everything merges.
+    if exch != "SMART":
+        tc = None
+        if symbol:
+            tc = next((c.tradingClass for c in matching if c.tradingClass == symbol), None)
+        tc = tc or matching[0].tradingClass
+        matching = [c for c in matching if c.tradingClass == tc]
+    else:
+        tc = matching[0].tradingClass
+
+    expirations: set[str] = set()
+    strikes: set[float] = set()
+    for c in matching:
+        expirations.update(c.expirations or ())
+        strikes.update(c.strikes or ())
+    if not expirations or not strikes:
+        return None
+
+    log.info("option_chain_merged", symbol=symbol, exchange=exch, chains_merged=len(matching),
+             expiries=len(expirations), strikes=len(strikes),
+             nearest=sorted(expirations)[:3])
+    return _MergedChain(exch, expirations, strikes, tc)
 
 
 def get_put_contracts(
@@ -287,7 +336,8 @@ def get_put_contracts(
         log.info("no_option_chains", symbol=symbol, exchange=exchange)
         return []
 
-    chain = _find_best_option_exchange(chains, preferred="SMART" if exchange == "SMART" else exchange)
+    chain = _find_best_option_exchange(chains, preferred="SMART" if exchange == "SMART" else exchange,
+                                       symbol=symbol)
     if chain is None:
         log.info("no_matching_option_exchange", symbol=symbol, preferred=exchange,
                  available=[c.exchange for c in chains])
@@ -331,7 +381,11 @@ def get_put_contracts(
     if not contracts:
         return []
 
-    qualified = ib.qualifyContracts(*contracts)
+    # Serialize through get_ib_lock() like every other fetcher here — this drives the
+    # shared event loop (run_until_complete) and ran UNLOCKED on every put/CC scan,
+    # racing concurrent scans ("This event loop is already running").
+    with get_ib_lock():
+        qualified = ib.qualifyContracts(*contracts)
     return [c for c in qualified if c.conId > 0]
 
 
@@ -377,7 +431,8 @@ def get_call_contracts(
     if not chains:
         return []
 
-    chain = _find_best_option_exchange(chains, preferred="SMART" if exchange == "SMART" else exchange)
+    chain = _find_best_option_exchange(chains, preferred="SMART" if exchange == "SMART" else exchange,
+                                       symbol=symbol)
     if chain is None:
         return []
 
@@ -410,7 +465,11 @@ def get_call_contracts(
     if not contracts:
         return []
 
-    qualified = ib.qualifyContracts(*contracts)
+    # Serialize through get_ib_lock() like every other fetcher here — this drives the
+    # shared event loop (run_until_complete) and ran UNLOCKED on every put/CC scan,
+    # racing concurrent scans ("This event loop is already running").
+    with get_ib_lock():
+        qualified = ib.qualifyContracts(*contracts)
     return [c for c in qualified if c.conId > 0]
 
 
