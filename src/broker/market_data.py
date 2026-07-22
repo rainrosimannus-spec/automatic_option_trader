@@ -25,6 +25,21 @@ _PRICE_FAIL_THRESHOLD = 5       # failures before temporary skip
 _PRICE_FAIL_COOLDOWN_MIN = 5   # minutes to skip after threshold reached
 
 
+# ── Short-TTL price cache ────────────────────────────────────
+# get_stock_price() is called SEVERAL times per symbol per scan (risk screening, contract
+# building, sizing) and every call was a fresh reqHistoricalData. Across ~75 symbols that
+# blows through IBKR's ~60-historical-requests-per-10-minutes pacing budget, so requests
+# stall server-side and ib_insync cancels them when its timeout expires — 98 timeouts, each
+# paired 1:1 with an Error 162 "query cancelled", in a single session. That starved the scan
+# of prices even after option chains resolved correctly, so nothing could be sold.
+#
+# Caching successful prices briefly collapses the duplicate fetches (the actual pacing
+# driver) and shortens how long the shared IB lock is held. TTL is deliberately short so
+# trading decisions stay fresh; callers that need a real-time tick use get_stock_live_price().
+_price_cache: dict[tuple[str, str, str], tuple[float, datetime]] = {}
+_PRICE_CACHE_TTL_SEC = 60
+
+
 # Exchanges where IBKR's SMART router can re-route after qualifyContracts.
 # Direct-only markets (MEXI, JSE, TASE, BVMF, VSE) must keep their original exchange
 # after qualification — overriding to SMART breaks historical-data requests with Error 200.
@@ -102,6 +117,10 @@ def get_stock_price(
     if _is_symbol_blocked(symbol):
         log.debug("price_symbol_skipped_blocked", symbol=symbol)
         return None
+    _ck = (symbol, exchange, currency)
+    _hit = _price_cache.get(_ck)
+    if _hit and (datetime.now() - _hit[1]).total_seconds() < _PRICE_CACHE_TTL_SEC:
+        return _hit[0]
     try:
         with get_ib_lock():
             _ensure_market_data_type()
@@ -122,16 +141,21 @@ def get_stock_price(
                         whatToShow=what,
                         useRTH=False,
                         formatDate=1,
-                        timeout=8,
+                        # 8s was under the round-trip for delayed-frozen bars once IBKR starts
+                        # pacing us, so ib_insync cancelled its own request (Error 162) before
+                        # the data landed. Give a paced response room to arrive.
+                        timeout=20,
                     )
                     if bars:
                         _record_symbol_success(symbol)
+                        _px = float(bars[-1].close)
+                        _price_cache[_ck] = (_px, datetime.now())
                         try:
                             from src.scheduler.jobs import record_price_success
                             record_price_success()
                         except Exception:
                             pass
-                        return float(bars[-1].close)
+                        return _px
                 except Exception as e:
                     log.debug("price_request_failed", symbol=symbol, what=what, error=str(e) or repr(e))
                 ib.sleep(0.5)  # brief pause before retry

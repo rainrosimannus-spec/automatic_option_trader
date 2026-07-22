@@ -163,18 +163,35 @@ def _fx_rate_ccy_per_base(ib, pair, base: str, ccy: str) -> float:
 
 
 def _qualify_fx_pair(ib, base: str, ccy: str):
-    """Qualify the canonical IBKR FX pair for {base, ccy}, trying base-first then ccy-first."""
+    """Qualify the canonical IBKR FX pair for {base, ccy}, trying base-first then ccy-first.
+
+    Returns (contract, reason). `contract` is None when neither orientation qualifies, and
+    `reason` then carries the REAL error from IBKR.
+
+    Previously every exception here was swallowed (`except Exception: cand = None`) and the
+    caller reported a hard-coded "(FX permission?)" guess. That made a genuine permissions
+    problem indistinguishable from a transient connection / event-loop error, and left a live
+    USD margin loan open with no usable diagnostic. EUR.USD is the canonical IBKR pair and
+    always exists, so a failure here is never really "no such pair".
+    """
     from src.broker.connection import get_ib_lock
+    errors: list[str] = []
     with get_ib_lock():
         for sym, cur in ((base, ccy), (ccy, base)):
-            cand = Forex(sym + cur)
+            pair_name = sym + cur
+            cand = Forex(pair_name)
             try:
                 ib.qualifyContracts(cand)
-            except Exception:
-                cand = None
-            if cand is not None and getattr(cand, "conId", 0):
-                return cand
-    return None
+            except Exception as e:
+                errors.append(f"{pair_name}: {type(e).__name__}: {e}")
+                log.warning("fx_pair_qualify_failed", pair=pair_name, base=base, ccy=ccy,
+                            error_type=type(e).__name__, error=str(e) or repr(e))
+                continue
+            if getattr(cand, "conId", 0):
+                return (cand, "")
+            errors.append(f"{pair_name}: qualified but conId=0")
+            log.warning("fx_pair_no_conid", pair=pair_name, base=base, ccy=ccy)
+    return (None, "; ".join(errors) or "no error reported by IBKR")
 
 
 def _wait_fill(ib, trade, wait_secs: float) -> tuple:
@@ -268,9 +285,9 @@ def _convert_to_ccy(ib, cfg, base: str, ccy: str, need_ccy: float, eur_liquid: f
                                      and reads as a false alarm. A restart in European hours retries it.
       - ok=False, deferred=False   → a real failure (caller alerts).
     """
-    pair = _qualify_fx_pair(ib, base, ccy)
+    pair, pair_err = _qualify_fx_pair(ib, base, ccy)
     if pair is None:
-        return (False, f"no {base}.{ccy} pair (FX permission?)", False)
+        return (False, f"{base}.{ccy} qualify failed — {pair_err}", False)
     rate = _fx_rate_ccy_per_base(ib, pair, base, ccy)   # ccy per 1 base
     plan = fx_conversion_plan(base, ccy, need_ccy, rate, pair.symbol,
                               cfg.fx_idealpro_min_base)
