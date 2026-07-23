@@ -16,6 +16,7 @@ Market guard:
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -328,7 +329,16 @@ class PortfolioAnalyzer:
                     break
             except Exception:
                 pass
-            self.ib.sleep(2)  # IBKR pacing: max 60 requests per 10 min
+            # Pacing gap between historical-data requests. Use a plain thread sleep, NOT
+            # self.ib.sleep() — the latter drives the shared portfolio event loop while OUTSIDE
+            # get_portfolio_lock(). That both (a) raced concurrent portfolio-loop jobs (IPO scans,
+            # health check) into "This event loop is already running" and (b) itself raised that
+            # error — and since this line sits OUTSIDE the try above, it propagated out of
+            # _fetch_bars and was logged as portfolio_analysis_error, wiping out whole Buy-Scan
+            # passes at the congested :25 slot. A pacing delay needs wall-clock only: no loop-drive,
+            # no lock held during the sleep. (Re-applies reverted 803b017 — the revert was for
+            # failing to fix an unrelated startup burst, not for any regression.)
+            time.sleep(2)  # IBKR pacing: max 60 requests per 10 min
         return bars
 
     @staticmethod
