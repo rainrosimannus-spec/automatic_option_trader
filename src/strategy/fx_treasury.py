@@ -30,6 +30,7 @@ unit-tested directly.
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 from ib_insync import Forex, LimitOrder, MarketOrder, Stock
@@ -38,6 +39,18 @@ from src.core.config import get_settings
 from src.core.logger import get_logger
 
 log = get_logger("strategy.fx_treasury")
+
+
+def _is_loop_busy(e: BaseException) -> bool:
+    """True for the transient 'This event loop is already running' RuntimeError.
+
+    The options connection runs ib_insync on a single shared event loop; every ib call ultimately
+    does loop.run_until_complete(). At a congested cron slot (the daily FX pass fires at 14:00:00 UTC
+    alongside the interval executors) another options-loop op can be mid-flight WITHOUT the shared
+    RLock, so run_until_complete raises this immediately. It is momentary — a short time.sleep (which
+    does NOT drive the loop) lets the colliding op finish, then the retry succeeds. Distinct from a
+    real IBKR error (Error 200 no-such-pair, permissions, disconnect), which must NOT be retried."""
+    return isinstance(e, RuntimeError) and "event loop is already running" in str(e).lower()
 
 
 # ─────────────────────────── pure decision helpers (unit-tested) ───────────────────────────
@@ -139,27 +152,33 @@ def _per_currency_cash(ib) -> dict:
 def _fx_rate_ccy_per_base(ib, pair, base: str, ccy: str) -> float:
     """FX mid for `pair` as units of `ccy` per 1 unit of `base`. 0.0 on any failure."""
     from src.broker.connection import get_ib_lock
-    try:
-        with get_ib_lock():
-            t = ib.reqMktData(pair, "", True, False)
-            ib.sleep(2)
-        px = None
-        for cand in (t.midpoint(), t.marketPrice(), t.last, t.close):
-            if cand and cand == cand and cand > 0:
-                px = float(cand)
-                break
+    for attempt in range(1, 5):
         try:
             with get_ib_lock():
-                ib.cancelMktData(pair)
-        except Exception:
-            pass
-        if not px:
+                t = ib.reqMktData(pair, "", True, False)
+                ib.sleep(2)
+            px = None
+            for cand in (t.midpoint(), t.marketPrice(), t.last, t.close):
+                if cand and cand == cand and cand > 0:
+                    px = float(cand)
+                    break
+            try:
+                with get_ib_lock():
+                    ib.cancelMktData(pair)
+            except Exception:
+                pass
+            if not px:
+                return 0.0
+            if (pair.symbol or "").upper() == (base or "").upper():
+                return px
+            return 1.0 / px
+        except Exception as e:
+            if _is_loop_busy(e) and attempt < 4:
+                log.warning("fx_rate_loop_busy_retry", base=base, ccy=ccy, attempt=attempt)
+                time.sleep(3)
+                continue
             return 0.0
-        if (pair.symbol or "").upper() == (base or "").upper():
-            return px
-        return 1.0 / px
-    except Exception:
-        return 0.0
+    return 0.0
 
 
 def _qualify_fx_pair(ib, base: str, ccy: str):
@@ -175,22 +194,37 @@ def _qualify_fx_pair(ib, base: str, ccy: str):
     always exists, so a failure here is never really "no such pair".
     """
     from src.broker.connection import get_ib_lock
+    # Retry the whole qualify on the transient 'loop already running' race (see _is_loop_busy). Each
+    # attempt re-acquires the lock and sleeps OUTSIDE it (time.sleep, never ib.sleep) so the colliding
+    # op can drain the loop. Real IBKR errors (no-such-pair, permissions) fall through immediately.
     errors: list[str] = []
-    with get_ib_lock():
-        for sym, cur in ((base, ccy), (ccy, base)):
-            pair_name = sym + cur
-            cand = Forex(pair_name)
-            try:
-                ib.qualifyContracts(cand)
-            except Exception as e:
-                errors.append(f"{pair_name}: {type(e).__name__}: {e}")
-                log.warning("fx_pair_qualify_failed", pair=pair_name, base=base, ccy=ccy,
-                            error_type=type(e).__name__, error=str(e) or repr(e))
-                continue
-            if getattr(cand, "conId", 0):
-                return (cand, "")
-            errors.append(f"{pair_name}: qualified but conId=0")
-            log.warning("fx_pair_no_conid", pair=pair_name, base=base, ccy=ccy)
+    for attempt in range(1, 5):
+        errors = []
+        loop_busy = False
+        with get_ib_lock():
+            for sym, cur in ((base, ccy), (ccy, base)):
+                pair_name = sym + cur
+                cand = Forex(pair_name)
+                try:
+                    ib.qualifyContracts(cand)
+                except Exception as e:
+                    if _is_loop_busy(e):
+                        loop_busy = True
+                        break
+                    errors.append(f"{pair_name}: {type(e).__name__}: {e}")
+                    log.warning("fx_pair_qualify_failed", pair=pair_name, base=base, ccy=ccy,
+                                error_type=type(e).__name__, error=str(e) or repr(e))
+                    continue
+                if getattr(cand, "conId", 0):
+                    return (cand, "")
+                errors.append(f"{pair_name}: qualified but conId=0")
+                log.warning("fx_pair_no_conid", pair=pair_name, base=base, ccy=ccy)
+        if not loop_busy:
+            break
+        log.warning("fx_pair_qualify_loop_busy_retry", base=base, ccy=ccy, attempt=attempt)
+        time.sleep(3)
+    else:
+        errors.append("event loop stayed busy across 4 retries")
     return (None, "; ".join(errors) or "no error reported by IBKR")
 
 
