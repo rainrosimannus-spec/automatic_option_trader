@@ -2092,26 +2092,31 @@ def create_scheduler() -> BackgroundScheduler:
         except Exception as e:
             log.error("ipo_date_scan_error", error=str(e))
 
-    # IPO ticker scan — every 5 minutes during market hours
+    # IPO jobs are LOW priority: IPO events move on a daily timescale (new listings, lockup
+    # expiries known days ahead), and check_flip_exits only reconciles whether an already-RESTING
+    # flip order filled (the exit price is set at IBKR — slower polling delays only the fill
+    # bookkeeping, never the exit). So they run every 30 min, NOT every 5 — they should slot into
+    # free time between the important scans (Buy Scan, option put/CC scans), not compete with them
+    # every 5 minutes. jitter scatters each fire ±2 min so the three don't align with each other or
+    # land on the Buy Scan's :25 slot. (Correctness is already guaranteed by the shared lock; this
+    # is purely to stop the low-value IPO churn from crowding the loop.)
     scheduler.add_job(
         _job_ipo_scan,
-        IntervalTrigger(minutes=5),
+        IntervalTrigger(minutes=30, jitter=120),
         id="ipo_scan",
         name="IPO Ticker Scan",
         max_instances=1,
     )
-
-    # IPO exit/lockup check — every 5 minutes
     scheduler.add_job(
         _job_ipo_check_exits,
-        IntervalTrigger(minutes=5),
+        IntervalTrigger(minutes=30, jitter=120),
         id="ipo_exits",
         name="IPO Exit & Lockup Check",
         max_instances=1,
     )
     scheduler.add_job(
         _job_ipo_check_lockups,
-        IntervalTrigger(minutes=5),
+        IntervalTrigger(minutes=30, jitter=120),
         id="ipo_lockups",
         name="IPO Phase 2 Lockup Check",
         max_instances=1,
