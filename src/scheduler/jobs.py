@@ -1091,9 +1091,39 @@ def job_fx_treasury():
         return
     try:
         from src.strategy.fx_treasury import manage_fx_treasury
-        manage_fx_treasury()
+        if manage_fx_treasury() == "deferred":
+            _rearm_fx_treasury_retry()
     except Exception as e:
         log.error("fx_treasury_job_error", error=str(e))
+
+
+def _rearm_fx_treasury_retry():
+    """Schedule a one-off debit-close retry at the next moment the park ETF can trade.
+
+    The 14:00 UTC cron is the ONLY scheduled slot inside the ETF window (08:00-16:30 UTC), and the
+    restart nudge lands wherever the process restarted (e.g. 20:14 UTC — outside it). Without this,
+    a deferral left the USD margin loan (-$36.5k, ~17% NLV) accruing negative carry for a FULL DAY.
+    Self-limiting: once the debit actually closes, plan_debit_close stops acting, no deferral is
+    returned, and nothing re-arms. Fixed job id + replace_existing so retries never pile up."""
+    try:
+        from apscheduler.triggers.date import DateTrigger
+
+        from src.strategy.fx_treasury import next_etf_retry_time
+        sched = get_scheduler()
+        if sched is None:
+            return
+        when = next_etf_retry_time()
+        sched.add_job(
+            job_fx_treasury,
+            DateTrigger(run_date=when),
+            id="fx_treasury_retry",
+            name="FX Treasury (deferred retry)",
+            max_instances=1,
+            replace_existing=True,
+        )
+        log.info("fx_treasury_retry_armed", run_at=str(when))
+    except Exception as e:
+        log.warning("fx_treasury_retry_arm_failed", error=str(e))
 
 
 def job_db_cleanup():

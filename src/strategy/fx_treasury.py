@@ -31,7 +31,7 @@ unit-tested directly.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ib_insync import Forex, LimitOrder, MarketOrder, Stock
 
@@ -87,6 +87,34 @@ def etf_market_open(now: datetime | None = None) -> bool:
         return False
     minutes = now.hour * 60 + now.minute
     return 8 * 60 <= minutes <= 16 * 60 + 30     # 08:00–16:30 UTC (LSE window ⊂ Xetra window)
+
+
+def next_etf_retry_time(now: datetime | None = None, in_window_delay_min: int = 30) -> datetime:
+    """When to retry a DEFERRED debit-close, so a deferral costs hours instead of a full day.
+
+    The daily job fires at 14:00 UTC, which is the ONLY scheduled slot inside the ETF window — and
+    the restart nudge lands wherever the process happened to restart (e.g. 20:14 UTC, useless). So a
+    deferral (EUR still parked in XEON, Xetra/LSE shut) otherwise left the USD margin loan accruing
+    negative carry until the NEXT day's 14:00. This picks the next moment the park ETF can actually
+    trade: shortly from now if we're already in-window, else the next weekday's open.
+
+    Pure (takes `now`) so it is unit-testable. Returns an aware UTC datetime strictly in the future.
+    """
+    now = now or datetime.now(timezone.utc)
+    # Already in-window (deferred for a fillable reason — unpriced / sale didn't fill): retry soon,
+    # but only if the retry still lands inside the window; otherwise fall through to the next open.
+    if etf_market_open(now):
+        cand = now + timedelta(minutes=in_window_delay_min)
+        if etf_market_open(cand):
+            return cand
+    # Next weekday session open, +5min so quotes are live rather than at the auction instant.
+    d = now
+    for _ in range(8):                           # at most a week ahead
+        open_at = d.replace(hour=8, minute=5, second=0, microsecond=0)
+        if d.weekday() < 5 and open_at > now:
+            return open_at
+        d = (d + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return now + timedelta(hours=24)             # unreachable safety net
 
 
 def plan_park(liquid_cash: float, nlv: float,
@@ -404,11 +432,14 @@ def crash_regime_active() -> bool:
 
 # ─────────────────────────── orchestrator (scheduler entry point) ───────────────────────────
 
-def manage_fx_treasury() -> None:
+def manage_fx_treasury() -> str | None:
     """Daily FX-treasury pass: close any USD debit, else park idle cash per currency.
 
     Priority: a USD debit-close and parking never run in the same pass (avoids intra-run churn) —
     close the debit today, park next run. No-op unless enabled; places no orders while dry_run.
+
+    Returns "deferred" when a debit-close was postponed because the park ETF could not be sold
+    (market shut / unpriced / unfilled); the caller re-arms an in-window retry. None otherwise.
     """
     cfg = get_settings().risk
     if not cfg.fx_treasury_enabled:
@@ -474,7 +505,11 @@ def manage_fx_treasury() -> None:
                      other_debits=[c for c, _, _ in debits[1:]])
             if deferred:
                 # Expected pre-open condition (EUR still parked in XEON) — retry next pass, no alarm.
+                # Returning "deferred" lets the scheduler job re-arm a one-off retry at the next
+                # in-window moment (see next_etf_retry_time) instead of waiting a full day for the
+                # 14:00 UTC cron — a -$36k loan should not accrue for 24h over a shut ETF market.
                 log.info("fx_treasury_debit_close_deferred", ccy=ccy, detail=detail)
+                return "deferred"
             elif alerts:
                 title = f"{ccy} debit auto-close"
                 msg = (f"{ccy} balance {ccy_cash:,.0f} (debit) → target +{nlv * cfg.fx_settlement_buffer_pct:,.0f}\n"
