@@ -298,6 +298,33 @@ def _etf_last_price(ib, symbol: str, exchange: str, currency: str,
     return None
 
 
+def _etf_position_shares(ib, symbol: str) -> float | None:
+    """Shares of `symbol` ACTUALLY held on the options account. None when it cannot be determined.
+
+    The debit-close funds itself by SELLING the park ETF, and it used to size that sale purely from
+    the euros it needed (991b926) — with NO reference to the position actually held. When the
+    shortfall exceeded what was parked it sold MORE THAN WAS OWNED, opening a naked SHORT in the
+    park ETF (margin account, so IBKR fills it) and raising euros the park never contained. The old
+    comment claimed it "never tries to sell more XEON than is parked" — nothing enforced that.
+
+    Fail-CLOSED: returns None on any lookup error so the caller defers rather than selling blind.
+    A genuine flat position returns 0.0, which is different from None and must stay different.
+    """
+    from src.broker.connection import get_ib_lock
+    try:
+        with get_ib_lock():
+            positions = ib.positions()
+    except Exception as e:
+        log.warning("fx_treasury_position_lookup_failed", symbol=symbol, error=str(e))
+        return None
+    total = 0.0
+    for p in positions or []:
+        c = getattr(p, "contract", None)
+        if c is not None and (getattr(c, "symbol", "") or "").upper() == symbol.upper():
+            total += float(getattr(p, "position", 0) or 0)
+    return total
+
+
 def _place_etf_order(ib, action: str, symbol: str, exchange: str, currency: str,
                      shares: int, wait_secs: float, limit_price: float | None = None,
                      primary: str | None = None) -> bool:
@@ -381,8 +408,45 @@ def _convert_to_ccy(ib, cfg, base: str, ccy: str, need_ccy: float, eur_liquid: f
         if not (price and price > 0):
             return (False, f"could not price {cfg.fx_park_eur_symbol} to free €{xeon_to_raise:,.0f} "
                            f"— deferred", True)
-        # Size for the 0.5% marketable-limit haircut so the freed euros fully cover the shortfall.
-        shares = int(xeon_to_raise * 1.005 / (price * 0.995)) + 1
+        # Size for the 0.5% marketable-limit haircut so the freed euros fully cover the shortfall,
+        # then CLAMP to the shares actually held. Selling more than is parked opens a naked SHORT in
+        # the park ETF — never do it, no matter how big the debit is. Fail-closed if the position
+        # can't be read.
+        want_shares = int(xeon_to_raise * 1.005 / (price * 0.995)) + 1
+        held = _etf_position_shares(ib, cfg.fx_park_eur_symbol)
+        if held is None:
+            return (False, f"could not read {cfg.fx_park_eur_symbol} position to size the sale "
+                           f"— deferred (refusing to sell blind)", True)
+        shares = min(want_shares, int(held))
+        if shares < want_shares:
+            log.warning("fx_treasury_park_sale_capped", symbol=cfg.fx_park_eur_symbol,
+                        wanted=want_shares, held=int(held), selling=shares)
+        if shares <= 0:
+            return (False, f"{cfg.fx_park_eur_symbol} position is {int(held)} shares — nothing to free "
+                           f"toward €{xeon_to_raise:,.0f}; not shorting the park. Debit stays open", True)
+
+        # Decide the WHOLE plan before placing anything. If the park can only cover PART of the
+        # shortfall, convert only what we can actually fund — over-converting against euros we never
+        # raised is what earns Error 201 (currency leverage), and converting the full amount anyway
+        # is what leaves excess, unwanted USD. And if even the full held position can't fund a
+        # placeable leg, DON'T sell the park for nothing (that just pays a fee and strands cash).
+        eur_mobilized = max(0.0, eur_liquid - eur_working) + shares * price * 0.995
+        if eur_mobilized < fx_eur:
+            capped_ccy = min(need_ccy, max(0.0, eur_mobilized / 1.01) * (rate or 0.0))
+            capped_plan = fx_conversion_plan(base, ccy, capped_ccy, rate, pair.symbol,
+                                             cfg.fx_idealpro_min_base)
+            log.warning("fx_treasury_convert_capped_to_funded", ccy=ccy, wanted_ccy=round(need_ccy),
+                        funded_ccy=round(capped_ccy), eur_mobilized=round(eur_mobilized),
+                        placeable=bool(capped_plan["place"]))
+            if not capped_plan["place"]:
+                return (False, f"{cfg.fx_park_eur_symbol} holds only {int(held)} shares — the most that "
+                               f"can be freed (€{eur_mobilized:,.0f}) is below the IDEALPRO minimum, so "
+                               f"the leg can't be placed ({capped_plan['reason']}). NOT selling the park "
+                               f"for nothing; debit stays open", True)
+            plan = capped_plan
+            need_eur = plan["base_value"]
+            need_ccy = capped_ccy
+
         if not dry:
             freed = _place_etf_order(ib, "SELL", cfg.fx_park_eur_symbol, cfg.fx_park_eur_exchange,
                                      cfg.fx_park_eur_currency, shares, cfg.fx_fill_wait_secs,
@@ -392,6 +456,9 @@ def _convert_to_ccy(ib, cfg, base: str, ccy: str, need_ccy: float, eur_liquid: f
                                f"— deferred", True)
         park_note = (f"; sold {shares} {cfg.fx_park_eur_symbol} (≈€{shares * price:,.0f}) to top up — "
                      f"liquid working pool €{eur_working:,.0f} kept")
+        if shares < want_shares:
+            park_note += (f" [park held only {int(held)}; conversion sized to the "
+                          f"€{eur_mobilized:,.0f} actually funded]")
 
     detail = (f"{plan['action']} {plan['qty']} {pair.symbol}{pair.currency} "
               f"(≈€{need_eur:,.0f} → {ccy} {need_ccy:,.0f}){park_note}")
