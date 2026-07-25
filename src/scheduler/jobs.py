@@ -1463,13 +1463,23 @@ def create_scheduler() -> BackgroundScheduler:
         max_instances=1,
     )
 
-    # Overnight settlement — 03:00 UTC daily (catches all overnight expiries)
+    # `timedelta` is shadowed as a function-local further down, so alias it
+    # locally to avoid an UnboundLocalError (same reason the FX job below does).
+    from datetime import timedelta as _timedelta
+    # Overnight settlement — 03:00 UTC daily (catches all overnight expiries).
+    # Also runs ~200s after every restart (mirrors the FX Treasury startup nudge
+    # below): without it, an assignment whose trades synced AFTER the last 03:00
+    # run stays an OPEN put with no stock lot until the next cron — which on a
+    # weekend is 03:00 the following day. Trades mirror IBKR executions instantly,
+    # but the put→stock flip only happens here, so holdings would otherwise lag
+    # trades by up to a day. The startup run reconciles within ~3 min of restart.
     scheduler.add_job(
         job_check_assignments,
         CronTrigger(hour="3", minute="0", timezone=utc_tz),
         id="check_assignments_overnight",
         name="Check Assignments Overnight",
         max_instances=1,
+        next_run_time=datetime.now(pytz.UTC) + _timedelta(seconds=200),
     )
 
     # ── PRIVATE intraday CC-timing instrumentation (default OFF) ──────────────
