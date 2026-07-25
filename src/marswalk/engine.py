@@ -101,6 +101,12 @@ class Params:
     delta_min: float = 0.15
     delta_max: float = 0.30
     put_min_premium: float = 0.0   # 0 = use settings.yaml default
+    # Moneyness window for the 0-3 DTE selection path (parity with live
+    # strategy.put_otm_*). Defaults reproduce the historical hardcoded window;
+    # the moneyness sweep varies these to trade assignment frequency vs return.
+    put_otm_floor: float = 0.02
+    put_otm_target: float = 0.05
+    put_otm_cap: float = 0.12
     # ── Covered calls ──
     cc_dte_min: int = 1            # live cfg.cc_dte_min
     cc_dte_max: int = 7            # live cfg.cc_dte_max
@@ -307,17 +313,30 @@ class Params:
 
 
 class _CfgShim:
-    """Proxy the live strategy cfg but override min_premium / min_premium_put,
-    so a backtest can test a different premium floor without touching settings.
-    Everything else (min_bid, weekend_theta, …) proxies to the real cfg."""
+    """Proxy the live strategy cfg but override selected fields, so a backtest
+    can test a different premium floor or moneyness window without touching
+    settings. Everything else (min_bid, weekend_theta, …) proxies to the real
+    cfg. A min_premium of 0 means "don't override the premium floor"; an otm
+    override of None means "don't override that moneyness field"."""
 
-    def __init__(self, base, min_premium):
+    def __init__(self, base, min_premium=0.0,
+                 otm_floor=None, otm_target=None, otm_cap=None):
         object.__setattr__(self, "_base", base)
         object.__setattr__(self, "_mp", min_premium)
+        object.__setattr__(self, "_otm", {
+            "put_otm_floor": otm_floor,
+            "put_otm_target": otm_target,
+            "put_otm_cap": otm_cap,
+        })
 
     def __getattr__(self, name):
         if name in ("min_premium", "min_premium_put"):
-            return object.__getattribute__(self, "_mp")
+            mp = object.__getattribute__(self, "_mp")
+            if mp:
+                return mp
+        otm = object.__getattribute__(self, "_otm")
+        if name in otm and otm[name] is not None:
+            return otm[name]
         return getattr(object.__getattribute__(self, "_base"), name)
 
 
@@ -455,7 +474,11 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     cc_dte_max = params.cc_dte_max
     cc_above_cb = getattr(cfg, "cc_above_cost_basis", True)
     # Per-run min-premium overrides (0 = use live settings default)
-    put_cfg = _CfgShim(cfg, params.put_min_premium) if params.put_min_premium > 0 else cfg
+    # Always shim puts so the moneyness window (Params.put_otm_*) is honored even
+    # when put_min_premium is 0. Params otm defaults are kept equal to the live
+    # strategy.put_otm_* defaults, so a bare Params() still reproduces live.
+    put_cfg = _CfgShim(cfg, params.put_min_premium,
+                       params.put_otm_floor, params.put_otm_target, params.put_otm_cap)
     cc_cfg = _CfgShim(cfg, params.cc_min_premium) if params.cc_min_premium > 0 else cfg
 
     # Per-symbol lookup + unified trading-date axis. Skip _pre:<sym> warmup keys —
@@ -490,6 +513,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     stocks: dict[str, dict] = {}
     n_trades = 0
     n_assign = 0
+    n_puts_sold = 0          # short-put SALE events (one per position opened)
+    put_bid_sum = 0.0        # Σ premium bid per contract at sale (fee-floor proxy)
     points = []
     peak = start_cap
     max_dd = 0.0
@@ -1429,6 +1454,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 held.add(sym)
                 slots -= 1
                 n_trades += 1
+                n_puts_sold += 1
+                put_bid_sum += top.bid
 
                 # ── Strangle leg (2026-05-28) ───────────────────────────────
                 # Fires when EITHER:
@@ -1585,6 +1612,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "target_return_pct": final[3],
         "max_drawdown_pct": round(max_dd, 2),
         "n_trades": n_trades, "n_assignments": n_assign,
+        "n_puts_sold": n_puts_sold,
+        "put_bid_sum": round(put_bid_sum, 2),
         "n_halt_days": n_halt_days,
         "n_hvg_days": hvg_active_days,
         "n_crash_days": crash_active_days,

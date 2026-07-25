@@ -55,6 +55,14 @@ class StrategyConfig(BaseModel):
     contracts_per_stock: int = 2     # growth-mode 2026-05-26: double base size
     min_premium: float = 0.20          # call minimum ($0.20 for covered calls)
     min_premium_put: float = 0.50       # put minimum ($0.50 for puts)
+    # Short-put moneyness window for the 0-3 DTE selection path (the real
+    # assignment-distance knob for USD names). Defaults reproduce the historical
+    # hardcoded 2%/5%/12%. Raising put_otm_floor culls the nearest-ATM,
+    # most-assignment-prone strikes; must stay parity-locked with MarsWalk
+    # Params.put_otm_* and the dashboard rules chip.
+    put_otm_floor: float = 0.02         # min OTM distance (skip strikes closer than this)
+    put_otm_target: float = 0.05        # preferred OTM distance (scorer peak)
+    put_otm_cap: float = 0.12           # max OTM distance (skip farther — no premium)
     min_open_interest: int = 10
     min_bid: float = 0.05
     min_net_premium_multiplier: float = 5.0

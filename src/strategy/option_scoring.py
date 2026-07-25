@@ -46,9 +46,16 @@ def score_put_candidates(stock_price, iv, contracts, cfg, delta_min, delta_max,
         # Instead, filter by how far OTM the strike is as % of stock price.
         # Target: 3-10% OTM (e.g., stock at $186 → strikes $167-$180)
         if dte <= 3:
+            # Moneyness window (assignment-distance knob). Defaults reproduce the
+            # historical hardcoded 2%/5%/12% behavior; overridable via cfg
+            # (live: strategy.put_otm_*; MarsWalk: Params.put_otm_* through the
+            # _CfgShim) so the window can be tuned and A/B'd on the 6y replay.
+            otm_floor = getattr(cfg, 'put_otm_floor', 0.02)
+            otm_target = getattr(cfg, 'put_otm_target', 0.05)
+            otm_cap = getattr(cfg, 'put_otm_cap', 0.12)
             otm_pct = (stock_price - contract.strike) / stock_price
-            if otm_pct < 0.02 or otm_pct > 0.12:
-                continue  # skip <2% OTM (too risky) or >12% OTM (no premium)
+            if otm_pct < otm_floor or otm_pct > otm_cap:
+                continue  # skip too-near-ATM (assignment-prone) or too-far (no premium)
             eff_min_premium = max(getattr(cfg, 'min_premium_put', cfg.min_premium), 0.05)
             eff_min_bid = max(cfg.min_bid, 0.03)
 
@@ -58,8 +65,7 @@ def score_put_candidates(stock_price, iv, contracts, cfg, delta_min, delta_max,
                 continue
 
             # ── Scoring components ──
-            # 1. OTM distance: closer to 5% OTM = better (0-1)
-            otm_target = 0.05
+            # 1. OTM distance: closer to otm_target = better (0-1)
             otm_score = 1 - abs(otm_pct - otm_target) / otm_target
             otm_score = max(0, min(1, otm_score))
 
