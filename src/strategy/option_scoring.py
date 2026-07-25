@@ -19,9 +19,19 @@ from src.broker.greeks import compute_put_greeks, compute_call_greeks
 
 
 def score_put_candidates(stock_price, iv, contracts, cfg, delta_min, delta_max,
-                         resolved_dte_min, resolved_dte_max, today):
-    """BS-score put contracts. Returns list[ScoredContract] (unsorted)."""
+                         resolved_dte_min, resolved_dte_max, today,
+                         otm_floor=None, otm_target=None, otm_cap=None):
+    """BS-score put contracts. Returns list[ScoredContract] (unsorted).
+
+    otm_floor/target/cap override the 0-3 DTE moneyness window when passed
+    (used by the VIX-tiered OTM lever to widen the window on stress days);
+    when None they fall back to cfg.put_otm_* (flat window)."""
     from src.strategy.screener import ScoredContract, _weekend_theta_bonus  # noqa: F401
+    # Resolve the 0-3 DTE moneyness window once: explicit per-call override
+    # (VIX-tiered lever) else cfg.put_otm_* else the historical literals.
+    otm_floor = otm_floor if otm_floor is not None else getattr(cfg, 'put_otm_floor', 0.02)
+    otm_target = otm_target if otm_target is not None else getattr(cfg, 'put_otm_target', 0.05)
+    otm_cap = otm_cap if otm_cap is not None else getattr(cfg, 'put_otm_cap', 0.12)
     candidates = []
     for contract in contracts:
         exp_date = datetime.strptime(contract.lastTradeDateOrContractMonth, "%Y%m%d").date()
@@ -46,13 +56,7 @@ def score_put_candidates(stock_price, iv, contracts, cfg, delta_min, delta_max,
         # Instead, filter by how far OTM the strike is as % of stock price.
         # Target: 3-10% OTM (e.g., stock at $186 → strikes $167-$180)
         if dte <= 3:
-            # Moneyness window (assignment-distance knob). Defaults reproduce the
-            # historical hardcoded 2%/5%/12% behavior; overridable via cfg
-            # (live: strategy.put_otm_*; MarsWalk: Params.put_otm_* through the
-            # _CfgShim) so the window can be tuned and A/B'd on the 6y replay.
-            otm_floor = getattr(cfg, 'put_otm_floor', 0.02)
-            otm_target = getattr(cfg, 'put_otm_target', 0.05)
-            otm_cap = getattr(cfg, 'put_otm_cap', 0.12)
+            # Moneyness window (assignment-distance knob) resolved above.
             otm_pct = (stock_price - contract.strike) / stock_price
             if otm_pct < otm_floor or otm_pct > otm_cap:
                 continue  # skip too-near-ATM (assignment-prone) or too-far (no premium)

@@ -107,6 +107,17 @@ class Params:
     put_otm_floor: float = 0.02
     put_otm_target: float = 0.05
     put_otm_cap: float = 0.12
+    # VIX-tiered OTM lever (default OFF = flat window above). When enabled, the
+    # 0-3 DTE window widens to the *_stress values on stress days (VIX >=
+    # put_otm_stress_vix OR SPY 10d<20d bearish) — pushing strikes farther OTM
+    # exactly where near-ATM puts assign into falling names (dead capital),
+    # while calm/bull days keep the aggressive near-ATM window that carries the
+    # benign-market premium. Parity-locked with live strategy.put_otm_*_stress.
+    put_otm_tier_enabled: bool = False
+    put_otm_stress_vix: float = 20.0
+    put_otm_floor_stress: float = 0.04
+    put_otm_target_stress: float = 0.07
+    put_otm_cap_stress: float = 0.15
     # ── Covered calls ──
     cc_dte_min: int = 1            # live cfg.cc_dte_min
     cc_dte_max: int = 7            # live cfg.cc_dte_max
@@ -1190,6 +1201,16 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         else:
             day_delta_min, day_delta_max = params.delta_min, params.delta_max
 
+        # (c2) VIX-tiered OTM window (NEW lever, default OFF). Widen the 0-3 DTE
+        #      moneyness window on stress days (elevated VIX or SPY bearish) so
+        #      puts sit farther OTM where near-ATM assignment = dead capital.
+        if params.put_otm_tier_enabled and (
+                spy_bearish or (vix_now is not None and vix_now >= params.put_otm_stress_vix)):
+            day_otm = (params.put_otm_floor_stress, params.put_otm_target_stress,
+                       params.put_otm_cap_stress)
+        else:
+            day_otm = (params.put_otm_floor, params.put_otm_target, params.put_otm_cap)
+
         # (d) Drawdown daily-cap scaler (risk._drawdown_cap_multiplier) — 5d window.
         #     Plus a parallel 20d lookback that catches slow-grind bears (NEW vs live).
         #     Engine takes min(5d_mult, 20d_mult) so whichever sees the deeper trouble wins.
@@ -1346,7 +1367,9 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                                                 k_today)
                 cands = score_put_candidates(spot, score_iv, chain, put_cfg,
                                              day_delta_min, day_delta_max,
-                                             day_dte_min, day_dte_max, d)
+                                             day_dte_min, day_dte_max, d,
+                                             otm_floor=day_otm[0], otm_target=day_otm[1],
+                                             otm_cap=day_otm[2])
                 if cands:
                     top = max(cands, key=lambda c: c.score)
                     ranked.append((top.score, sym, top, ivr))
