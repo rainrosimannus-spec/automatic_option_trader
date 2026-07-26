@@ -54,6 +54,27 @@ def _realized_cc_premium_per_share(db, stock_pos) -> float:
     return cc_total / shares
 
 
+def _confirmed_downtrend(symbol: str, spot: float) -> bool:
+    """G4 for the below-breakeven CC: is this name in a confirmed downtrend?
+
+    True only when spot is below its own 200d SMA AND has no 20-day upward
+    momentum (spot <= its close 20 trading days ago). FAIL-SAFE: any missing /
+    insufficient price history returns False, so a below-breakeven call is NEVER
+    written without positive downtrend confirmation (markets trend up — only cap
+    a loss on a name that is demonstrably not participating).
+    """
+    try:
+        from src.portfolio.fmp import get_price_history
+        prices = get_price_history(symbol, 300)   # ~300 calendar days → ≥200 closes
+    except Exception:
+        return False
+    if not prices or len(prices) < 201 or not spot:
+        return False
+    ma200 = sum(prices[-200:]) / 200.0
+    price_20d_ago = prices[-21]
+    return spot < ma200 and spot <= price_20d_ago
+
+
 class WheelManager:
     """Manages the wheel: assignment detection → covered call writing."""
 
@@ -750,6 +771,42 @@ class WheelManager:
                 log.info("cc_token_rescue", symbol=symbol, strike=candidate.strike,
                          delta=round(candidate.delta, 3), bid=candidate.bid,
                          note="token far-OTM CC on deep-underwater lot that had no standard candidate")
+
+        # Below-breakeven last resort (2026-07-26, STRICT): a chronically dead lot
+        # that even token rescue can't cover ≥breakeven. Write a CAPPED below-
+        # breakeven OTM call — but ONLY when aged (G2) + deep (G3) + in a confirmed
+        # downtrend (G4), never locking more than cc_bbe_max_lock below basis (G5),
+        # strike above spot (deep ⇒ bbe_floor > spot) so a loss realizes only on a
+        # recovery — never a fire-sale at the bottom. Turns dead capital into income
+        # + recycling on genuine zombies (e.g. an IREN still −20% and falling after a
+        # full quarter). Live-only ([[live-marswalk-parity-rule]] exempt like Lever
+        # 3a: MarsWalk has no fee floor so it can't score it — proven inert in-sim).
+        if (not candidate and in_rescue and current_price and cost_basis
+                and getattr(risk_cfg, "cc_below_breakeven_enabled", True)):
+            _opened = getattr(stock_pos, "opened_at", None)
+            age_days = (datetime.utcnow() - _opened).days if _opened else 0
+            deep = current_price <= cost_basis * (1.0 - getattr(risk_cfg, "cc_bbe_min_drawdown", 0.20))
+            aged = age_days >= getattr(risk_cfg, "cc_bbe_min_age_days", 90)
+            if aged and deep and _confirmed_downtrend(symbol, current_price):
+                bbe_floor = cost_basis * (1.0 - getattr(risk_cfg, "cc_bbe_max_lock", 0.10))
+                candidate = screen_calls(
+                    symbol,
+                    exchange=exchange,
+                    currency=currency,
+                    min_strike=bbe_floor,          # below breakeven but capped; > spot since deep
+                    delta_min_override=0.01,
+                    delta_max_override=cc_delta_max,
+                    max_dte_override=dte_max_override,
+                    min_dte_override=dte_min_override,
+                )
+                if candidate:
+                    log.warning(
+                        "cc_below_breakeven", symbol=symbol, strike=candidate.strike,
+                        cost_basis=round(cost_basis, 2), bbe_floor=round(bbe_floor, 2),
+                        current_price=round(current_price, 2), age_days=age_days,
+                        bid=candidate.bid,
+                        locked_loss_pct=round((1 - candidate.strike / cost_basis) * 100, 1),
+                        note="capped below-breakeven CC on aged/deep/downtrend zombie lot")
 
         if not candidate:
             log.debug("no_call_candidate", symbol=symbol)

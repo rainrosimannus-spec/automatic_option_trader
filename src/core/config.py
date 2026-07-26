@@ -327,6 +327,18 @@ class RiskConfig(BaseModel):
     cc_rescue_repair_dte_min: int = 30            # rescue repair: time-value OTM call DTE window floor
     cc_rescue_repair_dte_max: int = 60            # rescue repair: time-value OTM call DTE window ceiling
     cc_token_rescue_enabled: bool = True          # 2026-07-02 (Lever 3a): if a deep lot has no ≥-breakeven call in the 0.05Δ rescue band, retry at 0.01Δ so a far-OTM strike with a real fee-clearing bid still gets written (never below breakeven) instead of leaving the lot uncovered/dead-capital (e.g. IREN −20%)
+    # Below-breakeven CC (2026-07-26): STRICT last resort when even token rescue can't
+    # cover a chronically dead lot ≥breakeven. Writes a CAPPED below-breakeven OTM call
+    # ONLY when the lot is aged (≥cc_bbe_min_age_days) + deep (≥cc_bbe_min_drawdown below
+    # basis) + in a confirmed downtrend (below MA200, no 20d momentum), never locking more
+    # than cc_bbe_max_lock below basis, strike above spot so a loss realizes only on a
+    # recovery — never a fire-sale at the bottom. Live-only ([[live-marswalk-parity-rule]]
+    # exempt like Lever 3a: MarsWalk has no fee floor so it can't score it — proven inert
+    # in-sim, 0 fires). Turns dead capital into income + recycling on genuine zombies.
+    cc_below_breakeven_enabled: bool = True
+    cc_bbe_min_age_days: int = 90                 # G2: a full quarter for the recovery thesis first
+    cc_bbe_min_drawdown: float = 0.20             # G3: only lots ≥20% below basis
+    cc_bbe_max_lock: float = 0.10                 # G5: never lock more than 10% below basis
     # ── Cash-and-carry mode (high-vol-grind detector + SGOV rotation) ──
     # Ported 2026-05-28 from MarsWalk after the high-vol-grind detector + parameter-
     # override experiment (memory: stagflation-strategy-attempted-2026-05-28) showed
