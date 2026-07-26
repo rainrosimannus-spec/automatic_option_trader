@@ -118,6 +118,28 @@ class Params:
     put_otm_floor_stress: float = 0.04
     put_otm_target_stress: float = 0.07
     put_otm_cap_stress: float = 0.15
+    # Covered-call coverage lag (dead-capital sim). 0 = same-cycle (write the CC
+    # the day the lot is assigned — the engine's default and best case). >0
+    # models a delayed-coverage world where an assigned lot sits UNCOVERED for N
+    # trading days before it is eligible for a CC. Sweeping 0 vs N quantifies
+    # what closing a live coverage gap is worth. Does NOT change the CC terms,
+    # only when the first CC may be written.
+    cc_coverage_lag_days: int = 0
+    # Below-breakeven CC (strict last-resort, default OFF). Writes a CAPPED
+    # below-breakeven OTM call on a chronically-dead lot so idle capital earns
+    # income / recycles — but ONLY when the >=breakeven paths found nothing AND
+    # the lot is aged + deep + in a confirmed downtrend (recovery has failed).
+    # Strike stays >= basis*(1-max_lock) and above spot, so a loss is realized
+    # only on a recovery to the strike, never a fire-sale at the bottom. An
+    # UNGATED version was rejected in-sim (cc-multiassignment deep-dump); the
+    # gates are what this tests. NOTE: MarsWalk has no fee floor so it overstates
+    # below-breakeven writability — the LIVE payoff (income on lots that today
+    # get no bid) is not fully visible here; the sim tests the price-path effect
+    # of capping vs holding uncovered.
+    cc_below_breakeven_enabled: bool = False
+    cc_bbe_min_age_days: int = 90        # G2: quarter for the recovery thesis
+    cc_bbe_min_drawdown: float = 0.20    # G3: only lots >=20% below basis
+    cc_bbe_max_lock: float = 0.10        # G5: never lock more than 10% below basis
     # ── Covered calls ──
     cc_dte_min: int = 1            # live cfg.cc_dte_min
     cc_dte_max: int = 7            # live cfg.cc_dte_max
@@ -526,6 +548,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     n_assign = 0
     n_puts_sold = 0          # short-put SALE events (one per position opened)
     put_bid_sum = 0.0        # Σ premium bid per contract at sale (fee-floor proxy)
+    uncovered_lot_days = 0   # Σ over days of held 100-share lots with NO covering CC
+    n_bbe_writes = 0         # below-breakeven CC writes (strict last-resort lever)
     points = []
     peak = start_cap
     max_dd = 0.0
@@ -802,6 +826,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     daily_yield_rate = (cash_yield_annual / 365.0) if cash_yield_annual else 0.0
 
     for d in dates:
+        day_idx = dates.index(d)     # trading-day ordinal (for coverage-lag gating)
         # Hoisted VIX lookups (used by Lever A direction-aware halt below and
         # the existing VIX-tier delta logic in Section 4).
         vix_q = pv("^VIX", d)
@@ -822,6 +847,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     tot = st["shares"] + add
                     st["cost_basis"] = (st["cost_basis"] * st["shares"] + cb * add) / tot if tot else cb
                     st["shares"] = tot
+                    st["assigned_idx"] = day_idx     # for coverage-lag gating
                     n_assign += 1
                 # else: expired worthless, premium already kept
             else:
@@ -913,6 +939,13 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         for sym, st in list(stocks.items()):
             if st["shares"] // 100 <= 0 or sym in covered:
                 continue
+            # Coverage-lag gate (dead-capital sim): an assigned lot is not eligible
+            # for a CC until cc_coverage_lag_days trading days have passed. lag=0
+            # (default) = same-cycle coverage, the engine's normal behavior.
+            if params.cc_coverage_lag_days > 0:
+                ai = st.get("assigned_idx")
+                if ai is not None and (day_idx - ai) < params.cc_coverage_lag_days:
+                    continue
             q = pv(sym, d)
             if not q:
                 continue
@@ -972,6 +1005,28 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             # Fallback band: crash bolster (patient OTM), rescue, or patient.
             if not cands:
                 cands = score_call_candidates(spot, cc_iv, chain, cc_cfg, cdmin, cdmax, d)
+            # Below-breakeven last resort (strict, default OFF): every >=breakeven
+            # path found nothing writable. Only if the lot is AGED (G2) + DEEP (G3)
+            # + in a CONFIRMED DOWNTREND (G4) do we allow a CAPPED (G5) below-
+            # breakeven OTM call — strike >= basis*(1-max_lock) AND > spot, so a
+            # loss is realized only on a recovery to the strike, never at the bottom.
+            if not cands and params.cc_below_breakeven_enabled and cc_above_cb:
+                ai = st.get("assigned_idx")
+                aged = ai is not None and (day_idx - ai) >= params.cc_bbe_min_age_days
+                deep = spot <= cb * (1.0 - params.cc_bbe_min_drawdown)
+                ma200 = per_name_ma200.get(sym, {}).get(d)
+                q20 = pv(sym, dates[max(0, day_idx - 20)])
+                downtrend = (ma200 is not None and spot < ma200
+                             and q20 is not None and spot <= q20[0])
+                if aged and deep and downtrend:
+                    bbe_floor = cb * (1.0 - params.cc_bbe_max_lock)
+                    bbe_chain = [sc for sc in pricing.build_contracts(spot, d, cc_dte_hi + 7, symbol=sym)
+                                 if cc_dte_lo <= _dte(sc.lastTradeDateOrContractMonth, d) <= cc_dte_hi
+                                 and sc.strike >= bbe_floor and sc.strike > spot]
+                    cands = score_call_candidates(spot, cc_iv, bbe_chain, cc_cfg, 0.05, 0.40, d)
+                    if cands:
+                        cc_branch = "below_breakeven"
+                        n_bbe_writes += 1
             if not cands:
                 continue
             top = max(cands, key=lambda c: c.score)
@@ -981,6 +1036,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                                 "expiry": _exp_date(top.expiry),
                                 "premium": top.bid, "qty": lots})
             n_trades += 1
+
+        # Dead-capital telemetry: 100-share lots still uncovered after today's CC
+        # pass (either lag-gated or no coverable CC found). Σ over days.
+        _covered_now = {c["sym"] for c in short_calls}
+        for sym, st in stocks.items():
+            lots = st["shares"] // 100
+            if lots > 0 and sym not in _covered_now:
+                uncovered_lot_days += lots
 
         # ── 4. Sell new puts — gated like live: VIX/margin halt, IV-rank, earnings,
         #      correlation, collateral cap, sector cap ──
@@ -1637,6 +1700,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "n_trades": n_trades, "n_assignments": n_assign,
         "n_puts_sold": n_puts_sold,
         "put_bid_sum": round(put_bid_sum, 2),
+        "uncovered_lot_days": uncovered_lot_days,
+        "n_bbe_writes": n_bbe_writes,
         "n_halt_days": n_halt_days,
         "n_hvg_days": hvg_active_days,
         "n_crash_days": crash_active_days,
