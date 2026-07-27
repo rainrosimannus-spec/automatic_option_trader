@@ -794,6 +794,15 @@ def sync_ibkr_positions() -> int:
                 continue
             from src.strategy.wheel import WheelManager as _WM
             _WM._handle_assignment(None, db, _match, _sym)   # books lot + ASSIGNMENT trade, flips put ASSIGNED
+            # The stock-DELIVERY BUY_STOCK fill never synced (that IS why this was missed).
+            # Realized P&L is computed as SELL_STOCK − BUY_STOCK, so without a buy row the eventual
+            # sale books the whole sale price as profit (cosmos). Synthesize the delivery at the
+            # strike unless a real one exists, so buy/sell balance and realized is correct.
+            if assignment_delivery_fill(db, _sym, _match.strike, _match.opened_at, _match.quantity) is None:
+                db.add(Trade(symbol=_sym, trade_type=TradeType.BUY_STOCK, strike=0.0, expiry="",
+                             premium=0, quantity=_qty, fill_price=(_match.strike or 0.0), commission=0,
+                             order_status=OrderStatus.FILLED, created_at=datetime.utcnow(),
+                             notes="Self-heal: assignment stock delivery (never synced)"))
             changes += 1
             log.warning("position_sync_recovered_missed_assignment",
                         symbol=_sym, ibkr_qty=_qty, put_id=_match.id, strike=_match.strike,
