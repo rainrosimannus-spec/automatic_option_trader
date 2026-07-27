@@ -75,6 +75,29 @@ def _confirmed_downtrend(symbol: str, spot: float) -> bool:
     return spot < ma200 and spot <= price_20d_ago
 
 
+def _ibkr_share_verdict(ibkr_shares, symbol: str, db_total_shares: int):
+    """Reconcile a DB stock lot against live IBKR holdings before writing a CC / exiting.
+
+    A lot sold via the live-exit path has no covered call, so check_called_away never
+    closes it and its DB row can read phantom-OPEN until trade_sync reconciles — the naked
+    call / naked short trap. This decides what to do with only a TRUSTED, non-empty read:
+
+    - ibkr_shares is None/empty ({} may be a transient portfolio blip) → ('ok', db_total_shares):
+      proceed on the DB; the sell_stock clamp still backstops any actual sale.
+    - populated map that OMITS symbol, or shows < 1 lot → ('skip', None): shares are gone.
+    - populated map with fewer shares than the DB → ('clamp', real_shares): size down.
+    - otherwise → ('ok', db_total_shares).
+    """
+    if not ibkr_shares:
+        return ("ok", db_total_shares)
+    real = ibkr_shares.get(symbol, 0)
+    if real < 100:
+        return ("skip", None)
+    if real < db_total_shares:
+        return ("clamp", real)
+    return ("ok", db_total_shares)
+
+
 class WheelManager:
     """Manages the wheel: assignment detection → covered call writing."""
 
@@ -528,6 +551,21 @@ class WheelManager:
             from src.broker.orders import get_cached_open_orders
             open_orders = get_cached_open_orders()
 
+            # IBKR-truth reconcile (guards the direct-sell blind spot). A lot sold via the
+            # live-exit path (cc_sell_above_assignment) has NO covered call, so
+            # check_called_away never closes it and its DB row can read phantom-OPEN until
+            # trade_sync's independent position_sync catches up. Reading actual IBKR holdings
+            # here stops the CC writer — and its inline live-exit — from writing a naked call
+            # or queuing a phantom re-sell on shares we no longer own. Same call
+            # check_assignments/check_called_away already trust. Fail-safe: on a raised read
+            # we get None and skip the reconcile (proceed on DB); the sell_stock clamp
+            # backstops any sell regardless. (get_stock_positions imported at module top.)
+            try:
+                ibkr_shares = get_stock_positions()          # {symbol: shares}, non-zero only
+            except Exception as e:
+                ibkr_shares = None                           # untrusted read → skip reconcile
+                log.warning("cc_ibkr_shares_unavailable", error=str(e))
+
             # Group stock positions by symbol to handle multiple lots
             symbols_seen = set()
             for stock_pos in stock_positions:
@@ -545,6 +583,20 @@ class WheelManager:
                 ).all()
                 total_shares = sum(p.quantity for p in all_stock)
                 lots_needed = total_shares // 100
+
+                # Reconcile the DB lot against live IBKR holdings before acting so the CC writer
+                # and its inline live-exit can never act on shares we no longer own.
+                _verdict, _real = _ibkr_share_verdict(ibkr_shares, symbol, total_shares)
+                if _verdict == "skip":
+                    log.info("cc_skip_no_ibkr_shares", symbol=symbol, db_shares=total_shares,
+                             ibkr_shares=(ibkr_shares or {}).get(symbol, 0),
+                             note="DB lot not held at IBKR (likely sold, DB not yet synced) — skip")
+                    continue
+                if _verdict == "clamp":
+                    log.info("cc_clamp_to_ibkr_shares", symbol=symbol,
+                             db_shares=total_shares, ibkr_shares=_real)
+                    total_shares = _real
+                    lots_needed = total_shares // 100
 
                 # Count open covered call contracts
                 open_calls = db.query(Position).filter(

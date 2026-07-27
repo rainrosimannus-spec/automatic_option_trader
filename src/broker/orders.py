@@ -432,6 +432,37 @@ def sell_stock(
         contract = Stock(symbol, "SMART", currency)
         ib.qualifyContracts(contract)
 
+        # Hard safety clamp: never sell more than IBKR actually shows us holding, and refuse
+        # outright if the position is flat/short. Guards every sell path (the four wheel_exit
+        # crons + the CC-writer's inline live-exit) against a phantom DB row that trade_sync
+        # hasn't reconciled yet — the naked-short trap. Mirrors _verify_short_position used by
+        # buy_to_close_put. Fail-CLOSED: on any doubt (read error, no position), do not sell.
+        try:
+            from src.core.config import get_settings
+            acct_id = get_settings().ibkr.account
+        except Exception:
+            acct_id = None
+        try:
+            held = sum(
+                int(p.position)
+                for p in ib.positions()
+                if p.contract.symbol == symbol
+                and p.contract.secType == "STK"
+                and p.position > 0
+                and (not acct_id or p.account == acct_id)
+            )
+        except Exception as e:
+            log.error("sell_stock_position_check_failed", symbol=symbol, error=str(e))
+            return None
+        if held <= 0:
+            log.warning("sell_stock_refused_not_held", symbol=symbol, requested=shares,
+                        note="IBKR shows no long position — refusing (stale DB row?)")
+            return None
+        if shares > held:
+            log.warning("sell_stock_clamped_to_held", symbol=symbol,
+                        requested=shares, held=held)
+            shares = held
+
         if limit_price:
             order = LimitOrder("SELL", shares, limit_price)
             # Wheel EXIT: allow extended-hours fills. Safe because it's a LIMIT (fills only
