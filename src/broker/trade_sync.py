@@ -515,6 +515,20 @@ def assignment_delivery_fill(db, symbol, strike, put_opened_at, quantity):
     )
 
 
+def _missed_assignment_put(closed_puts, ibkr_qty):
+    """Pick the recently-closed short put that accounts for an unbooked IBKR stock holding.
+
+    Returns the put whose contract count EXACTLY equals the held shares
+    (contracts*100 == ibkr_qty), else None. The exact match is deliberate: it keeps the
+    self-heal from ever over-booking a symbol that has several recently-closed put lots
+    (some genuinely worthless) — an ambiguous holding is surfaced for manual review, never
+    guessed. Newest puts are considered first when several qualify."""
+    for p in closed_puts:
+        if (p.quantity or 0) * 100 == ibkr_qty:
+            return p
+    return None
+
+
 def sync_ibkr_positions() -> int:
     """
     Sync open positions from IBKR into the Position table.
@@ -732,6 +746,66 @@ def sync_ibkr_positions() -> int:
             log.info("stock_position_closed_by_sync",
                      symbol=pos.symbol, realized_pnl=pos.realized_pnl,
                      trade_count=len(stock_trades))
+
+        # ── Self-heal MISSED wheel assignments (2026-07-27) ──────────────────────────
+        # An IBKR LONG stock position with no OPEN DB wheel lot is an assignment we failed
+        # to book: the delivery BUY_STOCK fill never synced, so the ITM put fell through to
+        # worthless-EXPIRED/CLOSED and its shares vanished from the dashboard while staying
+        # live on IBKR — invisible to covered-call writing and the exit path (CCJ 90-put,
+        # ANET 175-put, 2026-07-25). Recover from IBKR truth: match a recently-closed short
+        # put whose contract count EXACTLY equals the held shares and book it through the same
+        # handler a normal assignment uses. Gates that keep this from breaking anything:
+        #   • only symbols with recently-closed WHEEL puts (no put history → skip, so the
+        #     EUR park ETF and any non-wheel stock are never touched);
+        #   • EXACT quantity match (never over-books a multi-lot symbol; ambiguous → alert);
+        #   • only when no OPEN wheel lot exists (never double-books).
+        # The sell_stock / CC guards (afaa425) still clamp any resulting exit to IBKR reality.
+        from datetime import timedelta as _td_heal
+        _heal_cutoff = datetime.utcnow() - _td_heal(days=21)
+        for _sym, _qty in list(ibkr_stock_positions.items()):
+            if _qty <= 0:
+                continue
+            if db.query(Position).filter(
+                Position.symbol == _sym,
+                Position.position_type == "stock",
+                Position.status == PositionStatus.OPEN,
+                Position.is_wheel == True,
+            ).first():
+                continue                      # already booked → never double-book
+            _puts = db.query(Position).filter(
+                Position.symbol == _sym,
+                Position.position_type == "short_put",
+                Position.status.in_([PositionStatus.EXPIRED, PositionStatus.CLOSED]),
+                Position.closed_at >= _heal_cutoff,
+            ).order_by(Position.closed_at.desc()).all()
+            if not _puts:
+                continue                      # no wheel-put history → not a wheel assignment
+            _match = _missed_assignment_put(_puts, _qty)
+            if _match is None:
+                log.warning("position_sync_unbooked_stock_no_match", symbol=_sym, ibkr_qty=_qty,
+                            note="IBKR holds stock with no DB lot and no exact put match — manual review")
+                try:
+                    from src.core.alerts import get_alert_manager
+                    get_alert_manager()._send(
+                        f"⚠️ {_sym}: IBKR holds {_qty} shares with no dashboard lot and no exact "
+                        f"put match — manual reconciliation needed.", priority="high", tags="assignment")
+                except Exception:
+                    pass
+                continue
+            from src.strategy.wheel import WheelManager as _WM
+            _WM._handle_assignment(None, db, _match, _sym)   # books lot + ASSIGNMENT trade, flips put ASSIGNED
+            changes += 1
+            log.warning("position_sync_recovered_missed_assignment",
+                        symbol=_sym, ibkr_qty=_qty, put_id=_match.id, strike=_match.strike,
+                        put_was=_match.status.value,
+                        note="IBKR held stock with no DB lot — booked missed assignment from matching put")
+            try:
+                from src.core.alerts import get_alert_manager
+                get_alert_manager()._send(
+                    f"Recovered missed assignment: {_sym} {_qty} sh @ strike {_match.strike}.",
+                    priority="default", tags="assignment")
+            except Exception:
+                pass
 
         for key, data in ibkr_positions.items():
             if key in tracked_keys:
