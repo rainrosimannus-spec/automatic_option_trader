@@ -683,11 +683,19 @@ def sync_ibkr_positions() -> int:
                     Trade.expiry == pos.expiry,
                     Trade.order_status == OrderStatus.FILLED,
                 ).all()
+                # Count ONLY the trades of this position's own right. pos_trades matches
+                # symbol+strike+expiry but NOT call/put, so a covered call and a short put at the
+                # SAME strike+expiry would each absorb the OTHER's premium — double-counting both
+                # legs' realized (observed: ANET 160 exp 20260710, call & put each booked the
+                # combined 5,336 instead of 5,005 / 331). Gate by the leg's right.
+                is_call = "call" in pos.position_type
+                sell_t = TradeType.SELL_CALL if is_call else TradeType.SELL_PUT
+                buy_t = TradeType.BUY_CALL if is_call else TradeType.BUY_PUT
                 realized = 0.0
                 for t in pos_trades:
-                    if t.trade_type in (TradeType.SELL_PUT, TradeType.SELL_CALL):
+                    if t.trade_type == sell_t:
                         realized += (t.premium or 0) * (t.quantity or 1) * 100 - (t.commission or 0)
-                    elif t.trade_type in (TradeType.BUY_PUT, TradeType.BUY_CALL):
+                    elif t.trade_type == buy_t:
                         realized -= (t.premium or 0) * (t.quantity or 1) * 100 + (t.commission or 0)
                 pos.realized_pnl = round(realized, 2)
 
