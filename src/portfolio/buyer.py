@@ -1275,8 +1275,20 @@ class PortfolioBuyer:
         # Park any standing idle cash (the crash reserve + undeployed slack) into the park ETF (XEON) for yield;
         # the executor un-parks it just-in-time when it's time to deploy. Cash backing this scan's intended
         # buys (`spent`) and still-working orders is left liquid so fills don't open a margin loan.
+        # One day's WORKING CAPITAL must be sitting in cash before the next trading day opens, and the
+        # next day opens in ASIA. The park venue (Xetra) is 07:00-15:00 UTC; Tokyo opens 00:00 UTC and
+        # Sydney/HK soon after — all of them trade while Xetra is SHUT, so a just-in-time sale during
+        # an Asian session can never fill. The sale that funds Asia therefore has to happen in the
+        # PREVIOUS European session. Passing the day's pace here makes it part of the park target, so
+        # the parker never parks it away and the un-park leg (already gated on the EUR venue being
+        # open) tops it back up on each European scan — ~4 chances between 07:00 and 15:00 UTC.
+        # Use the stable base pace, not the scan's remaining `budget`: the point is to pre-fund
+        # TOMORROW, and remaining-budget is 0 by the end of a day that deployed.
+        _day_budget = cmp.base_daily_pace(investable, cc.base_pct, cc.dca_horizon_days,
+                                          remaining_gap, deployed_today,
+                                          cc.lump_horizon_days, pace_throttle)
         self._park_compounder_excess(nlv, spent, deposit_runway=self._deposit_runway(cc),
-                                     crash_active=crash_active)
+                                     day_budget=_day_budget, crash_active=crash_active)
 
         self._store_state("compounder_last_spent", str(round(spent)))
         # deployed_today is computed live from actual fills each scan (see above) — just persist the
@@ -1645,6 +1657,7 @@ class PortfolioBuyer:
 
     def _park_compounder_excess(self, nlv: float, spent_this_scan: float,
                                 deposit_runway: float = 0.0,
+                                day_budget: float = 0.0,
                                 crash_active: bool = False) -> None:
         """Hold the base-currency cash line at the deploy runway, parking or un-parking the ETF to suit.
 
@@ -1688,7 +1701,14 @@ class PortfolioBuyer:
             # funded by a JIT sale of shares long past their spread.
             # The NLV buffer remains the FLOOR (cc.cash_buffer_pct, 3% — an operational cushion for FX
             # settlement and foreign legs, deliberately configured; set it to 0 to park to the bone).
-            _reserve = max(nlv * cc.cash_buffer_pct, max(0.0, deposit_runway))
+            # PLUS one day's working capital, always. That money is spent within a day, so parking it
+            # would sell it back well inside the loss window — and, decisively, the day starts in ASIA
+            # while the park venue is shut, so it cannot be raised just-in-time. Keeping it liquid IS
+            # the "sell one day's budget of XEON per day" behaviour: the un-park leg replenishes it on
+            # a European scan, funding the Asian session that follows ~9 hours later.
+            _reserve = max(nlv * cc.cash_buffer_pct,
+                           max(0.0, deposit_runway),
+                           max(0.0, day_budget))
             _park_min = getattr(cc, "cash_park_min", 5000.0)
 
             # Both legs key off the BASE-CURRENCY CASH LINE, never TotalCashValue. The park ETF is
@@ -1736,7 +1756,9 @@ class PortfolioBuyer:
             if excess > -_park_min or not _market_open(base_ccy):
                 return
             log.info("compounder_runway_restore", base_ccy=base_ccy, target=round(target),
-                     cash=round(base_cash), short=round(-excess), spent=round(spent_this_scan))
+                     cash=round(base_cash), short=round(-excess), spent=round(spent_this_scan),
+                     day_budget=round(day_budget), deposit_runway=round(deposit_runway),
+                     note="pre-funds the next Asian session — Xetra is shut when Tokyo opens")
             _unpark_yield(self.ib, self.cfg, target, settle_ccy=base_ccy)
         except Exception as e:
             log.warning("compounder_park_excess_error", error=str(e))

@@ -121,3 +121,44 @@ def test_the_observed_round_trip_is_now_blocked():
     _reset()
     B._last_unpark_at["XEON"] = datetime.utcnow() - timedelta(minutes=9)
     assert B._recently_unparked("XEON") is True
+
+
+# ── One day's working capital is never parked (Asia opens while Xetra is shut) ──
+# Park venue (EUR) is 07:00-15:00 UTC. Tokyo opens 00:00 UTC, Sydney/HK just after -- all trade
+# while Xetra is SHUT, so a JIT sale during an Asian session cannot fill. The cash that funds Asia
+# must already be liquid, raised on the previous European scan.
+
+DAY_BUDGET = 79_885.0
+
+
+def _target2(deposit_runway: float, day_budget: float, open_buy: float = 0.0) -> float:
+    """Mirror of the reserve/target computation including the working-capital leg."""
+    return max(NLV * BUFFER_PCT, max(0.0, deposit_runway), max(0.0, day_budget)) + open_buy
+
+
+def test_one_day_of_working_capital_is_always_reserved():
+    """Even with no deposit and an aged book, the day's budget stays out of the park."""
+    assert _target2(0.0, DAY_BUDGET) >= DAY_BUDGET
+
+
+def test_working_capital_is_not_parked_then_bought_back_next_morning():
+    """The old behaviour parked it at the end of the day and needed it back before Asia."""
+    cash = DAY_BUDGET                      # exactly one day's float on hand
+    excess = cash - _target2(0.0, DAY_BUDGET)
+    assert excess < PARK_MIN               # nothing to park -> no round trip
+
+
+def test_shortfall_triggers_a_top_up_so_asia_is_pre_funded():
+    """Cash below the day's budget must show as a shortfall the un-park leg acts on."""
+    cash = 10_000.0
+    excess = cash - _target2(0.0, DAY_BUDGET)
+    assert excess < -PARK_MIN              # un-park branch fires (during EUR hours)
+
+
+def test_deposit_window_dominates_when_larger():
+    assert _target2(500_000.0, DAY_BUDGET) == NLV_FLOOR + 0.0 or \
+           _target2(500_000.0, DAY_BUDGET) == max(NLV_FLOOR, 500_000.0)
+
+
+def test_cushion_still_floors_everything():
+    assert _target2(0.0, 0.0) == NLV_FLOOR
