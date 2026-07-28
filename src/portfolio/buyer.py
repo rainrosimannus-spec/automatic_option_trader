@@ -11,6 +11,7 @@ Tier-aware: different buy criteria for dividend, breakthrough, growth stocks.
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -185,6 +186,64 @@ def _order_blocked_by_permission(trade) -> bool:
 # Tracks when each symbol was FIRST seen stuck in 'PendingSubmit' (so a freshly-placed order that's
 # briefly PendingSubmit before it transmits isn't mistaken for stuck). In-memory; cleared on restart.
 _pending_submit_since: dict[str, datetime] = {}
+# ── Venue tick-size rounding ────────────────────────────────────────────────────────────
+# Every limit price used to be `round(price, 2)`, which is only legal where the minimum tick IS
+# 0.01. On any coarser grid IBKR accepts the order into PendingSubmit, never assigns a permId, and
+# it sits there until our own stuck-order guard cancels it and (wrongly) blames "venue rights".
+# 2026-07-28 evidence — every foreign order ever placed by the compounder hung on an illegal price:
+#   6146  TSEJ  ¥55,697.1   6920 TSEJ ¥38,330.7   4385 TSEJ ¥3,858.77   (Tokyo has no fractional yen)
+#   ITC   NSE   ₹287.28     (NSE tick ₹0.05)      NICE TASE 29,165.1    (agorot grid)
+#   ASML  AEB   €1,404.69   (Euronext tick at €1.4k is €0.50, not €0.01)
+# The control that proves it is not permissions/routing/currency: INGA filled on the SAME venue in
+# the SAME currency at €28.14 — because at €28 the Euronext tick really is €0.01. US names always
+# filled for the same reason. IBKR reports the grid as ContractDetails.minTick; use it.
+_MIN_TICK_CACHE: dict[int, float] = {}      # conId -> minTick
+
+
+def _round_to_tick(price: float, min_tick: float | None, action: str = "BUY") -> float:
+    """Snap `price` onto the venue's tick grid. BUY rounds DOWN, SELL rounds UP — never cross the
+    price you intended by rounding. Falls back to the legacy 2dp when the tick is unknown, so a
+    contract-details hiccup degrades to today's behaviour instead of blocking the order."""
+    if not price or price <= 0:
+        return price
+    if not min_tick or min_tick <= 0:
+        return round(price, 2)
+    steps = price / min_tick
+    steps = math.floor(steps + 1e-9) if action.upper() == "BUY" else math.ceil(steps - 1e-9)
+    snapped = steps * min_tick
+    # Decimals implied by the tick (0.01 -> 2, 0.5 -> 1, 10 -> 0); guards float dust like 1424.9999997.
+    dec = max(0, min(6, -int(math.floor(math.log10(min_tick))) if min_tick < 1 else 0))
+    return round(snapped, dec)
+
+
+def _min_tick_for(ib, contract, details=None) -> float | None:
+    """ContractDetails.minTick for a qualified contract, cached by conId. `details` reuses a
+    reqContractDetails result the caller already fetched (the routing path always has one).
+    Returns None when unknown — callers then keep the legacy 2dp rounding."""
+    try:
+        if details:
+            t = float(getattr(details[0] if isinstance(details, list) else details, "minTick", 0) or 0)
+            if t > 0:
+                if getattr(contract, "conId", 0):
+                    _MIN_TICK_CACHE[contract.conId] = t
+                return t
+        cid = getattr(contract, "conId", 0)
+        if cid and cid in _MIN_TICK_CACHE:
+            return _MIN_TICK_CACHE[cid]
+        with get_portfolio_lock():
+            det = ib.reqContractDetails(contract)
+        if det:
+            t = float(getattr(det[0], "minTick", 0) or 0)
+            if t > 0:
+                if cid:
+                    _MIN_TICK_CACHE[cid] = t
+                return t
+    except Exception as e:
+        log.warning("portfolio_min_tick_lookup_failed",
+                    symbol=getattr(contract, "symbol", "?"), error=str(e))
+    return None
+
+
 _STUCK_PENDING_SECONDS = 240.0      # PendingSubmit longer than this → never reached the exchange
 
 
@@ -254,7 +313,14 @@ def detect_stuck_orders_from_cache(ib=None) -> int:
                 ).all()
                 for g in ghosts:
                     g.status = "cancelled"
-                    g.review_note = "Order stuck PendingSubmit (venue rights) — auto-blocked, budget to next"
+                    # State the OBSERVATION, not a cause. This note used to read "(venue rights)",
+                    # which is a guess this code never verifies — it reads no IBKR error code. That
+                    # guess cost three weeks: every foreign order was hanging on an illegal tick-grid
+                    # price (see _round_to_tick), while the dashboard confidently reported a
+                    # permissions problem the account did not have.
+                    g.review_note = (f"Order sat PendingSubmit >{int(_STUCK_PENDING_SECONDS)}s and was "
+                                     f"never acknowledged by the venue — cancelled, budget to next. "
+                                     f"Cause unverified (check tick size, routing, then permissions).")
             cancelled = 0
             if ib is not None:                          # targeted loop-free cancel of the stuck order(s)
                 for sym in blocked:
@@ -263,7 +329,8 @@ def detect_stuck_orders_from_cache(ib=None) -> int:
                             cancelled += 1
             log.warning("compounder_stuck_pending_blocked", symbols=sorted(blocked),
                         cancelled=cancelled,
-                        note="never reached exchange — venue-blocked + order cancelled; budget to next")
+                        note="never acknowledged by venue — order cancelled, symbol paused, budget "
+                             "to next; cause UNVERIFIED (tick size / routing / permissions)")
     except Exception as e:
         log.warning("compounder_stuck_detect_failed", error=str(e))
     return len(blocked)
@@ -885,7 +952,22 @@ class PortfolioBuyer:
                 # single ~€400k park would swamp the day's pace and zero the stock-buy budget.
                 PortfolioTransaction.symbol != (self.cfg.cash_yield_symbol or "__none__"),
             ).group_by(PortfolioTransaction.currency).all()
-            _fills_today = _pfx.sum_base(_fills_rows, _fx_rates)
+            # NET today's SELLS back out. Deployment is capital COMMITTED today, so a same-day sell
+            # (manual de-risking, a trim, an assignment unwind) returns budget that the buy-only sum
+            # kept charged for the rest of the day. Buys are imported from IBKR regardless of who
+            # placed them (source='ibkr_sync'), so a manual buy already counts here — verified
+            # 2026-07-28, a manual 57-share ASML fill correctly drove the day's room to 0; sells were
+            # the asymmetric half. Floor at 0 so a net-sell day can't manufacture extra budget.
+            _sell_rows = _db.query(
+                PortfolioTransaction.currency,
+                _func.coalesce(_func.sum(PortfolioTransaction.amount), 0.0),
+            ).filter(
+                PortfolioTransaction.action == "sell",
+                PortfolioTransaction.created_at >= _today + " 00:00:00",
+                PortfolioTransaction.symbol != (self.cfg.cash_yield_symbol or "__none__"),
+            ).group_by(PortfolioTransaction.currency).all()
+            _fills_today = max(0.0, _pfx.sum_base(_fills_rows, _fx_rates)
+                               - _pfx.sum_base(_sell_rows, _fx_rates))
         # deployed_today = committed capital today = today's FILLS + still-working BUY orders. Counting
         # open_buy too means a placed order reduces the day's budget immediately (so the budget moves
         # with the buys, not only once they fill), while cancelled/failed orders — which leave open_buy
@@ -1341,49 +1423,56 @@ class PortfolioBuyer:
             if not debits:
                 return
             debits.sort(key=lambda x: x[1])           # most-negative balance (largest debit) first
-            ccy, ccy_cash, _dc = debits[0]
-
-            # Target a small POSITIVE ccy cushion after the close (rate-free: a fraction of the debit),
-            # so _ensure_currency_funding converts |debit| + cushion and lands slightly positive.
-            target_ccy = abs(ccy_cash) * buf_pct
-            # EUR to free from the XEON park before the SELL-EUR leg (est. from cached FX; 0 if unknown).
-            import src.portfolio.fx as pfx
-            base_per_ccy = pfx.to_base(1.0, ccy)
-            need_base = (abs(ccy_cash) + target_ccy) * base_per_ccy if base_per_ccy > 0 else 0.0
-
+            # Close EVERY actionable debit in this pass, largest first. Acting on debits[0] only meant
+            # a book carrying loans in several currencies needed one calendar day per currency to get
+            # clean — and this job runs once a day, so the tail kept accruing borrow interest for a
+            # week while each pass "succeeded". The per-currency threshold below still filters dust.
             alerts = None
             try:
                 from src.core.alerts import get_alert_manager
                 alerts = get_alert_manager()
             except Exception:
                 pass
+            import src.portfolio.fx as pfx
 
-            log.info("portfolio_fx_treasury_debit", dry_run=dry, ccy=ccy,
-                     ccy_cash=round(ccy_cash), target_ccy=round(target_ccy),
-                     est_eur=round(need_base), nlv=round(nlv),
-                     other_debits=[c for c, _, _ in debits[1:]])
+            closed_any = False
+            for _i, (ccy, ccy_cash, _dc) in enumerate(debits):
+                # Target a small POSITIVE ccy cushion after the close (rate-free: a fraction of the
+                # debit), so _ensure_currency_funding converts |debit| + cushion and lands positive.
+                target_ccy = abs(ccy_cash) * buf_pct
+                # EUR to free from the XEON park before the SELL-EUR leg (est. from cached FX).
+                base_per_ccy = pfx.to_base(1.0, ccy)
+                need_base = (abs(ccy_cash) + target_ccy) * base_per_ccy if base_per_ccy > 0 else 0.0
 
-            if dry:
+                log.info("portfolio_fx_treasury_debit", dry_run=dry, ccy=ccy,
+                         ccy_cash=round(ccy_cash), target_ccy=round(target_ccy),
+                         est_eur=round(need_base), nlv=round(nlv),
+                         remaining_debits=[c for c, _, _ in debits[_i + 1:]])
+
+                if dry:
+                    if alerts:
+                        alerts.treasury_alert(
+                            f"{ccy} debit auto-close (dry-run)",
+                            f"{ccy} balance {ccy_cash:,.0f} (debit) → would convert ≈€{need_base:,.0f} "
+                            f"EUR→{ccy} to clear it (+ small buffer). No order placed (burn-in).",
+                            dry_run=True,
+                        )
+                    continue
+
+                # ARMED: free EUR from the park first (best-effort), then convert base→ccy.
+                if need_base > 0:
+                    _unpark_yield(self.ib, cfg, need_base, settle_ccy=base)
+                ok = _ensure_currency_funding(self.ib, ccy, base, target_ccy, cfg=cfg)
+                closed_any = closed_any or ok
+                log.info("portfolio_fx_treasury_debit_close", ccy=ccy, ok=ok,
+                         ccy_cash=round(ccy_cash), nlv=round(nlv))
                 if alerts:
-                    alerts.treasury_alert(
-                        f"{ccy} debit auto-close (dry-run)",
-                        f"{ccy} balance {ccy_cash:,.0f} (debit) → would convert ≈€{need_base:,.0f} "
-                        f"EUR→{ccy} to clear it (+ small buffer). No order placed (burn-in).",
-                        dry_run=True,
-                    )
-                return
-
-            # ARMED: free EUR from the XEON park first (best-effort), then convert base→ccy (fail-closed).
-            if need_base > 0:
-                _unpark_yield(self.ib, cfg, need_base, settle_ccy=base)
-            ok = _ensure_currency_funding(self.ib, ccy, base, target_ccy, cfg=cfg)
-            log.info("portfolio_fx_treasury_debit_close", ccy=ccy, ok=ok,
-                     ccy_cash=round(ccy_cash), nlv=round(nlv))
-            if alerts:
-                msg = (f"{ccy} balance {ccy_cash:,.0f} (debit) → convert EUR→{ccy} to clear "
-                       f"(target +{target_ccy:,.0f}).\n{'OK' if ok else 'FAILED — check manually'}")
-                (alerts.treasury_alert(f"{ccy} debit auto-close", msg, dry_run=False) if ok
-                 else alerts.critical(f"Portfolio FX: {ccy} debit close FAILED", msg))
+                    msg = (f"{ccy} balance {ccy_cash:,.0f} (debit) → convert EUR→{ccy} to clear "
+                           f"(target +{target_ccy:,.0f}).\n{'OK' if ok else 'FAILED — check manually'}")
+                    (alerts.treasury_alert(f"{ccy} debit auto-close", msg, dry_run=False) if ok
+                     else alerts.critical(f"Portfolio FX: {ccy} debit close FAILED", msg))
+            log.info("portfolio_fx_treasury_pass_done", debits=len(debits),
+                     closed_any=closed_any, dry_run=dry)
         except Exception as e:
             log.error("portfolio_fx_treasury_error", error=str(e))
 
@@ -2455,6 +2544,15 @@ class PortfolioBuyer:
         # Convert each rung price to base for share-sizing — a base brick ÷ a LOCAL price over-buys a
         # foreign name by its FX rate (the AZN bug). `rate` is LOCAL→BASE (1.0 for base/USD-on-USD).
         ccy = stock.currency or "USD"
+        # FAIL CLOSED on an unpriceable currency. rate_to_base falls back to 1.0 when IBKR has not
+        # reported an ExchangeRate for `ccy` (it only reports currencies the account already holds),
+        # and 1.0 turns the share-count division below into nonsense: 2026-07-28 an ITC order sized
+        # ₹287.28/share as if it were €287.28 — 196 shares (~€600) booked as €56,307 of deployment.
+        # Skip the name; the rate appears as soon as the account holds any of that currency.
+        if not pfx.has_rate(ccy):
+            log.warning("portfolio_buy_skipped_no_fx_rate", symbol=stock.symbol, ccy=ccy,
+                        note="no cached IBKR ExchangeRate — refusing to size at 1.0")
+            return (0.0, 0.0)
         rate = pfx.rate_to_base(ccy)
         # NLV-scaled core-rung floor (the caller's brick already cleared it); fall back to the
         # configured cap if not threaded through, so the method is safe to call standalone.
@@ -2529,11 +2627,14 @@ class PortfolioBuyer:
 
             # `cash_room` and the returned notionals are base-ccy (the caller's budget/spent are base),
             # while the order prices in LOCAL — convert each rung's spend to base for the gate/return.
+            # Tick grid for this venue — an unsnapped foreign price hangs in PendingSubmit forever.
+            _tick = _min_tick_for(self.ib, contract)
             room = cash_room
             for i, (price, shares) in enumerate(rungs):
                 notional_base = shares * price * rate
                 if notional_base > room:
                     continue                      # can't afford this rung — skip (core has priority)
+                price = _round_to_tick(price, _tick, "BUY")
                 order = LimitOrder("BUY", shares, price)
                 order.tif = "DAY"
                 order.outsideRth = _outside_rth_ok(stock.currency)
@@ -2604,8 +2705,14 @@ class PortfolioBuyer:
                 self.cfg.cash_yield_exchange,
                 self.cfg.cash_yield_currency,
             )
+            park_exch = self.cfg.cash_yield_exchange or "IBIS"
             with get_portfolio_lock():
                 self.ib.qualifyContracts(contract)
+                # Price on SMART (unchanged — this data request has always worked there), but keep the
+                # ORDER on the configured native venue. Placing the buy on SMART let IBKR pick a
+                # different book than _unpark_yield's sell: 2026-07-28 sold 755 XEON on GETTEX2 and
+                # bought 56 back on IBIS2 the same day, paying both spreads on a round trip that
+                # should never have crossed venues. See the matching note in _unpark_yield.
                 contract.exchange = "SMART"
                 bars = self.ib.reqHistoricalData(
                     contract, endDateTime="",
@@ -2613,6 +2720,7 @@ class PortfolioBuyer:
                     whatToShow="TRADES", useRTH=False,
                     formatDate=1, timeout=8,
                 )
+                contract.exchange = park_exch          # one book for both legs of the park round trip
 
             price = float(bars[-1].close) if bars else None
             if not price or price <= 0:
@@ -2622,7 +2730,8 @@ class PortfolioBuyer:
             if shares <= 0:
                 return
 
-            order = LimitOrder("BUY", shares, round(price * 1.001, 2))
+            _tick = _min_tick_for(self.ib, contract)
+            order = LimitOrder("BUY", shares, _round_to_tick(price * 1.001, _tick, "BUY"))
             order.tif = "DAY"
             order.outsideRth = _outside_rth_ok(self.cfg.cash_yield_currency)
             with get_portfolio_lock():
@@ -3424,12 +3533,20 @@ def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool
             log.info("portfolio_unpark_skipped_market_closed", symbol=sym, park_ccy=park_ccy,
                      settle_ccy=settle_ccy, needed=round(needed), shortfall=round(shortfall))
             return not fatal_on_fail
-        contract = Stock(sym, "SMART", cfg.cash_yield_currency)
+        # Pin the park venue for the ORDER. Routing this SELL via SMART while _park_cash's BUY also
+        # went via SMART let IBKR pick a DIFFERENT book for each leg — 2026-07-28: sold 755 XEON on
+        # GETTEX2 and bought 56 back on IBIS2 the same day, paying both spreads on a round trip that
+        # should never have crossed venues. cfg.cash_yield_exchange already names the intended book
+        # (IBIS); both legs now use it. Pricing stays on SMART, where it has always worked.
+        park_exch = getattr(cfg, "cash_yield_exchange", "IBIS") or "IBIS"
+        contract = Stock(sym, park_exch, cfg.cash_yield_currency)
         with get_portfolio_lock():
             ib.qualifyContracts(contract)
+            contract.exchange = "SMART"
             bars = ib.reqHistoricalData(contract, endDateTime="", durationStr="2 D",
                                         barSizeSetting="1 day", whatToShow="TRADES",
                                         useRTH=False, formatDate=1, timeout=8)
+            contract.exchange = park_exch
         price = float(bars[-1].close) if bars else None
         if not price or price <= 0:
             return not fatal_on_fail       # can't price the ETF; only fatal if its proceeds were required
@@ -3559,6 +3676,7 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         # 10147 "OrderId not found". Zero foreign fills for that whole window (AZN, ASML, NICE, 4385),
         # while US orders on qualifyContracts filled normally on the same connection. reqContractDetails
         # is now used ONLY to read validExchanges for the routing decision.
+        details = None      # set on the foreign path; also feeds the tick-grid lookup below
         if exch and exch != "SMART":
             contract = Stock(symbol, exch, ccy)                     # NATIVE listing — resolves conId
             with get_portfolio_lock():
@@ -3591,7 +3709,15 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         # suggestion's limit_price is in pounds/rand — convert back here (exactly reverses the ingest
         # division, so it equals IBKR's original quote). Share count is unit-independent; only the
         # price changes. See src.core.quote_units.
-        order_price = round(qu.major_to_quote(limit_price, ccy), 2)
+        # Snap onto the venue's tick grid. `round(..., 2)` is only legal where minTick == 0.01; on a
+        # coarser grid IBKR parks the order in PendingSubmit forever (see _round_to_tick). `details` is
+        # already in hand on the foreign path — reuse it rather than re-querying.
+        _tick = _min_tick_for(ib, contract, details=details)
+        order_price = _round_to_tick(qu.major_to_quote(limit_price, ccy), _tick, "BUY")
+        if _tick:
+            log.info("portfolio_order_price_ticked", id=suggestion_id, symbol=symbol,
+                     min_tick=_tick, raw=round(qu.major_to_quote(limit_price, ccy), 4),
+                     ticked=order_price)
         # Fund the foreign-currency leg up front (settlement is in MAJOR units — order_price is back in
         # the quoted minor unit) so the buy doesn't silently open a margin loan in the foreign ccy.
         notional_settle = shares * qu.quote_to_major(order_price, ccy)

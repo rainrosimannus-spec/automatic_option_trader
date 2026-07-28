@@ -38,9 +38,33 @@ def base_ccy(rates: dict | None = None) -> str:
     return "USD"
 
 
+def has_rate(currency: str | None, rates: dict | None = None) -> bool:
+    """True when `currency` can be priced into base (it IS base, or a usable rate is cached).
+
+    Callers that SIZE MONEY (order share counts, deploy-budget accounting) must gate on this rather
+    than lean on `rate_to_base`'s 1.0 fallback. IBKR only reports an ExchangeRate for currencies the
+    account actually holds, so a first-ever INR/HKD/AUD/CHF buy prices at 1.0 — 2026-07-28: an ITC
+    order sized ₹287.28/share as if it were €287.28, committing €56,307 of the day's budget for
+    ~€600 of real exposure. Fail closed instead: skip the name until its rate is known.
+    """
+    if currency in (None, "", "BASE"):
+        return True
+    rates = rates if rates is not None else load_fx_rates()
+    if currency == base_ccy(rates):
+        return True
+    try:
+        return float((rates or {}).get(currency) or 0.0) > 0.0
+    except Exception:
+        return False
+
+
 def rate_to_base(currency: str | None, rates: dict | None = None) -> float:
-    """LOCAL→BASE multiplier for `currency`. 1.0 for the base currency, unknown, or a missing rate
-    (fail-safe: never silently scales an amount we can't price)."""
+    """LOCAL→BASE multiplier for `currency`. 1.0 for the base currency, unknown, or a missing rate.
+
+    The 1.0 fallback is a PASS-THROUGH, not a correct conversion — it is only safe for amounts that
+    are already in base. Anything that turns money into share counts or into a budget number must
+    call `has_rate()` first and refuse when it is False (see the ITC case in that docstring).
+    """
     if currency in (None, "", "BASE"):
         return 1.0
     rates = rates if rates is not None else load_fx_rates()
