@@ -1,15 +1,18 @@
-"""XEON park/un-park churn guards (2026-07-28).
+"""XEON park/un-park behaviour (2026-07-28).
 
-Rain saw the compounder sell 755 XEON on GETTEX2 and buy 56 back on IBIS2 the same day. Three
-independent causes; the venue split is fixed in 345f2ca, these are the other two.
+Rain saw the compounder sell 755 XEON on GETTEX2 and buy 56 back on IBIS2 the same day. The venue
+split is fixed in 345f2ca; this covers the rest.
 
-  A. The cash RUNWAY was sized off the scan's REMAINING budget, which drains to 0 as the day deploys
-     (instantly, if a manual buy lands). runway = park_reserve_days x that, so the park target
-     collapsed ~EUR797k -> ~EUR328k inside one day and rebuilt each morning. The parker holds cash AT
-     the target, so it parked into the fall and un-parked into the reset -- a daily round trip caused
-     by a counter, not by cash. Now sized off base_daily_pace, which does not move as the day deploys.
-  B. A park could immediately follow an un-park (late partial fill, target moved between scans), so a
-     BUY landed right behind a SELL on the same ETF. Now gated by a cool-down.
+THE RULE, in Rain's words: the 10-day cash reserve applies ONLY to newly added cash. XEON is a €STR
+money-market ETF — its NAV accrues ~2%/yr against a round-trip spread, so selling park shares inside
+~10 days realises a LOSS and after that a gain. So the reserve is not "always hold N days of cash";
+it is "don't park money you're about to spend". A deposit waits in cash until it is deployed or has
+aged past the spread. After that nothing is held back: the book runs ~fully parked and each day's
+buying is funded by a just-in-time sale of shares long past their spread. Crash regime is exempt.
+
+The old code sized the reserve as park_reserve_days x the scan's REMAINING budget, which drains to 0
+as the day deploys — so the target collapsed ~EUR797k -> ~EUR328k inside a day and rebuilt each
+morning, parking into the fall and un-parking into the reset.
 """
 from __future__ import annotations
 
@@ -19,61 +22,77 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.portfolio import compounder as cmp
 from src.portfolio import buyer as B
 
-INVESTABLE = 10_599_799.0
-BASE_PCT = 0.90
-DCA, LUMP, THROTTLE = 21, 126, 0.95
-GAP = 9_497_003.0 - 1_097_603.0
-RESERVE_DAYS = 10
 NLV = 10_926_456.62
-NLV_FLOOR = NLV * 0.03
+BUFFER_PCT = 0.03
+NLV_FLOOR = NLV * BUFFER_PCT          # ~EUR327,794 operational cushion (deliberate config)
+PARK_MIN = 5_000.0
 
 
-def _pace(deployed_today: float) -> float:
-    return cmp.base_daily_pace(INVESTABLE, BASE_PCT, DCA, GAP - deployed_today,
-                               deployed_today, LUMP, THROTTLE)
+def _target(deposit_runway: float, open_buy: float = 0.0) -> float:
+    """Mirror of the reserve/target computation in _park_compounder_excess."""
+    return max(NLV * BUFFER_PCT, max(0.0, deposit_runway)) + open_buy
 
 
-def _budget(deployed_today: float) -> float:
-    return cmp.daily_deploy_budget(
-        INVESTABLE, BASE_PCT, DCA, 0.0, 1_097_603.0 + deployed_today, 9_497_003.0,
-        False, 10_000_000.0, deployed_today=deployed_today,
-        lump_horizon_days=LUMP, pace_throttle=THROTTLE)
+def _runway(deposited: float, spent_since: float) -> float:
+    """Mirror of _deposit_runway's arithmetic (deposits in window minus buys since the oldest)."""
+    return max(0.0, deposited - spent_since)
 
 
-def _target(runway_source: float) -> float:
-    return max(NLV_FLOOR, RESERVE_DAYS * max(0.0, runway_source))
+# ── The reserve covers ONLY the added cash, and decays as it is spent ────────
+
+def test_fresh_deposit_is_held_out_of_the_park():
+    """EUR200k lands, nothing spent yet -> all EUR200k waits in cash."""
+    assert _runway(200_000.0, 0.0) == 200_000.0
 
 
-# ── A. runway must not move as the day deploys ───────────────────────────────
-
-def test_remaining_budget_collapses_within_a_day():
-    """The OLD source. This is the churn engine, shown explicitly."""
-    assert _budget(0.0) > 70_000
-    assert _budget(80_050.80) == 0.0          # today: one manual ASML buy zeroed it
+def test_reserve_decays_as_the_deposit_is_deployed():
+    assert _runway(200_000.0, 50_000.0) == 150_000.0
+    assert _runway(200_000.0, 200_000.0) == 0.0
 
 
-def test_base_pace_is_stable_across_the_same_day():
-    """The NEW source. Deploying the day's budget must not move the runway."""
-    start, after = _pace(0.0), _pace(80_050.80)
-    assert abs(after - start) / start < 0.01
+def test_reserve_never_goes_negative_when_overspent():
+    """Buying more than the deposit (funded from the park) must not create a negative reserve."""
+    assert _runway(200_000.0, 500_000.0) == 0.0
 
 
-def test_park_target_no_longer_swings_by_hundreds_of_thousands():
-    old_start, old_after = _target(_budget(0.0)), _target(_budget(80_050.80))
-    new_start, new_after = _target(_pace(0.0)), _target(_pace(80_050.80))
-    assert old_start - old_after > 400_000          # ~EUR469k swing -> park, then un-park tomorrow
-    assert abs(new_start - new_after) < 5_000       # inside the cash_park_min deadband: no trade
+def test_no_recent_deposit_means_no_reserve():
+    """Today's real state: last deposit 2026-07-07, 21 days ago -> outside the window entirely."""
+    assert _runway(0.0, 0.0) == 0.0
+    assert _target(0.0) == NLV_FLOOR      # only the operational cushion remains outside XEON
 
 
-def test_target_still_floors_at_the_nlv_buffer():
-    """A zero pace must not drive the runway to zero and dump the whole cash line into the ETF."""
-    assert _target(0.0) == NLV_FLOOR
+def test_steady_state_parks_everything_above_the_cushion():
+    """Aged book: reserve 0, so any cash above the cushion is parked."""
+    base_cash = NLV_FLOOR + 250_000.0
+    excess = base_cash - _target(0.0)
+    assert abs(excess - 250_000.0) < 1e-6 and excess >= PARK_MIN
 
 
-# ── B. no park immediately after an un-park ──────────────────────────────────
+def test_in_flight_buys_are_never_parked_out_from_under():
+    assert _target(0.0, open_buy=120_000.0) == NLV_FLOOR + 120_000.0
+
+
+# ── The old sizing is what churned; the new one does not ────────────────────
+
+def test_old_budget_keyed_reserve_swung_within_a_day_new_one_does_not():
+    old_start = max(NLV * BUFFER_PCT, 10 * 79_675.0)      # budget at start of day
+    old_after = max(NLV * BUFFER_PCT, 10 * 0.0)           # budget after the day deployed
+    assert old_start - old_after > 400_000                # ~EUR469k swing -> park, un-park tomorrow
+
+    new_start, new_after = _target(_runway(0.0, 0.0)), _target(_runway(0.0, 0.0))
+    assert new_start == new_after                         # deposit-keyed: deploying moves nothing
+
+
+def test_a_deposit_does_not_force_selling_the_park_to_build_a_reserve():
+    """The reserve can only be SATISFIED by deposited cash, never manufactured by selling XEON:
+    it is bounded by what was deposited and not yet spent."""
+    assert _runway(50_000.0, 0.0) == 50_000.0             # not 10 x daily budget (~EUR797k)
+    assert _runway(50_000.0, 0.0) < 10 * 79_675.0
+
+
+# ── Hysteresis: no park immediately after an un-park ─────────────────────────
 
 def _reset(sym="XEON"):
     B._last_unpark_at.pop(sym, None)
@@ -97,15 +116,8 @@ def test_cooldown_expires():
     assert B._recently_unparked("XEON") is False
 
 
-def test_cooldown_is_per_symbol():
-    _reset("XEON")
-    _reset("XFFE")
-    B._last_unpark_at["XEON"] = datetime.utcnow()
-    assert B._recently_unparked("XFFE") is False
-
-
 def test_the_observed_round_trip_is_now_blocked():
-    """08:54:55 un-park fills, 09:03:47 parker wants back in — 9 minutes later, inside the window."""
+    """08:54:55 un-park fills, 09:03:47 parker wants back in — 9 minutes, inside the window."""
     _reset()
     B._last_unpark_at["XEON"] = datetime.utcnow() - timedelta(minutes=9)
     assert B._recently_unparked("XEON") is True

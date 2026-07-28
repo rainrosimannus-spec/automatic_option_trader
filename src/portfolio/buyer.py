@@ -1275,17 +1275,8 @@ class PortfolioBuyer:
         # Park any standing idle cash (the crash reserve + undeployed slack) into the park ETF (XEON) for yield;
         # the executor un-parks it just-in-time when it's time to deploy. Cash backing this scan's intended
         # buys (`spent`) and still-working orders is left liquid so fills don't open a margin loan.
-        # Size the cash RUNWAY off the stable base PACE, not this scan's REMAINING budget. `budget`
-        # shrinks to 0 as the day deploys (or the moment a manual buy lands — 2026-07-28), and the
-        # runway is park_reserve_days x that number, so the park target collapsed from ~EUR797k to the
-        # EUR328k NLV floor within a single day and rebuilt every morning. The parker holds cash AT the
-        # target, so it dutifully parked into the fall and un-parked into the reset: a mechanical daily
-        # XEON round trip driven by nothing but the budget counter. base_daily_pace is the same number
-        # the budget is derived FROM and does not move as the day deploys.
-        _runway_pace = cmp.base_daily_pace(investable, cc.base_pct, cc.dca_horizon_days,
-                                           remaining_gap, deployed_today,
-                                           cc.lump_horizon_days, pace_throttle)
-        self._park_compounder_excess(nlv, spent, daily_budget=_runway_pace)
+        self._park_compounder_excess(nlv, spent, deposit_runway=self._deposit_runway(cc),
+                                     crash_active=crash_active)
 
         self._store_state("compounder_last_spent", str(round(spent)))
         # deployed_today is computed live from actual fills each scan (see above) — just persist the
@@ -1590,7 +1581,71 @@ class PortfolioBuyer:
         except Exception as e:
             log.error("portfolio_fx_treasury_error", error=str(e))
 
-    def _park_compounder_excess(self, nlv: float, spent_this_scan: float, daily_budget: float = 0.0) -> None:
+    def _deposit_runway(self, cc) -> float:
+        """Cash to keep OUT of the park right now: the still-undeployed part of RECENT deposits.
+
+        Why deposits and not a standing reserve — XEON is a €STR money-market ETF whose NAV accrues
+        ~2%/yr (~0.0055%/day) against a round-trip spread. Park cash and sell it again inside
+        ~park_reserve_days and the accrual has NOT covered the spread, so the round trip realises a
+        LOSS; hold past that and it is a gain. So the rule is not "always keep N days of cash" — it is
+        "don't park money you are about to spend". Freshly deposited cash is exactly that money: it
+        waits in cash until it has either been deployed or aged enough to park profitably.
+
+        Crucially this covers ONLY the added cash (Rain, 2026-07-28). It is not an account-wide
+        runway: money already parked stays parked, and once a deposit is spent or ages out, nothing is
+        held back. Steady state is therefore ~everything in XEON, with each day's buying funded by a
+        just-in-time sale of roughly one day's budget — which is a loss-free sale, because those
+        shares are long past the spread.
+
+        Sizing: total deposits younger than park_reserve_days, MINUS everything bought since the
+        oldest of them (the park ETF excluded — parking is not deployment). Floored at 0. Deposits are
+        recorded in the account BASE currency (amount_original), same as the cash line this is
+        compared against.
+
+        Returns 0.0 when the ledger is unreadable — the caller then falls back to the NLV buffer,
+        which parks MORE rather than less. Erring toward parked is the safe side: the failure it
+        avoids is holding idle cash, not spending money we don't have.
+        """
+        try:
+            days = int(getattr(cc, "park_reserve_days", 10) or 0)
+            if days <= 0:
+                return 0.0
+            cutoff = (datetime.utcnow().date() - timedelta(days=days)).isoformat()
+            acct = getattr(self.cfg, "ibkr_account", None) or None
+            from src.portfolio.models import PortfolioCapitalInjection
+            with get_db() as db:
+                q = db.query(PortfolioCapitalInjection).filter(
+                    PortfolioCapitalInjection.date >= cutoff)
+                if acct:
+                    q = q.filter(PortfolioCapitalInjection.account_id == acct)
+                rows = q.all()
+                if not rows:
+                    return 0.0
+                deposited = sum(float(r.amount_original or 0.0) for r in rows)
+                oldest = min(str(r.date)[:10] for r in rows)
+                from sqlalchemy import func as _f
+                buy_rows = db.query(
+                    PortfolioTransaction.currency,
+                    _f.coalesce(_f.sum(PortfolioTransaction.amount), 0.0),
+                ).filter(
+                    PortfolioTransaction.action == "buy",
+                    PortfolioTransaction.created_at >= oldest + " 00:00:00",
+                    PortfolioTransaction.symbol != (self.cfg.cash_yield_symbol or "__none__"),
+                ).group_by(PortfolioTransaction.currency).all()
+            from src.portfolio import fx as _pfx
+            spent_since = _pfx.sum_base(buy_rows, _pfx.load_fx_rates())
+            runway = max(0.0, deposited - spent_since)
+            log.info("compounder_deposit_runway", window_days=days, since=oldest,
+                     deposited=round(deposited), spent_since=round(spent_since),
+                     runway=round(runway))
+            return runway
+        except Exception as e:
+            log.warning("compounder_deposit_runway_failed", error=str(e))
+            return 0.0
+
+    def _park_compounder_excess(self, nlv: float, spent_this_scan: float,
+                                deposit_runway: float = 0.0,
+                                crash_active: bool = False) -> None:
         """Hold the base-currency cash line at the deploy runway, parking or un-parking the ETF to suit.
 
         Idle cash above the runway is parked for yield; a runway that has drained below it is refilled
@@ -1600,6 +1655,12 @@ class PortfolioBuyer:
         Un-parking here — not only just-in-time in the executor — is what makes non-European sessions
         tradeable at all: the park's venue (Xetra) is shut while Tokyo/HK/Sydney trade, so a JIT sale
         during those sessions can never fill. Both legs are no-ops when the park venue is closed.
+
+        `deposit_runway` is the un-deployed remainder of recent deposits (see _deposit_runway) — the
+        only cash deliberately kept OUT of the park, because selling park shares inside
+        park_reserve_days costs more in spread than they have accrued. It decays to 0 as that money is
+        spent or ages, after which the book runs ~fully parked and each day's buying is funded by a
+        JIT sale. `crash_active` suspends the park leg entirely (dry powder stays cash).
 
         `spent_this_scan` is retained for the log line only; it is already inside the in-flight total.
         Best-effort, gated on cash_yield_enabled + not-readonly."""
@@ -1619,9 +1680,15 @@ class PortfolioBuyer:
             # cash-first path) rather than selling the ETF each time. By the time the runway drains and
             # the ETF must be sold, its NAV has accrued past the buy-side spread, so the sale isn't at a
             # loss. Runway = park_reserve_days × the day's deploy budget, floored by the NLV buffer.
-            _reserve_days = int(getattr(cc, "park_reserve_days", 10) or 0)
-            _deploy_runway = _reserve_days * max(0.0, daily_budget)
-            _reserve = max(nlv * cc.cash_buffer_pct, _deploy_runway)
+            # The runway is the un-deployed remainder of RECENT DEPOSITS (see _deposit_runway), not a
+            # standing multiple of the day's budget. Parking cash and selling it again inside
+            # park_reserve_days realises a loss (spread > accrual), so freshly deposited money — the
+            # money about to be spent — stays in cash until it is deployed or ages past the spread.
+            # Once it does, nothing is held back and the book runs ~fully parked, each day's buying
+            # funded by a JIT sale of shares long past their spread.
+            # The NLV buffer remains the FLOOR (cc.cash_buffer_pct, 3% — an operational cushion for FX
+            # settlement and foreign legs, deliberately configured; set it to 0 to park to the bone).
+            _reserve = max(nlv * cc.cash_buffer_pct, max(0.0, deposit_runway))
             _park_min = getattr(cc, "cash_park_min", 5000.0)
 
             # Both legs key off the BASE-CURRENCY CASH LINE, never TotalCashValue. The park ETF is
@@ -1640,6 +1707,13 @@ class PortfolioBuyer:
 
             excess = base_cash - target
             if excess >= _park_min:
+                # CRASH EXCEPTION (Rain): never park into a crash. Cash freed by the drawdown tranches
+                # is dry powder for the dip — locking it into the ETF (and then needing to sell it
+                # back, possibly inside the loss window) works against the whole point. Un-parking
+                # stays available below. Mirrors manage_fx_treasury, which likewise suspends in a crash.
+                if crash_active:
+                    log.info("compounder_park_skipped_crash", excess=round(excess))
+                    return
                 # Don't buy back what we just sold. An un-park inside the cool-down means cash was
                 # deliberately raised moments ago; parking it now is the round trip this pair keeps
                 # producing. Let the next scan decide, by which point the cash has either been spent
