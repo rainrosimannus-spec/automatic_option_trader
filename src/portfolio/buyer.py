@@ -244,6 +244,22 @@ def _min_tick_for(ib, contract, details=None) -> float | None:
     return None
 
 
+# Park/un-park hysteresis. The two legs are driven by the same target from different sides, so any
+# residual wobble (a late partial fill, a target that moved between scans) can put a BUY right behind
+# a SELL on the same ETF — paying both spreads to end up where we started. Records the last un-park so
+# the parker can stand off for a cool-down. In-process; a restart clears it, which is fine — the worst
+# case is one allowed round trip, not a loop.
+_last_unpark_at: dict[str, datetime] = {}
+_PARK_COOLDOWN_MINUTES = 30.0
+
+
+def _recently_unparked(sym: str, minutes: float = _PARK_COOLDOWN_MINUTES) -> bool:
+    ts = _last_unpark_at.get(sym or "")
+    if not ts:
+        return False
+    return (datetime.utcnow() - ts).total_seconds() < minutes * 60.0
+
+
 _LIVE_FX_CACHE: dict[str, float] = {}      # ccy -> LOCAL->BASE multiplier, resolved from IBKR
 
 
@@ -1259,7 +1275,17 @@ class PortfolioBuyer:
         # Park any standing idle cash (the crash reserve + undeployed slack) into the park ETF (XEON) for yield;
         # the executor un-parks it just-in-time when it's time to deploy. Cash backing this scan's intended
         # buys (`spent`) and still-working orders is left liquid so fills don't open a margin loan.
-        self._park_compounder_excess(nlv, spent, daily_budget=budget)
+        # Size the cash RUNWAY off the stable base PACE, not this scan's REMAINING budget. `budget`
+        # shrinks to 0 as the day deploys (or the moment a manual buy lands — 2026-07-28), and the
+        # runway is park_reserve_days x that number, so the park target collapsed from ~EUR797k to the
+        # EUR328k NLV floor within a single day and rebuilt every morning. The parker holds cash AT the
+        # target, so it dutifully parked into the fall and un-parked into the reset: a mechanical daily
+        # XEON round trip driven by nothing but the budget counter. base_daily_pace is the same number
+        # the budget is derived FROM and does not move as the day deploys.
+        _runway_pace = cmp.base_daily_pace(investable, cc.base_pct, cc.dca_horizon_days,
+                                           remaining_gap, deployed_today,
+                                           cc.lump_horizon_days, pace_throttle)
+        self._park_compounder_excess(nlv, spent, daily_budget=_runway_pace)
 
         self._store_state("compounder_last_spent", str(round(spent)))
         # deployed_today is computed live from actual fills each scan (see above) — just persist the
@@ -1614,6 +1640,15 @@ class PortfolioBuyer:
 
             excess = base_cash - target
             if excess >= _park_min:
+                # Don't buy back what we just sold. An un-park inside the cool-down means cash was
+                # deliberately raised moments ago; parking it now is the round trip this pair keeps
+                # producing. Let the next scan decide, by which point the cash has either been spent
+                # or is genuinely surplus.
+                if _recently_unparked(getattr(self.cfg, "cash_yield_symbol", "") or ""):
+                    log.info("compounder_park_skipped_cooldown",
+                             symbol=self.cfg.cash_yield_symbol, excess=round(excess),
+                             cooldown_min=_PARK_COOLDOWN_MINUTES)
+                    return
                 self._park_cash(amount=excess)
                 return
 
@@ -3647,13 +3682,22 @@ def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool
         if shares <= 0:
             return True
         order = MarketOrder("SELL", shares)
-        order.tif = "DAY"
+        # IOC, not DAY. With tif=DAY this order could fill AFTER the wait below gave up on it: the
+        # cancel is fire-and-forget inside a bare except, and a market order on an open venue routinely
+        # trades before the cancel lands. 2026-07-28 is the proof — 1,116 shares reported
+        # filled=0/Submitted at 08:54:55, 755 filled anyway, and the 09:03 scan bought some back. Cash
+        # we had decided we did not need arrived regardless, and the parker round-tripped it.
+        # Immediate-or-cancel makes a late fill impossible: it fills now or it is gone. A partial still
+        # raises what it raised, and the failure path is unchanged (return not fatal_on_fail).
+        order.tif = "IOC"
         with get_portfolio_lock():
             trade = ib.placeOrder(contract, order)
         # Wait for a real outcome. A market sell into an open Xetra normally trades in well under a
         # second, but the fill callback does not always land inside a single short sleep — deciding
         # after ~2s and cancelling killed sells that were about to trade.
         status, filled = _await_order_outcome(ib, trade, shares)
+        if filled > 0:
+            _last_unpark_at[sym] = datetime.utcnow()      # arm the parker's cool-down
         if status == "Filled" or filled >= shares * 0.9:
             log.info("portfolio_unparked", symbol=sym, shares=shares, filled=filled,
                      raised=round(filled * price) or round(shares * price), status=status)
