@@ -39,6 +39,58 @@ def _convert_to_usd(price: float, currency: str) -> float:
     return price * rate
 
 
+def _filled_short_put_positions_today() -> list[str]:
+    """Symbols of DISTINCT short-put positions IBKR shows as FILLED today.
+
+    Reads `ib.fills()` — the session-cached execution list, populated by callbacks, so this is a
+    local lookup with no round trip (same source src.broker.trade_sync prefers). Executions are
+    grouped by (symbol, strike, expiry) so several partial fills of one position count once, which
+    is what the position/daily caps are denominated in.
+
+    Exists because short-put Position rows are written by the 15-minute sync job, not at placement:
+    between a fill and that sync the position is invisible to every DB-derived cap. See the
+    reconciliation in can_open_put_budget_recheck.
+
+    Returns [] on any failure — callers then fall back to the DB counts, i.e. today's behaviour.
+    Never raises: this runs inside the execution hot path.
+    """
+    try:
+        from src.broker.connection import get_ib, is_connected, get_ib_lock
+        if not is_connected():
+            return []
+        try:
+            from src.core.config import get_settings
+            acct = (get_settings().ibkr.account or "").strip()
+        except Exception:
+            acct = ""
+        ib = get_ib()
+        with get_ib_lock():
+            fills = ib.fills() or []
+        today = date.today()
+        seen: dict[tuple, str] = {}
+        for f in fills:
+            try:
+                c, e = f.contract, f.execution
+                if acct and getattr(e, "acctNumber", "") != acct:
+                    continue
+                if getattr(c, "secType", "") not in ("OPT", "FOP"):
+                    continue
+                if getattr(c, "right", "") != "P" or getattr(e, "side", "") != "SLD":
+                    continue
+                t = getattr(e, "time", None)
+                if t is None or t.date() != today:
+                    continue
+                key = (c.symbol, getattr(c, "strike", 0),
+                       getattr(c, "lastTradeDateOrContractMonth", ""))
+                seen[key] = c.symbol
+            except Exception:
+                continue
+        return list(seen.values())
+    except Exception as exc:                       # noqa: BLE001 — must never break execution
+        log.warning("filled_put_reconcile_failed", error=str(exc))
+        return []
+
+
 def adaptive_max_positions(net_liq: float) -> int:
     """Max open slot-consuming positions (short_put + stock), scaled by NLV.
     Single source of truth for both the live position-limit gate and the dashboard
@@ -2199,26 +2251,22 @@ class RiskManager:
                 continue
         working_put_count = len(working_put_syms)
 
-        # 1. Slot budget: OPEN(short_put+stock) + in-flight working sell-puts.
-        with get_db() as db:
-            open_slots = (
-                db.query(Position)
-                .filter(
-                    Position.status == PositionStatus.OPEN,
-                    Position.position_type.in_(["short_put", "stock"]),
-                )
-                .count()
-            )
-        max_slots = adaptive_max_positions(net_liq)
-        if open_slots + working_put_count >= max_slots:
-            return RiskCheck(
-                False,
-                f"slot budget reached at execution: {open_slots} open + "
-                f"{working_put_count} working >= {max_slots} (NLV ${net_liq:,.0f})",
-            )
-
-        # 2. Daily budget: short_puts opened today + in-flight working put orders
-        # (a working order was necessarily placed today).
+        # FILLED-BUT-UNSYNCED puts. Excluding "Filled" above is only correct once the fill has
+        # become a Position row — and it does not, for up to 15 minutes. Short-put Positions are
+        # written by the trade_sync/position_sync job on a 15-minute timer, NOT at placement, so a
+        # put that filled two minutes ago is invisible to BOTH halves of every cap: it is not in
+        # `opened_today`/`open_slots` (no Position row yet) and not in `working_put_count` (status
+        # is Filled). It therefore counts as ZERO and the wave keeps going.
+        # 2026-07-28 is the proof: six puts (AMD, INTU, AVGO, CDNS, ADBE, ABNB) appeared as
+        # Positions at 17:13:39, all created by the trade_sync that ran at 17:13:34 — the day ended
+        # 12 puts against an 11 limit and 17 slots against 15, with the re-check only ever firing
+        # on the sector gate because the numbers it read were stale.
+        # Fix: reconcile against IBKR's OWN fills. `ib.fills()` is the session cache (no network),
+        # grouped by (symbol, strike, expiry) so partial fills of one position count once.
+        filled_today_syms = _filled_short_put_positions_today()
+        # Whichever source is ahead is the truth — max() never double-counts a fill that HAS been
+        # synced, and never undercounts one that has not.
+        # Today's short puts per the DB (Position rows) — the lagging source.
         today_start = datetime.combine(date.today(), datetime.min.time())
         with get_db() as db:
             opened_today = (
@@ -2229,11 +2277,45 @@ class RiskManager:
                 )
                 .count()
             )
-        daily_limit = self._get_dynamic_daily_limit()
-        if opened_today + working_put_count >= daily_limit:
+        # Reconcile: every put filled today becomes a Position row eventually, so whichever source
+        # is ahead is the truth. `unsynced_extra` is the count IBKR knows about and the DB does not.
+        effective_today = max(opened_today, len(filled_today_syms))
+        unsynced_extra = max(0, len(filled_today_syms) - opened_today)
+        if unsynced_extra:
+            log.info("put_cap_unsynced_fills_counted",
+                     db_today=opened_today, ibkr_today=len(filled_today_syms),
+                     unsynced=unsynced_extra,
+                     note="fills not yet written as Positions by the 15-min sync")
+        # Those symbols also block the per-name dup + sector gates below.
+        inflight_syms = list(working_put_syms) + list(filled_today_syms)
+
+        # 1. Slot budget: OPEN(short_put+stock) + in-flight working sell-puts + unsynced fills.
+        with get_db() as db:
+            open_slots = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type.in_(["short_put", "stock"]),
+                )
+                .count()
+            )
+        max_slots = adaptive_max_positions(net_liq)
+        if open_slots + working_put_count + unsynced_extra >= max_slots:
             return RiskCheck(
                 False,
-                f"daily budget reached at execution: {opened_today} today + "
+                f"slot budget reached at execution: {open_slots} open + "
+                f"{working_put_count} working + {unsynced_extra} unsynced-fill "
+                f">= {max_slots} (NLV ${net_liq:,.0f})",
+            )
+
+        # 2. Daily budget: short_puts opened today (DB or IBKR, whichever is ahead) + in-flight
+        # working put orders (a working order was necessarily placed today).
+        daily_limit = self._get_dynamic_daily_limit()
+        if effective_today + working_put_count >= daily_limit:
+            return RiskCheck(
+                False,
+                f"daily budget reached at execution: {effective_today} today "
+                f"(db {opened_today}/ibkr {len(filled_today_syms)}) + "
                 f"{working_put_count} working >= {daily_limit}",
             )
 
@@ -2250,10 +2332,13 @@ class RiskManager:
                 )
                 .count()
             )
-        if existing_name > 0 or symbol in working_put_syms:
+        # `inflight_syms` includes today's filled-but-unsynced fills, so a name that just filled
+        # cannot be written a second time inside the 15-minute sync blind spot.
+        if existing_name > 0 or symbol in inflight_syms:
             return RiskCheck(
                 False,
-                f"per-name dup at execution: {symbol} already has an open or working short put",
+                f"per-name dup at execution: {symbol} already has an open, working or "
+                f"just-filled short put",
             )
 
         # 4. Commitment + per-name notional against committed state (these read
@@ -2266,7 +2351,7 @@ class RiskManager:
             return chk
 
         # 5. Sector concentration, augmented with in-flight working-order symbols.
-        chk = self.check_sector_exposure(symbol, extra_open_symbols=working_put_syms)
+        chk = self.check_sector_exposure(symbol, extra_open_symbols=inflight_syms)
         if not chk.allowed:
             return chk
 
