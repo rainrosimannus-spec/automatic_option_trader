@@ -1413,16 +1413,37 @@ class PortfolioBuyer:
             thr = float(getattr(cfg, "fx_debit_close_threshold_pct", 0.005) or 0.0)
             buf_pct = float(getattr(cfg, "fx_settlement_buffer_pct", 0.005) or 0.0)
 
+            import src.portfolio.fx as _pfx0
             debits = []
             for ccy, bal in cash.items():
                 if ccy == base:
                     continue
-                dc = plan_debit_close(bal, nlv, thr, buf_pct)
+                # HARD RULE: only ever act on an actual DEBT. A positive foreign balance is left
+                # exactly as it is — this pass converts base->ccy to repay a loan, so running it on a
+                # credit would BUY more of a currency we already hold long. It is never a sweep of
+                # foreign cash back to base (that direction does not exist here, by design).
+                if bal >= 0:
+                    continue
+                # Compare the debt against the dust threshold IN BASE. `bal` is in the foreign
+                # currency but `nlv` (and therefore nlv*threshold_pct) is in base, so the raw
+                # comparison mixed units: a ¥1,000,000 debit (≈€5.4k) looked ~186x bigger than it is
+                # and tripped a €54.6k threshold, while a £50,000 debit (≈€58.5k) looked smaller than
+                # it is and slipped under. Normalise first; skip when the rate is unknown rather than
+                # guess at 1.0 (see fx.has_rate).
+                if not _pfx0.has_rate(ccy):
+                    log.warning("portfolio_fx_treasury_skip_no_rate", ccy=ccy, bal=round(bal),
+                                note="no cached ExchangeRate — cannot size the debit in base")
+                    continue
+                bal_base = _pfx0.to_base(bal, ccy)
+                dc = plan_debit_close(bal_base, nlv, thr, buf_pct)
                 if dc["act"]:
-                    debits.append((ccy, bal, dc))
+                    debits.append((ccy, bal, dc, bal_base))
             if not debits:
                 return
-            debits.sort(key=lambda x: x[1])           # most-negative balance (largest debit) first
+            # Largest debit FIRST, ranked in base — ranking on the raw balance put every yen debit at
+            # the top purely because ¥ numbers are large (¥1m ≈ €5.4k would outrank a £50k ≈ €58.5k
+            # loan). Matters now that the pass works through all of them in order.
+            debits.sort(key=lambda x: x[3])
             # Close EVERY actionable debit in this pass, largest first. Acting on debits[0] only meant
             # a book carrying loans in several currencies needed one calendar day per currency to get
             # clean — and this job runs once a day, so the tail kept accruing borrow interest for a
@@ -1436,7 +1457,7 @@ class PortfolioBuyer:
             import src.portfolio.fx as pfx
 
             closed_any = False
-            for _i, (ccy, ccy_cash, _dc) in enumerate(debits):
+            for _i, (ccy, ccy_cash, _dc, _bal_base) in enumerate(debits):
                 # Target a small POSITIVE ccy cushion after the close (rate-free: a fraction of the
                 # debit), so _ensure_currency_funding converts |debit| + cushion and lands positive.
                 target_ccy = abs(ccy_cash) * buf_pct
@@ -1447,7 +1468,8 @@ class PortfolioBuyer:
                 log.info("portfolio_fx_treasury_debit", dry_run=dry, ccy=ccy,
                          ccy_cash=round(ccy_cash), target_ccy=round(target_ccy),
                          est_eur=round(need_base), nlv=round(nlv),
-                         remaining_debits=[c for c, _, _ in debits[_i + 1:]])
+                         debit_base=round(_bal_base),
+                         remaining_debits=[c for c, _, _, _ in debits[_i + 1:]])
 
                 if dry:
                     if alerts:
