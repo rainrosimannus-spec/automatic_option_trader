@@ -244,6 +244,72 @@ def _min_tick_for(ib, contract, details=None) -> float | None:
     return None
 
 
+_LIVE_FX_CACHE: dict[str, float] = {}      # ccy -> LOCAL->BASE multiplier, resolved from IBKR
+
+
+def resolve_fx_rate(ib, ccy: str, base: str) -> float | None:
+    """LOCAL→BASE rate for `ccy`, from IBKR — the SAME broker that books the trade.
+
+    Order: the account cache (IBKR's own ExchangeRate, written hourly) → a live snapshot of the
+    IBKR FX pair → None.
+
+    Why the pair fallback exists: IBKR reports an ExchangeRate only for currencies the account
+    ALREADY HOLDS, so a first-ever buy in a new currency has no cached rate. Gating purely on the
+    cache would deadlock those names forever — they can never be bought, so the rate never appears.
+    HKD/AUD/ZAR are all in that state today (3690, 2318, XRO, CFR) even though IBKR quotes
+    EUR.HKD / EUR.AUD / EUR.ZAR perfectly well.
+
+    Returning None is a genuine "this currency is not dealable here", not a missing lookup: it means
+    IBKR could not qualify the pair in EITHER direction. INR is the live example — no EURINR and no
+    INREUR exist, because INR is not convertible for a non-resident account. That is also why an
+    external rate source would NOT unblock India: the rate is not the blocker, the absence of any
+    tradeable pair is. Pulling a mid off the internet would only let us size an order we still
+    cannot fund, whose settlement would open an INR loan the debit-closer cannot repay (it needs the
+    same non-existent pair). Fail closed instead.
+    """
+    if not ccy or ccy.upper() == (base or "").upper():
+        return 1.0
+    ccy = ccy.upper()
+    from src.portfolio import fx as _pfx
+    rates = _pfx.load_fx_rates()
+    if _pfx.has_rate(ccy, rates):
+        return _pfx.rate_to_base(ccy, rates)
+    if ccy in _LIVE_FX_CACHE:
+        return _LIVE_FX_CACHE[ccy]
+    pair = None
+    try:
+        with get_portfolio_lock():
+            for sym, cur in ((base, ccy), (ccy, base)):
+                cand = Forex(sym + cur)
+                try:
+                    ib.qualifyContracts(cand)
+                except Exception:
+                    cand = None
+                if cand is not None and getattr(cand, "conId", 0):
+                    pair = cand
+                    break
+    except Exception as e:
+        log.warning("portfolio_fx_pair_qualify_failed", ccy=ccy, base=base, error=str(e))
+        return None
+    if pair is None:
+        log.warning("portfolio_fx_rate_undealable", ccy=ccy, base=base,
+                    note="no FX pair in either direction — currency not dealable on this account")
+        return None
+    ccy_per_base = _fx_rate_ccy_per_base(ib, pair, base, ccy)
+    if not ccy_per_base or ccy_per_base <= 0:
+        log.warning("portfolio_fx_rate_unpriced", ccy=ccy, base=base, pair=pair.symbol)
+        return None
+    rate = 1.0 / ccy_per_base                     # ccy-per-base → base-per-ccy (LOCAL→BASE)
+    # Sanity band: a real FX rate sits far inside this. Catches an inverted or garbage snapshot
+    # before it turns into a share count.
+    if not (1e-6 < rate < 1e6):
+        log.warning("portfolio_fx_rate_out_of_band", ccy=ccy, rate=rate)
+        return None
+    _LIVE_FX_CACHE[ccy] = rate
+    log.info("portfolio_fx_rate_from_pair", ccy=ccy, base=base, pair=pair.symbol, rate=rate)
+    return rate
+
+
 _STUCK_PENDING_SECONDS = 240.0      # PendingSubmit longer than this → never reached the exchange
 
 
@@ -2570,12 +2636,17 @@ class PortfolioBuyer:
         # reported an ExchangeRate for `ccy` (it only reports currencies the account already holds),
         # and 1.0 turns the share-count division below into nonsense: 2026-07-28 an ITC order sized
         # ₹287.28/share as if it were €287.28 — 196 shares (~€600) booked as €56,307 of deployment.
-        # Skip the name; the rate appears as soon as the account holds any of that currency.
-        if not pfx.has_rate(ccy):
+        # resolve_fx_rate falls back to a live IBKR FX-pair snapshot, so a first-ever buy in a new
+        # currency is NOT deadlocked (gating on the account cache alone would block HKD/AUD/ZAR
+        # forever: no buy → no holding → no reported rate → no buy). None means IBKR does not deal
+        # the pair at all (INR) — skip the name rather than size it on a guess.
+        _base_ccy = (getattr(cc, "base_currency", None)
+                     or getattr(self.cfg, "base_currency", "EUR") or "EUR")
+        rate = resolve_fx_rate(self.ib, ccy, _base_ccy)
+        if not rate or rate <= 0:
             log.warning("portfolio_buy_skipped_no_fx_rate", symbol=stock.symbol, ccy=ccy,
-                        note="no cached IBKR ExchangeRate — refusing to size at 1.0")
+                        note="no IBKR rate (cache or pair) — refusing to size at 1.0")
             return (0.0, 0.0)
-        rate = pfx.rate_to_base(ccy)
         # NLV-scaled core-rung floor (the caller's brick already cleared it); fall back to the
         # configured cap if not threaded through, so the method is safe to call standalone.
         core_floor = min_buy if min_buy is not None else cc.min_single_buy

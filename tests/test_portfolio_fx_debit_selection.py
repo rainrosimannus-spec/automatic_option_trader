@@ -99,3 +99,64 @@ def test_debits_rank_by_base_value_not_raw_balance():
     )
     assert [c for c, _ in ranked] == ["GBP", "JPY"]           # sterling is the bigger loan
     assert abs(cash["JPY"]) > abs(cash["GBP"])                # ...despite the larger raw number
+
+
+# ── Rate resolution: IBKR cache -> IBKR FX pair -> refuse ────────────────────
+
+def test_resolve_fx_rate_prefers_the_account_cache(monkeypatch):
+    """Cached IBKR ExchangeRate wins; no pair lookup, no market data."""
+    from src.portfolio import buyer as B
+    monkeypatch.setattr("src.portfolio.fx.load_fx_rates", lambda: RATES)
+    called = []
+    monkeypatch.setattr(B, "_fx_rate_ccy_per_base",
+                        lambda *a, **k: called.append(1) or 0.0)
+    assert B.resolve_fx_rate(object(), "JPY", "EUR") == RATES["JPY"]
+    assert called == []
+
+
+def test_resolve_fx_rate_returns_none_when_no_pair_exists(monkeypatch):
+    """INR: neither EURINR nor INREUR qualifies -> not dealable -> refuse to size.
+    This is why an EXTERNAL rate source would not unblock India."""
+    from src.portfolio import buyer as B
+    monkeypatch.setattr("src.portfolio.fx.load_fx_rates", lambda: RATES)
+    B._LIVE_FX_CACHE.pop("INR", None)
+
+    class _IB:
+        def qualifyContracts(self, c):      # IBKR resolves nothing for INR
+            return []
+    monkeypatch.setattr(B, "get_portfolio_lock", lambda: __import__("contextlib").nullcontext())
+    assert B.resolve_fx_rate(_IB(), "INR", "EUR") is None
+
+
+def test_resolve_fx_rate_falls_back_to_the_live_pair(monkeypatch):
+    """HKD has no cached rate (never held) but IBKR quotes EUR.HKD — must NOT deadlock."""
+    from src.portfolio import buyer as B
+    monkeypatch.setattr("src.portfolio.fx.load_fx_rates", lambda: RATES)
+    B._LIVE_FX_CACHE.pop("HKD", None)
+
+    class _Pair:
+        conId, symbol = 1234, "EUR"
+    class _IB:
+        def qualifyContracts(self, c):
+            c.conId, c.symbol = _Pair.conId, _Pair.symbol
+            return [c]
+    monkeypatch.setattr(B, "get_portfolio_lock", lambda: __import__("contextlib").nullcontext())
+    monkeypatch.setattr(B, "_fx_rate_ccy_per_base", lambda *a, **k: 9.1)   # HKD per EUR
+    rate = B.resolve_fx_rate(_IB(), "HKD", "EUR")
+    assert rate is not None and abs(rate - 1 / 9.1) < 1e-9                 # LOCAL->BASE
+    assert B._LIVE_FX_CACHE["HKD"] == rate                                 # cached for reuse
+
+
+def test_resolve_fx_rate_rejects_an_out_of_band_snapshot(monkeypatch):
+    """A garbage/inverted quote must not become a share count."""
+    from src.portfolio import buyer as B
+    monkeypatch.setattr("src.portfolio.fx.load_fx_rates", lambda: RATES)
+    B._LIVE_FX_CACHE.pop("ZAR", None)
+
+    class _IB:
+        def qualifyContracts(self, c):
+            c.conId, c.symbol = 99, "EUR"
+            return [c]
+    monkeypatch.setattr(B, "get_portfolio_lock", lambda: __import__("contextlib").nullcontext())
+    monkeypatch.setattr(B, "_fx_rate_ccy_per_base", lambda *a, **k: 1e-12)
+    assert B.resolve_fx_rate(_IB(), "ZAR", "EUR") is None
