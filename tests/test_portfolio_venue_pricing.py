@@ -103,3 +103,63 @@ def test_the_itc_mis_sizing_is_now_refused():
     brick, price_local = 56369.0, 287.28
     assert int(brick / (price_local * pfx.rate_to_base("INR", _RATES))) == 196   # the bug
     assert not pfx.has_rate("INR", _RATES)                                      # now skipped
+
+
+# ── 3. IBKR's minTick is a FLOOR, not the applicable tick ────────────────────
+# 2026-07-29: the first fix trusted ContractDetails.minTick. On Tokyo IBKR returns 0.1 -- the
+# FINEST tick across every price band -- so the snap was a no-op and the orders hung again:
+#     6920  raw 35,617.2  -> "ticked" 35,617.2   (TSE has no fractional yen at ANY price)
+#     6146  raw 52,471.05 -> "ticked" 52,471.0   (real grid there is Y100)
+# Fix: round on max(IBKR minTick, the venue's band tick at this price).
+
+from src.portfolio.buyer import _venue_band_tick
+
+
+def _snap_jpy(raw: float, ibkr_tick: float = 0.1) -> float:
+    return _round_to_tick(raw, max(ibkr_tick, _venue_band_tick("JPY", raw)), "BUY")
+
+
+def test_tse_band_tick_widens_with_price():
+    assert _venue_band_tick("JPY", 2_500) == 1
+    assert _venue_band_tick("JPY", 4_000) == 5
+    assert _venue_band_tick("JPY", 20_000) == 10
+    assert _venue_band_tick("JPY", 40_000) == 50
+    assert _venue_band_tick("JPY", 100_000) == 100
+    assert _venue_band_tick("JPY", 60_000_000) == 100_000
+
+
+def test_every_japanese_order_that_hung_now_snaps_to_whole_yen():
+    """The five real limits IBKR refused to acknowledge."""
+    assert _snap_jpy(35_617.20) == 35_600      # 6920, 2026-07-29
+    assert _snap_jpy(52_471.05) == 52_400      # 6146, 2026-07-29
+    assert _snap_jpy(38_330.70) == 38_300      # 6920, 2026-07-28
+    assert _snap_jpy(55_697.10) == 55_600      # 6146, 2026-07-28
+    assert _snap_jpy(3_858.77) == 3_855        # 4385
+
+
+def test_no_japanese_price_can_carry_a_fraction_of_a_yen():
+    """The property that actually matters — TSE never quotes sub-yen."""
+    for raw in (999.9, 3_000.5, 4_999.99, 29_999.9, 35_617.2, 52_471.05, 299_999.4):
+        assert float(_snap_jpy(raw)).is_integer()
+
+
+def test_ibkr_tick_still_wins_when_it_is_the_coarser_one():
+    """max(), not override: a venue we have not tabled must keep trusting IBKR."""
+    assert _round_to_tick(100.07, max(0.05, _venue_band_tick("USD", 100.07)), "BUY") == 100.05
+
+
+def test_untabled_venues_are_left_alone():
+    """Returning 0 means 'no opinion' — the caller falls back to IBKR's minTick."""
+    for ccy in ("USD", "EUR", "GBP", "CAD", "HKD", "AUD", None):
+        assert _venue_band_tick(ccy, 1_404.69) == 0.0
+
+
+def test_band_tick_is_conservative_so_a_coarse_price_is_legal_on_a_finer_grid():
+    """We use the non-TOPIX100 table; a multiple of Y100 is also a multiple of the TOPIX100 Y50."""
+    snapped = _snap_jpy(52_471.05)
+    assert snapped % 100 == 0 and snapped % 50 == 0
+
+
+def test_snapped_buy_never_pays_more_than_asked():
+    for raw in (35_617.2, 52_471.05, 3_858.77):
+        assert _snap_jpy(raw) <= raw

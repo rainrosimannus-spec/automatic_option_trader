@@ -199,6 +199,44 @@ _pending_submit_since: dict[str, datetime] = {}
 # filled for the same reason. IBKR reports the grid as ContractDetails.minTick; use it.
 _MIN_TICK_CACHE: dict[int, float] = {}      # conId -> minTick
 
+# IBKR's ContractDetails.minTick is a FLOOR, not the applicable tick. On venues with a
+# price-banded tick table it reports the FINEST tick across every band, so at a high price it is
+# far too fine to be legal. 2026-07-29 proved it on Tokyo: minTick came back 0.1 for both names,
+# so the snap was a no-op and the orders hung exactly as before —
+#   6920  raw 35,617.2  -> "ticked" 35,617.2   (TSE has no fractional yen at ANY price)
+#   6146  raw 52,471.05 -> "ticked" 52,471.0   (real grid there is Y100)
+# So: take max(IBKR minTick, the band tick for this venue at this price). Rounding onto a COARSER
+# grid is always legal on a finer one, so where a venue's band depends on data we don't have
+# (TSE's TOPIX100 split, Euronext's liquidity bands) we deliberately use the COARSER table. The
+# cost is at most one tick of price — Y100 on Y52,471 is 0.19%, and a BUY rounds DOWN, so it only
+# ever bids slightly less.
+#
+# Tokyo Stock Exchange, non-TOPIX100 table (the coarser of the two; a multiple of Y100 is also a
+# valid multiple of the TOPIX100 Y50). Pairs are (upper price bound inclusive, tick).
+_TSE_TICK_BANDS: list[tuple[float, float]] = [
+    (3_000, 1), (5_000, 5), (30_000, 10), (50_000, 50), (300_000, 100),
+    (500_000, 500), (3_000_000, 1_000), (5_000_000, 5_000),
+    (30_000_000, 10_000), (50_000_000, 50_000),
+]
+_TSE_TICK_ABOVE = 100_000.0
+
+
+def _venue_band_tick(currency: str | None, price: float) -> float:
+    """Conservative tick for venues whose grid widens with price and whose IBKR minTick lies.
+
+    Returns 0.0 when we have no table for the venue — the caller then trusts IBKR's minTick, i.e.
+    today's behaviour. Only add a venue here once its table is known; a wrong table is worse than
+    none, because it would move prices off a grid that was already legal.
+    """
+    if not price or price <= 0:
+        return 0.0
+    if (currency or "").upper() == "JPY":
+        for bound, tick in _TSE_TICK_BANDS:
+            if price <= bound:
+                return float(tick)
+        return _TSE_TICK_ABOVE
+    return 0.0
+
 
 def _round_to_tick(price: float, min_tick: float | None, action: str = "BUY") -> float:
     """Snap `price` onto the venue's tick grid. BUY rounds DOWN, SELL rounds UP — never cross the
@@ -242,6 +280,20 @@ def _min_tick_for(ib, contract, details=None) -> float | None:
         log.warning("portfolio_min_tick_lookup_failed",
                     symbol=getattr(contract, "symbol", "?"), error=str(e))
     return None
+
+
+def _effective_tick(ib, contract, price: float, details=None,
+                    currency: str | None = None) -> float | None:
+    """The tick to actually round on: the COARSER of IBKR's minTick and the venue's band tick.
+
+    IBKR's value alone is not enough (see _venue_band_tick) and our table alone would be wrong for
+    venues we have not mapped, so take the max. None only when neither source knows anything, in
+    which case _round_to_tick falls back to the legacy 2dp.
+    """
+    ibkr_tick = _min_tick_for(ib, contract, details=details) or 0.0
+    band_tick = _venue_band_tick(currency or getattr(contract, "currency", None), price)
+    eff = max(ibkr_tick, band_tick)
+    return eff if eff > 0 else None
 
 
 # Park/un-park hysteresis. The two legs are driven by the same target from different sides, so any
@@ -2852,13 +2904,14 @@ class PortfolioBuyer:
             # `cash_room` and the returned notionals are base-ccy (the caller's budget/spent are base),
             # while the order prices in LOCAL — convert each rung's spend to base for the gate/return.
             # Tick grid for this venue — an unsnapped foreign price hangs in PendingSubmit forever.
-            _tick = _min_tick_for(self.ib, contract)
             room = cash_room
             for i, (price, shares) in enumerate(rungs):
                 notional_base = shares * price * rate
                 if notional_base > room:
                     continue                      # can't afford this rung — skip (core has priority)
-                price = _round_to_tick(price, _tick, "BUY")
+                # Per-rung: the band tick depends on the rung's own price, so it cannot be hoisted.
+                price = _round_to_tick(
+                    price, _effective_tick(self.ib, contract, price, currency=ccy), "BUY")
                 order = LimitOrder("BUY", shares, price)
                 order.tif = "DAY"
                 order.outsideRth = _outside_rth_ok(stock.currency)
@@ -2954,8 +3007,10 @@ class PortfolioBuyer:
             if shares <= 0:
                 return
 
-            _tick = _min_tick_for(self.ib, contract)
-            order = LimitOrder("BUY", shares, _round_to_tick(price * 1.001, _tick, "BUY"))
+            _bid = price * 1.001
+            _tick = _effective_tick(self.ib, contract, _bid,
+                                    currency=self.cfg.cash_yield_currency)
+            order = LimitOrder("BUY", shares, _round_to_tick(_bid, _tick, "BUY"))
             order.tif = "DAY"
             order.outsideRth = _outside_rth_ok(self.cfg.cash_yield_currency)
             with get_portfolio_lock():
@@ -3945,12 +4000,13 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         # Snap onto the venue's tick grid. `round(..., 2)` is only legal where minTick == 0.01; on a
         # coarser grid IBKR parks the order in PendingSubmit forever (see _round_to_tick). `details` is
         # already in hand on the foreign path — reuse it rather than re-querying.
-        _tick = _min_tick_for(ib, contract, details=details)
-        order_price = _round_to_tick(qu.major_to_quote(limit_price, ccy), _tick, "BUY")
+        _raw_price = qu.major_to_quote(limit_price, ccy)
+        _tick = _effective_tick(ib, contract, _raw_price, details=details, currency=ccy)
+        order_price = _round_to_tick(_raw_price, _tick, "BUY")
         if _tick:
             log.info("portfolio_order_price_ticked", id=suggestion_id, symbol=symbol,
-                     min_tick=_tick, raw=round(qu.major_to_quote(limit_price, ccy), 4),
-                     ticked=order_price)
+                     min_tick=_tick, ibkr_tick=_min_tick_for(ib, contract, details=details),
+                     raw=round(_raw_price, 4), ticked=order_price)
         # Fund the foreign-currency leg up front (settlement is in MAJOR units — order_price is back in
         # the quoted minor unit) so the buy doesn't silently open a margin loan in the foreign ccy.
         notional_settle = shares * qu.quote_to_major(order_price, ccy)
@@ -4047,8 +4103,12 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                 else:
                     s.status = "submitted"
                     s.review_note = f"Order {fill_status} — awaiting fill"
+        # price = what was actually SENT (tick-snapped), not the suggestion's raw limit. Logging
+        # limit_price here misreported every foreign order and masked the tick problem: 6146 showed
+        # price=52471.05 in this line while the order carried the snapped 52471.0.
         log.info("portfolio_suggestion_order_placed", id=suggestion_id, symbol=symbol,
-                 shares=shares, price=limit_price, exchange=exch, currency=ccy,
+                 shares=shares, price=order_price, raw_limit=limit_price,
+                 exchange=exch, currency=ccy,
                  order_status=fill_status, perm_id=_ack.get("perm_id"),
                  why_held=_ack.get("why_held"))
         return fill_status
