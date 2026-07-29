@@ -163,3 +163,80 @@ def test_band_tick_is_conservative_so_a_coarse_price_is_legal_on_a_finer_grid():
 def test_snapped_buy_never_pays_more_than_asked():
     for raw in (35_617.2, 52_471.05, 3_858.77):
         assert _snap_jpy(raw) <= raw
+
+
+# ── 4. IBKR's market rule is the authoritative banded table ──────────────────
+# ContractDetails.marketRuleIds is positionally aligned with validExchanges, and
+# reqMarketRule(id) returns the venue's real (lowEdge, increment) bands. That is what minTick
+# should have been. Covers EVERY currency without a hardcoded table per venue.
+
+from src.portfolio.buyer import _market_rule_tick, _MARKET_RULE_CACHE
+
+
+class _Inc:
+    def __init__(self, low, inc):
+        self.lowEdge, self.increment = low, inc
+
+
+class _Details:
+    def __init__(self, rules, exchanges):
+        self.marketRuleIds, self.validExchanges = rules, exchanges
+
+
+class _RuleIB:
+    """Serves a TSE-shaped banded table for rule 32, a flat 0.01 grid for rule 7."""
+    def __init__(self):
+        self.asked = []
+
+    def reqMarketRule(self, rid):
+        self.asked.append(rid)
+        if rid == 32:
+            return [_Inc(0, 1), _Inc(3000, 5), _Inc(5000, 10),
+                    _Inc(30000, 50), _Inc(50000, 100)]
+        return [_Inc(0, 0.01)]
+
+
+def _fresh(monkeypatch):
+    _MARKET_RULE_CACHE.clear()
+    from src.portfolio import buyer as B
+    monkeypatch.setattr(B, "get_portfolio_lock",
+                        lambda: __import__("contextlib").nullcontext())
+    return _RuleIB()
+
+
+def test_market_rule_picks_the_band_for_this_price(monkeypatch):
+    ib = _fresh(monkeypatch)
+    d = _Details("32,7", "TSEJ,SMART")
+    assert _market_rule_tick(ib, [d], "TSEJ", 52_471.05) == 100
+    assert _market_rule_tick(ib, [d], "TSEJ", 35_617.20) == 50
+    assert _market_rule_tick(ib, [d], "TSEJ", 4_000) == 5
+
+
+def test_market_rule_is_selected_by_the_ROUTED_exchange(monkeypatch):
+    """Wrong rule = wrong grid. SMART must get rule 7, not TSEJ's 32."""
+    ib = _fresh(monkeypatch)
+    d = _Details("32,7", "TSEJ,SMART")
+    assert _market_rule_tick(ib, [d], "SMART", 52_471.05) == 0.01
+    assert _market_rule_tick(ib, [d], "TSEJ", 52_471.05) == 100
+
+
+def test_market_rule_result_is_cached(monkeypatch):
+    ib = _fresh(monkeypatch)
+    d = _Details("32", "TSEJ")
+    _market_rule_tick(ib, [d], "TSEJ", 52_471.05)
+    _market_rule_tick(ib, [d], "TSEJ", 35_617.20)
+    assert ib.asked == [32]                     # one round trip, not two
+
+
+def test_market_rule_absent_returns_zero_not_a_guess(monkeypatch):
+    ib = _fresh(monkeypatch)
+    assert _market_rule_tick(ib, [_Details("", "")], "TSEJ", 1000) == 0.0
+    assert _market_rule_tick(ib, None, "TSEJ", 1000) == 0.0
+
+
+def test_market_rule_covers_currencies_with_no_hardcoded_table(monkeypatch):
+    """HKD/GBP/AUD/ZAR/EUR have no _venue_band_tick entry — the rule supplies the grid."""
+    ib = _fresh(monkeypatch)
+    d = _Details("32", "SEHK")
+    assert _venue_band_tick("HKD", 52_471.05) == 0.0      # no table
+    assert _market_rule_tick(ib, [d], "SEHK", 52_471.05) == 100   # rule still knows

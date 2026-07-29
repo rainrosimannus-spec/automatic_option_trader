@@ -282,17 +282,73 @@ def _min_tick_for(ib, contract, details=None) -> float | None:
     return None
 
 
-def _effective_tick(ib, contract, price: float, details=None,
-                    currency: str | None = None) -> float | None:
-    """The tick to actually round on: the COARSER of IBKR's minTick and the venue's band tick.
+_MARKET_RULE_CACHE: dict[int, list] = {}        # ruleId -> [PriceIncrement, ...]
 
-    IBKR's value alone is not enough (see _venue_band_tick) and our table alone would be wrong for
-    venues we have not mapped, so take the max. None only when neither source knows anything, in
-    which case _round_to_tick falls back to the legacy 2dp.
+
+def _market_rule_tick(ib, details, exchange: str | None, price: float) -> float:
+    """The AUTHORITATIVE tick: IBKR's own market rule for this venue at this price.
+
+    ContractDetails.marketRuleIds is a comma-separated list positionally aligned with
+    validExchanges, and reqMarketRule(id) returns the venue's real banded increment table as
+    (lowEdge, increment) pairs. This is what minTick should have been — minTick is only the finest
+    increment in that table, which is why Tokyo reported 0.1 for a name trading at Y52,471 whose
+    actual grid is Y100.
+
+    Cached by rule id (the tables are static). Returns 0.0 if anything is unavailable, so the
+    caller falls back to minTick / the hardcoded band table.
+    """
+    try:
+        d = details[0] if isinstance(details, list) else details
+        if d is None:
+            return 0.0
+        rule_ids = [r.strip() for r in (getattr(d, "marketRuleIds", "") or "").split(",") if r.strip()]
+        exchanges = [e.strip().upper() for e in (getattr(d, "validExchanges", "") or "").split(",")]
+        if not rule_ids:
+            return 0.0
+        rid = None
+        want = (exchange or "").strip().upper()
+        for ex, r in zip(exchanges, rule_ids):
+            if ex == want:
+                rid = r
+                break
+        if rid is None:
+            rid = rule_ids[0]           # fall back to the primary listing's rule
+        rid_i = int(rid)
+        increments = _MARKET_RULE_CACHE.get(rid_i)
+        if increments is None:
+            with get_portfolio_lock():
+                increments = ib.reqMarketRule(rid_i) or []
+            _MARKET_RULE_CACHE[rid_i] = increments
+        best = 0.0
+        for inc in increments:
+            try:
+                if float(inc.lowEdge) <= price:
+                    best = float(inc.increment)
+            except Exception:
+                continue
+        return best if best > 0 else 0.0
+    except Exception as e:
+        log.warning("portfolio_market_rule_lookup_failed",
+                    exchange=exchange, price=price, error=str(e))
+        return 0.0
+
+
+def _effective_tick(ib, contract, price: float, details=None,
+                    currency: str | None = None, exchange: str | None = None) -> float | None:
+    """The tick to round on — the COARSEST of every source that claims to know.
+
+    Priority of truth is really: IBKR market rule > our band table > minTick. We take the max of
+    all three rather than the first available, because a price on a COARSER grid is always legal on
+    a finer one, so an over-coarse answer costs at most one tick (and a BUY rounds down, so it only
+    ever bids less) while an over-fine answer hangs the order in PendingSubmit forever.
+
+    None when nothing knows anything — _round_to_tick then falls back to the legacy 2dp.
     """
     ibkr_tick = _min_tick_for(ib, contract, details=details) or 0.0
     band_tick = _venue_band_tick(currency or getattr(contract, "currency", None), price)
-    eff = max(ibkr_tick, band_tick)
+    rule_tick = _market_rule_tick(
+        ib, details, exchange or getattr(contract, "exchange", None), price)
+    eff = max(ibkr_tick, band_tick, rule_tick)
     return eff if eff > 0 else None
 
 
@@ -4001,11 +4057,15 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         # coarser grid IBKR parks the order in PendingSubmit forever (see _round_to_tick). `details` is
         # already in hand on the foreign path — reuse it rather than re-querying.
         _raw_price = qu.major_to_quote(limit_price, ccy)
-        _tick = _effective_tick(ib, contract, _raw_price, details=details, currency=ccy)
+        _tick = _effective_tick(ib, contract, _raw_price, details=details, currency=ccy,
+                                exchange=getattr(contract, "exchange", None))
         order_price = _round_to_tick(_raw_price, _tick, "BUY")
         if _tick:
             log.info("portfolio_order_price_ticked", id=suggestion_id, symbol=symbol,
-                     min_tick=_tick, ibkr_tick=_min_tick_for(ib, contract, details=details),
+                     min_tick=_tick,
+                     ibkr_tick=_min_tick_for(ib, contract, details=details),
+                     rule_tick=_market_rule_tick(ib, details,
+                                                 getattr(contract, "exchange", None), _raw_price),
                      raw=round(_raw_price, 4), ticked=order_price)
         # Fund the foreign-currency leg up front (settlement is in MAJOR units — order_price is back in
         # the quoted minor unit) so the buy doesn't silently open a margin loan in the foreign ccy.
