@@ -1346,7 +1346,21 @@ class PortfolioBuyer:
                 break
             stock, a = analyses[r.symbol]
             brick = min(max_buy, tgt - cur, budget - spent)
-            if brick < min_buy:
+            # The min-order floor must never make a name PERMANENTLY unbuyable. min_buy is 0.4% of
+            # NLV and SCALES WITH IT, while a per-name target is a slice of the tier budget — so on a
+            # large book the floor overtakes the smallest targets and those names are skipped every
+            # scan, forever, with the gap never growing enough to clear it. 2026-07-30: 18 of 106
+            # names were in that state (WKL EUR13k, ABF EUR19k ... SU EUR40k, CFR EUR33k), including
+            # ranks 15/22/23/24/28/31 — well-ranked names starved purely by arithmetic, and it gets
+            # worse as NLV grows.
+            # So when the whole remaining GAP is under the floor, allow one order that CLOSES it
+            # completely (never a partial dust order — brick < gap still fails, e.g. when the day's
+            # budget is short, and it simply waits). cc.min_single_buy_floor remains an absolute
+            # hard floor so genuine dust is still skipped.
+            _gap = max(0.0, tgt - cur)
+            _hard_floor = float(getattr(cc, "min_single_buy_floor", 2000.0) or 0.0)
+            _eff_floor = min_buy if _gap >= min_buy else max(_gap, _hard_floor)
+            if brick < _eff_floor:
                 continue
             idx = rank_idx.get(r.symbol, 0)
             is_leader = r.symbol in leaders
@@ -1390,7 +1404,10 @@ class PortfolioBuyer:
             )
             core_placed, total_placed = self._execute_compounder_buy(
                 stock, a, brick, urgency, is_leader, cash_room,
-                rank=idx, rank_score=r.rank_score, rationale=rat, min_buy=min_buy)
+                # Pass the EFFECTIVE floor, not the raw one: _execute_compounder_buy re-applies it to
+                # the core rung, so a gap-closing order that this loop just allowed would be rejected
+                # there instead — the name would still never be bought.
+                rank=idx, rank_score=r.rank_score, rationale=rat, min_buy=_eff_floor)
             if total_placed > 0:
                 bought.append(stock.symbol)
                 spent += core_placed        # throttle base pace by the core rung only
