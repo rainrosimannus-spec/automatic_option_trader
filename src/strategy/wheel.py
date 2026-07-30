@@ -98,6 +98,41 @@ def _ibkr_share_verdict(ibkr_shares, symbol: str, db_total_shares: int):
     return ("ok", db_total_shares)
 
 
+def _covered_call_contracts(db, symbol: str) -> int:
+    """Covered-call CONTRACTS backing `symbol` right now — gap-safe against the sync lag.
+
+    The `covered_call` Position rows are authoritative, but trade_sync writes them only
+    AFTER a fill syncs. In that window (observed ~13 min) a naked call gets double-written:
+    2026-07-30 LRCX held 100 shares yet sold 2× 400C, because every scan between the first
+    fill (14:00) and the position sync (14:13) read covered=0 and wrote again. The old bridge
+    (count today's FILLED SELL_CALL trades) was blind here because _write_call records the
+    trade as SUBMITTED and trade_sync only flips it to FILLED later; it also counted trade
+    ROWS, so a single qty=2 order under-counted.
+
+    Fix: count `covered_call` positions opened BEFORE today, plus today's SELL_CALL coverage
+    from the trade rows _write_call writes SYNCHRONOUSLY at placement — counting BOTH SUBMITTED
+    and FILLED, and summing CONTRACTS not rows. Excluding today's positions stops the position
+    and its originating trades from double-counting once the sync catches up.
+    """
+    from sqlalchemy import func as _func
+    from datetime import date as _date
+    today_str = _date.today().strftime("%Y-%m-%d")
+    prior = db.query(Position).filter(
+        Position.symbol == symbol,
+        Position.status == PositionStatus.OPEN,
+        Position.position_type == "covered_call",
+        Position.opened_at < today_str,
+    ).all()
+    covered = sum(p.quantity for p in prior)
+    today_qty = db.query(_func.coalesce(_func.sum(Trade.quantity), 0)).filter(
+        Trade.symbol == symbol,
+        Trade.trade_type == TradeType.SELL_CALL,
+        Trade.order_status.in_([OrderStatus.SUBMITTED, OrderStatus.FILLED]),
+        Trade.created_at >= today_str,
+    ).scalar() or 0
+    return int(covered) + int(today_qty)
+
+
 class WheelManager:
     """Manages the wheel: assignment detection → covered call writing."""
 
@@ -378,22 +413,7 @@ class WheelManager:
                 total_shares = sum(p.quantity for p in all_stock)
                 lots_needed = total_shares // 100
 
-                open_calls = db.query(Position).filter(
-                    Position.symbol == symbol,
-                    Position.status == PositionStatus.OPEN,
-                    Position.position_type == "covered_call",
-                ).all()
-                covered_contracts = sum(p.quantity for p in open_calls)
-
-                from datetime import date as _date
-                today_str = _date.today().strftime("%Y-%m-%d")
-                filled_calls_today = db.query(Trade).filter(
-                    Trade.symbol == symbol,
-                    Trade.trade_type == TradeType.SELL_CALL,
-                    Trade.order_status == OrderStatus.FILLED,
-                    Trade.created_at >= today_str,
-                ).count()
-                covered_contracts += filled_calls_today
+                covered_contracts = _covered_call_contracts(db, symbol)
 
                 pending_contracts = sum(
                     o.get("qty", 0) for o in open_orders
@@ -598,25 +618,8 @@ class WheelManager:
                     total_shares = _real
                     lots_needed = total_shares // 100
 
-                # Count open covered call contracts
-                open_calls = db.query(Position).filter(
-                    Position.symbol == symbol,
-                    Position.status == PositionStatus.OPEN,
-                    Position.position_type == "covered_call",
-                ).all()
-                covered_contracts = sum(p.quantity for p in open_calls)
-
-                # Also count filled call trades today — catches fills before trade_sync runs
-                from src.core.models import Trade, TradeType, OrderStatus
-                from datetime import date as _date
-                today_str = _date.today().strftime("%Y-%m-%d")
-                filled_calls_today = db.query(Trade).filter(
-                    Trade.symbol == symbol,
-                    Trade.trade_type == TradeType.SELL_CALL,
-                    Trade.order_status == OrderStatus.FILLED,
-                    Trade.created_at >= today_str,
-                ).count()
-                covered_contracts += filled_calls_today
+                # Covered-call contracts already backing this name — gap-safe (see helper).
+                covered_contracts = _covered_call_contracts(db, symbol)
 
                 # Count pending IBKR call orders
                 pending_contracts = sum(
