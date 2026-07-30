@@ -529,6 +529,17 @@ def _missed_assignment_put(closed_puts, ibkr_qty):
     return None
 
 
+def _reconcile_option_qty(db_qty: int, ibkr_qty: int) -> int:
+    """IBKR is source of truth for a still-open option's CONTRACT COUNT. Returns the
+    quantity the DB should hold: IBKR's whenever it holds >0 contracts and that differs
+    from the DB (a partial close/increase the presence-only sync used to miss), else the
+    DB value unchanged. ibkr_qty == 0 means the option is GONE — that's the caller's
+    close/expire path, not a quantity edit, so leave db_qty alone here."""
+    if ibkr_qty > 0 and ibkr_qty != db_qty:
+        return ibkr_qty
+    return db_qty
+
+
 def sync_ibkr_positions() -> int:
     """
     Sync open positions from IBKR into the Position table.
@@ -608,6 +619,23 @@ def sync_ibkr_positions() -> int:
             right = "P" if "put" in pos.position_type else "C"
             key = (pos.symbol, pos.strike, pos.expiry, right)
             tracked_keys.add(key)
+
+            # IBKR is source of truth for the AMOUNT, not just existence. If it still holds
+            # this option but at a different contract count than the DB — a PARTIAL close such
+            # as a manual buy-back of 1 of 2 — reconcile the DB quantity to IBKR. position_sync
+            # historically only detected FULL closes (key gone from IBKR), so a 2->1 reduction
+            # stuck open forever and left coverage math + the dashboard wrong (2026-07-30 LRCX:
+            # bought 1 of 2 400C back, DB kept qty 2). Short-option/CC contract counts only —
+            # stock lots are reconciled by their own path below.
+            _ibkr_pos = ibkr_positions.get(key)
+            if _ibkr_pos is not None:
+                _new_qty = _reconcile_option_qty(pos.quantity, int(_ibkr_pos.get("quantity", 0)))
+                if _new_qty != pos.quantity:
+                    log.warning("position_qty_reconciled_to_ibkr",
+                                symbol=pos.symbol, strike=pos.strike, expiry=pos.expiry,
+                                right=right, db_qty=pos.quantity, ibkr_qty=_new_qty)
+                    pos.quantity = _new_qty
+                    changes += 1
 
             if key not in ibkr_positions:
                 # Skip if there is a live open order at IBKR for this position
