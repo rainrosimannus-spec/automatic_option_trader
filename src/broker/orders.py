@@ -218,8 +218,9 @@ def sell_put(
                  expiry=expiry, status=status, message=log_msg[:200])
 
         if status in ("Cancelled", "Inactive"):
-            log.error("order_rejected", symbol=symbol, strike=strike,
-                      expiry=expiry, status=status, reason=log_msg[:200])
+            log.warning("order_cancelled_pending_retry", symbol=symbol, strike=strike,
+                        expiry=expiry, status=status, reason=log_msg[:200],
+                        note="broker cancelled (often price-cap/aggressiveness on a stale delayed quote); the strategy auto-repices on its next cycle")
             if exchange != "SMART" and _order_blocked_by_permission(trade):
                 _mark_permission_blocked(symbol)
             return None
@@ -556,8 +557,9 @@ def buy_to_close_put(
                  message=log_msg[:200])
 
         if status in ("Cancelled", "Inactive"):
-            log.error("order_rejected", symbol=symbol, strike=strike,
-                      expiry=expiry, status=status, reason=log_msg[:200])
+            log.warning("order_cancelled_pending_retry", symbol=symbol, strike=strike,
+                        expiry=expiry, status=status, reason=log_msg[:200],
+                        note="broker cancelled (often price-cap/aggressiveness on a stale delayed quote); the strategy auto-repices on its next cycle")
             return None
 
         return trade
@@ -606,8 +608,9 @@ def buy_to_close_call(
                  message=log_msg[:200])
 
         if status in ("Cancelled", "Inactive"):
-            log.error("order_rejected", symbol=symbol, strike=strike,
-                      expiry=expiry, status=status, reason=log_msg[:200])
+            log.warning("order_cancelled_pending_retry", symbol=symbol, strike=strike,
+                        expiry=expiry, status=status, reason=log_msg[:200],
+                        note="broker cancelled (often price-cap/aggressiveness on a stale delayed quote); the strategy auto-repices on its next cycle")
             return None
 
         return trade
@@ -664,8 +667,9 @@ def sell_covered_call(
                  message=log_msg[:200])
 
         if status in ("Cancelled", "Inactive"):
-            log.error("order_rejected", symbol=symbol, strike=strike,
-                      expiry=expiry, status=status, reason=log_msg[:200])
+            log.warning("order_cancelled_pending_retry", symbol=symbol, strike=strike,
+                        expiry=expiry, status=status, reason=log_msg[:200],
+                        note="broker cancelled (often price-cap/aggressiveness on a stale delayed quote); the strategy auto-repices on its next cycle")
             if exchange != "SMART" and _order_blocked_by_permission(trade):
                 _mark_permission_blocked(symbol)
             return None
