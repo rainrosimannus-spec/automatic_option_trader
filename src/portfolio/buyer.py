@@ -40,10 +40,26 @@ log = get_logger(__name__)
 # — their orders rest and transmit when the local market opens.
 _OUTSIDE_RTH_CCY = {"USD", "CAD", "EUR", "GBP", "CHF", "NOK", "SEK", "DKK"}
 
-# Venues that advertise SMART in validExchanges but where SMART does NOT work at placement:
-# Tokyo (TSEJ) lists SMART yet SMART silently hangs (permId=0, PendingSubmit, cancel→Error 10147),
-# never a fill in 22 attempts. Force these to their native book regardless of validExchanges.
-_SMART_HANGS_EXCH = {"TSEJ"}
+# Venues that advertise SMART in validExchanges but where SMART does NOT work at placement.
+#
+# TSEJ was in this set on the evidence "SMART silently hangs (permId=0, PendingSubmit,
+# cancel→Error 10147), never a fill in 22 attempts". 2026-07-30: that evidence is CONTAMINATED and
+# TSEJ is removed. Every one of those 22 attempts carried an illegal price — the limit was
+# round(px, 2) and Tokyo quotes no fractional yen, so IBKR could never accept any of them. The
+# retained logs show it without exception: 41556.75, 64641.6, 43683.27, 69244.5, 38330.7, 55697.1,
+# 62269.8, 43596.9, 43405.95, 59978.4, 70611.3, 71164.05. And permId=0/PendingSubmit/10147 is
+# precisely the signature the same bug produced on AEB (ASML), NSE (ITC) and TASE (NICE) — venues
+# never blacklisted — while INGA filled on AEB through the identical code because €28.14 happened
+# to land on a legal tick. So the hang is explained by the price, not by SMART.
+#
+# Forcing native then made things strictly worse: with a legal price (34850) IBKR now REJECTS
+# outright with Error 10311 "This order will be directly routed to TSEJ ... Restriction is
+# specified in Precautionary Settings", i.e. the gateway forbids direct routing. Native is a
+# confirmed dead end; SMART is merely unproven. Empty set = trust validExchanges everywhere.
+#
+# NOT YET PROVEN: that SMART fills on TSEJ. It has never been tried with a legal price. The first
+# such order is the test — watch for an ack (Submitted/PreSubmitted) rather than PendingSubmit.
+_SMART_HANGS_EXCH: set[str] = set()
 
 
 def _outside_rth_ok(currency: str | None) -> bool:
@@ -2900,6 +2916,13 @@ class PortfolioBuyer:
         for i, (price, frac) in enumerate(plan):
             if price <= 0:
                 continue
+            # Snap onto the venue's coarse band BEFORE sizing, so the suggestion card carries the
+            # price that will actually be sent. The card used to show the raw ladder price while the
+            # executor sent a snapped one — 6920 displayed 34863.45 against an order of 34850.0 —
+            # which read as "still placing decimals" long after the orders were legal. Band table
+            # only here (no IBKR round trip in the scan loop); the executor still applies the
+            # authoritative market-rule tick, which can only round the same way or finer.
+            price = _round_to_tick(price, _venue_band_tick(ccy, price) or None, "BUY")
             shares = int((core_amount * frac) / (price * rate))
             notional_base = shares * price * rate
             # Core rung must clear the NLV-scaled min order; dip rungs just need to be non-trivial.

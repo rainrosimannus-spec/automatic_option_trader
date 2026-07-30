@@ -240,3 +240,43 @@ def test_market_rule_covers_currencies_with_no_hardcoded_table(monkeypatch):
     d = _Details("32", "SEHK")
     assert _venue_band_tick("HKD", 52_471.05) == 0.0      # no table
     assert _market_rule_tick(ib, [d], "SEHK", 52_471.05) == 100   # rule still knows
+
+
+# ── 5. Card price must equal what is sent; TSEJ no longer forced native ──────
+# 2026-07-30: the card showed the raw ladder price (6920 = 34863.45) while the executor sent the
+# snapped 34850.0. That mismatch read as "still placing decimals" long after the wire was legal.
+
+from src.portfolio.buyer import _SMART_HANGS_EXCH
+
+
+def _card_price(raw: float, ccy: str) -> float:
+    """Mirror of the suggestion-card snap in _execute_compounder_buy."""
+    return _round_to_tick(raw, _venue_band_tick(ccy, raw) or None, "BUY")
+
+
+def test_card_price_matches_the_order_price_for_japan():
+    assert _card_price(34_863.45, "JPY") == 34_850.0
+    assert _card_price(52_471.05, "JPY") == 52_400.0
+
+
+def test_card_price_is_whole_yen():
+    for raw in (34_863.45, 52_471.05, 3_858.77, 71_164.05):
+        assert float(_card_price(raw, "JPY")).is_integer()
+
+
+def test_card_price_unchanged_where_no_band_table_applies():
+    """USD/EUR keep the legacy 2dp card; the executor still applies the market-rule tick."""
+    assert _card_price(199.535, "USD") == 199.53
+    assert _card_price(1_404.694, "EUR") == 1_404.69
+
+
+def test_card_price_never_above_the_ladder_price():
+    for raw, ccy in ((34_863.45, "JPY"), (52_471.05, "JPY"), (199.535, "USD")):
+        assert _card_price(raw, ccy) <= raw
+
+
+def test_tsej_is_no_longer_forced_off_smart():
+    """The 22 'SMART hangs' attempts all carried illegal decimal prices, so that evidence cannot
+    support the blacklist. Native routing is the confirmed dead end (Error 10311)."""
+    assert "TSEJ" not in _SMART_HANGS_EXCH
+    assert _SMART_HANGS_EXCH == set()
