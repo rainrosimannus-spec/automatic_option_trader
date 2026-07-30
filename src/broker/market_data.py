@@ -437,6 +437,24 @@ def get_option_greeks(contracts: list[Option]) -> dict:
         return tickers
 
 
+def _call_strike_bounds(price: float, min_strike: Optional[float]) -> tuple[float, float]:
+    """Strike window (lower, upper) for covered-call candidates.
+
+    The 15%-above-spot cap bounds the normal CC band, but when the caller pins an
+    explicit floor ABOVE that cap (rescue/token/below-breakeven on a deep-underwater
+    lot: min_strike ≈ breakeven or basis×0.90, spot 20-50% below), cap∩floor was the
+    EMPTY SET — the screen returned zero contracts before ever seeing a bid, so a
+    >15%-underwater lot could never be covered by ANY branch (found 2026-07-30 via
+    son's tree). Extend the ceiling to a 10% band above the requested floor;
+    everything else (delta band, fee floor, live-bid check) still gates what actually
+    gets written."""
+    lower = min_strike if min_strike else price
+    upper = price * 1.15
+    if min_strike and min_strike >= upper:
+        upper = min_strike * 1.10
+    return lower, upper
+
+
 def get_call_contracts(
     symbol: str,
     exchange: str = "SMART",
@@ -475,12 +493,12 @@ def get_call_contracts(
     if not price:
         return []
 
-    lower_bound = min_strike if min_strike else price
+    lower_bound, upper_bound = _call_strike_bounds(price, min_strike)
     opt_exchange = chain.exchange
     contracts = []
     for exp in target_expiries:
         for strike in chain.strikes:
-            if strike > lower_bound and strike < price * 1.15:
+            if strike > lower_bound and strike < upper_bound:
                 opt = Option(symbol, exp, strike, "C", opt_exchange, currency=currency)
                 if opt_exchange != "SMART":
                     opt.tradingClass = chain.tradingClass
