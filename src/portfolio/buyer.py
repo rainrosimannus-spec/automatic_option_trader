@@ -61,6 +61,28 @@ _OUTSIDE_RTH_CCY = {"USD", "CAD", "EUR", "GBP", "CHF", "NOK", "SEK", "DKK"}
 # such order is the test — watch for an ack (Submitted/PreSubmitted) rather than PendingSubmit.
 _SMART_HANGS_EXCH: set[str] = set()
 
+# Board lot (trading unit) by currency, used only as a FALLBACK when IBKR's ContractDetails
+# doesn't report a size increment. Some venues reject any order size that isn't a multiple of
+# the trading unit (Tokyo: Error 461 "should be a multiple of 100"). Tokyo standardised every
+# TSE name to a 100-share unit in 2018, so JPY→100 is safe. Other venues rely on IBKR's own
+# sizeIncrement/minSize (see _board_lot) so we never wrongly round a venue that trades in 1s.
+_CCY_BOARD_LOT = {"JPY": 100}
+
+
+def _board_lot(details, currency: str | None) -> int:
+    """Trading unit (board lot) for a contract. Prefer what IBKR reports for THIS contract
+    (sizeIncrement, then minSize); fall back to the venue's known unit by currency; default 1
+    (any size legal, e.g. US). Order sizes must be floored to a multiple of this or lot-based
+    venues reject them (Error 461)."""
+    for attr in ("sizeIncrement", "minSize"):
+        try:
+            v = int(float(getattr(details[0], attr, 0) or 0)) if details else 0
+        except Exception:
+            v = 0
+        if v > 1:
+            return v
+    return _CCY_BOARD_LOT.get((currency or "").upper(), 1)
+
 
 def _outside_rth_ok(currency: str | None) -> bool:
     return (currency or "USD").upper() in _OUTSIDE_RTH_CCY
@@ -4087,6 +4109,28 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
             contract = Stock(symbol, "SMART", ccy)
             with get_portfolio_lock():
                 ib.qualifyContracts(contract)
+
+        # Board-lot rounding. Lot-based venues (Tokyo above all) reject any order size that isn't a
+        # multiple of the stock's trading unit — a raw dollar-target/price share count like 454 got
+        # cancelled with Error 461 "should be a multiple of 100". Floor to the lot IBKR reports for
+        # this contract, falling back to the venue's known unit. US/SMART stay lot=1 (unchanged).
+        lot = _board_lot(details, ccy)
+        if lot > 1:
+            rounded = (shares // lot) * lot
+            if rounded <= 0:
+                log.warning("portfolio_order_below_one_lot", id=suggestion_id, symbol=symbol,
+                            exchange=exch, shares=shares, lot=lot)
+                with get_db() as db:
+                    s = db.query(TradeSuggestion).filter(
+                        TradeSuggestion.id == suggestion_id).first()
+                    if s:
+                        s.status = "approved"   # can't afford a whole lot yet — retry as the gap grows
+                        s.review_note = f"Below one {lot}-share board lot on {exch} — will retry"
+                return "approved"
+            if rounded != shares:
+                log.info("portfolio_order_lot_rounded", id=suggestion_id, symbol=symbol,
+                         exchange=exch, lot=lot, raw_shares=shares, shares=rounded)
+                shares = rounded
 
         # Minor-unit venues (LSE quotes GBP in pence, JSE quotes ZAR in cents) must be ORDERED in the
         # same unit IBKR quotes. The analyzer normalised the quote to major units at ingest, so the
