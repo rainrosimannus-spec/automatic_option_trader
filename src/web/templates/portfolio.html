@@ -456,11 +456,14 @@ function syncInjections() {
                         </td>
                         <td class="px-3 py-2 text-gray-400">{{h.sector[:20]}}</td>
                         <td class="px-3 py-2 text-right text-gray-300">{{h.shares}}</td>
-                        <td class="px-3 py-2 text-right text-gray-300">{{"{:.2f}".format(h.avg_cost)}}</td>
-                        <td class="px-3 py-2 text-right text-white">{{"{:.2f}".format(h.current_price or 0)}}</td>
-                        <td class="px-3 py-2 text-right text-white">${{"{:,.0f}".format(h.market_value or 0)}}</td>
+                        <td class="px-3 py-2 text-right text-gray-300">{{h.ccy_symbol}}{{"{:,.2f}".format(h.avg_cost)}}</td>
+                        <td class="px-3 py-2 text-right text-white">{{h.ccy_symbol}}{{"{:,.2f}".format(h.current_price or 0)}}</td>
+                        <td class="px-3 py-2 text-right text-white">
+                            {{h.ccy_symbol}}{{"{:,.0f}".format(h.market_value or 0)}}
+                            {% if h.ccy_symbol != base_ccy_symbol %}<div class="text-xs text-gray-500">≈ {{base_ccy_symbol}}{{"{:,.0f}".format(h.market_value_base or 0)}}</div>{% endif %}
+                        </td>
                         <td class="px-3 py-2 text-right {% if (h.unrealized_pnl or 0) >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">
-                            ${{"{:,.0f}".format(h.unrealized_pnl or 0)}}
+                            {{h.ccy_symbol}}{{"{:,.0f}".format(h.unrealized_pnl or 0)}}
                         </td>
                         <td class="px-3 py-2 text-right {% if (h.unrealized_pnl_pct or 0) >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">
                             {{"{:.1f}".format(h.unrealized_pnl_pct or 0)}}%
@@ -732,11 +735,16 @@ function syncInjections() {
                 <div class="text-xs text-gray-400 mt-0.5">Available to deploy</div>
             </div>
 
-            <!-- Suggestion Mode -->
+            <!-- Execution Mode -->
             <div class="bg-gray-800/60 rounded-lg p-3">
                 <div class="text-xs text-gray-500 mb-1">Execution Mode</div>
+                {% if portfolio_auto_approve %}
+                <div class="font-medium text-sm text-emerald-400">⚡ Live Auto-Execute</div>
+                <div class="text-xs text-gray-400 mt-0.5">Suggestions auto-approved &amp; sent to IBKR</div>
+                {% else %}
                 <div class="font-medium text-sm text-purple-400">✓ Suggestion Mode</div>
                 <div class="text-xs text-gray-400 mt-0.5">All trades require approval</div>
+                {% endif %}
             </div>
         </div>
 

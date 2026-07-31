@@ -30,6 +30,17 @@ def _get_state(key: str) -> str:
         return ""
 
 
+def _is_auto_approve_on(source: str) -> bool:
+    """True when the runtime auto-execute toggle is ON for a source (options/portfolio)."""
+    try:
+        from src.core.models import SystemState
+        with get_db() as db:
+            s = db.query(SystemState).filter(SystemState.key == f"auto_approve_{source}").first()
+            return s is not None and s.value == "true"
+    except Exception:
+        return False
+
+
 def _build_portfolio_performance() -> dict:
     """
     Graph starts today at 0% and grows forward from there.
@@ -319,6 +330,19 @@ async def portfolio_page(request: Request):
     total_invested = get_total_invested_base(account_id=_pacct)
     total_value = sum(_to_base(h.market_value or 0, h.currency, fx_rates, _base_ccy) for h in holdings)
 
+    # Rank + label holdings by a COMPARABLE base-currency value. The raw market_value is in each
+    # name's NATIVE currency, so the DB `order_by(market_value)` and the template's hard-coded "$"
+    # treated ¥/£/etc. as dollars — a single Tokyo lot (¥-millions) then sorted to the top and dwarfed
+    # every USD/EUR row. Attach the base-converted value (for ranking + a comparable column) and the
+    # native currency symbol (so the native figure is labelled correctly), then re-sort in Python.
+    _ccy_sym = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CHF": "Fr ", "CAD": "C$",
+                "AUD": "A$", "HKD": "HK$", "INR": "₹", "ZAR": "R ", "SGD": "S$"}
+    for _h in holdings:
+        _h.market_value_base = _to_base(_h.market_value or 0, _h.currency, fx_rates, _base_ccy)
+        _h.ccy_symbol = _ccy_sym.get((_h.currency or "USD").upper(), ((_h.currency or "") + " "))
+    holdings.sort(key=lambda _h: _h.market_value_base or 0, reverse=True)
+    base_ccy_symbol = _ccy_sym.get((_base_ccy or "USD").upper(), (_base_ccy or "") + " ")
+
     # Parked-cash card (top of page): idle cash swept into the money-market ETF (XEON) for ~€STR yield.
     # Amount is the ETF holding's market value in BASE ccy (0 when nothing is parked); the annual % is the
     # configured displayed rate. Reads the holdings already loaded — no IBKR call.
@@ -574,6 +598,7 @@ async def portfolio_page(request: Request):
         "watchlist": watchlist,
         "transactions": transactions,
         "put_entries": put_entries,
+        "base_ccy_symbol": base_ccy_symbol,
         "total_invested": total_invested,
         "total_value": total_value,
         "total_pnl": total_pnl,
@@ -612,6 +637,8 @@ async def portfolio_page(request: Request):
         "position_cap": position_cap,
         "total_exposure_cap": total_exposure_cap,
         "daily_deployment_cap": daily_deployment_cap,
+        # Execution mode card — reflect the real runtime auto-execute toggle
+        "portfolio_auto_approve": _is_auto_approve_on("portfolio"),
         # Compounder strategy reserve state (cards shown only when active)
         "is_compounder": (_get_state("strategy") == "compounder"),
         "compounder": {
