@@ -836,6 +836,25 @@ def sync_ibkr_positions() -> int:
                 Position.is_wheel == True,
             ).first():
                 continue                      # already booked → never double-book
+            # A pending DEFERRED assignment already explains these shares. position_sync
+            # keeps an assigned put OPEN (with its real stock-DELIVERY fill) so
+            # check_assignments can own the put→stock transition; those shares belong to
+            # THAT open put. Never let the self-heal grab them for a worthless CLOSED put —
+            # that double-books once check_assignments books the open put too. (ISRG
+            # 2026-08-01: the 335 expired worthless, but the self-heal ran before the 355
+            # was booked, matched the 355 assignment's 100 real shares to the 335, and
+            # synthesized a phantom lot → 200 held vs 100 at IBKR.)
+            if any(
+                assignment_delivery_fill(db, p.symbol, p.strike, p.opened_at, p.quantity) is not None
+                for p in db.query(Position).filter(
+                    Position.symbol == _sym,
+                    Position.position_type == "short_put",
+                    Position.status == PositionStatus.OPEN,
+                ).all()
+            ):
+                log.info("position_sync_selfheal_deferred_pending_assignment",
+                         symbol=_sym, ibkr_qty=_qty)
+                continue
             _puts = db.query(Position).filter(
                 Position.symbol == _sym,
                 Position.position_type == "short_put",

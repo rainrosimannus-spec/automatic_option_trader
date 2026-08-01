@@ -92,3 +92,20 @@ def test_multiple_pending_sorted_deduped(db):
 
 def test_none_when_no_open_puts(db):
     assert ts.pending_assignment_symbols() == []
+
+
+def test_pending_flagged_even_when_a_worthless_closed_put_exists(db):
+    """The ISRG double-book (2026-08-01) regression.
+
+    ISRG had a WORTHLESS-expired 335 put (CLOSED) AND a real 355 assignment whose put was
+    still OPEN with a delivery fill. The self-heal grabbed the 355's 100 real shares for the
+    worthless 335 and synthesized a phantom lot → 200 held vs 100 at IBKR. The self-heal now
+    skips a symbol whenever an OPEN put has a delivery fill (same predicate as here), so those
+    shares stay owned by the pending assignment. This asserts that predicate fires despite the
+    worthless closed put also being present."""
+    # Worthless 335: CLOSED, no delivery.
+    _put(db, "ISRG", 335.0, status=PositionStatus.CLOSED, expiry="20260724")
+    # Real 355 assignment: OPEN put + a delivery fill at 355.
+    _put(db, "ISRG", 355.0, status=PositionStatus.OPEN, expiry="20260731")
+    _delivery(db, "ISRG", 355.0, qty=100)
+    assert ts.pending_assignment_symbols() == ["ISRG"]
