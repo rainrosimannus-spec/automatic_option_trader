@@ -47,6 +47,20 @@ class CompounderConfig(BaseModel):
     # the per-name caps (which remain the hard ceiling, so it self-limits). We trust the ranking's
     # ordering, so lean the book a little more toward the top names it surfaces.
     conviction_power: float = 1.75
+    # Screener drop-out handling (freeze+buffer). When the monthly screener drops a name we still HOLD,
+    # it is retained (not force-sold — tax/churn) but under the old behaviour it kept a FULL target and
+    # kept drawing new capital, diluting current members ("grandfather accumulation"). When enabled, a
+    # held drop-out is FROZEN — its target pinned to what's already invested, so it's never bought up and
+    # never sold — and its would-be budget REDISTRIBUTES to current members. Exception (the buffer/
+    # hysteresis): a drop-out still ranking within the top (members × freeze_buffer_mult) on the live rank
+    # is NOT frozen, so a name that merely grazed the cut line on a one-month wobble keeps accumulating.
+    # Members = watchlist names still in the screen (NOT pending_removal, category != 'existing_holding').
+    # A/B on the compounder backtest (scripts/compounder_freeze_ab.py): freeze+buffer beats keep-full-
+    # target across screener sizes 30–60 and BOTH crash cycles (COVID, 2022), trading ~0.3pp calm-market
+    # CAGR for a shallower reversal drawdown. Never touches the crash-reserve deployment path. Set
+    # freeze_dropped_names=False for the pre-2026-08 behaviour (a held drop-out keeps a full target).
+    freeze_dropped_names: bool = True
+    freeze_buffer_mult: float = 1.2    # keep buying a held drop-out while it ranks within top members×this
     # Conviction: the top fraction of the ranked universe are "leaders" — they get a higher
     # per-name cap AND are always bought directly (never routed to put-selling), so the engine
     # never under-accumulates or caps the upside of the names most likely to deliver the 10x.

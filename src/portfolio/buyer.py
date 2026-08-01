@@ -203,6 +203,31 @@ def _is_permission_blocked(symbol: str) -> bool:
     return False
 
 
+def _frozen_dropouts(watch, rank_idx: dict, buffer_mult: float) -> set:
+    """Held screener drop-outs to FREEZE (pin target at invested, exclude from fresh allocation).
+
+    A watchlist name is a LEGACY drop-out if the monthly screen flagged it `pending_removal` (it
+    fell out of the screen but is still held, so it wasn't deleted) OR it was never screened at all
+    (`category == 'existing_holding'`, auto-added by holdings-sync). Such a name is frozen UNLESS it
+    still ranks within the hysteresis band — top (member_count × buffer_mult) on the LIVE rank —
+    so a good name that merely grazed the cut line on a one-month wobble keeps accumulating.
+    member_count = watchlist names that are still current members (not legacy). An unranked legacy
+    name (no price this scan) is frozen (it can't be bought anyway). Pure/stateless for testability."""
+    legacy = {s.symbol for s in watch
+              if getattr(s, "pending_removal", False)
+              or (getattr(s, "category", "") == "existing_holding")}
+    member_count = sum(1 for s in watch if s.symbol not in legacy)
+    if member_count <= 0:                 # degenerate (no members) → don't freeze anything
+        return set()
+    cutoff = member_count * buffer_mult
+    frozen = set()
+    for sym in legacy:
+        r = rank_idx.get(sym)
+        if r is None or r > cutoff:       # unranked, or outside the buffer band → freeze
+            frozen.add(sym)
+    return frozen
+
+
 def _order_blocked_by_permission(trade) -> bool:
     """True if an order's cancel/rejection was a permission / no-security-definition error
     (the account can't trade that exchange yet), vs a transient cancel. Reads the IBKR
@@ -1083,7 +1108,17 @@ class PortfolioBuyer:
 
         ranked = cmp.rank_universe(names, cc.rank_fund_weight, cc.rank_mom_weight)
         rank_idx = {r.symbol: i + 1 for i, r in enumerate(ranked)}
-        leaders = cmp.leader_symbols(ranked, cc.leader_top_frac)
+        # Screener drop-out handling (freeze+buffer). A HELD name the monthly screener dropped keeps
+        # drawing new capital under the old behaviour, diluting current members. When enabled, FREEZE
+        # such a name — its target is pinned to what's already invested below (never bought up, never
+        # sold) — and exclude it from the fresh target allocation so target_weights REDISTRIBUTES its
+        # budget to members. A drop-out still ranking within the hysteresis band (top members ×
+        # freeze_buffer_mult) is NOT frozen. Leaders/targets are computed over the non-frozen set so the
+        # redistribution is automatic. Crash-reserve deployment is a separate path and is unaffected.
+        frozen_dropouts = (_frozen_dropouts(watch, rank_idx, cc.freeze_buffer_mult)
+                           if getattr(cc, "freeze_dropped_names", False) else set())
+        alloc_ranked = [r for r in ranked if r.symbol not in frozen_dropouts]
+        leaders = cmp.leader_symbols(alloc_ranked, cc.leader_top_frac)
 
         # Targets sized to base + currently-unlocked reserve (full base always live).
         # Compounder uses its own tier budgets (cc.tier_*) so the universe screener / classic
@@ -1095,7 +1130,7 @@ class PortfolioBuyer:
             "dividend": cc.tier_dividend,
             "growth": cc.tier_growth,
         }
-        targets = cmp.target_weights(ranked, tier_budgets, live_invest, cc.per_name_cap_pct,
+        targets = cmp.target_weights(alloc_ranked, tier_budgets, live_invest, cc.per_name_cap_pct,
                                      leader_syms=leaders, leader_cap_pct=cc.leader_cap_pct,
                                      conviction_power=cc.conviction_power,
                                      abs_ceiling=cc.per_name_abs_ceiling)
@@ -1110,6 +1145,14 @@ class PortfolioBuyer:
         min_buy, max_buy = cmp.single_buy_bounds(nlv, cc)
 
         held = self._get_holdings_map()           # symbol -> FILLED market value (excludes the park ETF)
+        # Pin each frozen drop-out's target to its currently-invested value: with target == current MV the
+        # buy loop's `cur >= tgt*0.98` test always holds, so it's never bought up — and nothing here sells,
+        # so the position is simply held flat until the screener re-admits it (which clears the freeze).
+        for _s in frozen_dropouts:
+            targets[_s] = held.get(_s, 0.0)
+        if frozen_dropouts:
+            log.info("compounder_froze_dropouts", count=len(frozen_dropouts),
+                     symbols=sorted(frozen_dropouts)[:20])
         deployed = sum(held.values())
         parked = self._get_parked_value()         # cash reserve parked in the park ETF (XEON, sellable on demand)
         # Re-price every scan: cancel the prior scan's still-resting compounder BUY orders so each
