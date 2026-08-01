@@ -1792,7 +1792,46 @@ def create_scheduler() -> BackgroundScheduler:
             name="Portfolio Monthly Screen",
             max_instances=1,
             replace_existing=True,
+            misfire_grace_time=1800,   # if the 03:00 fire is delayed while the process is UP, still run
+            coalesce=True,
         )
+
+        # Startup catch-up for the monthly screener. This scheduler uses an in-memory jobstore (jobs are
+        # re-added fresh on every startup), so a first-Monday 03:00 ET fire that was MISSED while the
+        # process was down — OR a run that STARTED but was killed mid-run by a restart (it takes 30-60
+        # min) — is NOT retried by APScheduler; next_run just rolls to next month. So misfire_grace_time
+        # alone can't help here. Instead: read the screener run-log and, if this month's run is due but
+        # hasn't COMPLETED successfully, fire a one-off catch-up a few minutes after startup. Self-limits
+        # — once a run writes status=success this month, the condition is false and nothing is scheduled.
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            from apscheduler.triggers.date import DateTrigger
+            _today_et = dt.now(us_tz).date()
+            _first = _today_et.replace(day=1)
+            _fm = _first + timedelta(days=(7 - _first.weekday()) % 7)   # first Monday of this month
+            _fire_et = us_tz.localize(datetime(_fm.year, _fm.month, _fm.day, 3, 0))
+            _completed_this_month = False
+            try:
+                _rl = _json.loads(_Path("data/screener_last_run.json").read_text())
+                _last = datetime.strptime(_rl.get("run_date", ""), "%Y-%m-%d %H:%M UTC").date()
+                _completed_this_month = _rl.get("status") == "success" and _last >= _fm
+            except Exception:
+                _completed_this_month = False
+            if dt.now(pytz.UTC) > _fire_et and not _completed_this_month:
+                _catchup_at = dt.now(pytz.UTC) + timedelta(minutes=5)
+                scheduler.add_job(
+                    partial(job_portfolio_monthly_screen, portfolio_cfg),
+                    DateTrigger(run_date=_catchup_at),
+                    id="portfolio_rescreen_catchup",
+                    name="Portfolio Monthly Screen (startup catch-up)",
+                    max_instances=1,
+                    replace_existing=True,
+                )
+                log.info("monthly_screen_catchup_scheduled",
+                         run_at=str(_catchup_at), first_monday=str(_fm))
+        except Exception as e:
+            log.warning("monthly_screen_catchup_setup_failed", error=str(e))
 
         # Monthly holdings review — first Monday of each month, 4 AM ET
         # Runs 1 hour after screener. Reviews holdings, CC harvesting + trailing stops.
@@ -2257,7 +2296,8 @@ def _job_trade_sync():
         return
     try:
         from src.broker.trade_sync import (
-            sync_ibkr_trades, sync_ibkr_positions, reconcile_submitted_trades
+            sync_ibkr_trades, sync_ibkr_positions, reconcile_submitted_trades,
+            pending_assignment_symbols
         )
         imported = sync_ibkr_trades()
         if imported:
@@ -2266,6 +2306,22 @@ def _job_trade_sync():
         pos_changes = sync_ibkr_positions()
         if pos_changes:
             log.info("position_sync_job_done", changes=pos_changes)
+        # Event-driven assignment booking. position_sync DEFERS a detected assignment
+        # (delivery fill present, put kept OPEN) to check_assignments — the only path that
+        # creates the stock lot + writes the covered call. That job's crons are mon–fri
+        # plus one 03:00 UTC daily run, so an assignment that syncs Saturday morning (after
+        # the 03:00 run) would sit off the holdings view AND uncovered until Sunday 03:00.
+        # Fire it NOW when a delivery has landed but isn't booked yet. _handle_assignment
+        # books the lot from the DB delivery fill alone (no market data), so this works on a
+        # closed market; the CC leg still defers to a session with data. Idempotent and
+        # self-limiting — once booked the put leaves OPEN, so the trigger clears.
+        try:
+            pending = pending_assignment_symbols()
+            if pending:
+                log.info("assignment_check_triggered_by_delivery", symbols=pending)
+                job_check_assignments()
+        except Exception as e:
+            log.error("assignment_delivery_trigger_error", error=str(e))
         # Reconcile phantom SUBMITTED rows (orders that died at IBKR without a fill)
         reconciled = reconcile_submitted_trades()
         if reconciled:

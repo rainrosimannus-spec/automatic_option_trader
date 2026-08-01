@@ -540,6 +540,34 @@ def _reconcile_option_qty(db_qty: int, ibkr_qty: int) -> int:
     return db_qty
 
 
+def pending_assignment_symbols() -> list[str]:
+    """Symbols with an OPEN short put whose assignment is DETECTED but not yet booked.
+
+    position_sync deliberately DEFERS a put that vanished from IBKR but has a stock-
+    DELIVERY fill (assignment_delivery_fill) — it keeps the put OPEN so the wheel's
+    check_assignments (the ONLY path that does put→stock lot + covered call) can own the
+    transition. But check_assignments runs on mon–fri market-hours crons plus a single
+    03:00 UTC daily run, so an assignment whose executions sync AFTER that Saturday run
+    sits detected-but-unbooked all weekend: off the holdings view AND uncovered. This
+    returns those symbols so the trade-sync job can fire check_assignments the moment a
+    delivery lands, instead of waiting for the next cron. Idempotent/self-limiting: once
+    booked the put is no longer OPEN, so the symbol drops out and the trigger stops."""
+    syms: list[str] = []
+    with get_db() as db:
+        open_puts = (
+            db.query(Position)
+            .filter(
+                Position.status == PositionStatus.OPEN,
+                Position.position_type == "short_put",
+            )
+            .all()
+        )
+        for p in open_puts:
+            if assignment_delivery_fill(db, p.symbol, p.strike, p.opened_at, p.quantity) is not None:
+                syms.append(p.symbol)
+    return sorted(set(syms))
+
+
 def sync_ibkr_positions() -> int:
     """
     Sync open positions from IBKR into the Position table.
