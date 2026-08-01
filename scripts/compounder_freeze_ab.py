@@ -56,6 +56,18 @@ WARMUP = 252
 MEMBERSHIP_N = 40          # screener keeps the top-N each month (of ~85 usable → real churn)
 BUFFER_MULT = 1.2          # FREEZE+BUFFER keeps buying held names down to rank N*1.2
 
+# Crash / mean-reversion windows. The portfolio is seeded over the FULL history and metrics
+# are measured only WITHIN the window, so each arm enters the crash with a realistic book.
+# 2022 is the decisive test: a momentum REVERSAL where the high-momentum names FREEZE
+# concentrates into got hit hardest and fallen names later snapped back — exactly where
+# "redistribute to current leaders" should lose to "keep buying the drop" if the risk is real.
+CRASH_WINDOWS = {
+    "covid_crash":   ("2020-02-14", "2020-04-07"),   # pure COVID drawdown
+    "covid_v":       ("2020-02-14", "2020-09-30"),   # crash + V recovery
+    "bear_2022":     ("2022-01-03", "2022-10-14"),   # 2022 momentum-reversal drawdown
+    "bear_recov_23": ("2022-01-03", "2023-07-31"),   # 2022 bear + 2023 recovery (mean-reversion)
+}
+
 
 def load_universe():
     d = yaml.safe_load(open("tools/discovered_pool.yaml"))
@@ -121,6 +133,19 @@ def _rank_at(t, syms, mat, score, tier):
                                  round(rk, 2), px, sma200, high52))
     ranked.sort(key=lambda r: -r.rank_score)
     return ranked, {r.symbol: i for i, r in enumerate(ranked)}
+
+
+def _window_metrics(dates, idx, start, end):
+    """Total TWR return and max drawdown of the index between two calendar dates."""
+    lo = next((i for i, d in enumerate(dates) if d >= start), None)
+    hi = next((i for i in range(len(dates) - 1, -1, -1) if dates[i] <= end), None)
+    if lo is None or hi is None or hi <= lo:
+        return None
+    seg = idx[lo:hi + 1]
+    peak = np.maximum.accumulate(seg)
+    mdd = float(np.max((peak - seg) / peak))
+    return {"ret_pct": round((seg[-1] / seg[0] - 1.0) * 100, 2),
+            "mdd_pct": round(mdd * 100, 2)}
 
 
 def simulate(universe, dates, mat, arm, conviction_power):
@@ -237,8 +262,10 @@ def simulate(universe, dates, mat, arm, conviction_power):
     vol = float(np.std(rets) * np.sqrt(252))
     peak = np.maximum.accumulate(idx)
     mdd = float(np.max((peak - idx) / peak))
+    windows = {name: _window_metrics(dates, idx, s, e) for name, (s, e) in CRASH_WINDOWS.items()}
     return {
         "arm": arm, "conviction_power": conviction_power,
+        "windows": windows,
         "terminal_nlv": round(float(mv_series[-1])),
         "total_invested": round(contributed),
         "multiple": round(float(mv_series[-1]) / contributed, 3),
@@ -285,6 +312,20 @@ def main():
               f"{r['twr_cagr_pct']:>8}{r['vol_pct']:>7}{r['max_drawdown_pct']:>7}"
               f"{str(r['sharpe_like']):>8}{str(r['eff_holdings_end']):>6}"
               f"{str(r['legacy_mv_pct_avg']):>11}{str(r['legacy_mv_pct_end']):>11}")
+    # ── Crash / mean-reversion stress: return + MDD WITHIN each window, per arm (cp=1.0) ──
+    print(f"\n{'CRASH STRESS (cp=1.0) — return% / maxDD% within window':<58}")
+    hdr = f"{'window':<16}" + "".join(f"{a:>18}" for a in ("keep", "freeze", "freeze_buffer"))
+    print(hdr); print("-" * len(hdr))
+    base = {r["arm"]: r for r in results if r["conviction_power"] == 1.0}
+    for wname in CRASH_WINDOWS:
+        row = f"{wname:<16}"
+        for arm in ("keep", "freeze", "freeze_buffer"):
+            w = base[arm]["windows"].get(wname)
+            cell = f"{w['ret_pct']:+.1f} / {w['mdd_pct']:.1f}" if w else "n/a"
+            row += f"{cell:>18}"
+        print(row)
+    print("  (freeze should LOSE here if 'redistribute to current leaders' == momentum-tilt risk)")
+
     print(f"\nsaved → {OUT}")
     print("Read cross-arm deltas at equal cp; 'legacy%' = capital in held non-members "
           "(grandfather accumulation).")
