@@ -206,18 +206,19 @@ def _is_permission_blocked(symbol: str) -> bool:
 def _frozen_dropouts(watch, rank_idx: dict, topk: int) -> set:
     """Held screener drop-outs to FREEZE (pin target at invested, exclude from fresh allocation).
 
-    A watchlist name is a LEGACY drop-out if the monthly screen flagged it `pending_removal` (it
-    fell out of the screen but is still held, so it wasn't deleted) OR it was never screened at all
-    (`category == 'existing_holding'`, auto-added by holdings-sync). A drop-out is frozen UNLESS it
-    still ranks in the TOP-`topk` on the live rank — an absolute conviction cutoff sparing only a
-    name that's still genuinely elite (or a likely re-admit). topk<=0 = TOTAL freeze (no exception):
-    a drop-out ranks below the members by construction, and its fundamental veto shouldn't be
-    overridden by momentum rank. An unranked legacy name (no price this scan) is always frozen (it
-    can't be bought anyway). Absolute top-K, NOT member_count×mult — the latter never binds when
-    members are ~90% of the universe (the live shape), so it froze nothing. Pure for testability."""
-    legacy = {s.symbol for s in watch
-              if getattr(s, "pending_removal", False)
-              or (getattr(s, "category", "") == "existing_holding")}
+    A watchlist name is a DROP-OUT iff the monthly screen flagged it `pending_removal` (it fell out
+    of the screen but is still held, so it wasn't deleted). This is the ONLY signal used, because the
+    screen maintains it BIDIRECTIONALLY — set on drop, CLEARED when the name re-qualifies (scheduler.py)
+    — so a re-admitted name auto-unfreezes next scan. (Do NOT also key on category=='existing_holding':
+    the screen never clears that category on re-admission, so a returning name would stay frozen forever;
+    and a never-screened auto-added holding isn't a "drop-out" at all.) A drop-out is frozen UNLESS it
+    still ranks in the TOP-`topk` on the live rank — an absolute conviction cutoff sparing only a name
+    that's still genuinely elite (or a likely re-admit). topk<=0 = TOTAL freeze (no exception): a drop-out
+    ranks below the members by construction, and its fundamental veto shouldn't be overridden by momentum
+    rank. An unranked drop-out (no price this scan) is always frozen (it can't be bought anyway). Absolute
+    top-K, NOT member_count×mult — the latter never binds when members are ~90% of the universe (the live
+    shape), so it froze nothing. Pure for testability."""
+    legacy = {s.symbol for s in watch if getattr(s, "pending_removal", False)}
     frozen = set()
     for sym in legacy:
         r = rank_idx.get(sym)             # 1-based live rank; None if unpriced this scan

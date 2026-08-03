@@ -50,8 +50,9 @@ class CompounderConfig(BaseModel):
     # Screener drop-out handling. When the monthly screener drops a name we still HOLD, it is retained
     # (not force-sold — tax/churn) but it dropped for a REASON, so we stop pouring NEW capital in: the
     # held drop-out is FROZEN — target pinned to what's already invested, never bought up, never sold —
-    # and its would-be budget REDISTRIBUTES to current members. Members = watchlist names still in the
-    # screen (NOT pending_removal AND category != 'existing_holding'). TOP-K conviction buffer: a drop-out
+    # and its would-be budget REDISTRIBUTES to current members. A drop-out = a watchlist name the screen
+    # flagged `pending_removal` (set on drop, CLEARED on re-admit — so a returning name auto-unfreezes).
+    # TOP-K conviction buffer: a drop-out
     # still ranking in the top-`freeze_buffer_topk` on the LIVE rank is NOT frozen (spare a name that's
     # still genuinely elite / likely re-admitted next screen); freeze_buffer_topk=0 = TOTAL freeze (no
     # exception — the default, since a drop-out ranks below the members by construction and the screener's
