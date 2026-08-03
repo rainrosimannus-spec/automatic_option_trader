@@ -53,8 +53,14 @@ MIN_BUY = 1_000.0
 REBAL_EVERY = 5
 WARMUP = 252
 
-MEMBERSHIP_N = 40          # screener keeps the top-N each month (of ~85 usable → real churn)
-BUFFER_MULT = 1.2          # FREEZE+BUFFER keeps buying held names down to rank N*1.2
+# LIVE-REALISTIC screener shape: on Rain's book the screen keeps ~98 of a ~109-name watchlist
+# (≈90% members, only ~11 held drop-outs). The earlier run kept 40 of 85 (~47%) — far more churn
+# than reality, which is why a member_count×1.2 buffer never bound live. Model the real shape:
+# keep the top MEMBERSHIP_FRAC of the priceable pool each month, so only a handful ever roll off.
+MEMBERSHIP_FRAC = 0.90
+# TOP-K conviction buffer to sweep: a held drop-out keeps accumulating only while it still ranks in
+# the top-K on the live rank; below K it's frozen. K ≈ the count conviction actually funds.
+TOPK_SWEEP = (25, 40, 55)
 
 # Crash / mean-reversion windows. The portfolio is seeded over the FULL history and metrics
 # are measured only WITHIN the window, so each arm enters the crash with a realistic book.
@@ -148,7 +154,7 @@ def _window_metrics(dates, idx, start, end):
             "mdd_pct": round(mdd * 100, 2)}
 
 
-def simulate(universe, dates, mat, arm, conviction_power):
+def simulate(universe, dates, mat, arm, conviction_power, membership_n, topk):
     n = len(dates)
     syms = [u["symbol"] for u in universe]
     tier = {u["symbol"]: u["tier"] for u in universe}
@@ -159,7 +165,7 @@ def simulate(universe, dates, mat, arm, conviction_power):
     contributed = INITIAL
     cur_month = dates[0][:7]
 
-    member_set, buffer_set, screen_month = set(), set(), None
+    member_set, screen_month = set(), None
     mv_series, contrib_flow = [], []
     eff_samples, legacy_samples = [], []
     freeze_events = 0
@@ -176,11 +182,10 @@ def simulate(universe, dates, mat, arm, conviction_power):
             ranked, rank_idx = _rank_at(t, syms, mat, score, tier)
             if ranked:
                 price = {r.symbol: r.price for r in ranked}
-                # ── Monthly screener: refresh membership at the first rebalance of a new month ──
+                # ── Monthly screener: keep the top membership_n by rank, refreshed monthly ──
                 if screen_month != dates[t][:7]:
                     screen_month = dates[t][:7]
-                    member_set = {r.symbol for r in ranked[:MEMBERSHIP_N]}
-                    buffer_set = {r.symbol for r in ranked[:int(MEMBERSHIP_N * BUFFER_MULT)]}
+                    member_set = {r.symbol for r in ranked[:membership_n]}
 
                 held = {s for s in syms if shares[s] > 0}
                 # Which held-non-members are FROZEN (held flat, no new buys) this arm?
@@ -188,11 +193,13 @@ def simulate(universe, dates, mat, arm, conviction_power):
                     frozen = set()                                  # nobody frozen
                     keep_band = member_set | held                   # legacy names keep full targets
                 elif arm == "freeze":
-                    frozen = held - member_set
-                    keep_band = set(member_set)                     # only members get fresh budget
-                elif arm == "freeze_buffer":
-                    frozen = held - buffer_set
-                    keep_band = member_set | (held & buffer_set)
+                    # TOP-K conviction buffer: a held drop-out keeps buying ONLY while it still ranks
+                    # in the top-`topk` on the live rank; otherwise it's frozen (held flat). Absolute
+                    # cutoff, not member_count×mult — the latter never binds when members are ~90% of
+                    # the universe (the live shape), which is why the multiplier version froze nothing.
+                    in_topk = {r.symbol for r in ranked[:topk]}
+                    frozen = {s for s in held if s not in member_set and s not in in_topk}
+                    keep_band = member_set | (held & in_topk)
                 else:
                     raise ValueError(arm)
                 freeze_events += len(frozen)
@@ -265,6 +272,7 @@ def simulate(universe, dates, mat, arm, conviction_power):
     windows = {name: _window_metrics(dates, idx, s, e) for name, (s, e) in CRASH_WINDOWS.items()}
     return {
         "arm": arm, "conviction_power": conviction_power,
+        "membership_n": membership_n, "topk": topk,
         "windows": windows,
         "terminal_nlv": round(float(mv_series[-1])),
         "total_invested": round(contributed),
@@ -281,6 +289,10 @@ def simulate(universe, dates, mat, arm, conviction_power):
     }
 
 
+def _label(topk):
+    return "keep" if topk is None else ("total_freeze" if topk == 0 else f"freeze_top{topk}")
+
+
 def main():
     uni = load_universe()
     if not os.path.exists(CACHE):
@@ -288,47 +300,55 @@ def main():
     cache = json.load(open(CACHE))
     uni = [u for u in uni if cache.get(u["symbol"])]
     dates, mat = build_matrix(cache, [u["symbol"] for u in uni])
+    membership_n = round(MEMBERSHIP_FRAC * len(uni))
     print(f"universe: {len(uni)} names with data | calendar {dates[0]} → {dates[-1]} "
-          f"({len(dates)} days) | screener keeps top {MEMBERSHIP_N}/month\n")
+          f"({len(dates)} days)\nscreener keeps top {membership_n} (~{MEMBERSHIP_FRAC:.0%}) "
+          f"→ ~{len(uni)-membership_n} held drop-outs/month (live-realistic, low churn)\n"
+          f"arms: keep vs total_freeze (K=0) vs top-K buffer K∈{TOPK_SWEEP}\n")
 
+    # topk=None → keep (baseline); topk=0 → total freeze; topk>0 → top-K conviction buffer.
+    variants = [None, 0] + list(TOPK_SWEEP)
     results = []
     for cp in (1.0, 1.75):
-        for arm in ("keep", "freeze", "freeze_buffer"):
-            res = simulate(uni, dates, mat, arm, cp)
+        for topk in variants:
+            arm = "keep" if topk is None else "freeze"
+            res = simulate(uni, dates, mat, arm, cp, membership_n, (0 if topk is None else topk))
+            res["label"] = _label(topk)
             results.append(res)
-            print(f"  cp={cp:<4} {arm:<14} → mult {res['multiple']:>5}x  "
+            print(f"  cp={cp:<4} {res['label']:<14} → mult {res['multiple']:>5}x  "
                   f"CAGR {res['twr_cagr_pct']:>6}%  MDD {res['max_drawdown_pct']:>5}%  "
-                  f"effN {res['eff_holdings_end']:>4}  legacy {res['legacy_mv_pct_avg']}%")
+                  f"effN {res['eff_holdings_end']:>4}  frozen/scan~{res['freeze_events']}")
 
     with open(OUT, "w") as f:
         for r in results:
             f.write(json.dumps(r) + "\n")
 
-    print(f"\n{'cp':<5}{'arm':<15}{'mult':>7}{'CAGR%':>8}{'vol%':>7}{'MDD%':>7}"
-          f"{'Sharpe':>8}{'effN':>6}{'legacy%avg':>11}{'legacy%end':>11}")
-    print("-" * 89)
-    for r in sorted(results, key=lambda x: (x["conviction_power"], -x["multiple"])):
-        print(f"{r['conviction_power']:<5}{r['arm']:<15}{r['multiple']:>7}"
-              f"{r['twr_cagr_pct']:>8}{r['vol_pct']:>7}{r['max_drawdown_pct']:>7}"
-              f"{str(r['sharpe_like']):>8}{str(r['eff_holdings_end']):>6}"
-              f"{str(r['legacy_mv_pct_avg']):>11}{str(r['legacy_mv_pct_end']):>11}")
-    # ── Crash / mean-reversion stress: return + MDD WITHIN each window, per arm (cp=1.0) ──
-    print(f"\n{'CRASH STRESS (cp=1.0) — return% / maxDD% within window':<58}")
-    hdr = f"{'window':<16}" + "".join(f"{a:>18}" for a in ("keep", "freeze", "freeze_buffer"))
+    for cp in (1.0, 1.75):
+        print(f"\ncp={cp}  {'arm':<15}{'mult':>7}{'CAGR%':>8}{'vol%':>7}{'MDD%':>7}"
+              f"{'Sharpe':>8}{'effN':>6}{'legacy%avg':>11}")
+        print("-" * 71)
+        for r in sorted([x for x in results if x["conviction_power"] == cp], key=lambda x: -x["multiple"]):
+            print(f"      {r['label']:<15}{r['multiple']:>7}{r['twr_cagr_pct']:>8}"
+                  f"{r['vol_pct']:>7}{r['max_drawdown_pct']:>7}{str(r['sharpe_like']):>8}"
+                  f"{str(r['eff_holdings_end']):>6}{str(r['legacy_mv_pct_avg']):>11}")
+
+    # ── Crash / mean-reversion stress: return% / maxDD% within each window (cp=1.75 = live) ──
+    arms_order = [_label(v) for v in variants]
+    print(f"\nCRASH STRESS (cp=1.75) — return% / maxDD% within window")
+    hdr = f"{'window':<16}" + "".join(f"{a:>16}" for a in arms_order)
     print(hdr); print("-" * len(hdr))
-    base = {r["arm"]: r for r in results if r["conviction_power"] == 1.0}
+    base = {r["label"]: r for r in results if r["conviction_power"] == 1.75}
     for wname in CRASH_WINDOWS:
         row = f"{wname:<16}"
-        for arm in ("keep", "freeze", "freeze_buffer"):
-            w = base[arm]["windows"].get(wname)
-            cell = f"{w['ret_pct']:+.1f} / {w['mdd_pct']:.1f}" if w else "n/a"
-            row += f"{cell:>18}"
+        for a in arms_order:
+            w = base[a]["windows"].get(wname)
+            cell = f"{w['ret_pct']:+.1f}/{w['mdd_pct']:.0f}" if w else "n/a"
+            row += f"{cell:>16}"
         print(row)
-    print("  (freeze should LOSE here if 'redistribute to current leaders' == momentum-tilt risk)")
 
     print(f"\nsaved → {OUT}")
-    print("Read cross-arm deltas at equal cp; 'legacy%' = capital in held non-members "
-          "(grandfather accumulation).")
+    print("Live shape (~90% members) → low churn, so expect SMALL deltas. total_freeze = no buffer; "
+          "top-K keeps buying a drop-out still ranking in the top-K.")
 
 
 if __name__ == "__main__":
