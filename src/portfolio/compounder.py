@@ -275,6 +275,25 @@ def choose_entry_mode(attractiveness: float, underweight_frac: float, crash_acti
 
 
 # ── 5. Daily deploy budget (base DCA + crash dump) ───────────
+def frozen_dropouts(rows, rank_idx: dict, topk: int) -> set:
+    """Held screener drop-outs to FREEZE — SINGLE SOURCE OF TRUTH for both the buy path
+    (buyer.run_compounder) and the dashboard display (build_signals_from_watchlist), so the
+    two never drift.
+
+    A drop-out iff the monthly screen flagged it `pending_removal` (set on drop, CLEARED on
+    re-admit — so a returning name auto-unfreezes). NOT category=='existing_holding' (the screen
+    never clears that on re-admit, and a never-screened holding isn't a drop-out). A drop-out is
+    frozen UNLESS it still ranks in the TOP-`topk` on the live rank; topk<=0 = TOTAL freeze. An
+    unranked drop-out (no price this scan) is always frozen. Pure/stateless for testability."""
+    legacy = {r.symbol for r in rows if getattr(r, "pending_removal", False)}
+    frozen = set()
+    for sym in legacy:
+        rk = rank_idx.get(sym)            # 1-based live rank; None if unpriced this scan
+        if topk <= 0 or rk is None or rk > topk:
+            frozen.add(sym)
+    return frozen
+
+
 def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: dict) -> list[dict]:
     """Compute the dashboard signal table directly from watchlist DB rows (each with the
     fundamental scores + freshly-updated current_price/sma_200/high_52w/momentum_12_1).
@@ -303,12 +322,21 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
                  if getattr(w, "momentum_12_1", None) is not None}
     ranked = rank_universe(names, cc.rank_fund_weight, cc.rank_mom_weight)
     rank_idx = {r.symbol: i + 1 for i, r in enumerate(ranked)}
-    leaders = leader_symbols(ranked, getattr(cc, "leader_top_frac", 0.0))
     investable = max(0.0, nlv) * (1 - cc.cash_buffer_pct)
-    targets = target_weights(ranked, tier_alloc, investable, cc.per_name_cap_pct,
+    # Screener drop-out freeze — mirror the buy path so the tab shows the SAME frozen targets the
+    # buyer acts on (else the display drifts, showing full targets on names the buyer won't buy).
+    # Exclude frozen drop-outs from the fresh allocation (their budget redistributes to members),
+    # then pin each to its invested value below so it reads target==current / action "hold".
+    frozen = (frozen_dropouts(rows, rank_idx, getattr(cc, "freeze_buffer_topk", 0))
+              if getattr(cc, "freeze_dropped_names", False) else set())
+    alloc = [r for r in ranked if r.symbol not in frozen]
+    leaders = leader_symbols(alloc, getattr(cc, "leader_top_frac", 0.0))
+    targets = target_weights(alloc, tier_alloc, investable, cc.per_name_cap_pct,
                              leader_syms=leaders,
                              leader_cap_pct=getattr(cc, "leader_cap_pct", None),
                              conviction_power=getattr(cc, "conviction_power", 1.0))
+    for _s in frozen:
+        targets[_s] = held.get(_s, 0.0)   # pin to invested MV → target==current, "hold"
     out = []
     for r in ranked:
         tgt = targets.get(r.symbol, 0.0)
