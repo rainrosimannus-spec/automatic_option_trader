@@ -691,7 +691,7 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
 
             # ══════════════════════════════════════════════════════
             # PHASE 3: Holdings review runs as separate job (job_portfolio_monthly_review)
-            # Scheduled 1 hour after screener at 4 AM ET, first Monday of month
+            # Scheduled the night after this screener — 22:30 UTC, Tuesday after the first Monday
             # ══════════════════════════════════════════════════════
             log.info("portfolio_monthly_screen_phase3_skipped",
                      reason="holdings review is now a separate scheduled job")
@@ -785,8 +785,8 @@ job_portfolio_annual_rescreen = job_portfolio_monthly_screen
 
 def job_portfolio_monthly_review(cfg: PortfolioConfig):
     """
-    Monthly holdings review — runs 4 AM ET, first Monday of month.
-    Runs 1 hour after job_portfolio_monthly_screen completes.
+    Monthly holdings review — runs 22:30 UTC on the Tuesday after the first Monday,
+    i.e. the night after job_portfolio_monthly_screen, whose universe files it reads.
 
     For each holding, independently evaluates two actions:
       1. CC harvesting: sell OTM covered call (delta 0.15-0.20, 45-90 DTE)
