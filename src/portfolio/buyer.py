@@ -203,27 +203,25 @@ def _is_permission_blocked(symbol: str) -> bool:
     return False
 
 
-def _frozen_dropouts(watch, rank_idx: dict, buffer_mult: float) -> set:
+def _frozen_dropouts(watch, rank_idx: dict, topk: int) -> set:
     """Held screener drop-outs to FREEZE (pin target at invested, exclude from fresh allocation).
 
     A watchlist name is a LEGACY drop-out if the monthly screen flagged it `pending_removal` (it
     fell out of the screen but is still held, so it wasn't deleted) OR it was never screened at all
-    (`category == 'existing_holding'`, auto-added by holdings-sync). Such a name is frozen UNLESS it
-    still ranks within the hysteresis band — top (member_count × buffer_mult) on the LIVE rank —
-    so a good name that merely grazed the cut line on a one-month wobble keeps accumulating.
-    member_count = watchlist names that are still current members (not legacy). An unranked legacy
-    name (no price this scan) is frozen (it can't be bought anyway). Pure/stateless for testability."""
+    (`category == 'existing_holding'`, auto-added by holdings-sync). A drop-out is frozen UNLESS it
+    still ranks in the TOP-`topk` on the live rank — an absolute conviction cutoff sparing only a
+    name that's still genuinely elite (or a likely re-admit). topk<=0 = TOTAL freeze (no exception):
+    a drop-out ranks below the members by construction, and its fundamental veto shouldn't be
+    overridden by momentum rank. An unranked legacy name (no price this scan) is always frozen (it
+    can't be bought anyway). Absolute top-K, NOT member_count×mult — the latter never binds when
+    members are ~90% of the universe (the live shape), so it froze nothing. Pure for testability."""
     legacy = {s.symbol for s in watch
               if getattr(s, "pending_removal", False)
               or (getattr(s, "category", "") == "existing_holding")}
-    member_count = sum(1 for s in watch if s.symbol not in legacy)
-    if member_count <= 0:                 # degenerate (no members) → don't freeze anything
-        return set()
-    cutoff = member_count * buffer_mult
     frozen = set()
     for sym in legacy:
-        r = rank_idx.get(sym)
-        if r is None or r > cutoff:       # unranked, or outside the buffer band → freeze
+        r = rank_idx.get(sym)             # 1-based live rank; None if unpriced this scan
+        if topk <= 0 or r is None or r > topk:   # total freeze, unranked, or below the top-K cutoff
             frozen.add(sym)
     return frozen
 
@@ -1115,7 +1113,7 @@ class PortfolioBuyer:
         # budget to members. A drop-out still ranking within the hysteresis band (top members ×
         # freeze_buffer_mult) is NOT frozen. Leaders/targets are computed over the non-frozen set so the
         # redistribution is automatic. Crash-reserve deployment is a separate path and is unaffected.
-        frozen_dropouts = (_frozen_dropouts(watch, rank_idx, cc.freeze_buffer_mult)
+        frozen_dropouts = (_frozen_dropouts(watch, rank_idx, getattr(cc, "freeze_buffer_topk", 0))
                            if getattr(cc, "freeze_dropped_names", False) else set())
         alloc_ranked = [r for r in ranked if r.symbol not in frozen_dropouts]
         leaders = cmp.leader_symbols(alloc_ranked, cc.leader_top_frac)
