@@ -339,6 +339,30 @@ class RiskConfig(BaseModel):
     cc_bbe_min_age_days: int = 90                 # G2: a full quarter for the recovery thesis first
     cc_bbe_min_drawdown: float = 0.20             # G3: only lots ≥20% below basis
     cc_bbe_max_lock: float = 0.10                 # G5: never lock more than 10% below basis
+    # ── Deep-ITM covered-call early-close (2026-08-05) ──
+    # Automates the manual "buy-to-close the call + sell the stock" when an assigned
+    # lot's stock has run far above the CC strike. The lot is CAPPED (yields
+    # strike+premium regardless) but sits on margin until expiry; closing it early
+    # once the call's remaining time value ≈ 0 banks the same P&L now, stops the
+    # margin carry, and frees capital+slot to sell puts immediately. Rule A only
+    # forces the buy-to-close here; the freed lot is sold by the existing
+    # _live_exit_opportunity path next cycle (spot ≫ assignment strike → it sells,
+    # with the afaa425 IBKR-truth clamp — no new sell code in the naked-short zone).
+    # Ships DEFAULT OFF: MarsWalk can't score the real edge (it never runs a margin
+    # debit, so the carry benefit is invisible) and price-path is ~neutral/slightly
+    # negative in-sim — the case for it is operational (carry, load, shorter
+    # naked-short window). Mirrored into MarsWalk Params for the A/B ([[live-marswalk-parity-rule]]).
+    cc_early_close_enabled: bool = True   # LIVE on Rain's account 2026-08-05 (son to copy); NOT live till options restart
+    cc_early_close_stock_over_strike_pct: float = 0.05   # deep-ITM pre-filter: spot ≥ strike*(1+X)
+    cc_early_close_max_extrinsic_pct: float = 0.005      # fire only when time value ≤ X*strike (TIGHT — sweep-best)
+    cc_early_close_min_dte: int = 2                       # skip near-expiry self-resolvers
+    # Sweep (cc_early_close_sweep.py, 2026-08-05): this TIGHT config (over=5%, ext≤0.5%)
+    # is return-NEUTRAL on the 6y replay (−0.09pp, +1.2pp DD) and HELPS the bear_2022
+    # recovery (+3.2pp, −2.4pp DD); the looser over=8%/ext=1% variant gave up 3pp
+    # (closing lots with real time value left, then churning the freed capital into
+    # more assignments). The real edge (margin carry + operational load + shorter
+    # naked-short window) is INVISIBLE in-sim — MarsWalk never runs a margin debit,
+    # so Σ modeled interest was $0. Enable = judgment call, not a backtest win.
     # ── Cash-and-carry mode (high-vol-grind detector + SGOV rotation) ──
     # Ported 2026-05-28 from MarsWalk after the high-vol-grind detector + parameter-
     # override experiment (memory: stagflation-strategy-attempted-2026-05-28) showed

@@ -171,6 +171,39 @@ class Params:
     cc_crash_bolster_enabled: bool = False     # OFF (sweep-rejected) — True = bolster branch when crash_active
     cc_crash_velocity: bool = False            # crash regime: try deep-ITM exit-velocity (dump harder)
     cc_crash_loss_tolerance_pct: float = 0.0   # crash regime floor relax (0 = strict breakeven)
+    # ── Deep-ITM CC early-close (2026-08-05) — mirror of live RiskConfig cc_early_close_* ──
+    # A covered lot whose stock ran far above the call strike is CAPPED but not yet
+    # called: it yields strike+premium no matter what, yet the capital stays locked
+    # (on margin) until expiry. When the call's remaining EXTRINSIC (time value) has
+    # decayed to ~0, buying-to-close it + selling the stock realizes the same P&L a
+    # few days early, kills the margin carry, and frees the cash+slot to sell puts
+    # NOW. Gates: spot >= strike*(1+over_strike_pct) AND (ask - intrinsic) <=
+    # max_extrinsic_pct*strike AND DTE >= min_dte. Default OFF (byte-identical to
+    # prior runs). NOTE: the real edge is carry+velocity — carry only scores when
+    # margin_interest_annual > 0 (see below); with it 0 this understates the rule.
+    cc_early_close_enabled: bool = False
+    cc_early_close_stock_over_strike_pct: float = 0.05   # deep-ITM pre-filter: spot >= strike*(1+X)
+    cc_early_close_max_extrinsic_pct: float = 0.005      # forfeit only when time value <= X*strike (TIGHT — sweep-best)
+    cc_early_close_min_dte: int = 2                       # skip near-expiry self-resolvers
+    # ── Rule B (2026-08-05, tested-only): don't-cap momentum lots ──
+    # Rain's floated alternative: on a lot whose stock is in a strong uptrend, skip
+    # the covered call entirely and hold the shares UNCAPPED for recovery/upside,
+    # re-capping (normal CC) only once the uptrend cools. This is a directional bet
+    # (captures gains above the strike when the name keeps running; forfeits the
+    # premium + velocity and adds drawdown when it stalls) — built to A/B, not to
+    # ship on intuition. Uptrend = spot >= price N trading days ago * (1+buffer),
+    # a self-contained momentum measure (independent of bear_market_gate_mode, which
+    # populates per_name_ma200 only in one mode). Default OFF.
+    cc_skip_on_momentum: bool = False
+    cc_momentum_lookback_days: int = 60
+    cc_momentum_buffer: float = 0.10
+    # Negative-cash margin interest (2026-08-05). The engine credits a positive
+    # idle-cash yield but has always charged ZERO on margin debit — so any rule
+    # whose benefit is "frees capital / kills carry" scored as free. 0.0 keeps every
+    # prior run byte-identical; set ~0.055 (IBKR-ish) to make the carry cost real so
+    # an early-close A/B isn't rigged against the thing it fixes. Fidelity fix, not a
+    # strategy knob (parity-exempt).
+    margin_interest_annual: float = 0.0
     # ── Portfolio ──
     start_capital: float = 4_000_000.0   # forward-looking simulation scale (NOT matched to live account; see memory: marswalk-start-capital)
     max_positions: int = 50           # live risk.max_portfolio_positions
@@ -550,6 +583,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     put_bid_sum = 0.0        # Σ premium bid per contract at sale (fee-floor proxy)
     uncovered_lot_days = 0   # Σ over days of held 100-share lots with NO covering CC
     n_bbe_writes = 0         # below-breakeven CC writes (strict last-resort lever)
+    n_cc_early_closes = 0    # deep-ITM covered calls bought-to-close + stock sold early
+    margin_interest_total = 0.0  # Σ interest charged on negative (margin-debit) cash
     points = []
     peak = start_cap
     max_dd = 0.0
@@ -874,6 +909,48 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 keep.append(c)
         short_calls = keep
 
+        # ── 2a. Deep-ITM covered-call early-close (2026-08-05) ───────────
+        # A covered lot whose stock ran far above the call strike is CAPPED but not
+        # yet called: it yields strike+premium regardless, yet the capital stays
+        # locked (on margin) until expiry. When the call's remaining EXTRINSIC
+        # (ask − intrinsic) has decayed below max_extrinsic_pct*strike, buy-to-close
+        # it + sell the stock NOW — same P&L minus the spread, but the freed cash +
+        # slot reach TODAY's put pass (Sections 3-4) and the margin carry stops.
+        # Gated deep-ITM with a DTE floor so calls about to self-resolve are left be.
+        # Mirrors the live ProfitTaker deep-ITM early-close branch. Default OFF.
+        if params.cc_early_close_enabled and short_calls:
+            keep = []
+            for c in short_calls:
+                st = stocks.get(c["sym"])
+                q = pv(c["sym"], d)
+                if not st or not q or (c["expiry"] - d).days < params.cc_early_close_min_dte:
+                    keep.append(c)
+                    continue
+                spot, iv = q
+                strike = c["strike"]
+                if spot < strike * (1.0 + params.cc_early_close_stock_over_strike_pct):
+                    keep.append(c)
+                    continue
+                ask = pricing.value_call_ask(spot, strike, c["expiry"].strftime("%Y%m%d"),
+                                             d, iv, params.short_dte_uplift_k)
+                extrinsic = ask - max(0.0, spot - strike)
+                if extrinsic > params.cc_early_close_max_extrinsic_pct * strike:
+                    keep.append(c)
+                    continue
+                # Fire: buy-to-close the short call (pay ask), then sell the freed
+                # shares at spot. Order mirrors the live safety rule (close the call
+                # before the stock leaves, so no naked-short window ever opens).
+                qty = c["qty"]
+                cash -= ask * 100 * qty            # buy-to-close short call
+                cash += spot * 100 * qty           # sell the now-uncovered shares
+                st["realized_cc"] = st.get("realized_cc", 0.0) + c["premium"]
+                st["shares"] -= 100 * qty
+                if st["shares"] <= 0:
+                    stocks.pop(c["sym"], None)
+                n_cc_early_closes += 1
+                n_trades += 1
+            short_calls = keep
+
         # ── 2b. Settle naked short calls (strangle/IC short-leg) ──────────
         # Settled in cash. If close > strike, pay out (close - strike) × 100
         # × qty. For iron condor, the long-call hedge caps that loss at the
@@ -950,6 +1027,13 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             if not q:
                 continue
             spot, iv = q
+            # Rule B (don't-cap momentum): if this lot's stock is in a strong
+            # uptrend, leave it UNCAPPED (no CC) so it keeps its upside; normal CC
+            # writing resumes once the uptrend cools. Directional bet — tested only.
+            if params.cc_skip_on_momentum:
+                qb = pv(sym, dates[max(0, day_idx - params.cc_momentum_lookback_days)])
+                if qb and spot >= qb[0] * (1.0 + params.cc_momentum_buffer):
+                    continue
             cb = st["cost_basis"]
             net_cb = cb - st.get("realized_cc", 0.0)
             # Regime-specific CC selection — mirrors live src/strategy/wheel.py
@@ -1687,6 +1771,17 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             cash += interest
             cash_yield_total += interest
 
+        # Margin-debit interest accrual (2026-08-05, fidelity fix). The engine has
+        # always let cash go negative on the margin line with NO carry cost, so any
+        # rule whose benefit is "frees capital / stops the interest bleed" (the
+        # deep-ITM CC early-close) scored as free. Charge daily interest on negative
+        # cash at margin_interest_annual/365. Default rate 0 = byte-identical to
+        # every prior run. Parity-exempt (sim fidelity, not a strategy knob).
+        if params.margin_interest_annual > 0 and cash < 0:
+            charge = -cash * (params.margin_interest_annual / 365.0)
+            cash -= charge
+            margin_interest_total += charge
+
     final = points[-1]
     return {
         "regime_id": regime_id, "regime_name": regime_name,
@@ -1702,6 +1797,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "put_bid_sum": round(put_bid_sum, 2),
         "uncovered_lot_days": uncovered_lot_days,
         "n_bbe_writes": n_bbe_writes,
+        "n_cc_early_closes": n_cc_early_closes,
+        "margin_interest_total": round(margin_interest_total, 2),
         "n_halt_days": n_halt_days,
         "n_hvg_days": hvg_active_days,
         "n_crash_days": crash_active_days,

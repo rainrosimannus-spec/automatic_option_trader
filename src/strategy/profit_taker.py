@@ -20,6 +20,26 @@ from ib_insync import Option as IBOption
 
 log = get_logger(__name__)
 
+
+def deep_itm_early_close_triggered(spot: float | None, strike: float, call_ask: float,
+                                   dte: int, *, over_pct: float, max_extrinsic_pct: float,
+                                   min_dte: int) -> bool:
+    """Rule A gate: should a deep-ITM covered call be bought-to-close early?
+
+    True only when all hold: the stock is genuinely deep ITM (spot ≥ strike*(1+over)),
+    the call's remaining time value has decayed to ~0 (ask − intrinsic ≤ max_ext*strike
+    — the only value we forfeit by closing now), and it's not about to self-resolve
+    (dte ≥ min_dte). Pure/side-effect-free so it can be unit-tested and mirrors the
+    MarsWalk engine's early-close pass exactly. Fails closed on a missing/zero spot.
+    """
+    if not spot or spot <= 0 or strike <= 0 or dte < min_dte:
+        return False
+    if spot < strike * (1.0 + over_pct):
+        return False
+    extrinsic = call_ask - max(0.0, spot - strike)
+    return extrinsic <= max_extrinsic_pct * strike
+
+
 # Market hours per currency: (timezone, open_hour, close_hour)
 _MARKET_HOURS = {
     "USD": ("US/Eastern",      9, 16),
@@ -592,6 +612,35 @@ class ProfitTaker:
                     entry_premium = pos.entry_premium
                     if not entry_premium or entry_premium <= 0:
                         continue
+
+                    # ── Deep-ITM early-close (Rule A, 2026-08-05) ──
+                    # When the stock has run far above the CC strike AND the call's
+                    # remaining time value has decayed to ~0, the lot is capped but
+                    # sits on margin until expiry. Buy-to-close the call now — SAFETY:
+                    # only the buy-to-close happens here; the freed (uncovered) lot is
+                    # sold next cycle by the wheel's _live_exit_opportunity, which
+                    # reads IBKR positions fail-closed (afaa425) — so no naked-short
+                    # window ever opens. Banks the capped gain early, stops the carry,
+                    # frees capital for new puts. Default OFF (see RiskConfig).
+                    rc = get_settings().risk
+                    if getattr(rc, "cc_early_close_enabled", False):
+                        spot = get_stock_live_price(pos.symbol, exchange, currency)
+                        if deep_itm_early_close_triggered(
+                                spot, pos.strike, live_ask, dte,
+                                over_pct=rc.cc_early_close_stock_over_strike_pct,
+                                max_extrinsic_pct=rc.cc_early_close_max_extrinsic_pct,
+                                min_dte=rc.cc_early_close_min_dte):
+                            log.info("cc_deep_itm_early_close",
+                                     symbol=pos.symbol, dte=dte, strike=pos.strike,
+                                     spot=round(spot, 2), call_ask=round(live_ask, 2),
+                                     extrinsic=round(live_ask - max(0.0, spot - pos.strike), 2),
+                                     over_strike_pct=f"{(spot / pos.strike - 1):.1%}")
+                            success = self._close_covered_call(
+                                db, pos, live_ask, opt_exchange, currency,
+                                reason="deep_itm_early_close")
+                            if success:
+                                acted.append(pos.symbol)
+                            continue  # acted/churn-blocked — skip the 80%-profit branch
 
                     # ── Iron-logic CC exit (Phase 16) ──
                     # Single rule: if CC is 80%+ profitable, close it. Next wheel cycle

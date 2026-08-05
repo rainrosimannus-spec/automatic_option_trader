@@ -146,3 +146,23 @@ def value_call(spot: float, strike: float, expiry: str, today: date, iv: float,
     T = max(dte, 0.25) / 365.0
     g = compute_call_greeks(spot, strike, T, effective_iv(iv, dte, k))
     return float(g.mid) if g else 0.0
+
+
+def value_call_ask(spot: float, strike: float, expiry: str, today: date, iv: float,
+                   k: float = SHORT_DTE_K) -> float:
+    """BSM ASK of a call — what a buy-to-close of a short call actually pays.
+
+    Mirror of `value_put_ask` for the covered-call early-close path. The engine
+    SELLS the covered call at `greeks.bid`; marking the early buy-to-close at mid
+    (`value_call`) would hand the position half the spread for free and overstate
+    the early-close edge. This returns the synthetic ask (compute_call_greeks, 5%
+    spread, $0.01 min half-spread) so the sell-at-bid → buy-at-ask round trip pays
+    the full spread. NOTE: MarsWalk still has no commission floor on the CC leg, so
+    a deep-ITM buy-to-close is modeled spread-only (understates live fee).
+    """
+    dte = _dte(expiry, today)
+    if dte < 0:
+        return max(0.0, spot - strike)  # intrinsic at/after expiry
+    T = max(dte, 0.25) / 365.0
+    g = compute_call_greeks(spot, strike, T, effective_iv(iv, dte, k))
+    return float(g.ask) if g else 0.0
