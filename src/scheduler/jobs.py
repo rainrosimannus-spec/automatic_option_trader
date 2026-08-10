@@ -393,7 +393,7 @@ def job_execute_queued():
                         cc_pending = _db.query(TradeSuggestion).filter(
                             TradeSuggestion.status.in_(["queued", "pending"]),
                             TradeSuggestion.source == "options",
-                            TradeSuggestion.action == "sell_call",
+                            TradeSuggestion.action.in_(["sell_covered_call", "sell_call"]),
                         ).count()
                     if cc_pending == 0:
                         log.info("execute_queued_margin_blocked", margin_pct=f"{margin_pct:.1%}")
@@ -424,15 +424,32 @@ def job_execute_queued():
                                 msg="headroom unknown — blocking execution for safety")
                     break
                 if headroom is not None:
-                    # Covered calls are fully covered by held stock — zero margin required
-                    if s.action == "sell_call":
+                    # Covered calls are fully covered by held stock — zero margin
+                    # required, so skip the whatif-margin gate. Claim atomically
+                    # (queued/pending → executing) so _execute_approved_order_inner,
+                    # which only runs approved/executing rows, actually places the
+                    # order rather than silently returning. Match both the canonical
+                    # action ("sell_covered_call", what wheel.py creates) and the
+                    # legacy "sell_call" label defensively.
+                    if s.action in ("sell_covered_call", "sell_call"):
+                        from sqlalchemy import update as _sa_update
+                        claimed = db.execute(
+                            _sa_update(TradeSuggestion)
+                            .where(TradeSuggestion.id == s.id,
+                                   TradeSuggestion.status.in_(["queued", "pending"]))
+                            .values(status="executing")
+                        )
+                        db.commit()
+                        if claimed.rowcount != 1:
+                            log.info("execute_queued_claim_lost", id=s.id, symbol=s.symbol)
+                            continue
                         selected = s
                         break
 
                     # Wheel-exit stock sell reduces exposure — no option whatif applies. Claim
                     # it here (queued/pending → executing) so _execute_approved_order_inner,
                     # which only runs approved/executing rows, actually executes it rather than
-                    # skipping (the sell_call fast-path above relies on manual approval instead).
+                    # skipping.
                     if s.action == "sell_stock":
                         from sqlalchemy import update as _sa_update
                         claimed = db.execute(
