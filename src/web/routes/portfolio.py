@@ -498,12 +498,19 @@ async def portfolio_page(request: Request):
     try:
         from datetime import datetime as _dt_t
         from sqlalchemy import func as _func2
+        from src.core.config import get_settings as _get_settings
         from src.portfolio.config import CompounderConfig as _CC
         from src.portfolio.compounder import base_daily_pace as _base_daily_pace
         from src.portfolio.connection import get_cached_portfolio_pending_orders as _gp
         _investable = float(_get_state("compounder_investable") or 0)
         if _investable > 0:
-            _ccfg = _CC()
+            # LIVE config, not a fresh CompounderConfig() — a settings.yaml override of base_pct /
+            # dca_horizon_days / lump_horizon_days would otherwise be invisible here and the card would
+            # quote a pace the scan never uses. Defaults only as a fallback if settings can't be read.
+            try:
+                _ccfg = _get_settings().portfolio.compounder
+            except Exception:
+                _ccfg = _CC()
             _throttle = float(_get_state("compounder_pace_throttle") or 1.0)
             # UTC boundary — match the scan's throttle (buyer.py uses datetime.utcnow) and the UTC
             # created_at storage, so the live budget card and the actual per-day cap agree on "today".
@@ -542,6 +549,23 @@ async def portfolio_page(request: Request):
                                           _remaining_gap, _deployed_today,
                                           _ccfg.lump_horizon_days, _throttle)
             _live_daily_budget = max(0.0, min(_remaining_gap, _base_pace - _deployed_today))
+            # Burn-in clamp — the scan's FINAL ceiling (buyer._compounder_burn_in_cap) caps TOTAL
+            # committed capital, so while it binds the real budget is the room left under the cap, not
+            # the DCA pace. Without this the card kept quoting the full pace during the burn-in while the
+            # engine bought nothing. Same precedence as the engine: a manual burn_in_max_deployed always
+            # wins (it arms no date and publishes no state key), otherwise the auto-arm ramp — and that
+            # one is keyed off the ARMED DATE, never the cap value alone, because a disarmed burn-in can
+            # leave a stale ramp figure behind and it would read as a still-binding ceiling forever.
+            _manual_cap = float(getattr(_ccfg, "burn_in_max_deployed", 0.0) or 0.0)
+            if _manual_cap > 0:
+                _burn_cap = _manual_cap
+            elif (_get_state("compounder_burn_in_armed_date") or "").strip():
+                _burn_cap = float(_get_state("compounder_burn_in_cap") or 0)
+            else:
+                _burn_cap = 0.0
+            if _burn_cap > 0:
+                _committed = _deployed + _open_buy_notional
+                _live_daily_budget = min(_live_daily_budget, max(0.0, _burn_cap - _committed))
     except Exception as _e:
         log.warning("compounder_live_budget_failed", error=str(_e))
 

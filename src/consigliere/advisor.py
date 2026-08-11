@@ -469,14 +469,15 @@ class Consigliere:
                     f"Maintenance margin is €{acct.maintenance_margin:,.0f} against "
                     f"€{nlv:,.0f} NLV. "
                     f"{'CRITICAL: margin call territory. ' if margin_pct > 70 else ''}"
-                    f"The margin gate in the portfolio buyer is blocking new "
-                    f"purchases (threshold: 40%). This is working as designed. "
-                    f"If this persists, consider reducing the options position "
-                    f"size (contracts_per_stock) or narrowing the watchlist."
+                    f"The compounder's maintenance-cushion gate de-rates new "
+                    f"purchases above 65% and hard-stops at 80% (88% in "
+                    f"capitulation). If this persists, consider reducing the "
+                    f"options position size (contracts_per_stock) or narrowing "
+                    f"the watchlist."
                 ),
                 metric_name="margin_utilization",
                 metric_value=margin_pct,
-                metric_benchmark=40.0,
+                metric_benchmark=80.0,
             ))
 
         if acct.cash_balance < 0:

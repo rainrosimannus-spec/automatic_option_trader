@@ -1021,21 +1021,39 @@ class PortfolioBuyer:
         # book in calm markets. Margin is used ONLY when a crash drawdown-tranche is active, bounded by
         # crash_margin_pct, and the whole path is hard-stopped / soft-de-rated by the maintenance-margin
         # level. (The classic path's margin gate never ran for the compounder branch — this wires it in.)
+        # Two brakes, not one (see the CompounderConfig block for why). The LOAN gate measures actual
+        # leverage (borrowed/NLV) — that is the posture this account trades: nothing borrowed in normal
+        # regimes, up to crash_margin_pct at capitulation. The MAINTENANCE gate measures the solvency
+        # cushion (maint/NLV → 100% is a call). The old single gate used maint/NLV at 40%/25%, which
+        # rises simply by BEING INVESTED — a cash-funded equity book carries ~25-30% — so it would have
+        # de-rated and then blocked the tail of a completely unlevered deployment. Deployment scales by
+        # the MIN of the two de-rates, so whichever brake is genuinely tighter wins.
         settled = self._get_settled_cash()
         base_cash = settled if settled is not None else cash
         maint = self._get_maintenance_margin() or 0.0
         margin_pct = (maint / nlv * 100.0) if nlv > 0 else 0.0
+        loan_pct = (max(0.0, -base_cash) / nlv * 100.0) if nlv > 0 else 0.0
         self._store_state("margin_utilization", str(round(margin_pct, 1)))
-        hard_limit = cc.margin_hard_limit_crash_pct if capitulation else cc.margin_hard_limit_pct
-        if margin_pct > hard_limit:
-            log.warning("compounder_margin_gate_blocked", margin_pct=round(margin_pct, 1),
-                        limit=hard_limit, crash=crash_active)
+        self._store_state("portfolio_loan_pct", str(round(loan_pct, 1)))
+        loan_limit = cc.loan_hard_limit_crash_pct if capitulation else cc.loan_hard_limit_pct
+        maint_limit = cc.maint_hard_limit_crash_pct if capitulation else cc.maint_hard_limit_pct
+        if loan_pct > loan_limit:
+            log.warning("compounder_loan_gate_blocked", loan_pct=round(loan_pct, 1),
+                        limit=loan_limit, crash=crash_active, capitulation=capitulation)
             self._store_state("portfolio_blocked_reason",
-                              f"margin {margin_pct:.0f}% > {hard_limit:.0f}% limit")
+                              f"margin loan {loan_pct:.0f}% of NLV > {loan_limit:.0f}% limit")
             return bought
-        soft_scale = 1.0
-        if margin_pct > cc.margin_soft_floor_pct:
-            soft_scale = max(0.0, (hard_limit - margin_pct) / (hard_limit - cc.margin_soft_floor_pct))
+        if margin_pct > maint_limit:
+            log.warning("compounder_margin_gate_blocked", margin_pct=round(margin_pct, 1),
+                        limit=maint_limit, crash=crash_active)
+            self._store_state("portfolio_blocked_reason",
+                              f"maintenance margin {margin_pct:.0f}% of NLV > {maint_limit:.0f}% limit")
+            return bought
+        soft_scale = min(cmp.leverage_derate(loan_pct, cc.loan_soft_floor_pct, loan_limit),
+                         cmp.leverage_derate(margin_pct, cc.maint_soft_floor_pct, maint_limit))
+        if soft_scale < 1.0:
+            log.info("compounder_leverage_derate", soft_scale=round(soft_scale, 2),
+                     loan_pct=round(loan_pct, 1), margin_pct=round(margin_pct, 1))
 
         # Build ranked universe from live technicals + refreshed fundamental scores
         watch = self._get_watchlist()
@@ -2207,7 +2225,11 @@ class PortfolioBuyer:
             days = 0
         if days >= ramp_days:
             # Window elapsed — the live paths have run for the full burn-in; disarm so the cap lifts.
+            # Zero the published cap too: it is a DISPLAY key (the dashboard budget card clamps by it),
+            # and leaving the last ramp value behind reads as a still-binding ceiling forever.
             self._store_state("compounder_burn_in_armed_date", "")
+            self._store_state("compounder_burn_in_cap", "0")
+            self._store_state("compounder_burn_in_day", "")
             log.info("compounder_burn_in_complete", days=days, ramp_days=ramp_days)
             return 0.0
         from src.portfolio import compounder as _cmp

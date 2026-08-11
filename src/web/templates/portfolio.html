@@ -754,7 +754,7 @@ function syncInjections() {
             <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-gray-400">
                 <div class="bg-gray-800/60 rounded-lg p-3">
                     <span class="text-emerald-400 font-medium block mb-0.5">Cash-first leverage</span>
-                    Deploys settled cash only (TotalCashValue) — zero margin in normal times. Margin is a last-resort supplement, gated to true capitulation (deepest tranche) only — up to 15% NLV, hard-stop 40% maint (55% in capitulation), soft de-rate above 25%.
+                    Deploys settled cash only (TotalCashValue) — zero margin in normal times. Margin is a last-resort supplement, gated to true capitulation (deepest tranche) only — up to 15% NLV. Two brakes, deployment scaled by the tighter of the two: LOAN gate on actual borrowing (borrowed/NLV — de-rate above 10%, hard-stop 20%, 30% in capitulation) and a MAINTENANCE-CUSHION gate on solvency (maint/NLV — de-rate above 65%, hard-stop 80%, 88% in capitulation). The cushion gate is deliberately far out: maint/NLV rises just from being invested (~25-30% for a cash-funded equity book), so it is an emergency backstop, not a deployment brake.
                 </div>
                 <div class="bg-gray-800/60 rounded-lg p-3">
                     <span class="text-emerald-400 font-medium block mb-0.5">Parked cash reserve</span>

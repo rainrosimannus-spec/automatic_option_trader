@@ -158,9 +158,27 @@ class CompounderConfig(BaseModel):
     park_reserve_days: int = 10             # keep this many days of deploy budget UN-parked as cash, so
                                             # routine buys fund from cash (no ETF sale) and the ETF is only
                                             # sold once it's aged past its entry spread (no realised loss)
-    margin_hard_limit_pct: float = 40.0     # block ALL new compounder buys above this maint-margin/NLV
-    margin_hard_limit_crash_pct: float = 55.0  # relaxed cap while a crash tranche is active (~15% NLV loan)
-    margin_soft_floor_pct: float = 25.0     # above this maint-margin level, linearly de-rate deployment
+    # TWO independent brakes, and the deployment de-rate is the MIN of both (see buyer._leverage_gate):
+    #
+    #  (a) LOAN gate — the actual leverage. Measured as borrowed/NLV, i.e. max(0, -TotalCashValue)/NLV.
+    #      This is the one that expresses the posture above: normal regimes borrow nothing, a fired
+    #      capitulation tranche may borrow up to crash_margin_pct (15%). The limits sit above that so a
+    #      falling NLV (which inflates the ratio on an unchanged loan) de-rates before it hard-stops.
+    #
+    #  (b) MAINTENANCE-CUSHION gate — solvency, NOT leverage. maint/NLV rises toward 100% as the equity
+    #      cushion is consumed; a margin call fires when it reaches it. This was previously the ONLY gate,
+    #      at 40%/25% — but maint/NLV rises simply by being INVESTED (a 100% cash-funded equity book
+    #      carries ~25-30% maintenance, and this account already read 23.0% at 17.6% deployed). So the old
+    #      thresholds would have braked, then blocked, the tail of a completely unlevered deployment.
+    #      Re-based on the cushion that actually matters: block with ~20% of NLV still in reserve, de-rate
+    #      from ~35%. At full capitulation leverage this book prices out near ~35% maint/NLV, so these are
+    #      a genuine emergency backstop rather than a routine brake.
+    loan_hard_limit_pct: float = 20.0       # block ALL new compounder buys above this borrowed/NLV
+    loan_hard_limit_crash_pct: float = 30.0 # relaxed cap while the deepest (capitulation) tranche is live
+    loan_soft_floor_pct: float = 10.0       # above this borrowed/NLV, linearly de-rate deployment
+    maint_hard_limit_pct: float = 80.0      # block ALL new compounder buys above this maint-margin/NLV
+    maint_hard_limit_crash_pct: float = 88.0   # relaxed cap while the deepest tranche is live
+    maint_soft_floor_pct: float = 65.0      # above this maint-margin level, linearly de-rate deployment
     # ── Concentration caps on NEW target sizing (winners still run untrimmed — these gate buys only) ──
     per_name_abs_ceiling: float = 750000.0  # hard $ ceiling per name on top of the 6%/10% pct caps
     sector_cap_pct: float = 0.30            # max 30% of NLV targeted into any single sector

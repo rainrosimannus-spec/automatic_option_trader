@@ -172,3 +172,104 @@ def test_queue_orders_green_first_then_by_underweight_gap():
     rows.sort(key=lambda x: (0 if x[0] >= 0 else 1, -x[1]))
     # all greens (biggest gap first) before any yellow — greens never wait behind a yellow
     assert rows == [(0.01, 8000.0), (0.05, 3000.0), (-0.02, 9000.0), (-0.10, 1000.0)]
+
+
+# ── Leverage gates: LOAN (borrowed/NLV) + MAINTENANCE CUSHION (maint/NLV) ────────────────────
+from src.portfolio.config import CompounderConfig
+
+
+def _gates(cc, loan_pct, maint_pct, capitulation=False):
+    """Mirror of run_compounder_scan's two-gate block: returns (blocked, soft_scale)."""
+    loan_limit = cc.loan_hard_limit_crash_pct if capitulation else cc.loan_hard_limit_pct
+    maint_limit = cc.maint_hard_limit_crash_pct if capitulation else cc.maint_hard_limit_pct
+    if loan_pct > loan_limit or maint_pct > maint_limit:
+        return True, 0.0
+    return False, min(cmp.leverage_derate(loan_pct, cc.loan_soft_floor_pct, loan_limit),
+                      cmp.leverage_derate(maint_pct, cc.maint_soft_floor_pct, maint_limit))
+
+
+def test_leverage_derate_curve():
+    # 1.0 at/below the soft floor, linear to 0.0 at the hard limit, clamped past it
+    assert cmp.leverage_derate(0.0, 10.0, 20.0) == 1.0
+    assert cmp.leverage_derate(10.0, 10.0, 20.0) == 1.0
+    assert cmp.leverage_derate(15.0, 10.0, 20.0) == 0.5
+    assert cmp.leverage_derate(20.0, 10.0, 20.0) == 0.0
+    assert cmp.leverage_derate(35.0, 10.0, 20.0) == 0.0
+    # collapsed span fails CLOSED (no divide-by-zero, no accidental full-speed deployment)
+    assert cmp.leverage_derate(30.0, 20.0, 20.0) == 0.0
+    assert cmp.leverage_derate(10.0, 20.0, 20.0) == 1.0
+
+
+def test_unlevered_fully_invested_book_is_not_braked():
+    """THE REGRESSION: the old single gate keyed on maint/NLV at 40% hard / 25% soft, but a
+    100%-cash-funded equity book carries ~25-30% maintenance. It would have de-rated, then blocked,
+    the tail of a deployment with ZERO borrowing. The loan gate must read clean at loan_pct == 0."""
+    cc = CompounderConfig()
+    for maint_pct in (23.0, 27.0, 30.0, 35.0):          # the real range for this account
+        blocked, scale = _gates(cc, loan_pct=0.0, maint_pct=maint_pct)
+        assert blocked is False
+        assert scale == 1.0
+
+
+def test_loan_gate_derates_then_blocks_on_real_borrowing():
+    cc = CompounderConfig()
+    assert _gates(cc, loan_pct=10.0, maint_pct=30.0) == (False, 1.0)   # at the soft floor
+    assert _gates(cc, loan_pct=15.0, maint_pct=30.0) == (False, 0.5)   # halfway to the hard limit
+    # the 15%-of-NLV capitulation facility is inside the normal hard limit but past the soft floor
+    blocked, scale = _gates(cc, loan_pct=15.0, maint_pct=30.0, capitulation=True)
+    assert blocked is False and 0.0 < scale < 1.0
+    # runaway loan blocks outright, and capitulation relaxes the limit rather than removing it
+    assert _gates(cc, loan_pct=25.0, maint_pct=30.0)[0] is True
+    assert _gates(cc, loan_pct=25.0, maint_pct=30.0, capitulation=True)[0] is False
+    assert _gates(cc, loan_pct=31.0, maint_pct=30.0, capitulation=True)[0] is True
+
+
+def test_maintenance_cushion_still_backstops_a_real_squeeze():
+    """The cushion gate must not be toothless — it just moved to where a call actually threatens."""
+    cc = CompounderConfig()
+    assert _gates(cc, loan_pct=0.0, maint_pct=65.0) == (False, 1.0)
+    assert _gates(cc, loan_pct=0.0, maint_pct=72.5)[1] == 0.5
+    assert _gates(cc, loan_pct=0.0, maint_pct=85.0)[0] is True
+    assert _gates(cc, loan_pct=0.0, maint_pct=85.0, capitulation=True)[0] is False   # 88% in crash
+    assert _gates(cc, loan_pct=0.0, maint_pct=90.0, capitulation=True)[0] is True
+
+
+def test_tighter_of_the_two_gates_wins():
+    cc = CompounderConfig()
+    # loan says 0.5, cushion says 1.0 → 0.5; and the reverse
+    assert _gates(cc, loan_pct=15.0, maint_pct=60.0)[1] == 0.5
+    assert _gates(cc, loan_pct=0.0, maint_pct=72.5)[1] == 0.5
+    # both biting → the tighter one
+    assert _gates(cc, loan_pct=12.5, maint_pct=76.25)[1] == 0.25
+
+
+def _card_burn_cap(manual_cap, armed_date, published_cap):
+    """Mirror of the dashboard budget card's cap resolution (src/web/routes/portfolio.py).
+    Must match buyer._compounder_burn_in_cap's precedence: manual wins, else the auto-arm ramp,
+    and the ramp is only live while an ARMED DATE is set."""
+    if manual_cap > 0:
+        return manual_cap
+    if (armed_date or "").strip():
+        return published_cap
+    return 0.0
+
+
+def test_card_burn_cap_precedence_matches_engine():
+    # manual operator cap always wins, even with no armed date and no published ramp
+    assert _card_burn_cap(300_000, "", 0) == 300_000
+    assert _card_burn_cap(300_000, "2026-06-26", 9_000_000) == 300_000
+    # auto-arm ramp applies only while armed
+    assert _card_burn_cap(0, "2026-06-26", 9_000_000) == 9_000_000
+    # THE BUG: disarmed burn-in leaves a stale published cap behind — must NOT clamp the card
+    assert _card_burn_cap(0, "", 10_138_253) == 0.0
+
+
+def test_card_burn_cap_clamps_budget_like_the_engine():
+    # card clamp and engine clamp must agree given the same cap and committed capital
+    for cap, committed, budget in ((300_000, 250_000, 120_000),
+                                   (300_000, 100_000, 40_000),
+                                   (300_000, 340_000, 120_000),
+                                   (0.0, 9_000_000, 120_000)):
+        engine = _burn_in_clamp(budget, cap, committed)
+        card = min(budget, max(0.0, cap - committed)) if cap > 0 else budget
+        assert engine == card

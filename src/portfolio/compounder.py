@@ -230,6 +230,20 @@ def burn_in_ceiling(armed_days: int, ramp_days: int, floor: float, investable: f
     return floor + frac * max(0.0, investable - floor)
 
 
+def leverage_derate(value_pct: float, soft_floor_pct: float, hard_limit_pct: float) -> float:
+    """Linear de-rate factor for a risk ratio: 1.0 at/below `soft_floor_pct`, sliding to 0.0 at
+    `hard_limit_pct`. Pure so the LOAN gate (borrowed/NLV) and the MAINTENANCE-CUSHION gate
+    (maint/NLV) share one curve — the buyer applies the MIN of the two, so whichever brake is
+    tighter wins. A non-positive span means the two thresholds collapsed: treat anything above the
+    floor as fully braked (fail-closed) rather than dividing by zero."""
+    if value_pct <= soft_floor_pct:
+        return 1.0
+    span = hard_limit_pct - soft_floor_pct
+    if span <= 0:
+        return 0.0
+    return max(0.0, min(1.0, (hard_limit_pct - value_pct) / span))
+
+
 def backstop_unlocked_fraction(days_since_start: int, start_days: int = 365,
                                bleed_days: int = 365) -> float:
     """Time-based backstop: if no crash tranche has fired by `start_days`, deploy the reserve
