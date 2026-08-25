@@ -688,6 +688,7 @@ document.addEventListener('DOMContentLoaded', function() {
         <span class="px-2.5 py-1 rounded bg-purple-900/40 text-purple-300">Compounder screener drop-out freeze: a held name the monthly screen drops keeps its shares but its target is frozen at invested (no new capital) and redistributed to members — it dropped for a reason. Total freeze by default (top-K conviction buffer available); crash-reserve path unaffected</span>
         <span class="px-2.5 py-1 rounded bg-purple-900/40 text-purple-300">Margin on capitulation/stabilization</span>
         <span class="px-2.5 py-1 rounded bg-purple-900/40 text-purple-300">Compounder leverage brakes (deployment scaled by the tighter of the two): LOAN gate on actual borrowing — borrowed/NLV, de-rate &gt;10%, stop 20% (30% in capitulation); MAINTENANCE-CUSHION gate on solvency — maint/NLV, de-rate &gt;65%, stop 80% (88% in capitulation). The cushion gate is an emergency backstop, not a deployment brake: maint/NLV runs ~25-30% on a fully-invested book with zero borrowing</span>
+        <span class="px-2.5 py-1 rounded bg-purple-900/40 text-purple-300">Compounder crash reserve (~10% sleeve): unlocks fast on SPY drawdown tranches (10/20/30%). Time backstop bleeds it in anyway if no crash comes — but FROTH-GATED: the bleed pauses whenever SPY is extended &gt;5% above its 200-day trend, so the reserve is never force-deployed into a melt-up top (holds dry powder for the drawdown instead). Monotonic — once bled in it is never re-locked</span>
     </div>
 </div>
 

@@ -1001,18 +1001,45 @@ class PortfolioBuyer:
         # NOT to crash_active — margin is a last-resort supplement, the parked cash reserve is primary.
         deepest_dd = (cc.drawdown_tranches[-1] if cc.drawdown_tranches else 1.0)
         capitulation = dd >= deepest_dd
-        # Time-based backstop bleed: if no crash within backstop_start_days, deploy the reserve
-        # slowly anyway so we're never permanently under-invested in a melt-up.
+        # SPY extension above its 200-day trend — the froth signal. Computed ONCE here and reused by the
+        # base-DCA throttle below (was a second check_market_overbought call). None => data unavailable.
+        try:
+            _, spy_ext = self.analyzer.check_market_overbought(cc.deploy_throttle_full_pct)
+        except Exception as e:
+            spy_ext = None
+            log.warning("compounder_spy_ext_failed", error=str(e))
+        market_extended = (spy_ext is not None and spy_ext > cc.deploy_throttle_start_pct)
+
+        # Froth-GATED time backstop: if no crash comes, still bleed the reserve in slowly so we're never
+        # permanently under-invested — BUT pause the bleed whenever SPY is extended above its 200-day
+        # trend, so the reserve is not force-deployed into a melt-up top. 2021-22 backtest: the old
+        # calendar-only backstop deployed the whole reserve BEFORE the crash ($0 dry powder); gating the
+        # bleed on the same froth signal the base DCA already uses held it and deployed into the drawdown
+        # instead (+~3.5pp full-cycle). Monotonic: once bled in, the reserve is not re-locked (never sell).
         import datetime as _dt
         start_str = self._get_state_value("compounder_start_date")
         if not start_str:
             start_str = _dt.date.today().isoformat()
             self._store_state("compounder_start_date", start_str)
+        _today = _dt.date.today()
         try:
-            days_since = (_dt.date.today() - _dt.date.fromisoformat(start_str)).days
+            days_since = (_today - _dt.date.fromisoformat(start_str)).days
         except Exception:
             days_since = 0
-        backstop = cmp.backstop_unlocked_fraction(days_since, cc.backstop_start_days, cc.backstop_bleed_days)
+        eff_days = float(self._get_state_value("compounder_backstop_eff_days") or 0.0)
+        last_bday = self._get_state_value("compounder_backstop_last_date")
+        days_step = 0
+        if last_bday:
+            try:
+                days_step = max(0, (_today - _dt.date.fromisoformat(last_bday)).days)
+            except Exception:
+                days_step = 0
+        eff_days = cmp.backstop_bleed_step(eff_days, days_step,
+                                           past_start=days_since > cc.backstop_start_days,
+                                           market_extended=market_extended)
+        self._store_state("compounder_backstop_eff_days", str(eff_days))
+        self._store_state("compounder_backstop_last_date", _today.isoformat())
+        backstop = cmp.backstop_accrued_fraction(eff_days, cc.backstop_bleed_days)
         unlocked = max(unlocked_dd, backstop)
 
         # ── Leverage gate (margin account) ───────────────────────────────────────────────
@@ -1247,15 +1274,12 @@ class PortfolioBuyer:
         # into euphoria, full speed once at/below trend). Linear ramp from deploy_throttle_start_pct
         # (full pace) to deploy_throttle_full_pct (floor). Never throttles the crash dump. The compounder
         # otherwise ignored the overbought guard entirely and would deploy at full pace into froth.
+        # Reuses spy_ext computed once above (the same froth signal that gates the reserve backstop).
         pace_throttle = 1.0
-        try:
-            _, spy_ext = self.analyzer.check_market_overbought(cc.deploy_throttle_full_pct)
-            if spy_ext is not None and spy_ext > cc.deploy_throttle_start_pct:
-                _span = max(0.1, cc.deploy_throttle_full_pct - cc.deploy_throttle_start_pct)
-                _frac = min(1.0, (spy_ext - cc.deploy_throttle_start_pct) / _span)
-                pace_throttle = max(cc.deploy_throttle_floor, 1.0 - _frac * (1.0 - cc.deploy_throttle_floor))
-        except Exception as e:
-            log.warning("compounder_throttle_calc_failed", error=str(e))
+        if spy_ext is not None and spy_ext > cc.deploy_throttle_start_pct:
+            _span = max(0.1, cc.deploy_throttle_full_pct - cc.deploy_throttle_start_pct)
+            _frac = min(1.0, (spy_ext - cc.deploy_throttle_start_pct) / _span)
+            pace_throttle = max(cc.deploy_throttle_floor, 1.0 - _frac * (1.0 - cc.deploy_throttle_floor))
         self._store_state("compounder_pace_throttle", str(round(pace_throttle, 2)))
         budget = cmp.daily_deploy_budget(
             investable, cc.base_pct, cc.dca_horizon_days, unlocked,

@@ -246,13 +246,41 @@ def leverage_derate(value_pct: float, soft_floor_pct: float, hard_limit_pct: flo
 
 def backstop_unlocked_fraction(days_since_start: int, start_days: int = 365,
                                bleed_days: int = 365) -> float:
-    """Time-based backstop: if no crash tranche has fired by `start_days`, deploy the reserve
-    slowly anyway, linearly over `bleed_days`, so the portfolio is never permanently
-    under-invested in a long melt-up. Returns 0..1 (deployed via the patient base DCA, not the
-    aggressive crash dump). Combine with the drawdown unlock via max()."""
+    """Calendar-only backstop unlock (SUPERSEDED in the live path by the froth-gated pair
+    backstop_bleed_step + backstop_accrued_fraction; kept for reference/back-compat). If no crash
+    tranche has fired by `start_days`, deploy the reserve slowly over `bleed_days` so the portfolio
+    is never permanently under-invested. The flaw this had: it bled on the calendar regardless of
+    valuation, so a melt-up that ran > start_days before a crash force-deployed the whole reserve into
+    the top, leaving no dry powder for the drawdown (2021-22 backtest). Combine with the drawdown
+    unlock via max()."""
     if bleed_days <= 0 or days_since_start <= start_days:
         return 0.0
     return min(1.0, (days_since_start - start_days) / bleed_days)
+
+
+def backstop_bleed_step(prior_eff_days: float, days_step: int, past_start: bool,
+                        market_extended: bool) -> float:
+    """Accumulate FROTH-GATED backstop bleed-days (monotonic). Adds `days_step` calendar days to the
+    running total ONLY once past the start delay (`past_start`) and ONLY while the market is NOT
+    extended above its 200-day trend (`market_extended` False). Froth pauses the accrual so the reserve
+    is never force-deployed into a melt-up top — the 2021-22 lesson: the calendar backstop bled the
+    whole reserve in before the crash, leaving $0 dry powder; froth-gating held it and deployed into the
+    drawdown instead (+~3.5pp full-cycle in backtest). Never decreases — an already-bled reserve is not
+    re-locked (the compounder never sells). Pure/stateless for testability."""
+    prior = max(0.0, prior_eff_days)
+    if past_start and not market_extended and days_step > 0:
+        return prior + float(days_step)
+    return prior
+
+
+def backstop_accrued_fraction(eff_bleed_days: float, bleed_days: int = 180) -> float:
+    """Map accumulated froth-gated bleed-days (from backstop_bleed_step) to a 0..1 reserve-unlock over
+    `bleed_days`. Companion to backstop_bleed_step; together they replace the calendar-only
+    backstop_unlocked_fraction in the live path so the reserve bleeds in during calm/cheap stretches but
+    pauses in froth. Combine with the drawdown unlock via max()."""
+    if bleed_days <= 0 or eff_bleed_days <= 0:
+        return 0.0
+    return min(1.0, eff_bleed_days / bleed_days)
 
 
 # ── 4. Fair-price signal + entry-mode choice ─────────────────
