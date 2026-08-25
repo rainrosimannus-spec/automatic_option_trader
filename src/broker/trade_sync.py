@@ -540,6 +540,22 @@ def _reconcile_option_qty(db_qty: int, ibkr_qty: int) -> int:
     return db_qty
 
 
+def _reconcile_stock_qty(db_qty: int, ibkr_qty: int) -> int:
+    """Shares the DB stock lot should hold while IBKR STILL holds the name (ibkr_qty > 0).
+
+    DOWN-ONLY, unlike the option helper. A partial call-away / partial sell leaves IBKR
+    below the DB lot — follow it down so a blended multi-CC lot can't linger inflated
+    (CTAS 2026-08-25: db=400 vs ibkr=200 for days after a partial call-away, feeding the
+    exit path a phantom uncovered lot). But NEVER revise UP: extra shares at IBKR are an
+    unbooked assignment, which the delivery / self-heal path must book so the added shares
+    get their real cost basis — a blind quantity bump here would leave that basis wrong.
+    ibkr_qty <= 0 means the name is GONE — the caller's close path owns that, not a
+    quantity edit — so leave db_qty untouched."""
+    if 0 < ibkr_qty < db_qty:
+        return ibkr_qty
+    return db_qty
+
+
 def pending_assignment_symbols() -> list[str]:
     """Symbols with an OPEN short put whose assignment is DETECTED but not yet booked.
 
@@ -780,6 +796,32 @@ def sync_ibkr_positions() -> int:
                     new_upnl = round(ibkr_stock_upnl[pos.symbol], 2)
                     if pos.unrealized_pnl != new_upnl:
                         pos.unrealized_pnl = new_upnl
+                        changes += 1
+                # Reconcile a PARTIAL reduction: IBKR still holds this name but FEWER shares
+                # than the DB lot. A partial call-away of a blended multi-CC lot never lands
+                # here otherwise — _handle_called_away only ever CLOSES the whole stock lot and
+                # its shares<100*qty trigger doesn't trip while other CCs still cover the rest,
+                # so the surplus lingered (CTAS 2026-08-25: db=400 vs ibkr=200 for days, feeding
+                # the exit path a phantom uncovered lot). This is the sole source-of-truth layer;
+                # reduce the DB lot to IBKR — mirroring _reconcile_option_qty for options. Only
+                # when this is the SOLE open stock lot for the symbol (assignments blend into one
+                # lot, so this is the norm); multiple lots are ambiguous (which lot lost shares,
+                # whose cost basis) → alert for manual review, never guess. Cost-basis is
+                # per-share so it stays valid; realized P&L is still computed from the stock
+                # trades when the lot fully closes, so a decrement here never double-counts.
+                ibkr_qty = int(ibkr_stock_positions[pos.symbol])
+                _new_qty = _reconcile_stock_qty(pos.quantity or 0, ibkr_qty)
+                if _new_qty != (pos.quantity or 0):
+                    sibling_lots = [p for p in open_stock_positions
+                                    if p.symbol == pos.symbol and p.id != pos.id]
+                    if sibling_lots:
+                        log.warning("stock_qty_reconcile_ambiguous_multilot",
+                                    symbol=pos.symbol, db_qty=pos.quantity, ibkr_qty=ibkr_qty,
+                                    note="multiple open stock lots — manual review, not reconciled")
+                    else:
+                        log.info("stock_qty_reconciled_to_ibkr", symbol=pos.symbol,
+                                 db_qty=pos.quantity, ibkr_qty=_new_qty)
+                        pos.quantity = _new_qty
                         changes += 1
                 continue
             # Stock no longer in IBKR. Look for the SELL_STOCK trade.

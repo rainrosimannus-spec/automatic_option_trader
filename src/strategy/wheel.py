@@ -396,6 +396,20 @@ class WheelManager:
             from src.broker.orders import get_cached_open_orders
             open_orders = get_cached_open_orders()
 
+            # Reconcile DB stock lots against live IBKR holdings BEFORE deciding to exit —
+            # same read write_covered_calls uses. Without this the exit path sizes off a
+            # stale DB count: a call-away/assignment that reduced IBKR shares but never
+            # decremented the DB row leaves an inflated total, so lots_needed − covered
+            # manufactures phantom "uncovered" lots and fires a sell on shares that are in
+            # fact fully covered — the 2026-08-25 CTAS incident (db=400 ibkr=200, 200 fully
+            # covered, exit sold the covered 200 → 2 naked calls). Fail-safe: a raised read
+            # yields None and we proceed on the DB; the sell_stock clamp still backstops.
+            try:
+                ibkr_shares = get_stock_positions()          # {symbol: shares}, non-zero only
+            except Exception as e:
+                ibkr_shares = None                           # untrusted read → skip reconcile
+                log.warning("wheel_exit_ibkr_shares_unavailable", error=str(e))
+
             symbols_seen = set()
             for stock_pos in stock_positions:
                 symbol = stock_pos.symbol
@@ -412,6 +426,21 @@ class WheelManager:
                 ).all()
                 total_shares = sum(p.quantity for p in all_stock)
                 lots_needed = total_shares // 100
+
+                # Clamp/skip to real IBKR holdings, exactly as write_covered_calls does, so a
+                # stale DB lot can never manufacture a phantom uncovered lot to sell.
+                _verdict, _real = _ibkr_share_verdict(ibkr_shares, symbol, total_shares)
+                if _verdict == "skip":
+                    log.info("wheel_exit_skip_no_ibkr_shares", symbol=symbol,
+                             db_shares=total_shares,
+                             ibkr_shares=(ibkr_shares or {}).get(symbol, 0),
+                             note="DB lot not held at IBKR (likely sold, DB not yet synced) — skip")
+                    continue
+                if _verdict == "clamp":
+                    log.info("cc_clamp_to_ibkr_shares", symbol=symbol,
+                             db_shares=total_shares, ibkr_shares=_real)
+                    total_shares = _real
+                    lots_needed = total_shares // 100
 
                 covered_contracts = _covered_call_contracts(db, symbol)
 
@@ -434,14 +463,19 @@ class WheelManager:
                 # Live-price exit decision (shared with the covered-call writer): sell the
                 # shares directly when the live mid is at/above the share-weighted called-away
                 # (assignment) level + fee. One source of truth so the CC writer and this
-                # pre-market job can never disagree.
-                if self._live_exit_opportunity(db, symbol, total_shares, lots_needed):
+                # pre-market job can never disagree. Sell only the UNCOVERED shares — those NOT
+                # backing an open/pending covered call — so an exit can never strip collateral
+                # off a live CC and leave it naked.
+                uncovered_shares = total_shares - (covered_contracts + pending_contracts) * 100
+                if self._live_exit_opportunity(db, symbol, total_shares, lots_needed,
+                                               sell_shares=uncovered_shares):
                     fired.append(symbol)
 
         log.info("wheel_exit_scan_completed", symbols=fired)
         return fired
 
-    def _live_exit_opportunity(self, db, symbol: str, total_shares: int, lots_needed: int) -> bool:
+    def _live_exit_opportunity(self, db, symbol: str, total_shares: int, lots_needed: int,
+                               sell_shares: int | None = None) -> bool:
         """True when a LIVE quote shows the stock is already at/above its share-weighted
         called-away (assignment) level + sell fee — i.e. selling the shares directly beats
         writing a covered call. Creates a `sell_stock` suggestion (once) and returns True so
@@ -453,11 +487,23 @@ class WheelManager:
         accumulated CC premium is bonus, not part of the exit bar. Requires a two-sided quote
         with (ask − bid)/mid < 2% to reject phantom pre-market oddlot prints. This uses a fresh
         live price, unlike the CC screener which reads the stale daily-close.
+
+        `sell_shares` is how many shares to actually sell — the UNCOVERED shares only
+        (total_shares minus what existing covered calls back). Selling `total_shares` would
+        dump shares that are collateral for open CCs and leave those calls naked; on a fully
+        uncovered lot it equals total_shares (unchanged). Defaults to total_shares when the
+        caller does not supply it (fully-uncovered / backward-compatible). The threshold is
+        still weighted over lots_needed (the whole assigned lot) — the exit bar is unchanged;
+        only the sold quantity is scoped to the uncovered portion.
         """
         from src.core.config import get_settings as _gs
         from src.core.suggestions import create_suggestion, TradeSuggestion
         from src.broker.market_data import get_stock_live_quote
         from src.core.models import Trade, TradeType
+
+        qty_to_sell = total_shares if sell_shares is None else sell_shares
+        if qty_to_sell <= 0:
+            return False  # nothing uncovered to sell (shares already fully backing CCs)
 
         # Dedup: an exit sale already queued for this name → sell directly (skip CC), don't duplicate.
         already = db.query(TradeSuggestion).filter(
@@ -517,21 +563,21 @@ class WheelManager:
         create_suggestion(
             symbol=symbol,
             action="sell_stock",
-            quantity=total_shares,
+            quantity=qty_to_sell,
             limit_price=bid,  # conservative — guarantees fill at bid or better
             source="wheel_exit",
             signal=f"mid={round(mid, 2)} strike={strike} fee={sell_fee}",
             rationale=(
                 f"Exit opportunity: live mid ${round(mid, 2)} >= assignment ${strike} + fee "
-                f"${sell_fee}. Sell {total_shares} shares of {symbol} directly at/above the "
-                f"called-away level instead of writing a covered call."
+                f"${sell_fee}. Sell {qty_to_sell} uncovered shares of {symbol} directly at/above "
+                f"the called-away level instead of writing a covered call."
             ),
             current_price=mid,
             order_type="LMT",
             funding_source="wheel",
         )
         log.info("wheel_exit_suggestion_fired", symbol=symbol, mid=round(mid, 2),
-                 strike=strike, shares=total_shares)
+                 strike=strike, shares=qty_to_sell)
         return True
 
     def write_covered_calls(self) -> list[str]:
@@ -652,9 +698,12 @@ class WheelManager:
                 # its assignment (called-away) level + fee, sell the shares directly instead of
                 # writing a deep-ITM call. This overrides the stale daily-close the CC screener reads
                 # — the exact gap that let a deep-ITM CC be written on ANET while it traded above its
-                # $165 assignment. Gated so it can be toggled without a code change.
+                # $165 assignment. Gated so it can be toggled without a code change. Sell only the
+                # uncovered shares so an exit never strips collateral off an existing CC.
+                uncovered_shares = total_shares - (covered_contracts + pending_contracts) * 100
                 if risk_cfg.cc_sell_above_assignment_enabled and \
-                        self._live_exit_opportunity(db, symbol, total_shares, lots_needed):
+                        self._live_exit_opportunity(db, symbol, total_shares, lots_needed,
+                                                    sell_shares=uncovered_shares):
                     log.info("covered_call_skipped_live_exit", symbol=symbol,
                              note="stock at/above assignment level — sold directly instead of writing CC")
                     continue
