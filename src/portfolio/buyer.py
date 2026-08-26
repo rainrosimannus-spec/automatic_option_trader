@@ -1210,6 +1210,12 @@ class PortfolioBuyer:
         # window, AND the per-name underweight check all account for this in-flight intent.
         for _sym, _notional in self._pending_buy_suggestion_map().items():
             open_buy[_sym] = open_buy.get(_sym, 0.0) + _notional
+        # ALSO net in TODAY's EXECUTED-but-not-yet-synced buys — fills that landed BETWEEN scans before
+        # the holdings position-sync ran. Without this a follow-up scan sees the name still underweight
+        # (shares not in `held` yet, order no longer resting) and buys it again (VRT 2026-08-26 double-buy,
+        # ~$14k past target). Self-correcting: each card drops out once its fill lands in `held`.
+        for _sym, _notional in self._unsynced_executed_buy_map().items():
+            open_buy[_sym] = open_buy.get(_sym, 0.0) + _notional
         deployed_eff = deployed + sum(open_buy.values())
         target_total = sum(targets.values())
         open_put_syms = self._open_put_symbols()
@@ -2186,6 +2192,67 @@ class PortfolioBuyer:
                             notional, ccy_map.get(s.symbol, "USD"), rates)
         except Exception as e:
             log.warning("compounder_pending_suggestion_map_failed", error=str(e))
+        return out
+
+    def _unsynced_executed_buy_map(self) -> dict[str, float]:
+        """symbol → notional ($) of TODAY's compounder buy_stock suggestions that have EXECUTED
+        (filled) but whose shares are not yet in the holdings snapshot `cur` reads.
+
+        Holdings sync from LIVE IBKR positions (sync_ibkr_holdings) on a separate cadence from the
+        scan. A buy that fills BETWEEN two scans — e.g. the two green late-session scans near the close —
+        is invisible to every existing check: not in `held` (the position sync hasn't run since the
+        fill), not in `_open_buy_map` (the order FILLED, so it is no longer a resting order), and not in
+        `_pending_buy_suggestion_map` (that covers only pending/approved/queued/executing, never
+        executed). So the follow-up scan re-buys the name — VRT 2026-08-26 was bought twice ~17min apart
+        and overshot its target by ~$14k. Folding this in (alongside resting orders + pending cards)
+        closes that window.
+
+        Self-correcting, and safe against double-counting: an executed card is skipped once the holdings
+        sync has incorporated its fill — detected by the symbol's holding.updated_at having advanced to
+        at/after the card's fill timestamp (the same position sync that writes the shares stamps
+        updated_at). So once the fill lands in `held`, this stops adding it — it can never inflate `cur`
+        past the real position and wrongly BLOCK further buying. Empty in live-direct mode with no cards."""
+        from src.core.suggestions import TradeSuggestion
+        from src.portfolio.models import PortfolioHolding
+        from src.portfolio import fx as pfx
+        import datetime as _dt
+        rates = pfx.load_fx_rates()
+        park = getattr(self.cfg, "cash_yield_symbol", None)
+        today = _dt.date.today().isoformat()
+        out: dict[str, float] = {}
+        try:
+            with get_db() as db:
+                ccy_map = {w.symbol: (w.currency or "USD")
+                           for w in db.query(PortfolioWatchlist).all()}
+                hold_upd = {h.symbol: h.updated_at for h in db.query(PortfolioHolding).all()}
+                rows = db.query(TradeSuggestion).filter(
+                    TradeSuggestion.source == "portfolio",
+                    TradeSuggestion.action == "buy_stock",
+                    TradeSuggestion.status == "executed",
+                    TradeSuggestion.created_at >= today,
+                    TradeSuggestion.symbol != (park or "__none__"),
+                ).all()
+                for s in rows:
+                    # Skip once the holdings position-sync has picked this fill up (its updated_at is
+                    # at/after the card's fill time). reviewed_at ≈ fill time; fall back to created_at.
+                    stamp = s.reviewed_at or s.created_at
+                    hu = hold_upd.get(s.symbol)
+                    try:
+                        # Skip ONLY when we can confirm the fill is already in `held` (holdings synced
+                        # at/after it). hu is None = no holding row yet = brand-new position → NOT synced
+                        # → fold. On a type anomaly, skip (fall back to today's behavior, never block a buy).
+                        if hu is not None and stamp is not None and hu >= stamp:
+                            continue
+                    except TypeError:
+                        continue
+                    notional = float(s.est_cost or 0.0)
+                    if notional <= 0 and s.quantity and s.limit_price:
+                        notional = float(s.quantity) * float(s.limit_price)
+                    if notional > 0:
+                        out[s.symbol] = out.get(s.symbol, 0.0) + pfx.to_base(
+                            notional, ccy_map.get(s.symbol, "USD"), rates)
+        except Exception as e:
+            log.warning("compounder_unsynced_executed_map_failed", error=str(e))
         return out
 
     def _compounder_burn_in_cap(self, cc, investable: float) -> float:
