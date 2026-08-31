@@ -273,3 +273,81 @@ def test_card_burn_cap_clamps_budget_like_the_engine():
         engine = _burn_in_clamp(budget, cap, committed)
         card = min(budget, max(0.0, cap - committed)) if cap > 0 else budget
         assert engine == card
+
+
+# ── Buy-queue head published for the dashboard star (src/portfolio/buyer.py) ──────────────
+# The buyer now sorts the FULL ranked universe into `candidates`, publishes candidates[0] as
+# `compounder_next_buy`, and derives the deploy `queue` by filtering to names whose market is
+# open. These tests pin the two properties that makes safe: the sort key is unchanged, and
+# filtering after the sort leaves the deploy order exactly as it was.
+
+_QUEUE_KEY = lambda x: (0 if x[0] >= 0 else 1, -(x[3] - x[4]))   # noqa: E731 — mirrors buyer.py
+
+
+def _cands(rows):
+    """rows: (symbol, attractiveness, target, current) → sorted candidate tuples."""
+    out = [(a, (t - c) / t if t > 0 else 0.0, sym, t, c) for sym, a, t, c in rows]
+    out.sort(key=_QUEUE_KEY)
+    return out
+
+
+def test_next_buy_is_biggest_gap_green():
+    c = _cands([("AAA", +0.05, 100_000, 90_000),    # green, gap 10k
+                ("BBB", +0.02, 100_000, 40_000),    # green, gap 60k  ← head
+                ("CCC", -0.10, 100_000, 0)])        # yellow, gap 100k — biggest, but yellow
+    assert c[0][2] == "BBB"
+    assert [x[2] for x in c] == ["BBB", "AAA", "CCC"]
+
+
+def test_next_buy_falls_to_yellow_only_when_no_green_outstanding():
+    # A yellow can only reach the head when every green is at target (and so out of the list) —
+    # this is what keeps the star consistent with the greens_outstanding gate in the deploy loop.
+    c = _cands([("CCC", -0.10, 100_000, 0), ("DDD", -0.01, 100_000, 50_000)])
+    assert c[0][2] == "CCC"
+
+
+def _now_head(cands, open_now, greens_outstanding, crash_active=False, priority_gate=True):
+    """Mirror of the buyer's solid-star pick: head of the market-open slice, skipping yellows while
+    any green is still outstanding (the gate the deploy loop applies)."""
+    queue = [x for x in cands if x[2] in open_now]
+    yellow_blocked = (not crash_active) and priority_gate and greens_outstanding
+    return next((x[2] for x in queue if x[0] >= 0 or not yellow_blocked), "")
+
+
+def test_market_open_filter_preserves_deploy_order():
+    rows = [("AAA", +0.05, 100_000, 90_000), ("BBB", +0.02, 100_000, 40_000),
+            ("EUR1", +0.03, 100_000, 20_000), ("CCC", -0.10, 100_000, 0)]
+    c = _cands(rows)
+    assert c[0][2] == "EUR1"                       # full-universe head — star shows this
+    open_now = {"AAA", "BBB", "CCC"}               # EU shut: EUR1 is not buyable this scan
+    queue = [x for x in c if x[2] in open_now]
+    assert [x[2] for x in queue] == ["BBB", "AAA", "CCC"]   # same order the old code produced
+    assert queue[0][2] != c[0][2]                  # ...and the star is NOT the name bought now
+
+
+def test_empty_universe_publishes_no_star():
+    c = _cands([])
+    assert (c[0][2] if c else "") == ""
+
+
+def test_hollow_and_solid_stars_split_when_leaders_market_is_shut():
+    rows = [("6920", +0.06, 100_000, 10_000),      # green, gap 90k — full-universe head, Tokyo shut
+            ("NVDA", +0.02, 100_000, 40_000),      # green, gap 60k — biggest tradeable gap
+            ("CCC", -0.10, 100_000, 0)]            # yellow
+    c = _cands(rows)
+    assert c[0][2] == "6920"                                     # ☆ hollow — next in line
+    assert _now_head(c, {"NVDA", "CCC"}, greens_outstanding=True) == "NVDA"   # ★ solid — buying now
+
+
+def test_no_solid_star_when_only_shut_greens_remain():
+    # Every open-market name is yellow while a green is outstanding elsewhere → the loop buys
+    # NOTHING this scan, so there must be no solid star claiming otherwise.
+    c = _cands([("6920", +0.06, 100_000, 10_000), ("CCC", -0.10, 100_000, 0)])
+    assert _now_head(c, {"CCC"}, greens_outstanding=True) == ""
+    # ...but a crash tranche bypasses the priority gate, so the yellow becomes buyable again
+    assert _now_head(c, {"CCC"}, greens_outstanding=True, crash_active=True) == "CCC"
+
+
+def test_stars_collapse_to_one_when_the_leader_is_tradeable():
+    c = _cands([("NVDA", +0.02, 100_000, 40_000), ("CCC", -0.10, 100_000, 0)])
+    assert c[0][2] == _now_head(c, {"NVDA", "CCC"}, greens_outstanding=True) == "NVDA"

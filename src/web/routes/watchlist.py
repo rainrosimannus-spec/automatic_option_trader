@@ -93,6 +93,13 @@ async def watchlist_page(request: Request):
     }
     strategy = _state("strategy") or "classic"
 
+    # Buy-queue heads as of the last executed scan (written by the buyer, not recomputed here — the
+    # stars reflect what the engine actually decided, not a page load). `next_buy_now` is the head of
+    # the slice that could trade that scan (solid star); `next_buy` is the head of the FULL ranked
+    # universe (hollow star), which differs when the leading name's own exchange is shut.
+    next_buy = (_state("compounder_next_buy") or "").strip().upper()
+    next_buy_now = (_state("compounder_next_buy_now") or "").strip().upper()
+
     slots_allowed = sum(1 for s in signals if (s.get("target") or 0) > 0)
     slots_filled = sum(1 for s in signals if (s.get("target") or 0) > 0 and (s.get("current") or 0) > 0)
 
@@ -100,6 +107,8 @@ async def watchlist_page(request: Request):
         "request": request,
         "signals": signals,
         "wl_map": wl_map,
+        "next_buy": next_buy,
+        "next_buy_now": next_buy_now,
         "base_ccy": base_ccy,
         "base_sym": base_sym,
         "tier_summary": tier_summary,

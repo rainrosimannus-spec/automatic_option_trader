@@ -66,7 +66,17 @@
     <!-- ═══ Signals table ═══ -->
     <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
         <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
-            <h2 class="font-semibold">Ranked Universe ({{signals|length}})</h2>
+            <div class="flex items-baseline gap-3 flex-wrap">
+                <h2 class="font-semibold">Ranked Universe ({{signals|length}})</h2>
+                {# Buy-queue heads from the last executed scan. SOLID = could trade that scan
+                   (compounder_next_buy_now); HOLLOW = head of the full ranked universe
+                   (compounder_next_buy), shown only when its market was shut so it could not. #}
+                {% if next_buy_now %}<span class="text-xs text-gray-500">&#9733; buying now:
+                    <span class="text-amber-400 font-semibold">{{next_buy_now}}</span></span>{% endif %}
+                {% if next_buy and next_buy != next_buy_now %}<span class="text-xs text-gray-500">&#9734; next in line:
+                    <span class="text-amber-300/70 font-semibold">{{next_buy}}</span>
+                    <span class="text-gray-600">(market shut)</span></span>{% endif %}
+            </div>
             <input id="sigFilter" type="text" placeholder="filter symbol…" oninput="filterSig()"
                    class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm w-40">
         </div>
@@ -96,7 +106,7 @@
                 {% set w = wl_map.get(s.symbol) %}
                 <tr class="border-t border-gray-800 hover:bg-gray-800/40 sigrow" data-sym="{{s.symbol|lower}}">
                     <td class="px-3 py-2 text-gray-500">{{s.rank}}</td>
-                    <td class="px-3 py-2 font-semibold text-white">{{s.symbol}}</td>
+                    <td class="px-3 py-2 font-semibold text-white whitespace-nowrap">{{s.symbol}}{% if next_buy_now and s.symbol|upper == next_buy_now %}<span class="ml-1 text-amber-400" title="Head of the compounder buy queue that could trade on the last scan">&#9733;</span>{% elif next_buy and s.symbol|upper == next_buy %}<span class="ml-1 text-amber-300/70" title="Next in line overall — its market was shut on the last scan, so a tradeable name took the budget">&#9734;</span>{% endif %}</td>
                     <td class="px-3 py-2">
                         <span class="text-xs px-1.5 py-0.5 rounded
                           {% if s.tier=='growth' %}bg-sky-900/50 text-sky-300{% elif s.tier=='breakthrough' %}bg-fuchsia-900/50 text-fuchsia-300{% else %}bg-emerald-900/50 text-emerald-300{% endif %}">{{s.tier}}</span>

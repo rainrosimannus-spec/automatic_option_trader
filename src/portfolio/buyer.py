@@ -1388,10 +1388,12 @@ class PortfolioBuyer:
         # greens. So we always make progress toward the targets (time-in-market), preferring better
         # entries first. Put-selling is retired: we fill the target rather than wait to be paid.
         # `cur` is FILLED holdings + resting BUY notional so a working name isn't re-laddered/double-counted.
-        queue = []
+        # Built over the FULL ranked universe first (not just names whose market is open now), so the
+        # head of the order is a stable "next buy" the dashboard can show at any hour; `queue` is then
+        # the market-open slice of it. Filtering AFTER the sort preserves the relative order, so the
+        # deploy loop sees exactly the queue it saw before this split.
+        candidates = []
         for r in ranked:
-            if r.symbol not in analyses:
-                continue                          # ranked for sizing, but market closed now → can't buy
             tgt = targets.get(r.symbol, 0.0)
             if tgt <= 0:
                 continue
@@ -1406,14 +1408,19 @@ class PortfolioBuyer:
                                                   # doomed order; auto-retries after the cooldown
             attractiveness = cmp.fair_price_attractiveness(r.price, r.sma200, r.high_52w)
             uw = (tgt - cur) / tgt if tgt > 0 else 0.0
-            queue.append((attractiveness, uw, r, tgt, cur))
+            candidates.append((attractiveness, uw, r, tgt, cur))
         # Green (attractiveness >= 0) before yellow (< 0); within each band, biggest underweight $ gap
         # first (gap-to-target convergence — backtested +~1pp CAGR vs quality-rank ordering at equal DD,
         # because it routes marginal cash to the laggards and reaches the conviction targets faster).
         # Quality already lives in the targets (rank_score**conviction_power); the buy order only needs
         # to close the gap, so re-ranking by quality here would double-concentrate the path. (tgt=x[3],
         # cur=x[4]; gap = tgt - cur.)
-        queue.sort(key=lambda x: (0 if x[0] >= 0 else 1, -(x[3] - x[4])))
+        candidates.sort(key=lambda x: (0 if x[0] >= 0 else 1, -(x[3] - x[4])))
+        # Publish the head of the order for /watchlist (hollow-star ticker). Full-universe, so it
+        # survives a scan run while the leader's own market is shut. A yellow can only be at the head
+        # when NO green is outstanding anywhere — greens sort first — so this agrees with the gate below.
+        self._store_state("compounder_next_buy", candidates[0][2].symbol if candidates else "")
+        queue = [c for c in candidates if c[2].symbol in analyses]
 
         # Is ANY green still short of its target? Greens outrank yellows absolutely: a yellow (extended,
         # above fair) name may only be bought once the whole GREEN list has reached target — never before,
@@ -1432,6 +1439,15 @@ class PortfolioBuyer:
             if cmp.fair_price_attractiveness(_r.price, _r.sma200, _r.high_52w) >= 0:
                 greens_outstanding = True
                 break
+
+        # Solid-star ticker on /watchlist: the head of the queue that can actually trade THIS scan.
+        # Mirrors the loop's gate below exactly — a yellow is unbuyable while any green is outstanding
+        # (unless a crash tranche bypasses it, or the priority gate is off), so it is skipped here too.
+        # A green merely waiting for its late-session window is NOT skipped: that's a defer inside the
+        # same day, and it still holds the claim on today's budget. Empty when nothing can trade now.
+        _yellow_blocked = (not crash_active) and cc.late_session_only_green and greens_outstanding
+        self._store_state("compounder_next_buy_now",
+                          next((c[2].symbol for c in queue if c[0] >= 0 or not _yellow_blocked), ""))
 
         spent = 0.0
         cash_room = free_cash          # bounds total resting notional placed this scan
