@@ -37,11 +37,12 @@ def _num(key: str, default: float = 0.0) -> float:
         return default
 
 
-# Review cards that propose parting with stock. Both are in suggestions.REVIEW_ONLY_ACTIONS —
-# they NEVER auto-execute, they wait for Rain to approve — so the badge means "awaiting your
-# decision", not "about to happen". sell_covered_call_review is deliberately NOT here: writing a
-# call is not selling the shares.
-_SELL_REVIEW_ACTIONS = ("sell_stock_review", "reduce_position_review")
+# Review cards that propose parting with stock — outright, partially, or via a call that sells the
+# shares if it's exercised. The ROUTE differs; the question the badge answers ("is the system asking
+# to sell this?") does not. All three are in suggestions.REVIEW_ONLY_ACTIONS — they NEVER
+# auto-execute, they wait for Rain to approve — so the badge means "awaiting your decision", not
+# "about to happen".
+_SELL_REVIEW_ACTIONS = ("sell_stock_review", "reduce_position_review", "sell_covered_call_review")
 # Mirrors get_pending_suggestions() (src/core/suggestions.py) — but READ-ONLY. That helper also
 # WRITES the 'expired' sweep, which must not fire on a dashboard page load, so the expiry is
 # filtered here instead: an expired-but-unswept row must not show a stale SELL.

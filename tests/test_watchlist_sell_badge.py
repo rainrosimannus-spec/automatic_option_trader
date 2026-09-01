@@ -1,7 +1,8 @@
 """The SELL badge on /watchlist: which review cards earn one.
 
-The badge means "a card proposing to part with this stock is open and waiting on approval" —
-sell_stock_review and reduce_position_review are both in suggestions.REVIEW_ONLY_ACTIONS and never
+The badge means "a card proposing to part with this stock is open and waiting on approval". All
+three sell-side review actions count — outright, partial, and covered-call (which sells the shares
+if exercised); the route differs, the question does not. All are in REVIEW_ONLY_ACTIONS and never
 auto-execute. Under-reporting is safe; showing SELL for a card that is gone is not."""
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -17,16 +18,23 @@ def _row(symbol, action="sell_stock_review", status="pending", expires_at=None):
                            else NOW + timedelta(hours=6))
 
 
-def test_open_sell_and_reduce_cards_both_badge():
-    m = active_sell_map([_row("LRCX"), _row("VRT", action="reduce_position_review")], NOW)
-    assert m == {"LRCX": "sell_stock_review", "VRT": "reduce_position_review"}
+def test_all_three_sell_side_review_actions_badge():
+    m = active_sell_map([_row("LRCX"), _row("VRT", action="reduce_position_review"),
+                         _row("MSFT", action="sell_covered_call_review")], NOW)
+    assert m == {"LRCX": "sell_stock_review", "VRT": "reduce_position_review",
+                 "MSFT": "sell_covered_call_review"}
 
 
-def test_covered_call_review_is_not_a_stock_sale():
-    # Writing a call against a holding is not parting with the shares — no badge.
-    assert active_sell_map([_row("MSFT", action="sell_covered_call_review")], NOW) == {}
-    # ...nor is anything on the buy side.
-    assert active_sell_map([_row("NVDA", action="buy_stock")], NOW) == {}
+def test_covered_call_review_badges_too():
+    # A covered call sells the shares if it is exercised — a different ROUTE to selling, same
+    # question for the badge to answer.
+    assert active_sell_map([_row("MSFT", action="sell_covered_call_review")], NOW) == {
+        "MSFT": "sell_covered_call_review"}
+
+
+def test_buy_side_actions_never_badge():
+    for action in ("buy_stock", "sell_put"):
+        assert active_sell_map([_row("NVDA", action=action)], NOW) == {}
 
 
 def test_only_undecided_cards_badge():
