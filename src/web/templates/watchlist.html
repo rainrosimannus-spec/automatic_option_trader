@@ -106,7 +106,15 @@
                 {% set w = wl_map.get(s.symbol) %}
                 <tr class="border-t border-gray-800 hover:bg-gray-800/40 sigrow" data-sym="{{s.symbol|lower}}">
                     <td class="px-3 py-2 text-gray-500">{{s.rank}}</td>
-                    <td class="px-3 py-2 font-semibold text-white whitespace-nowrap">{{s.symbol}}{% if next_buy_now and s.symbol|upper == next_buy_now %}<span class="ml-1 text-amber-400" title="Head of the compounder buy queue that could trade on the last scan">&#9733;</span>{% elif next_buy and s.symbol|upper == next_buy %}<span class="ml-1 text-amber-300/70" title="Next in line overall — its market was shut on the last scan, so a tradeable name took the budget">&#9734;</span>{% endif %}</td>
+                    <td class="px-3 py-2 font-semibold text-white whitespace-nowrap">{{s.symbol}}{% if next_buy_now and s.symbol|upper == next_buy_now %}<span class="ml-1 text-amber-400" title="Head of the compounder buy queue that could trade on the last scan">&#9733;</span>{% elif next_buy and s.symbol|upper == next_buy %}<span class="ml-1 text-amber-300/70" title="Next in line overall — its market was shut on the last scan, so a tradeable name took the budget">&#9734;</span>{% endif %}
+                        {# Review card proposing to part with stock. REVIEW-ONLY: never auto-executes,
+                           so this means "waiting on your approval", not "about to sell". #}
+                        {# `or {}` so the row still renders if the context lacks sell_reviews — Jinja hot-reloads
+                           this file while the route module does NOT, so a mismatched pair must degrade
+                           to "no badge" rather than 500 the whole page. #}
+                        {% set _sell = (sell_reviews or {}).get(s.symbol|upper) %}
+                        {% if _sell %}<span class="ml-1.5 text-[10px] font-bold tracking-wide px-1.5 py-0.5 rounded bg-red-900/60 text-red-300 align-middle"
+                              title="{% if _sell == 'reduce_position_review' %}Reduce-position review card open — awaiting your approval on /suggestions{% else %}Sell-position review card open — awaiting your approval on /suggestions{% endif %} (never auto-executes)">SELL</span>{% endif %}</td>
                     <td class="px-3 py-2">
                         <span class="text-xs px-1.5 py-0.5 rounded
                           {% if s.tier=='growth' %}bg-sky-900/50 text-sky-300{% elif s.tier=='breakthrough' %}bg-fuchsia-900/50 text-fuchsia-300{% else %}bg-emerald-900/50 text-emerald-300{% endif %}">{{s.tier}}</span>

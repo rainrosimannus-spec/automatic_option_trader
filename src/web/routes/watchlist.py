@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse
 from src.web.template_engine import templates
 from src.core.database import get_db
 from src.portfolio.models import PortfolioState, PortfolioWatchlist, PortfolioHolding
+from src.core.suggestions import TradeSuggestion
 from src.core.logger import get_logger
 
 log = get_logger(__name__)
@@ -34,6 +35,54 @@ def _num(key: str, default: float = 0.0) -> float:
         return float(_state(key) or default)
     except Exception:
         return default
+
+
+# Review cards that propose parting with stock. Both are in suggestions.REVIEW_ONLY_ACTIONS —
+# they NEVER auto-execute, they wait for Rain to approve — so the badge means "awaiting your
+# decision", not "about to happen". sell_covered_call_review is deliberately NOT here: writing a
+# call is not selling the shares.
+_SELL_REVIEW_ACTIONS = ("sell_stock_review", "reduce_position_review")
+# Mirrors get_pending_suggestions() (src/core/suggestions.py) — but READ-ONLY. That helper also
+# WRITES the 'expired' sweep, which must not fire on a dashboard page load, so the expiry is
+# filtered here instead: an expired-but-unswept row must not show a stale SELL.
+_ACTIVE_STATUSES = ("pending", "submitted", "approved", "queued")
+
+
+def active_sell_map(rows, now) -> dict[str, str]:
+    """symbol -> the active sell/reduce review action on it (pure; latest row wins).
+
+    Authoritative filter — the SQL below only narrows what we load. Re-checks action and status
+    here too so the badge can never outlive the rule, whatever the query returns."""
+    out: dict[str, str] = {}
+    for r in rows:
+        action = getattr(r, "action", None)
+        if action not in _SELL_REVIEW_ACTIONS:
+            continue
+        if getattr(r, "status", None) not in _ACTIVE_STATUSES:
+            continue
+        expires = getattr(r, "expires_at", None)
+        if expires is not None and expires < now:
+            continue                      # expired but not yet swept — no stale SELL
+        sym = (getattr(r, "symbol", "") or "").upper()
+        if sym:
+            out[sym] = action
+    return out
+
+
+def _sell_reviews() -> dict[str, str]:
+    """symbol -> the active sell/reduce review action on it. Empty on any error; a missing badge is
+    the safe failure — it can only under-report, never invent a SELL."""
+    from datetime import datetime
+    try:
+        with get_db() as db:
+            rows = db.query(TradeSuggestion).filter(
+                TradeSuggestion.action.in_(_SELL_REVIEW_ACTIONS),
+                TradeSuggestion.status.in_(_ACTIVE_STATUSES),
+            ).order_by(TradeSuggestion.created_at.asc()).all()
+            return active_sell_map(rows, datetime.utcnow())
+    except Exception as e:
+        log.warning("watchlist_sell_reviews_failed", error=str(e))
+        return {}
 
 
 @router.get("/watchlist", response_class=HTMLResponse)
@@ -100,6 +149,9 @@ async def watchlist_page(request: Request):
     next_buy = (_state("compounder_next_buy") or "").strip().upper()
     next_buy_now = (_state("compounder_next_buy_now") or "").strip().upper()
 
+    # Active sell/reduce review cards → a SELL badge beside the ticker, mirroring the buy stars.
+    sell_reviews = _sell_reviews()
+
     slots_allowed = sum(1 for s in signals if (s.get("target") or 0) > 0)
     slots_filled = sum(1 for s in signals if (s.get("target") or 0) > 0 and (s.get("current") or 0) > 0)
 
@@ -109,6 +161,7 @@ async def watchlist_page(request: Request):
         "wl_map": wl_map,
         "next_buy": next_buy,
         "next_buy_now": next_buy_now,
+        "sell_reviews": sell_reviews,
         "base_ccy": base_ccy,
         "base_sym": base_sym,
         "tier_summary": tier_summary,
