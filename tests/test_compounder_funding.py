@@ -171,17 +171,49 @@ def test_fx_submin_shortfall_left_to_loan_true():
     assert ib.orders_placed == 0
 
 
+# The conversion SELLs the base leg, so the account must actually HOLD those euros — see the
+# EUR-liquidity precheck in _ensure_currency_funding. Every test that expects an order to be PLACED
+# has to fund that side; a fake declaring only the foreign balance reads as EUR 0 and defers before
+# ever reaching placeOrder. (That omission is exactly what left these two red: they predate the
+# precheck and asserted the pre-precheck behaviour.)
+_EUR_LIQUID = ("CashBalance", "EUR", 200_000)
+
+
 def test_fx_real_shortfall_filled_true():
-    ib = FakeIB(cash=[("CashBalance", "USD", 0)], fill_status="Filled")
+    ib = FakeIB(cash=[_EUR_LIQUID, ("CashBalance", "USD", 0)], fill_status="Filled")
     assert _ensure_currency_funding(ib, "USD", "EUR", 50_000) is True
     assert ib.orders_placed == 1
 
 
 def test_fx_real_shortfall_unfilled_is_fatal_false():
     # FX market order did not fill → would open a USD margin loan → must fail-closed
-    ib = FakeIB(cash=[("CashBalance", "USD", 0)], fill_status="Submitted")
+    ib = FakeIB(cash=[_EUR_LIQUID, ("CashBalance", "USD", 0)], fill_status="Submitted")
     assert _ensure_currency_funding(ib, "USD", "EUR", 50_000) is False
     assert ib.orders_placed == 1
+
+
+def test_fx_defers_when_the_base_leg_is_not_liquid():
+    # THE PRECHECK ITSELF (previously untested): euros all parked in XEON, so SELLing EUR.USD would
+    # open a negative EUR balance — IBKR Error 201. Defer fail-closed WITHOUT placing the doomed
+    # order, rather than spamming rejects until the park can be unwound.
+    ib = FakeIB(cash=[("CashBalance", "EUR", 10_000), ("CashBalance", "USD", 0)],
+                fill_status="Filled")
+    assert _ensure_currency_funding(ib, "USD", "EUR", 50_000) is False
+    assert ib.orders_placed == 0
+
+
+def test_fx_unreadable_base_balance_does_not_defer():
+    # _ccy_cash returns None on a read error — an unreadable balance must not be mistaken for zero,
+    # or a transient account-data hiccup would silently halt every foreign buy.
+    ib = FakeIB(cash=[("CashBalance", "USD", 0)], fill_status="Filled")
+    import src.portfolio.buyer as _b
+    _orig = _b._ccy_cash
+    _b._ccy_cash = lambda *a, **k: None
+    try:
+        assert _ensure_currency_funding(ib, "USD", "EUR", 50_000) is True
+        assert ib.orders_placed == 1
+    finally:
+        _b._ccy_cash = _orig
 
 
 # ── _unpark_yield (SGOV unpark) ──────────────────────────────────────────────────────────

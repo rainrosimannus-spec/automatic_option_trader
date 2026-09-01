@@ -351,3 +351,57 @@ def test_no_solid_star_when_only_shut_greens_remain():
 def test_stars_collapse_to_one_when_the_leader_is_tradeable():
     c = _cands([("NVDA", +0.02, 100_000, 40_000), ("CCC", -0.10, 100_000, 0)])
     assert c[0][2] == _now_head(c, {"NVDA", "CCC"}, greens_outstanding=True) == "NVDA"
+
+
+# ── Core-rung sizing floor (src/portfolio/buyer.py _execute_compounder_buy) ───────────────
+# A gap-closing order is sized EXACTLY at its floor (the caller passes min_buy=_eff_floor, which
+# IS the whole remaining gap once that gap is under min_buy). int() share truncation then makes the
+# achievable notional strictly smaller, so an exact-equality test rejected every such order — the
+# 2026-07-30 escape hatch never fired. The floor now tolerates a shortfall of under one share.
+
+def _core_shares(core_amount, core_floor, price, rate, one_share_tolerance=True):
+    """Mirror of the core-rung sizing/floor test. Returns shares, or 0 if the rung is dropped."""
+    shares = int(core_amount / (price * rate))
+    notional_base = shares * price * rate
+    floor = core_floor
+    if one_share_tolerance and core_amount >= floor:
+        floor = max(0.0, floor - price * rate)
+    return shares if (shares > 0 and notional_base >= floor) else 0
+
+
+def test_gap_closing_order_survives_share_truncation():
+    # THE BUG, with FSR's real numbers: gap EUR 28,967, ZAR 95.55/share at 0.0485 -> EUR 4.634.
+    args = (28_967.0, 28_967.0, 95.55, 0.0485)
+    assert _core_shares(*args, one_share_tolerance=False) == 0     # old behaviour: always rejected
+    assert _core_shares(*args) == 6250                             # fixed: the gap-closer places
+
+
+def test_every_sub_min_buy_gap_was_rejected_before_the_fix():
+    # Not an FSR quirk — exact-equality fails for any price that doesn't divide the gap evenly.
+    for gap, price, rate in ((28_671.0, 95.55, 0.0485),   # FSR
+                             (27_512.0, 214.30, 0.0485),  # SBK
+                             (13_654.0, 118.40, 1.0),     # WKL (base ccy)
+                             (34_847.0, 1042.17, 0.86)):  # LLY
+        assert _core_shares(gap, gap, price, rate, one_share_tolerance=False) == 0
+        assert _core_shares(gap, gap, price, rate) > 0
+
+
+def test_tolerance_is_at_most_one_share_so_dust_is_still_blocked():
+    # A genuine dust gap under the $2k absolute floor must STILL be rejected — one share of a
+    # EUR 4.63 name cannot bridge a EUR 100 shortfall.
+    assert _core_shares(1_900.0, 2_000.0, 95.55, 0.0485) == 0
+    # ...including a name whose single share (EUR 896) is far larger than the EUR 100 shortfall:
+    # the tolerance is gated on the REQUEST clearing the floor, so a sub-floor ask gets none of it.
+    assert _core_shares(1_900.0, 2_000.0, 1_042.17, 0.86) == 0
+
+
+def test_normal_above_min_buy_order_is_unaffected():
+    # brick >> floor: truncation is irrelevant, both behaviours agree.
+    for tol in (True, False):
+        assert _core_shares(76_281.0, 43_385.0, 1_042.17, 0.86, one_share_tolerance=tol) == 85
+
+
+def test_exactly_divisible_gap_needs_no_tolerance():
+    # price*rate divides the gap evenly -> notional == floor exactly; accepted either way.
+    assert _core_shares(10_000.0, 10_000.0, 100.0, 1.0, one_share_tolerance=False) == 100
+    assert _core_shares(10_000.0, 10_000.0, 100.0, 1.0) == 100

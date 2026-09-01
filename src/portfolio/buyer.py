@@ -3119,10 +3119,32 @@ class PortfolioBuyer:
             notional_base = shares * price * rate
             # Core rung must clear the NLV-scaled min order; dip rungs just need to be non-trivial.
             floor = core_floor if i == 0 else 1000.0
+            if i == 0 and core_amount >= floor:
+                # The REQUEST clears the floor, so the only shortfall left is int() truncation —
+                # never a reason to strand a name. Allow the filled notional to come up short by
+                # less than one share.
+                # This is what silently killed every gap-closing order: the caller sizes one EXACTLY
+                # at this floor (it passes min_buy=_eff_floor, which IS the whole remaining gap once
+                # that gap is under min_buy), and shares = int(gap / per_share) then always buys
+                # strictly less than `gap`, so `notional_base < floor` was true every single time.
+                # The 2026-07-30 escape hatch meant to un-strand those names had therefore never once
+                # fired — 20 names / EUR 629k of target frozen at ~80%, LLY and ALAB among them, each
+                # ratcheting in as soon as its residual gap fell below min_buy.
+                # Gating on core_amount >= floor keeps genuine dust rejected: a request BELOW the
+                # floor gets no tolerance, so a high-priced name can't sneak a sub-floor order
+                # through on the back of one large share.
+                floor = max(0.0, floor - price * rate)
             if shares <= 0 or notional_base < floor:
                 continue
             rungs.append((price, shares))
         if not rungs or rungs[0][1] <= 0:
+            # Loud on purpose: the caller drops this name with no other trace — no order, no
+            # suggestion, no `spent`, nothing in `bought`. A name that led the buy queue and then
+            # bought nothing must never again be invisible (that is what hid the bug above).
+            log.warning("compounder_buy_no_rungs", symbol=stock.symbol, ccy=ccy,
+                        core_amount=round(core_amount), core_floor=round(core_floor),
+                        price=px, rate=round(rate, 6),
+                        per_share_base=round(px * rate, 4) if px and rate else None)
             return (0.0, 0.0)
 
         core_price, core_shares = rungs[0]
