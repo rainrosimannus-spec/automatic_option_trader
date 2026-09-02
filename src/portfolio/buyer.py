@@ -26,6 +26,7 @@ from src.portfolio.models import (
 )
 from src.portfolio.analyzer import PortfolioAnalyzer, StockAnalysis
 from src.portfolio.config import PortfolioConfig
+from src.portfolio.venues import partition_tradable
 from src.portfolio.connection import _ensure_event_loop, get_portfolio_lock
 from src.portfolio.ranker import (
     MarketRegime, CashPolicy, RankedSignal,
@@ -184,6 +185,11 @@ def _aftermarket(currency: str | None, minutes: int) -> bool:
 # until the block expires (auto-retries) or perms are granted. In-memory: a restart clears it,
 # so a blocked name gets one fresh attempt post-restart, then re-blocks if still failing.
 _PERMISSION_BLOCK_HOURS = 24.0
+# Symbols already reported as sitting on an unpermissioned venue. The scan runs every couple of
+# hours and the watchlist barely changes, so log the fact once per process rather than on every
+# pass — it is a standing condition, not an event.
+_untradable_logged: set[str] = set()
+
 _permission_blocked: dict[str, datetime] = {}
 
 
@@ -1089,6 +1095,25 @@ class PortfolioBuyer:
         names: list[cmp.NameInput] = []
         analyses: dict[str, tuple] = {}
         skipped_exch: set[str] = set()
+        # Venues this account has no IBKR permission for (ZAR/JSE, INR/NSE) leave the buy universe
+        # HERE — before analysis, ranking, targets, the /watchlist star, FX funding and any order.
+        # Dropping them at the top rather than letting a later gate refuse them is the whole point:
+        # FSR led the buy queue for weeks and every attempt converted euros into rand before IBKR
+        # answered Error 460, while an INR name would instead vanish silently at FX sizing because
+        # no EUR.INR pair exists. Two accidents, one deliberate rule. The monthly screen removes
+        # these names for good (tools/screen_universe.py enforce_stock_venue_policy); this covers
+        # every scan in between. Removing them from `watch` also takes them out of the target-weight
+        # denominator, so the capital they were holding redistributes to names that can spend it.
+        watch, _blocked_venue = partition_tradable(watch)
+        for _b in _blocked_venue:
+            if _b.symbol not in _untradable_logged:
+                _untradable_logged.add(_b.symbol)
+                log.info("compounder_skip_untradable_venue", symbol=_b.symbol,
+                         currency=_b.currency, exchange=_b.exchange,
+                         note="no IBKR trading permission for this venue — "
+                              "awaiting removal by the monthly screen")
+        if not watch:
+            log.warning("compounder_empty_watchlist"); return bought
         for s in watch:
             if s.exchange in skipped_exch:
                 continue

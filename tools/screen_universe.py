@@ -3577,7 +3577,15 @@ def write_screened_universe(stocks: list[StockScore], path: Path) -> None:
 #
 # Take a code OUT of this set only when the permission is actually granted; re-run the
 # whatIf probe to confirm rather than inferring it from a fill.
-UNTRADABLE_STOCK_CURRENCIES = {"ZAR", "INR"}
+#
+# Shared with the live buyer (src/portfolio/venues.py), which enforces the same list on every
+# scan — this screen runs monthly, so it cannot be the only gate. The literal fallback keeps
+# the screener runnable standalone from an unusual cwd, matching how canonical_symbol is
+# imported at the top of this file.
+try:
+    from src.portfolio.venues import UNTRADABLE_STOCK_CURRENCIES
+except Exception:  # pragma: no cover — standalone run without src on the path
+    UNTRADABLE_STOCK_CURRENCIES = frozenset({"ZAR", "INR"})
 
 # Real US exchanges. An ADR quoted here is an ordinary listed security — continuous
 # quotes, and the very same permission the account already uses for its ~85 US names.

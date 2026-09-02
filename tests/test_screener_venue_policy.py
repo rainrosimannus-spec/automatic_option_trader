@@ -201,3 +201,61 @@ def test_the_caller_must_rebind_because_dropping_returns_a_new_list():
     rows = [_stock("FSR", "FIRSTRAND LTD", "ZAR", "JSE"), _stock("AAPL", "APPLE INC", "USD", "SMART")]
     kept = T.enforce_stock_venue_policy(rows, ib)
     assert len(rows) == 2 and len(kept) == 1
+
+
+# ── the live buyer half of the same rule ────────────────────────────────────
+#
+# The screen runs monthly, so it cannot be the only gate: a blocked name already in the
+# watchlist (FSR and SBK are, today) has to be kept out of every scan in between. Both
+# sides read one list, src.portfolio.venues.
+
+from types import SimpleNamespace
+
+from src.portfolio.venues import (UNTRADABLE_STOCK_CURRENCIES as LIVE_BLOCKED,
+                                  is_untradable_currency, partition_tradable)
+
+
+def _row(symbol, currency, exchange):
+    return SimpleNamespace(symbol=symbol, currency=currency, exchange=exchange)
+
+
+def test_the_screener_and_the_buyer_read_the_same_list():
+    """Two enforcement points, one rule — they must not be able to drift apart."""
+    assert T.UNTRADABLE_STOCK_CURRENCIES is LIVE_BLOCKED
+
+
+@pytest.mark.parametrize("ccy,blocked", [
+    ("ZAR", True), ("INR", True), ("zar", True), (" inr ", True),
+    ("USD", False), ("EUR", False), ("JPY", False), ("HKD", False), ("AUD", False),
+])
+def test_only_the_two_unpermissioned_venues_are_blocked(ccy, blocked):
+    """HKD/AUD/JPY are explicitly NOT blocked: their orders fail on board-lot size, not
+    permissions, and blocking them would strand names that can actually be bought."""
+    assert is_untradable_currency(ccy) is blocked
+
+
+def test_a_row_with_no_currency_is_left_to_the_callers_other_gates():
+    """Defaulting an unknown currency to 'blocked' would empty the buy universe silently."""
+    assert is_untradable_currency(None) is False
+    assert is_untradable_currency("") is False
+
+
+def test_blocked_names_leave_the_buy_universe_and_order_is_preserved():
+    rows = [_row("AAPL", "USD", "SMART"), _row("FSR", "ZAR", "JSE"),
+            _row("WKL", "EUR", "AEB"), _row("INFY", "INR", "NSE"),
+            _row("TD", "CAD", "SMART")]
+    tradable, blocked = partition_tradable(rows)
+    assert [r.symbol for r in tradable] == ["AAPL", "WKL", "TD"]
+    assert [r.symbol for r in blocked] == ["FSR", "INFY"]
+
+
+def test_nothing_is_blocked_when_the_watchlist_is_all_tradable():
+    rows = [_row("AAPL", "USD", "SMART"), _row("6920", "JPY", "TSEJ"),
+            _row("2318", "HKD", "SEHK"), _row("XRO", "AUD", "ASX")]
+    tradable, blocked = partition_tradable(rows)
+    assert tradable == rows and blocked == []
+
+
+def test_an_empty_or_missing_watchlist_does_not_raise():
+    assert partition_tradable([]) == ([], [])
+    assert partition_tradable(None) == ([], [])
