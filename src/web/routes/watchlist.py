@@ -128,6 +128,31 @@ async def watchlist_page(request: Request):
     except Exception as e:
         log.warning("watchlist_signals_failed", error=str(e))
 
+    # Self-check: the numbers just recomputed above must match the ones the buyer actually acted
+    # on. They are two implementations of one allocation, and the last time they diverged (the page
+    # allocating the crash reserve, every target ~11% high) nothing noticed until Rain read a BUY
+    # off a name the buyer was holding. Both sides are already in portfolio_state, so this costs one
+    # read. Skipped when the snapshot is stale — a buyer that has not scanned for a day is a
+    # different problem, and price drift would make the comparison meaningless.
+    try:
+        from datetime import datetime, timedelta
+        from src.portfolio.models import PortfolioState
+        with get_db() as db:
+            _snap_row = db.query(PortfolioState).filter(
+                PortfolioState.key == "compounder_signals").first()
+            _snap_json, _snap_at = ((_snap_row.value, _snap_row.updated_at) if _snap_row
+                                    else (None, None))
+        if signals and _snap_json and _snap_at and _snap_at > datetime.utcnow() - timedelta(hours=24):
+            import json as _json
+            _drift = cmp.signal_parity_drift(signals, _json.loads(_snap_json))
+            if _drift:
+                log.warning("compounder_signal_parity_drift",
+                            note="the /watchlist allocation no longer matches the buyer's — "
+                                 "build_signals_from_watchlist has drifted from run_compounder",
+                            **_drift)
+    except Exception as e:                 # never let the self-check break the page
+        log.warning("compounder_signal_parity_check_failed", error=str(e))
+
     tier_summary: dict[str, dict] = {}
     for s in signals:
         d = tier_summary.setdefault(s.get("tier", "growth"), {"count": 0, "target": 0.0, "deployed": 0.0})

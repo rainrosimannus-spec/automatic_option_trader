@@ -112,3 +112,67 @@ def test_a_holding_past_its_target_reads_hold_not_buy():
     over = {"S00": targets["S00"] * 1.10}
     _, actions = _targets(rows, held=over)
     assert actions["S00"] == "hold"
+
+
+# ── the self-check that would have caught all of the above ──────────────────
+#
+# The four drifts fixed here went unnoticed for weeks; Rain found them by eye. Both sides of the
+# comparison already sit in portfolio_state, so /watchlist now diffs itself against the buyer's
+# persisted signals on every load and logs compounder_signal_parity_drift when they part company.
+
+def _sig(symbol, target):
+    return {"symbol": symbol, "target": target}
+
+
+def _pair(scale, n=30):
+    """A dashboard book and the buyer snapshot it should match, off by `scale`."""
+    dash = [_sig(f"S{i:02d}", 10_000 + i * 500) for i in range(n)]
+    snap = [_sig(d["symbol"], d["target"] * scale) for d in dash]
+    return dash, snap
+
+
+def test_agreeing_allocations_report_no_drift():
+    dash, snap = _pair(1.0)
+    assert cmp.signal_parity_drift(dash, snap) is None
+
+
+def test_the_exact_bug_is_caught():
+    """The live signature: every target scaled by base_pct because the page allocated the reserve."""
+    dash, snap = _pair(CC.base_pct)
+    drift = cmp.signal_parity_drift(dash, snap)
+    assert drift is not None
+    assert drift["median_ratio"] == 0.9
+    assert drift["names"] == 30
+    assert len(drift["worst"]) == 5
+
+
+def test_ordinary_snapshot_lag_is_not_reported_as_drift():
+    """Names move ~1% between the buyer's snapshot and a live recompute — that is not a bug, and
+    a check that cries about it would be turned off within a week."""
+    assert cmp.signal_parity_drift(*_pair(1.008)) is None
+    assert cmp.signal_parity_drift(*_pair(0.992)) is None
+
+
+def test_one_wild_name_does_not_trip_the_check_but_a_whole_book_does():
+    """The median is the point: a formula error moves EVERY name, a stale fill moves one."""
+    dash, snap = _pair(1.0)
+    snap[0]["target"] *= 3                       # one name filled since the snapshot
+    assert cmp.signal_parity_drift(dash, snap) is None
+    dash2, snap2 = _pair(0.80)
+    assert cmp.signal_parity_drift(dash2, snap2) is not None
+
+
+def test_a_thin_or_missing_snapshot_is_not_evidence():
+    """Before the first scan of a fresh process there is nothing to compare against."""
+    dash, snap = _pair(0.5, n=4)
+    assert cmp.signal_parity_drift(dash, snap) is None      # too few names
+    assert cmp.signal_parity_drift(dash, []) is None
+    assert cmp.signal_parity_drift([], []) is None
+
+
+def test_names_only_one_side_knows_about_are_ignored():
+    """FSR/SBK carry target 0 on the page and are absent from the buyer's snapshot entirely."""
+    dash, snap = _pair(1.0)
+    dash.append(_sig("FSR", 0))
+    drift = cmp.signal_parity_drift(dash, snap)
+    assert drift is None

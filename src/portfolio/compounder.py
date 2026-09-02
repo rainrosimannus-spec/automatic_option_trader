@@ -338,6 +338,49 @@ def frozen_dropouts(rows, rank_idx: dict, topk: int) -> set:
     return frozen
 
 
+def signal_parity_drift(dashboard: list[dict], snapshot: list[dict],
+                        tol: float = 0.03, min_names: int = 10) -> dict | None:
+    """Compare the displayed allocation against the buyer's own persisted one.
+
+    `build_signals_from_watchlist` is a second implementation of the compounder allocation, and on
+    2026-09-02 it was found to have drifted four ways at once — every target on the page was ~11%
+    high because it allocated the crash reserve the buyer holds back, and ASML rendered as a 6%
+    underweight BUY while the buyer was holding it at 110% of target. Nothing detected that; Rain
+    did, by eye, weeks later.
+
+    Both sides live in portfolio_state, so the check costs one read: the buyer writes
+    compounder_signals every scan, and this page recomputes the same numbers. Returns None when
+    they agree, else a dict describing the drift for the caller to log.
+
+    The statistic is the MEDIAN of snapshot/dashboard target ratios, which is what makes this
+    usable: individual names drift ~1% because the snapshot is a moment older than the recompute,
+    and a name filled since the snapshot legitimately flips its action — but a FORMULA difference
+    moves every name at once, so the median lands on the missing factor. When this was broken the
+    median was 0.900, exactly `base_pct`; after the fix, 1.000.
+
+    Pure — the caller supplies both lists and decides what to do with the verdict."""
+    snap = {r.get("symbol"): r for r in snapshot or []}
+    ratios, worst = [], []
+    for d in dashboard or []:
+        dt = d.get("target") or 0.0
+        s = snap.get(d.get("symbol"))
+        st = (s or {}).get("target") or 0.0
+        if dt <= 0 or st <= 0:
+            continue
+        ratios.append(st / dt)
+        worst.append((abs(st / dt - 1.0), d.get("symbol"), round(dt), round(st)))
+    if len(ratios) < min_names:
+        return None                       # too thin to be evidence of anything
+    ratios.sort()
+    median = ratios[len(ratios) // 2]
+    if abs(median - 1.0) <= tol:
+        return None
+    worst.sort(reverse=True)
+    return {"median_ratio": round(median, 4), "names": len(ratios),
+            "min_ratio": round(ratios[0], 4), "max_ratio": round(ratios[-1], 4),
+            "worst": [{"symbol": w[1], "dashboard": w[2], "buyer": w[3]} for w in worst[:5]]}
+
+
 def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: dict,
                                  unlocked: float = 0.0) -> list[dict]:
     """Compute the dashboard signal table directly from watchlist DB rows (each with the
