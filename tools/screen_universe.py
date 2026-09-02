@@ -3292,6 +3292,16 @@ class UniverseScreener:
         print(f"PHASE 3: Building portfolio universe")
         print(f"{'='*60}")
 
+        # Names whose home market this account cannot trade are rerouted to a US listing of
+        # the same company, or dropped. Applied HERE, before tier selection, so a
+        # substituted name competes on merit under its US ticker and a dropped one frees
+        # its slot for the next candidate instead of leaving a hole in the roster. Doing it
+        # here also covers the options universe for free — that list is re-ranked out of
+        # portfolio_universe a few lines below, and a stock we cannot buy is a stock we
+        # cannot wheel either.
+        all_scores = enforce_stock_venue_policy(all_scores, self.ib)
+        breakthrough_scores = enforce_stock_venue_policy(breakthrough_scores, self.ib)
+
         # Include both DIVIDEND_CANDIDATES symbols AND discovered_pool dividend names
         _dividend_universe = _get_dividend_universe()
         _dividend_pool_symbols = {str(sym) for pool in _dividend_universe.values() for sym in pool["symbols"]}
@@ -3541,6 +3551,209 @@ def write_screened_universe(stocks: list[StockScore], path: Path) -> None:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
     print(f"\n✅ Screened universe written to {path}")
 
+
+# ── Portfolio venue policy: home markets this account cannot trade ──────────
+# Cash-equity currencies the ACCOUNT has no trading permission for. IBKR rejects every
+# such order with Error 460 "No trading permissions" — and because the compounder funds
+# the currency BEFORE the order is acknowledged, each rejected attempt also strands
+# foreign cash: on 2026-09-01 an FSR buy that could never exist converted EUR 29,097 into
+# rand, which then just sat there (the FX treasury only closes DEBITS — it never sweeps a
+# positive foreign balance home). Worse, the name keeps its slot in the roster and its
+# share of the target, so the capital behind it is never deployed at all.
+#
+# A name in one of these currencies is therefore rerouted to a verified US listing of the
+# SAME company, or dropped from the universe outright. Better no position than a roster
+# slot that can never be filled.
+#
+# ZAR (JSE) is confirmed by live rejections (FSR, SBK). INR (NSE) is listed pre-emptively:
+# India needs a separate IBKR market segment this account does not hold, and no INR name
+# has ever reached an order — the screener's 20-name NSE candidate pool would fail exactly
+# the same way the day one of them ranked in. Take a code OUT of this set only when the
+# permission is actually granted.
+UNTRADABLE_STOCK_CURRENCIES = {"ZAR", "INR"}
+
+# Real US exchanges. An ADR quoted here is an ordinary listed security — continuous
+# quotes, and the very same permission the account already uses for its ~85 US names.
+US_LISTED_EXCHANGES = ("NYSE", "NASDAQ", "NASDAQOM", "ARCA", "AMEX", "BATS", "ISLAND", "PSE")
+# OTC / pink venues. Most South African ADRs exist ONLY here (FirstRand → FANDY, Standard
+# Bank → SGBLY, both unsponsored). Deliberately NOT accepted by default, for two separate
+# reasons: US OTC is its own IBKR permission, so substituting here could reproduce the
+# exact Error 460 this policy exists to prevent; and an unsponsored ADR is far too thin to
+# absorb the compounder's ~EUR 43k orders. Flip ALLOW_US_OTC_SUBSTITUTION only once OTC is
+# confirmed enabled on the account AND the liquidity has been checked name by name.
+US_OTC_EXCHANGES = ("PINK", "OTCBB", "VALUE", "NASDAQBX")
+ALLOW_US_OTC_SUBSTITUTION = False
+
+# Legal-form and depositary-receipt boilerplate — it says nothing about WHICH company
+# this is, and it differs between a home listing and its ADR.
+_NAME_NOISE = frozenset({
+    "LTD", "LIMITED", "PLC", "CORP", "CORPORATION", "INC", "INCORPORATED", "COMPANY",
+    "CO", "SA", "NV", "AG", "SE", "AB", "ASA", "OYJ", "SPA", "GROUP", "HOLDING",
+    "HOLDINGS", "THE", "AND", "OF", "ADR", "ADS", "GDR", "SPON", "SPONS", "SPONSORED",
+    "UNSPON", "UNSPONSORED", "SP", "CL", "CLASS", "SHS", "SHARES", "REG", "REPRESENTING",
+    "NEW",
+})
+
+
+def _company_tokens(name: str) -> list[str]:
+    """Significant words of a company name, upper-cased, order preserved.
+
+    Both sides of a comparison are IBKR's own `description` strings, so this only has to
+    survive legal-form and ADR boilerplate: 'FIRSTRAND LTD' and 'FIRSTRAND LTD-UNSPON ADR'
+    both reduce to ['FIRSTRAND']."""
+    cleaned = "".join(ch if ch.isalnum() else " " for ch in (name or "").upper())
+    # Single characters are share-class letters, not identity ('NASPERS LTD-N SHS').
+    return [w for w in cleaned.split() if len(w) > 1 and w not in _NAME_NOISE]
+
+
+def _token_match(a: str, b: str) -> bool:
+    """One name-word against another, tolerating IBKR's truncation.
+
+    Descriptions are cut to ~28 characters, and the cut is absorbed by ABBREVIATING the
+    last words rather than by dropping them: British American Tobacco's JSE line reads
+    'BRITISH AMERICAN TOBACCO PLC' while its NYSE ADR reads 'BRITISH AMERICAN TOB-SP ADR'.
+    So a word matches if it is a prefix of the other — but only from three characters on,
+    because two letters agreeing is noise, not evidence."""
+    if a == b:
+        return True
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    return len(short) >= 3 and long.startswith(short)
+
+
+def _same_company(a: str, b: str) -> bool:
+    """True when two IBKR descriptions name the same issuer.
+
+    Strict on purpose. Matching on NAME rather than ticker is the whole point: tickers
+    collide across markets, and a same-ticker probe for JSE 'FSR' (FirstRand) turns up US
+    'FSRNQ' FISKER, 'FSRL' FIRST RELIANCE BANCSHARES and 'FSRDQ' FAST RADIUS.
+
+    The rule is same word COUNT, identical first word, and every remaining pair matching
+    by prefix. Arity is what does the real work: a nesting test ('one token set contains
+    the other') accepts truncation but also accepts 'RELIANCE INDUSTRIES' → 'RELIANCE INC'
+    (a US steel distributor) and 'TITAN CO LTD' → 'TITAN AMERICA SA'. Both of those are
+    real NYSE tickers this screener would otherwise have bought instead of the company it
+    meant. Requiring equal arity rejects them while still accepting the abbreviations
+    truncation produces. A doubtful match drops the name; it never substitutes a
+    different company."""
+    ta, tb = _company_tokens(a), _company_tokens(b)
+    if not ta or not tb:
+        return False
+    if len(ta) != len(tb) or ta[0] != tb[0]:
+        return False
+    return all(_token_match(x, y) for x, y in zip(ta, tb))
+
+
+def pick_us_listing(descriptions, company_name: str, *, allow_otc: bool = False):
+    """Best tradable US listing of `company_name` among IBKR symbol-search results.
+
+    PURE — `descriptions` is whatever reqMatchingSymbols returned (each item exposing a
+    `.contract` with symbol/secType/currency/primaryExchange/description), so the choice is
+    unit-testable without a broker. Returns (symbol, primary_exchange) or None. Listed
+    venues beat OTC, and within a tier the order of the venue tuples decides, so a NYSE ADR
+    wins over a thin BATS quote."""
+    venues = US_LISTED_EXCHANGES + US_OTC_EXCHANGES
+    ranked = []
+    for d in descriptions or []:
+        c = getattr(d, "contract", None)
+        if c is None or (getattr(c, "secType", "") or "") != "STK":
+            continue
+        if (getattr(c, "currency", "") or "").upper() != "USD":
+            continue
+        sym = (getattr(c, "symbol", "") or "").strip().upper()
+        exch = (getattr(c, "primaryExchange", "") or "").strip().upper()
+        if not sym:
+            continue
+        if exch in US_LISTED_EXCHANGES:
+            tier = 0
+        elif allow_otc and exch in US_OTC_EXCHANGES:
+            tier = 1
+        else:
+            continue
+        if not _same_company(company_name, getattr(c, "description", "") or ""):
+            continue
+        ranked.append((tier, venues.index(exch), sym, exch))
+    if not ranked:
+        return None
+    ranked.sort()
+    return ranked[0][2], ranked[0][3]
+
+
+def resolve_us_listing(ib, symbol: str, company_name: str, *, allow_otc=None):
+    """Look up a US listing of the same company. READ-ONLY — a symbol search, no orders.
+
+    Searches by NAME (that is what makes "same company" checkable at all) and by ticker,
+    pooling every result before choosing once — so the pick ranks a NYSE hit above a pink
+    one even when the two came from different searches. The ticker search is safe only
+    because pick_us_listing gates every candidate on the name regardless of what was
+    searched for.
+
+    The name is searched as its first two significant words and then as its first word,
+    never in full: IBKR's symbol search is a prefix match over a TRUNCATED description, so
+    the whole legal name usually returns nothing ('STANDARD BANK GROUP LTD' finds no ADR;
+    'STANDARD BANK' finds SGBLY, and 'BRITISH AMERICAN' finds BTI on the NYSE).
+
+    Returns (symbol, exchange) or None; a broker hiccup reads as None, i.e. the name is
+    dropped rather than quietly left on a venue that cannot fill it."""
+    if allow_otc is None:
+        allow_otc = ALLOW_US_OTC_SUBSTITUTION
+    toks = _company_tokens(company_name)
+    patterns = []
+    for pattern in (" ".join(toks[:2]) if len(toks) >= 2 else "",
+                    toks[0] if toks else "", symbol):
+        if pattern and pattern not in patterns:
+            patterns.append(pattern)
+    found = []
+    for pattern in patterns:
+        try:
+            found.extend(ib.reqMatchingSymbols(pattern) or [])
+        except Exception as e:
+            log.warning("us_listing_lookup_failed", symbol=symbol,
+                        pattern=pattern, error=str(e)[:120])
+        # reqMatchingSymbols is rate-limited to roughly one call a second; this is a pure
+        # delay, not a wait on IBKR, so time.sleep is correct here (see 399434d).
+        time.sleep(1.0)
+    return pick_us_listing(found, company_name, allow_otc=allow_otc)
+
+
+def enforce_stock_venue_policy(stocks, ib, *, blocked=None, allow_otc=None):
+    """Reroute or DROP every name whose home currency this account cannot trade.
+
+    Returns a NEW list, order preserved — callers must rebind, because a name with no
+    tradable listing is removed outright rather than left occupying a roster slot it can
+    never fill. Names in tradable currencies are returned untouched, and no order of any
+    kind is placed."""
+    codes = {c.upper() for c in
+             (UNTRADABLE_STOCK_CURRENCIES if blocked is None else blocked)}
+    # Tickers already spoken for by a tradable listing — a substitution must never create
+    # a second row for a name the universe already holds under its own US ticker.
+    taken = {(s.symbol or "").upper() for s in stocks
+             if (s.currency or "").upper() not in codes}
+    kept = []
+    for s in stocks:
+        if (s.currency or "").upper() not in codes:
+            kept.append(s)
+            continue
+        hit = resolve_us_listing(ib, s.symbol, s.name, allow_otc=allow_otc)
+        if not hit:
+            log.info("portfolio_venue_dropped", symbol=s.symbol, name=s.name,
+                     currency=s.currency, exchange=s.exchange,
+                     note="no tradable US listing of this company — removed from universe")
+            continue
+        us_symbol, us_primary = hit
+        if us_symbol in taken:
+            log.info("portfolio_venue_dropped", symbol=s.symbol, name=s.name,
+                     currency=s.currency, exchange=s.exchange, us_symbol=us_symbol,
+                     note="its US listing is already in the universe under that ticker")
+            continue
+        log.info("portfolio_venue_substituted", symbol=s.symbol, us_symbol=us_symbol,
+                 name=s.name, was_currency=s.currency, was_exchange=s.exchange,
+                 us_primary=us_primary)
+        s.symbol = us_symbol
+        s.exchange = "SMART"
+        s.currency = "USD"
+        taken.add(us_symbol)
+        kept.append(s)
+    return kept
 
 # ── US-twin substitution ────────────────────────────────────────────────────
 # Verified-filling non-US option venues. A name whose native option venue is NOT
