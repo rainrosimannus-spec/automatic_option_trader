@@ -3565,11 +3565,18 @@ def write_screened_universe(stocks: list[StockScore], path: Path) -> None:
 # SAME company, or dropped from the universe outright. Better no position than a roster
 # slot that can never be filled.
 #
-# ZAR (JSE) is confirmed by live rejections (FSR, SBK). INR (NSE) is listed pre-emptively:
-# India needs a separate IBKR market segment this account does not hold, and no INR name
-# has ever reached an order — the screener's 20-name NSE candidate pool would fail exactly
-# the same way the day one of them ranked in. Take a code OUT of this set only when the
-# permission is actually granted.
+# Both codes are CONFIRMED against the live account, not assumed. ZAR (JSE) by real
+# rejections (FSR, SBK); INR (NSE) by whatIf orders on INFY and TCS, which IBKR validates
+# and answers with the same Error 460 — so the screener's 20-name NSE candidate pool would
+# fail exactly this way the day one of them ranked in.
+#
+# The same probe cleared HKD (SEHK), AUD (ASX) and JPY (TSEJ) as TRADABLE, so do NOT add
+# them here on the strength of their orders not filling: that is a sizing problem, not a
+# permission one. SEHK in particular answers Error 388 "order size smaller than the minimum
+# required size of 500" — a board lot, which reads like a block and is not one.
+#
+# Take a code OUT of this set only when the permission is actually granted; re-run the
+# whatIf probe to confirm rather than inferring it from a fill.
 UNTRADABLE_STOCK_CURRENCIES = {"ZAR", "INR"}
 
 # Real US exchanges. An ADR quoted here is an ordinary listed security — continuous
