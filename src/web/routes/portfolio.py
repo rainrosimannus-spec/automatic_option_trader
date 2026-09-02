@@ -470,8 +470,11 @@ async def portfolio_page(request: Request):
             # FX rate (matches the live engine's _get_holdings_map). nlv is already base.
             _held = {h.symbol: _to_base(h.market_value or h.total_invested or 0, h.currency,
                                         fx_rates, _base_ccy) for h in holdings}
+            # Unlocked crash-reserve FRACTION (the state key is a percent) — without it the
+            # targets here allocate reserve the buyer keeps back. See build_signals_from_watchlist.
+            _unlocked = float(_get_state("compounder_reserve_unlocked_pct") or 0) / 100.0
             _compounder_signals = _cmp.build_signals_from_watchlist(
-                watchlist, _held, portfolio_nlv or 0, _cc, _tier_alloc)
+                watchlist, _held, portfolio_nlv or 0, _cc, _tier_alloc, unlocked=_unlocked)
         except Exception as _e:
             log.warning("compounder_dashboard_signals_failed", error=str(_e))
 

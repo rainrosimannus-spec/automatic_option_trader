@@ -120,7 +120,11 @@ async def watchlist_page(request: Request):
                 for h in holds}
         inv = _num("compounder_investable")
         nlv = inv / (1 - cc.cash_buffer_pct) if inv > 0 else (sum(held.values()) or 1.0)
-        signals = cmp.build_signals_from_watchlist(rows, held, nlv, cc, tier_alloc)
+        # compounder_reserve_unlocked_pct is stored as a PERCENT (buyer writes unlocked*100);
+        # build_signals_from_watchlist wants the fraction, same as the buy path.
+        signals = cmp.build_signals_from_watchlist(
+            rows, held, nlv, cc, tier_alloc,
+            unlocked=_num("compounder_reserve_unlocked_pct") / 100.0)
     except Exception as e:
         log.warning("watchlist_signals_failed", error=str(e))
 

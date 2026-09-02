@@ -20,6 +20,8 @@ touches IBKR/DB lives in PortfolioBuyer.run_compounder_scan().
 """
 from __future__ import annotations
 
+from src.portfolio.venues import is_untradable_currency
+
 import bisect
 from dataclasses import dataclass
 
@@ -336,12 +338,30 @@ def frozen_dropouts(rows, rank_idx: dict, topk: int) -> set:
     return frozen
 
 
-def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: dict) -> list[dict]:
+def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: dict,
+                                 unlocked: float = 0.0) -> list[dict]:
     """Compute the dashboard signal table directly from watchlist DB rows (each with the
     fundamental scores + freshly-updated current_price/sma_200/high_52w/momentum_12_1).
     This makes the /watchlist + Portfolio views show the FULL ranked universe every page
     load, independent of whether a trading scan has persisted signals. `held` = symbol→
-    current market value. `cc` = CompounderConfig; `tier_alloc` = {tier: budget fraction}."""
+    current market value. `cc` = CompounderConfig; `tier_alloc` = {tier: budget fraction};
+    `unlocked` = the FRACTION (0-1) of the crash reserve currently released — note the
+    state key that carries it, compounder_reserve_unlocked_pct, is a PERCENT, so callers
+    divide by 100.
+
+    This is the second implementation of the allocation, and it must track buyer.run_compounder
+    step for step. It had drifted in three places, all of which made the page overstate every
+    target — on 2026-09-02 ASML showed "€174,496 target / €164,166 held / 6% underweight / buy"
+    while the buyer held it at 110% of a €148,463 target:
+
+      * the allocation base ignored base_pct, so the page allocated the 10% crash reserve that
+        the buyer keeps back — inflating EVERY target by 1/base_pct, ~11%;
+      * abs_ceiling was not passed, so the €750k per-name ceiling never bound;
+      * apply_sector_caps was never called, so an over-concentrated sector read full size.
+
+    Measured across the live 104-name book before the fix: buyer/dashboard target ratio ran
+    0.848-1.033 with a median of exactly 0.900 (= base_pct), and two names, ASML and XRO,
+    disagreed on the ACTION itself."""
     names = []
     for w in rows:
         price = getattr(w, "current_price", None)
@@ -365,18 +385,35 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
     ranked = rank_universe(names, cc.rank_fund_weight, cc.rank_mom_weight)
     rank_idx = {r.symbol: i + 1 for i, r in enumerate(ranked)}
     investable = max(0.0, nlv) * (1 - cc.cash_buffer_pct)
+    # Targets are sized to the base sleeve plus whatever share of the crash reserve has actually
+    # unlocked — the full reserve is NOT available to allocate. Mirrors buyer.run_compounder's
+    # `live_invest`; without it the page allocates money the buyer will not spend.
+    live_invest = investable * (cc.base_pct + (1 - cc.base_pct) * max(0.0, min(1.0, unlocked)))
     # Screener drop-out freeze — mirror the buy path so the tab shows the SAME frozen targets the
     # buyer acts on (else the display drifts, showing full targets on names the buyer won't buy).
     # Exclude frozen drop-outs from the fresh allocation (their budget redistributes to members),
     # then pin each to its invested value below so it reads target==current / action "hold".
     frozen = (frozen_dropouts(rows, rank_idx, getattr(cc, "freeze_buffer_topk", 0))
               if getattr(cc, "freeze_dropped_names", False) else set())
-    alloc = [r for r in ranked if r.symbol not in frozen]
+    # Names on a venue this account cannot trade get NO target, exactly as in the buy path
+    # (buyer.run_compounder partitions them out of `watch` before ranking). They stay in `ranked`
+    # so the table still lists them — with target 0 and action "—" — but they must not absorb
+    # tier budget the buyer will never spend on them: FSR and SBK were quietly holding two of the
+    # dividend tier's fifteen slots, shrinking every real dividend name's target by ~14%.
+    _blocked = {getattr(w, "symbol", "") for w in rows
+                if is_untradable_currency(getattr(w, "currency", None))}
+    alloc = [r for r in ranked if r.symbol not in frozen and r.symbol not in _blocked]
     leaders = leader_symbols(alloc, getattr(cc, "leader_top_frac", 0.0))
-    targets = target_weights(alloc, tier_alloc, investable, cc.per_name_cap_pct,
+    targets = target_weights(alloc, tier_alloc, live_invest, cc.per_name_cap_pct,
                              leader_syms=leaders,
                              leader_cap_pct=getattr(cc, "leader_cap_pct", None),
-                             conviction_power=getattr(cc, "conviction_power", 1.0))
+                             conviction_power=getattr(cc, "conviction_power", 1.0),
+                             abs_ceiling=getattr(cc, "per_name_abs_ceiling", None))
+    # Sector cap, applied BEFORE the frozen pin exactly as the buy path orders it — a frozen
+    # name's target is its invested value and must not then be scaled by a sector cap.
+    _sectors = {getattr(w, "symbol", ""): (getattr(w, "sector", "") or "") for w in rows}
+    targets = apply_sector_caps(targets, _sectors,
+                                getattr(cc, "sector_cap_pct", 0.0) * max(0.0, nlv))
     for _s in frozen:
         targets[_s] = held.get(_s, 0.0)   # pin to invested MV → target==current, "hold"
     out = []
