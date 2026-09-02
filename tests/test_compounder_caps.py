@@ -405,3 +405,99 @@ def test_exactly_divisible_gap_needs_no_tolerance():
     # price*rate divides the gap evenly -> notional == floor exactly; accepted either way.
     assert _core_shares(10_000.0, 10_000.0, 100.0, 1.0, one_share_tolerance=False) == 100
     assert _core_shares(10_000.0, 10_000.0, 100.0, 1.0) == 100
+
+
+# ── Deploy-queue budget priority (floor_verdict) ────────────────────────────
+#
+# Live regression, 2026-09-02. The 18:12 scan logged
+#     compounder_no_budget_today budget=24943 min_buy=43346
+# and then bought OKLO — rank 104 of 104. RKLB (rank 31) sat at the head of the queue with the
+# biggest gap in the book and was skipped, along with the 62 names between them, because a name
+# whose gap exceeds min_buy carries min_buy as its floor while OKLO's floor is its own small gap.
+# So on a short-budget scan the ONLY affordable names are the smallest ones, at the bottom.
+#
+# The numbers below are the real ones from that scan.
+
+_MIN_BUY = 43_346.0        # 0.4% of $10.84M NLV
+_MAX_BUY = 216_732.0       # 2% of NLV
+_HARD_FLOOR = 2_000.0      # cc.min_single_buy_floor
+
+
+def _eff_floor(gap, min_buy=_MIN_BUY, hard_floor=_HARD_FLOOR):
+    """The gap-closing escape hatch: a name whose whole gap is under min_buy may close it."""
+    return min_buy if gap >= min_buy else max(gap, hard_floor)
+
+
+def _walk(queue, budget, in_window=lambda _s: True):
+    """Walk the deploy queue the way the buy loop does, using the REAL floor_verdict.
+
+    Only the surrounding loop is reproduced here (the loop itself lives inside a ~400-line
+    method); every stop/skip/buy decision comes from the shipped function. `queue` is
+    (symbol, gap) in queue order — greens sorted by gap, biggest first."""
+    spent, bought = 0.0, []
+    for sym, gap in queue:
+        if spent >= budget:
+            break
+        brick = min(_MAX_BUY, gap, budget - spent)
+        verdict = cmp.floor_verdict(brick, _eff_floor(gap), budget - spent)
+        if verdict == "stop":
+            break
+        if verdict == "skip":
+            continue
+        if not in_window(sym):
+            continue                      # late-session defer — same day, keeps its claim
+        bought.append(sym)
+        spent += brick
+    return bought
+
+
+def test_a_leader_the_budget_cannot_fund_stops_the_scan():
+    """RKLB's real numbers: gap $103,329, floor $43,346, only $24,943 of allowance left."""
+    assert cmp.floor_verdict(24_943, 43_346, 24_943) == "stop"
+
+
+def test_the_bottom_of_the_queue_is_not_fed_from_the_leaders_budget():
+    """The exact 18:12 scan. OKLO is affordable on its own — that is the whole trap — but it
+    must never be reached, because the budget that would buy it is RKLB's."""
+    assert cmp.floor_verdict(19_393, 19_393, 24_943) == "buy"      # affordable in isolation
+    queue = [("RKLB", 103_329), ("NBIS", 101_261), ("BWXT", 100_353), ("OKLO", 19_393)]
+    assert _walk(queue, budget=24_943) == []                        # was ['OKLO']
+
+
+def test_foreign_names_keep_their_session_window_advantage():
+    """The 04:19 scan, budget $82,445. The US greens ahead are deferred to their own window,
+    and Tokyo/Sydney fill behind them exactly as before — this fix must not touch that."""
+    queue = [("RKLB", 103_329), ("NBIS", 101_261), ("6920", 42_797), ("XRO", 37_017),
+             ("OKLO", 19_393)]
+    open_now = {"6920", "XRO"}
+    assert _walk(queue, budget=82_445, in_window=lambda s: s in open_now) == ["6920", "XRO"]
+
+
+def test_the_scan_stops_once_the_remainder_is_too_small_for_anyone_ahead():
+    """Tail of that same 04:19 walk: after 6920 and XRO there is $2,631 left, so OKLO's
+    gap-closing order is refused rather than part-filled."""
+    assert cmp.floor_verdict(2_631, 19_393, 2_631) == "stop"
+
+
+def test_dust_is_skipped_and_the_walk_continues_past_it():
+    """A gap under the absolute hard floor is the NAME being too small, not the budget —
+    it must not stop a scan that can still fund everything behind it."""
+    assert cmp.floor_verdict(900, 2_000, 90_000) == "skip"
+    queue = [("DUST", 900), ("RKLB", 103_329)]
+    assert _walk(queue, budget=90_000) == ["RKLB"]
+
+
+def test_the_leader_takes_the_budget_when_it_can_be_funded():
+    queue = [("RKLB", 103_329), ("OKLO", 19_393)]
+    assert _walk(queue, budget=60_000) == ["RKLB"]
+
+
+def test_an_order_that_exactly_meets_its_floor_is_bought():
+    assert cmp.floor_verdict(43_346, 43_346, 43_346) == "buy"
+    assert cmp.floor_verdict(19_393, 19_393, 19_393) == "buy"
+
+
+def test_a_budget_equal_to_the_floor_never_stops_the_scan():
+    """The stop is for a budget that is genuinely SHORT; equality still funds the name."""
+    assert cmp.floor_verdict(19_393, 19_393, 43_346) == "buy"
+    assert cmp.floor_verdict(1_000, 2_000, 2_000) == "skip"     # dust, budget not the problem

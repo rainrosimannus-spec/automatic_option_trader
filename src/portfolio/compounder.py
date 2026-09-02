@@ -474,6 +474,38 @@ def single_buy_bounds(nlv: float, cc) -> tuple[float, float]:
     return lo, hi
 
 
+def floor_verdict(brick: float, eff_floor: float, budget_left: float) -> str:
+    """What the deploy loop does with a name whose order would come in under its floor.
+
+    "buy"  — the order clears the floor.
+    "skip" — the NAME is the problem: its whole remaining gap is dust, under the absolute
+             min_single_buy_floor. Pass over it and keep scanning; names further down the queue
+             are unaffected by it, and this is what lets a foreign name in its own session window
+             still be reached after the US greens ahead of it are deferred to theirs.
+    "stop" — the BUDGET is the problem: what is left of today's allowance cannot fund even this
+             name's floor. Every name behind it in the queue has a SMALLER gap (the queue sorts
+             greens by gap, biggest first), so the only orders that could still be placed are
+             smaller ones, lower down — i.e. today's remainder would go to a lower-priority name
+             precisely because the leader is too big to afford. Stop the scan instead. The
+             allowance is not lost: it banks, and daily_deploy_budget's accrual branch releases
+             it as one properly-sized order for the leader within a day or two.
+
+    Why this exists: on 2026-09-02 the buyer skipped RKLB (rank 31, $103k gap, floor = min_buy
+    $43,346) on a scan whose budget was $24,943, then walked 62 names down the queue and bought
+    OKLO — rank 104 of 104 — because OKLO's entire $19,393 gap fitted inside that short budget.
+    All five of that day's buys were bottom-of-queue names. Worse, each one inflated the trailing
+    `deployed_window` that the accrual subtracts, so the leader's properly-sized order could never
+    accumulate: the inversion fed itself.
+
+    The loop USED to no-op on a short-budget day — the comment at the `compounder_no_budget_today`
+    log still says so — but only by accident, because the gap-closing escape hatch was rejecting
+    every order it allowed (fixed in bc01edd). This makes that behaviour deliberate.
+    """
+    if brick >= eff_floor:
+        return "buy"
+    return "stop" if budget_left < eff_floor else "skip"
+
+
 def fair_value_price(sma200: float | None, high_52w: float | None) -> float | None:
     """The price at which fair_price_attractiveness == 0 — the GREEN/YELLOW boundary.
 

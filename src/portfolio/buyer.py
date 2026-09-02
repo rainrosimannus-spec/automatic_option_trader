@@ -1495,7 +1495,21 @@ class PortfolioBuyer:
             _gap = max(0.0, tgt - cur)
             _hard_floor = float(getattr(cc, "min_single_buy_floor", 2000.0) or 0.0)
             _eff_floor = min_buy if _gap >= min_buy else max(_gap, _hard_floor)
-            if brick < _eff_floor:
+            # A name under its floor is skipped when the NAME is too small (dust) but the whole
+            # scan STOPS when the BUDGET is too small — see compounder.floor_verdict. Continuing
+            # past a leader that today's allowance cannot fund would hand the remainder to a
+            # smaller, lower-ranked name, which is the one thing the queue order exists to
+            # prevent. Foreign names keep their session-window advantage: the budget is ample on
+            # those scans, so their US-deferred seniors return "skip", not "stop".
+            _verdict = cmp.floor_verdict(brick, _eff_floor, budget - spent)
+            if _verdict == "stop":
+                log.info("compounder_budget_held_for_leader", symbol=r.symbol,
+                         rank=rank_idx.get(r.symbol, 0), gap=round(_gap),
+                         eff_floor=round(_eff_floor), budget_left=round(budget - spent),
+                         note="today's allowance cannot fund the leader — banking it rather "
+                              "than spending it further down the queue")
+                break
+            if _verdict == "skip":
                 continue
             idx = rank_idx.get(r.symbol, 0)
             is_leader = r.symbol in leaders
