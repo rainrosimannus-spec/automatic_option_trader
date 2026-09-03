@@ -274,6 +274,71 @@ def _build_tier_breakdown(holdings, fx_rates=None) -> dict:
     return tiers
 
 
+# Categorical palette for the composition doughnuts. Six hues, validated for colour-blind
+# separation and >=3:1 contrast against this page's surface (#111827); the seventh entry is a
+# deliberate low-chroma neutral for the folded tail, which should read as recessive rather than as
+# a seventh category. Slices are drawn in this order, so the ring's wrap pair (tail -> first) was
+# checked too. Six is the cap because the seventh saturated hue no longer separates from the
+# neutral — past that, fold.
+_COMPOSITION_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300"]
+_COMPOSITION_OTHER_COLOR = "#94a3b8"
+_COMPOSITION_MAX_SLICES = 6
+
+
+def _build_composition(holdings, key_fn, fx_rates=None, base_ccy=None,
+                       park_symbol=None) -> list[dict]:
+    """Group holdings into value slices with a return % each, in the account BASE currency.
+
+    STOCKS ONLY — the parked cash-yield ETF is excluded. It is ~3x the whole invested book, so a
+    cash slice would leave every real category as an unreadable fringe.
+
+    FX matters twice over: market_value and total_invested are both in the holding's NATIVE
+    currency, so a raw sum would mix yen into euros AND the return % would come out of two
+    different scales. Both legs convert before they are added.
+
+    Returns slices already sorted by value, largest first, with everything past
+    _COMPOSITION_MAX_SLICES folded into a trailing "Other" that names its members.
+    """
+    buckets: dict[str, dict] = {}
+    for h in holdings:
+        if park_symbol and h.symbol == park_symbol:
+            continue
+        value = _to_base(h.market_value or 0, h.currency, fx_rates, base_ccy)
+        basis = _to_base(h.total_invested or 0, h.currency, fx_rates, base_ccy)
+        if value <= 0 and basis <= 0:
+            continue
+        b = buckets.setdefault(key_fn(h), {"value": 0.0, "basis": 0.0, "members": []})
+        b["value"] += value
+        b["basis"] += basis
+        b["members"].append(h.symbol)
+
+    ranked = sorted(buckets.items(), key=lambda kv: kv[1]["value"], reverse=True)
+    head, tail = ranked[:_COMPOSITION_MAX_SLICES], ranked[_COMPOSITION_MAX_SLICES:]
+    total = sum(b["value"] for _, b in ranked)
+
+    def _slice(label, b, color):
+        return {
+            "label": label,
+            "value": b["value"],
+            "basis": b["basis"],
+            "pnl": b["value"] - b["basis"],
+            "pct": (b["value"] / total * 100) if total > 0 else 0.0,
+            # Return on what was actually put in, not on today's value — same definition as the
+            # per-holding P&L% column, so the two agree when a slice holds one name.
+            "return_pct": ((b["value"] / b["basis"] - 1) * 100) if b["basis"] > 0 else 0.0,
+            "members": sorted(b["members"]),
+            "color": color,
+        }
+
+    out = [_slice(label, b, _COMPOSITION_COLORS[i]) for i, (label, b) in enumerate(head)]
+    if tail:
+        merged = {"value": sum(b["value"] for _, b in tail),
+                  "basis": sum(b["basis"] for _, b in tail),
+                  "members": [lbl for lbl, _ in tail]}
+        out.append(_slice("Other", merged, _COMPOSITION_OTHER_COLOR))
+    return out
+
+
 def _build_top_performers(holdings) -> list[dict]:
     """Top and bottom performers by unrealized P&L %."""
     performers = []
@@ -400,6 +465,23 @@ async def portfolio_page(request: Request):
     perf = _build_portfolio_performance()
     tiers = _build_tier_breakdown(holdings, fx_rates)
     performers = _build_top_performers(holdings)
+
+    # Composition doughnuts — where the invested book actually sits, by sector and by the
+    # company's home country. Stocks only (the park ETF is excluded inside _build_composition).
+    # Country is DERIVED — see src.portfolio.geography for why, and for the override list that
+    # keeps a US-listed foreign name from reading as American.
+    from src.portfolio.geography import home_country as _home_country, unmapped_symbols as _unmapped
+    sector_mix = _build_composition(
+        holdings, lambda h: (h.sector or "").strip() or "Unclassified",
+        fx_rates, _base_ccy, _park_symbol)
+    country_mix = _build_composition(
+        holdings, lambda h: _home_country(h.symbol, h.exchange, h.currency),
+        fx_rates, _base_ccy, _park_symbol)
+    # A venue code the map has never seen resolves by currency, which is a guess. Say so once per
+    # page load rather than letting the pie assert a country it does not actually know.
+    _unmapped_country = [s_ for s_ in _unmapped([h for h in holdings if h.symbol != _park_symbol])]
+    if _unmapped_country:
+        log.info("portfolio_country_unmapped", symbols=_unmapped_country)
 
     # Get portfolio account data from cache (populated hourly by scheduler)
     portfolio_margin_pct = 0.0
@@ -648,6 +730,10 @@ async def portfolio_page(request: Request):
         "perf_brkb": perf["brkb_data"],
         "current_return_pct": perf.get("current_return_pct", 0.0),
         "total_invested_usd": perf.get("total_invested_usd", 0.0),
+        # Composition doughnuts (sector / home country), invested stocks only
+        "sector_mix": sector_mix,
+        "country_mix": country_mix,
+        "country_unmapped": _unmapped_country,
         # Tier breakdown
         "tier_dividend": tiers.get("dividend", 0),
         "tier_growth": tiers.get("growth", 0),

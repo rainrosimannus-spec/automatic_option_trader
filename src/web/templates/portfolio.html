@@ -262,6 +262,119 @@ function syncInjections() {
         </div>
     </div>
 
+    <!-- ═══ Composition: sector + home country ═══ -->
+    {% if sector_mix or country_mix %}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+      {% for mix in [
+           {"id": "sectorMixChart", "title": "By Sector", "rows": sector_mix,
+            "note": "Sector as classified on the holding."},
+           {"id": "countryMixChart", "title": "By Home Country", "rows": country_mix,
+            "note": "Home country is derived from the listing venue, with an override list for companies listed away from home (Cameco, Nu, IREN, Ping An, Xero)."}
+         ] %}
+      {% if mix.rows %}
+      {% set mix_total = mix.rows | sum(attribute="value") %}
+      {% set mix_basis = mix.rows | sum(attribute="basis") %}
+      <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <div class="flex items-baseline justify-between mb-1">
+          <h2 class="text-sm font-semibold text-gray-200">{{ mix.title }}</h2>
+          <span class="text-xs text-gray-500">
+            {{ base_ccy_symbol }}{{ "{:,.0f}".format(mix_total) }} invested
+            {%- if mix_basis > 0 %} ·
+            <span class="font-mono {% if mix_total >= mix_basis %}text-emerald-400{% else %}text-red-400{% endif %}">{{ "%+.1f"|format((mix_total / mix_basis - 1) * 100) }}%</span>
+            {%- endif %}
+          </span>
+        </div>
+        <div class="text-xs text-gray-600 mb-3">Stocks only — parked cash excluded.</div>
+
+        <div class="flex flex-col sm:flex-row sm:items-center gap-4">
+          <div class="shrink-0 mx-auto sm:mx-0" style="width: 168px; height: 168px;">
+            <canvas id="{{ mix.id }}"
+                    data-mix='{{ mix.rows | tojson }}'
+                    data-ccy="{{ base_ccy_symbol }}"></canvas>
+          </div>
+          <div class="flex-1 min-w-0 space-y-1.5 text-xs">
+            {% for r in mix.rows %}
+            <div class="flex items-center justify-between gap-3">
+              <span class="flex items-center gap-2 min-w-0">
+                <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background: {{ r.color }}"></span>
+                <span class="truncate text-gray-300"
+                      {% if r.label == "Other" %}title="{{ r.members | join(', ') }}"{% endif %}>{{ r.label }}</span>
+              </span>
+              <span class="shrink-0 font-mono text-gray-500">
+                {{ base_ccy_symbol }}{{ "{:,.0f}".format(r.value) }}
+                <span class="text-gray-600">· {{ "%.0f"|format(r.pct) }}%</span>
+                <span class="{% if r.return_pct >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">{{ "%+.1f"|format(r.return_pct) }}%</span>
+              </span>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="mt-3 pt-2 border-t border-gray-800 text-xs text-gray-600">
+          Slice = share of invested value · trailing % = return on that slice's cost basis.
+          {{ mix.note }}
+          {%- if mix.id == "countryMixChart" and country_unmapped %}
+          <span class="text-amber-500">Venue not recognised for {{ country_unmapped | join(', ') }} — placed by currency.</span>
+          {%- endif %}
+        </div>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      document.querySelectorAll('canvas[data-mix]').forEach(function (el) {
+        const rows = JSON.parse(el.dataset.mix || '[]');
+        if (!rows.length) return;
+        const ccy = el.dataset.ccy || '';
+        const total = rows.reduce((a, r) => a + r.value, 0);
+        new Chart(el, {
+          type: 'doughnut',
+          data: {
+            labels: rows.map(r => r.label),
+            datasets: [{
+              data: rows.map(r => r.value),
+              backgroundColor: rows.map(r => r.color),
+              // Border is the card surface, not a lighter shade — it reads as a gap between
+              // slices rather than as an outline, which is what keeps adjacent hues separable.
+              borderColor: '#111827',
+              borderWidth: 2,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            cutout: '62%',
+            plugins: {
+              legend: { display: false },   // the HTML list beside the chart is the legend
+              tooltip: {
+                backgroundColor: '#1f2937',
+                borderColor: '#374151', borderWidth: 1,
+                titleColor: '#f3f4f6', bodyColor: '#e5e7eb',
+                callbacks: {
+                  label: function (c) {
+                    const r = rows[c.dataIndex];
+                    const pct = total > 0 ? (r.value / total * 100).toFixed(0) : '0';
+                    const out = [
+                      ccy + Math.round(r.value).toLocaleString() + ' · ' + pct + '% of invested',
+                      'return ' + (r.return_pct >= 0 ? '+' : '') + r.return_pct.toFixed(1) + '%'
+                        + '  (' + (r.pnl >= 0 ? '+' : '') + ccy
+                        + Math.round(r.pnl).toLocaleString() + ')',
+                    ];
+                    if (r.label === 'Other') out.push(r.members.join(', '));
+                    return out;
+                  },
+                },
+              },
+            },
+          },
+        });
+      });
+    });
+    </script>
+    {% endif %}
+
     <!-- ═══ Top & Bottom Performers ═══ -->
     {% if top_performers %}
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
