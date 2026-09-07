@@ -22,6 +22,17 @@ if ! tmux has-session -t portfolio 2>/dev/null; then
     echo "$TIMESTAMP [WATCHDOG] portfolio gateway session started" >> $LOGFILE
 fi
 
+# ── Check portfolio login-form watcher ───────────────────
+# Persistent helper that re-types credentials when the portfolio gateway drops to a blank login
+# form (IBC can't inject them). Started by start-gateway-portfolio.sh; revive it here if it died.
+if ! pgrep -u rain -f "portfolio-gw-autofill.sh" > /dev/null; then
+    echo "$TIMESTAMP [WATCHDOG] portfolio autofill watcher missing — restarting" >> $LOGFILE
+    nohup /home/rain/portfolio-gw-autofill.sh >/dev/null 2>&1 &
+fi
+
+# ── Reap orphaned gateway JVMs (nightly self-restart duplicates) ──
+/home/rain/gw-orphan-reaper.sh
+
 # ── Check trader (web dashboard + scheduler) ─────────────
 if ! tmux has-session -t trader 2>/dev/null; then
     echo "$TIMESTAMP [WATCHDOG] trader session missing — restarting" >> $LOGFILE
@@ -32,7 +43,11 @@ if ! tmux has-session -t trader 2>/dev/null; then
 fi
 
 # Check if python process is running inside trader session
-if ! pgrep -f "python.*src.main" > /dev/null; then
+# NOTE: scope to user 'rain' — the son's nexbit trader runs an IDENTICAL
+# `/home/nexbit/mesicap_trader/.venv/bin/python -m src.main`, so a bare
+# `pgrep -f "python.*src.main"` matched HIS process and reported "trader OK"
+# even when rain's trader was dead → auto-restart never fired.
+if ! pgrep -u rain -f "python.*src.main" > /dev/null; then
     echo "$TIMESTAMP [WATCHDOG] python process dead — restarting trader session" >> $LOGFILE
     tmux kill-session -t trader 2>/dev/null
     sleep 2
