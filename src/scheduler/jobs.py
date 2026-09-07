@@ -1833,7 +1833,7 @@ def create_scheduler() -> BackgroundScheduler:
             name="Portfolio Monthly Screen",
             max_instances=1,
             replace_existing=True,
-            misfire_grace_time=1800,   # if the 03:00 fire is delayed while the process is UP, still run
+            misfire_grace_time=1800,   # if the 22:30 fire is delayed while the process is UP, still run
             coalesce=True,
         )
 

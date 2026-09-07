@@ -423,7 +423,9 @@ def _assess_structural_risks():
 
 def job_portfolio_monthly_screen(cfg: PortfolioConfig):
     """
-    Monthly screener — first Monday of each month, 2 AM ET.
+    Monthly screener — first Monday of each month, 22:30 UTC (see portfolio_rescreen in
+    src/scheduler/jobs.py). Sets the Screener-page running flag for its whole duration so a
+    scheduled run shows on the page exactly like a manual Run-now.
 
     Four phases:
       1. Screen global universe → update screened_universe.yaml + options_universe.yaml
@@ -440,6 +442,15 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
     if not cfg.enabled:
         return
 
+    from src.portfolio.screener_flag import set_running_flag, clear_running_flag
+    set_running_flag()
+    try:
+        _job_portfolio_monthly_screen(cfg)
+    finally:
+        clear_running_flag()
+
+
+def _job_portfolio_monthly_screen(cfg: PortfolioConfig):
     with get_portfolio_lock():
         log.info("portfolio_monthly_screen_started",
                  date=datetime.utcnow().strftime("%Y-%m-%d"))
