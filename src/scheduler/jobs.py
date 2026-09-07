@@ -1794,27 +1794,39 @@ def create_scheduler() -> BackgroundScheduler:
             next_run_time=metrics_first_run,
         )
 
-        # Monthly screener — first Monday of each month, 22:30 UTC (Monday EVENING; 01:30 Tuesday
-        # in Tallinn during EEST, 00:30 during EET).
+        # One wall-clock for the screener, its startup catch-up, and the next-night review.
+        _SCREEN_TZ = pytz.timezone("US/Eastern")
+        _SCREEN_HOUR_ET, _SCREEN_MINUTE_ET = 17, 5
+
+        # Monthly screener — first Monday of each month, 17:05 US/Eastern (Monday EVENING;
+        # 21:05 UTC in summer / 22:05 UTC in winter; 23:05 / 23:05 in Luxembourg — CEST and EST
+        # shift the same weeks, so it reads 23:05 local all year bar a fortnight of DST skew).
         # Screens global universe, updates watchlist, CC suggestions, reclassifications.
         #
-        # WHY THIS SLOT: the run takes 30-60 min and holds get_portfolio_lock() the whole time —
-        # and that lock IS the options side's get_ib_lock() (see src/portfolio/connection.py), so
-        # it stalls EVERY IBKR call in the process, both accounts, for the duration. The trading
-        # clock has almost no gap: US post-market ends 20:00 ET = 00:00 UTC, the exact minute
-        # Tokyo opens, and US pre-market starts 04:00 ET = 08:00 UTC, the exact minute Hong Kong
-        # closes, with Europe filling 07:00-15:30 UTC on top. The one nightly gap is bounded by
-        # two deadlines, and BOTH are fixed in UTC — which is why this trigger is UTC, not local:
+        # WHY THIS SLOT: the run takes 30-75 min (Aug 2026: 22:30 -> 23:46 UTC) and holds
+        # get_portfolio_lock() the whole time — and that lock IS the options side's get_ib_lock()
+        # (see src/portfolio/connection.py), so it stalls EVERY IBKR call in the process, both
+        # accounts, for the duration. It also needs the portfolio gateway UP throughout (contract
+        # qualification, substitute_us_twins). The trading clock has one nightly dead window:
+        #   17:00 ET  — US after-market fallback fill ends (aftermarket_deploy_minutes=60 past the
+        #               16:00 close; job_portfolio_aftermarket_fill). After this nothing trades in
+        #               either account until Asia: the per-exchange option scans run only inside
+        #               each venue's session, compounder green buys only in a session's last 2h.
         #   23:40 UTC — the portfolio gateway's DAILY auto-restart begins (verified in
         #               ~/ibc/logs/portfolio/*.txt: 23:40 Exit Session Setting -> 23:45:00
-        #               "Restart in progress" -> 23:45:06 "Login has completed"). A run still
-        #               going at 23:40 loses its IBKR connection mid-flight.
-        #   00:00 UTC — Tokyo opens (09:00 JST; Japan has no DST, so this never moves).
-        # That leaves 22:30-23:40 UTC = 70 minutes for a 30-60 min job. The gateway comes back
-        # only ~15 min before Tokyo, so there is no usable slot AFTER the restart either — the run
-        # must finish before it, not wait for it. Pinning to Tallinn local would drift while the
-        # deadlines do not: 01:30 local is 22:30 UTC in summer but 23:30 UTC in winter, i.e. 10
-        # minutes before the restart and certain to be killed.
+        #               "Restart in progress" -> 23:45:06 "Login has completed"; weekend restarts
+        #               take far longer). A run still going at 23:40 loses IBKR mid-flight.
+        #   00:00 UTC — Tokyo and Sydney open (09:00 JST / 10:00 AEST; 23:00 UTC under AEDT).
+        # There is NO slot after the restart: the gateway is back ~15 min before Tokyo, and the
+        # trader's health check reconnects on a 5-min cadence on top — so the run must finish
+        # BEFORE the restart, and the only way to buy margin is to start earlier. 17:05 ET gives
+        # 21:05-23:40 UTC = 155 min in summer and 22:05-23:40 UTC = 95 min in winter, against a
+        # 75-min worst case. The previous 22:30 UTC slot left 70 min and August ran 6 min past it.
+        #
+        # Pinned to US/Eastern, not UTC and not local: the opening deadline (US after-market)
+        # moves with US DST while the restart is fixed in UTC, so an ET pin keeps the front margin
+        # constant and only the back margin breathes (95-155 min), which is the safe direction.
+        # 17:05 not 17:00 so the last 15-min after-market pass (up to 16:59) has released the lock.
         #
         # Weekday, not weekend: IBKR maintenance runs at the weekend and there is no market data,
         # and job_portfolio_monthly_screen aborts on an empty result
@@ -1825,20 +1837,20 @@ def create_scheduler() -> BackgroundScheduler:
             CronTrigger(
                 day_of_week="mon",
                 day="1-7",      # first Monday of month (day 1-7 that falls on Monday)
-                hour=22,
-                minute=30,
-                timezone=utc_tz,
+                hour=_SCREEN_HOUR_ET,
+                minute=_SCREEN_MINUTE_ET,
+                timezone=_SCREEN_TZ,
             ),
             id="portfolio_rescreen",
             name="Portfolio Monthly Screen",
             max_instances=1,
             replace_existing=True,
-            misfire_grace_time=1800,   # if the 22:30 fire is delayed while the process is UP, still run
+            misfire_grace_time=1800,   # if the 17:05 ET fire is delayed while the process is UP, still run
             coalesce=True,
         )
 
         # Startup catch-up for the monthly screener. This scheduler uses an in-memory jobstore (jobs are
-        # re-added fresh on every startup), so a first-Monday 22:30 UTC fire that was MISSED while the
+        # re-added fresh on every startup), so a first-Monday 17:05 ET fire that was MISSED while the
         # process was down — OR a run that STARTED but was killed mid-run by a restart (it takes 30-60
         # min) — is NOT retried by APScheduler; next_run just rolls to next month. So misfire_grace_time
         # alone can't help here. Instead: read the screener run-log and, if this month's run is due but
@@ -1851,7 +1863,9 @@ def create_scheduler() -> BackgroundScheduler:
             _today_utc = dt.now(pytz.UTC).date()
             _first = _today_utc.replace(day=1)
             _fm = _first + timedelta(days=(7 - _first.weekday()) % 7)   # first Monday of this month
-            _fire_utc = pytz.UTC.localize(datetime(_fm.year, _fm.month, _fm.day, 22, 30))
+            _fire_utc = _SCREEN_TZ.localize(
+                datetime(_fm.year, _fm.month, _fm.day, _SCREEN_HOUR_ET, _SCREEN_MINUTE_ET)
+            ).astimezone(pytz.UTC)
             _completed_this_month = False
             try:
                 _rl = _json.loads(_Path("data/screener_last_run.json").read_text())
@@ -1874,19 +1888,19 @@ def create_scheduler() -> BackgroundScheduler:
         except Exception as e:
             log.warning("monthly_screen_catchup_setup_failed", error=str(e))
 
-        # Monthly holdings review — the night AFTER the screener: 22:30 UTC on the Tuesday that
+        # Monthly holdings review — the night AFTER the screener: 17:05 ET on the Tuesday that
         # follows the first Monday. Reviews holdings, CC harvesting + trailing stops.
         #
         # Must run after the screener, not before: it reads the screened-universe files the
         # screener writes (_get_current_screened_symbols / _get_current_screened_tiers), and one
         # of its two rules keys on "stock dropped off screened universe" — the screener's own
-        # output. At its previous 4 AM ET slot it ran ~14h AHEAD of the 22:30 UTC screener and
+        # output. At its previous 4 AM ET slot it ran ~14h AHEAD of the evening screener and
         # would have acted on the PREVIOUS month's universe. It also takes get_portfolio_lock(),
         # and 4 AM ET = 08:00 UTC is the European open plus Hong Kong's close.
         #
-        # Same 22:30-23:40 UTC quiet window as the screener (see the rationale on that job), one
-        # night later — the screener can run until 23:30 and the gateway restarts at 23:40, so
-        # there is no room to chain them on the same night.
+        # Same 17:05 ET -> 23:40 UTC quiet window as the screener (see the rationale on that job),
+        # one night later — the screener alone can take 75 min of a 95-min winter window, so there
+        # is no room to chain them on the same night.
         #
         # day="2-8" + Tuesday is exactly the Tuesday after the first Monday, with no guard needed:
         # the first Monday is day 1-7, so its Tuesday is day 2-8, and only one Tuesday can fall in
@@ -1896,9 +1910,9 @@ def create_scheduler() -> BackgroundScheduler:
             CronTrigger(
                 day_of_week="tue",
                 day="2-8",
-                hour=22,
-                minute=30,
-                timezone=utc_tz,
+                hour=_SCREEN_HOUR_ET,
+                minute=_SCREEN_MINUTE_ET,
+                timezone=_SCREEN_TZ,
             ),
             id="portfolio_monthly_review",
             name="Portfolio Monthly Holdings Review",

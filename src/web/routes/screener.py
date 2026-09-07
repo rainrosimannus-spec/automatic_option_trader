@@ -1,7 +1,7 @@
 """
 Screener route — read-only log of monthly universe screener runs.
 Shows changes only: additions, removals, reclassifications, suggestions created.
-The actual screening runs automatically on the first Monday of each month at 22:30 UTC.
+The actual screening runs automatically on the first Monday of each month at 17:05 ET (after the US after-market).
 """
 from __future__ import annotations
 

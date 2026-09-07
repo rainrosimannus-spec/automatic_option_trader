@@ -423,7 +423,7 @@ def _assess_structural_risks():
 
 def job_portfolio_monthly_screen(cfg: PortfolioConfig):
     """
-    Monthly screener — first Monday of each month, 22:30 UTC (see portfolio_rescreen in
+    Monthly screener — first Monday of each month, 17:05 US/Eastern (see portfolio_rescreen in
     src/scheduler/jobs.py). Sets the Screener-page running flag for its whole duration so a
     scheduled run shows on the page exactly like a manual Run-now.
 
@@ -702,7 +702,7 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig):
 
             # ══════════════════════════════════════════════════════
             # PHASE 3: Holdings review runs as separate job (job_portfolio_monthly_review)
-            # Scheduled the night after this screener — 22:30 UTC, Tuesday after the first Monday
+            # Scheduled the night after this screener — 17:05 ET, Tuesday after the first Monday
             # ══════════════════════════════════════════════════════
             log.info("portfolio_monthly_screen_phase3_skipped",
                      reason="holdings review is now a separate scheduled job")
@@ -796,7 +796,7 @@ job_portfolio_annual_rescreen = job_portfolio_monthly_screen
 
 def job_portfolio_monthly_review(cfg: PortfolioConfig):
     """
-    Monthly holdings review — runs 22:30 UTC on the Tuesday after the first Monday,
+    Monthly holdings review — runs 17:05 ET on the Tuesday after the first Monday,
     i.e. the night after job_portfolio_monthly_screen, whose universe files it reads.
 
     For each holding, independently evaluates two actions:
