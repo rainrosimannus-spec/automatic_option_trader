@@ -32,8 +32,12 @@ LOCK="$GWLOG/autofill.lock"
 CREDS=/home/rain/.portfolio-gw-creds
 CFG=/opt/ibc/config-portfolio.ini
 PORT=7496
-TICK=15            # seconds between checks
-GRACE=45           # seconds a "Setting password" line must be old before we act on it
+TICK=5             # seconds between checks (cheap: one ss + one xdotool search)
+GRACE=20           # seconds a "Setting password" line must be old before we act on it.
+                   # IBC types the form ~2s after launch and its Login click has NEVER taken on
+                   # this gateway (autofill.log: every cold-start login was typed here), so this
+                   # grace is the whole delay before the IB Key push reaches the phone. 45s + a
+                   # 15s tick put the push 60-250s after restart-all.sh said "approve now".
 FAST_ATTEMPTS=3    # attempts allowed at 60s spacing per episode ...
 FAST_GAP=60
 SLOW_GAP=900       # ... then one every 15 min
@@ -43,7 +47,12 @@ log(){ echo "$(date '+%F %T') $*" >> "$LOG" 2>/dev/null; }
 # single instance — a second copy (start script re-run, watchdog) just exits
 mkdir -p "$GWLOG"
 exec 9>"$LOCK"
-flock -n 9 || exit 0
+# WAIT for the lock rather than bail: when start-gateway-portfolio.sh pkills the previous copy, that
+# copy's in-flight `sleep` child inherits fd 9 and holds the flock for up to one tick after its
+# parent is gone. A non-blocking flock here lost that race (2026-09-09 07:46: no watcher until the
+# watchdog's 07:50 cron) and the gateway sat on a stalled login form for 4 min. The sleeps below
+# also close fd 9 (9>&-) so the child never holds it in the first place.
+flock -w 30 9 || exit 0
 
 IBLOGIN=""; IBPASS=""
 if [ -r "$CREDS" ]; then . "$CREDS"; fi
@@ -88,7 +97,7 @@ type_credentials(){   # $1 = attempt number
 log "watcher started (pid $$) — passive until :$PORT is down AND the login form is stalled"
 attempts=0; last_attempt=0; last_tfa=0; was_up=0; noted_tfa=0
 while true; do
-  sleep "$TICK"
+  sleep "$TICK" 9>&-
   if port_up; then
     if [ "$was_up" -eq 0 ]; then
       [ "$attempts" -gt 0 ] && log "logged in — :$PORT up after $attempts attempt(s)"
@@ -119,7 +128,7 @@ while true; do
   fi
   # give the login ~40s: either :7496 binds, a 2FA push goes out, or we retry on the next tick
   for i in $(seq 1 8); do
-    sleep 5
+    sleep 5 9>&-
     if port_up; then break; fi
     if [ -n "$(tfa_window)" ]; then last_tfa=$(date +%s); log "2FA reached (attempt $attempts) — creds accepted, IB Key push sent; next retry no sooner than $((TFA_GAP/60)) min"; break; fi
   done
