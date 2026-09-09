@@ -146,6 +146,11 @@
                     🛑 Cancel Order
                 </button>
             </form>
+            {% elif s.status in ('approved', 'queued') and 'review' in s.action %}
+            <div class="w-24 px-3 py-2 rounded-lg text-center bg-emerald-900/50 border border-emerald-600/50"
+                 title="Review-only card: acknowledged, nothing is sent to IBKR — act on it manually if you agree">
+                <span class="text-emerald-300 text-xs font-medium">✓ Noted<br>manual</span>
+            </div>
             {% elif s.status in ('approved', 'queued') %}
             <div class="w-24 px-3 py-2 rounded-lg text-center bg-emerald-900/50 border border-emerald-600/50">
                 <span class="text-emerald-300 text-xs font-medium">✓ Approved<br>executing…</span>
@@ -157,15 +162,19 @@
                     🛑 Cancel
                 </button>
             </form>
-            {% elif auto_approve %}
+            {% elif auto_approve and 'review' not in s.action %}
             <div class="w-24 px-3 py-2 rounded-lg text-center bg-yellow-900/50 border border-yellow-600/50">
                 <span class="text-yellow-300 text-xs font-medium">⏳ Sending<br>to IBKR</span>
             </div>
             {% else %}
+            {# Review-only cards (sell/reduce/CC review from the monthly review) are NEVER sent to
+               IBKR, even under auto-approve — approve_suggestion returns before execution for
+               REVIEW_ONLY_ACTIONS. So they always get buttons, and the button says what it does. #}
             <form method="post" action="/suggestions/approve/{{ s.id }}">
                 <input type="hidden" name="source" value="{{ source }}">
-                <button class="w-24 px-4 py-2 rounded-lg font-medium bg-emerald-600 hover:bg-emerald-500 text-white text-sm transition">
-                    ✅ Approve
+                <button class="w-24 px-4 py-2 rounded-lg font-medium bg-emerald-600 hover:bg-emerald-500 text-white text-sm transition"
+                        {% if 'review' in s.action %}title="Marks the review as acknowledged. Nothing is sent to IBKR — you act on it manually."{% endif %}>
+                    {% if 'review' in s.action %}✅ Noted{% else %}✅ Approve{% endif %}
                 </button>
             </form>
             <form method="post" action="/suggestions/reject/{{ s.id }}">

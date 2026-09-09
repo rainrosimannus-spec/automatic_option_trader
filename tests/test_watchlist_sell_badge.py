@@ -7,20 +7,25 @@ auto-execute. Under-reporting is safe; showing SELL for a card that is gone is n
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from src.web.routes.watchlist import active_sell_map
+from src.web.routes.watchlist import active_sell_map, badge_reason
 
 NOW = datetime(2026, 9, 1, 12, 0, 0)
 
 
-def _row(symbol, action="sell_stock_review", status="pending", expires_at=None):
-    return SimpleNamespace(symbol=symbol, action=action, status=status,
+def _row(symbol, action="sell_stock_review", status="pending", expires_at=None, rationale=None):
+    return SimpleNamespace(symbol=symbol, action=action, status=status, rationale=rationale,
                            expires_at=expires_at if expires_at is not None
                            else NOW + timedelta(hours=6))
 
 
+def _actions(m):
+    """The badge's action-only view — most tests care which card badges, not its wording."""
+    return {k: v["action"] for k, v in m.items()}
+
+
 def test_all_three_sell_side_review_actions_badge():
-    m = active_sell_map([_row("LRCX"), _row("VRT", action="reduce_position_review"),
-                         _row("MSFT", action="sell_covered_call_review")], NOW)
+    m = _actions(active_sell_map([_row("LRCX"), _row("VRT", action="reduce_position_review"),
+                                  _row("MSFT", action="sell_covered_call_review")], NOW))
     assert m == {"LRCX": "sell_stock_review", "VRT": "reduce_position_review",
                  "MSFT": "sell_covered_call_review"}
 
@@ -28,7 +33,7 @@ def test_all_three_sell_side_review_actions_badge():
 def test_covered_call_review_badges_too():
     # A covered call sells the shares if it is exercised — a different ROUTE to selling, same
     # question for the badge to answer.
-    assert active_sell_map([_row("MSFT", action="sell_covered_call_review")], NOW) == {
+    assert _actions(active_sell_map([_row("MSFT", action="sell_covered_call_review")], NOW)) == {
         "MSFT": "sell_covered_call_review"}
 
 
@@ -39,7 +44,7 @@ def test_buy_side_actions_never_badge():
 
 def test_only_undecided_cards_badge():
     for status in ("pending", "submitted", "approved", "queued"):
-        assert active_sell_map([_row("LRCX", status=status)], NOW) == {"LRCX": "sell_stock_review"}
+        assert _actions(active_sell_map([_row("LRCX", status=status)], NOW)) == {"LRCX": "sell_stock_review"}
     for status in ("executed", "rejected", "cancelled", "expired"):
         assert active_sell_map([_row("LRCX", status=status)], NOW) == {}
 
@@ -60,5 +65,20 @@ def test_symbol_case_is_normalised_for_template_lookup():
 
 def test_latest_card_wins_when_a_name_has_two():
     # Rows arrive oldest-first; a later reduce card supersedes an earlier sell card.
-    m = active_sell_map([_row("LRCX"), _row("LRCX", action="reduce_position_review")], NOW)
+    m = _actions(active_sell_map([_row("LRCX"), _row("LRCX", action="reduce_position_review")], NOW))
     assert m == {"LRCX": "reduce_position_review"}
+
+
+def test_badge_carries_the_cards_reason_for_the_tooltip():
+    # Rain asked WHY a SELL badge is there (2026-09-09); the card's rationale is the answer, with
+    # the writers' "MONTHLY REVIEW: " prefix dropped as hover noise.
+    m = active_sell_map([_row("TT", rationale="MONTHLY REVIEW: TT (growth) revenue growth slowing "
+                                              "(+7.5% YoY, below 15% threshold).")], NOW)
+    assert m["TT"] == {"action": "sell_stock_review",
+                       "reason": "TT (growth) revenue growth slowing (+7.5% YoY, below 15% threshold)."}
+
+
+def test_badge_reason_survives_missing_rationale():
+    assert badge_reason(None) == ""
+    assert badge_reason("  plain text  ") == "plain text"
+    assert active_sell_map([_row("LRCX")], NOW)["LRCX"]["reason"] == ""

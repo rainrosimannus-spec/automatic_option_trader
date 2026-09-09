@@ -30,24 +30,37 @@ def _get_auto_approve_state(source: str) -> bool:
         return state is not None and state.value == "true"
 
 
+# Which stored `source` values each page owns. The monthly screener/review writes its cards with
+# source="rescreen" (src/portfolio/scheduler.py — sell_stock_review, reduce_position_review,
+# sell_covered_call_review, ...) and NOTHING rendered that source, so every review card ever
+# produced was invisible here — the /watchlist SELL badge and the alert email were the only
+# places they showed, with no way to accept or reject (found 2026-09-09). They are portfolio
+# cards; the page filtered them out only because it matched one literal string.
+_PAGE_SOURCES = {
+    "portfolio": ("portfolio", "rescreen"),
+    "options": ("options",),
+}
+
+
 def _get_suggestions_by_source(source: str):
     """Get pending and recent suggestions filtered by source."""
+    sources = _PAGE_SOURCES.get(source, (source,))
     all_pending = get_pending_suggestions()
     # Exclude submitted — they are fetched separately and prepended below
-    pending = [s for s in all_pending if s.source == source and s.status != "submitted"]
+    pending = [s for s in all_pending if s.source in sources and s.status != "submitted"]
 
     # Also include "submitted" orders (sent to IBKR but not yet filled)
     with get_db() as db:
         submitted = db.query(TradeSuggestion).filter(
             TradeSuggestion.status == "submitted",
-            TradeSuggestion.source == source,
+            TradeSuggestion.source.in_(sources),
         ).order_by(TradeSuggestion.created_at.desc()).all()
         # Prepend submitted orders to pending list so they show at top
         pending = submitted + pending
 
         from sqlalchemy import or_
         recent = db.query(TradeSuggestion).filter(
-            TradeSuggestion.source == source,
+            TradeSuggestion.source.in_(sources),
             TradeSuggestion.status.in_(["approved", "rejected", "expired", "executed", "submitted", "cancelled"]),
         ).order_by(TradeSuggestion.created_at.desc()).limit(40).all()
         # Force-load all attributes before session closes

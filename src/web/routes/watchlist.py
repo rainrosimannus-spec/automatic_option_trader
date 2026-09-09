@@ -49,12 +49,22 @@ _SELL_REVIEW_ACTIONS = ("sell_stock_review", "reduce_position_review", "sell_cov
 _ACTIVE_STATUSES = ("pending", "submitted", "approved", "queued")
 
 
-def active_sell_map(rows, now) -> dict[str, str]:
-    """symbol -> the active sell/reduce review action on it (pure; latest row wins).
+def badge_reason(rationale) -> str:
+    """The card's rationale as hover text: the 'MONTHLY REVIEW: ' prefix every review writer
+    prepends is noise on a badge, and a None (older rows) must render as nothing, not 'None'."""
+    text = (rationale or "").strip()
+    if text.upper().startswith("MONTHLY REVIEW:"):
+        text = text[len("MONTHLY REVIEW:"):].strip()
+    return text
+
+
+def active_sell_map(rows, now) -> dict[str, dict]:
+    """symbol -> {"action", "reason"} of the active sell/reduce review card on it (pure; latest
+    row wins). "reason" is the card's rationale (badge_reason), so the badge can say WHY.
 
     Authoritative filter — the SQL below only narrows what we load. Re-checks action and status
     here too so the badge can never outlive the rule, whatever the query returns."""
-    out: dict[str, str] = {}
+    out: dict[str, dict] = {}
     for r in rows:
         action = getattr(r, "action", None)
         if action not in _SELL_REVIEW_ACTIONS:
@@ -66,13 +76,13 @@ def active_sell_map(rows, now) -> dict[str, str]:
             continue                      # expired but not yet swept — no stale SELL
         sym = (getattr(r, "symbol", "") or "").upper()
         if sym:
-            out[sym] = action
+            out[sym] = {"action": action, "reason": badge_reason(getattr(r, "rationale", None))}
     return out
 
 
-def _sell_reviews() -> dict[str, str]:
-    """symbol -> the active sell/reduce review action on it. Empty on any error; a missing badge is
-    the safe failure — it can only under-report, never invent a SELL."""
+def _sell_reviews() -> dict[str, dict]:
+    """symbol -> {"action", "reason"} of the active sell/reduce review card on it. Empty on any
+    error; a missing badge is the safe failure — it can only under-report, never invent a SELL."""
     from datetime import datetime
     try:
         with get_db() as db:

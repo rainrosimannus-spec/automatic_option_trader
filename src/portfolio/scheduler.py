@@ -1323,9 +1323,14 @@ def _review_existing_holdings_monthly(
                                 "reason": f"Growth→Dividend: rev growth {rev_yoy:+.1f}%, div yield {div_yield:.1f}%",
                             })
                         else:
-                            # Growth slowing, no dividend — check how long held
-                            # Use earliest buy transaction for this symbol
-                            held_days = 999
+                            # Growth slowing, no dividend — check how long held.
+                            # Use earliest buy transaction for this symbol. The compounder writes
+                            # stock buys as action "buy" (buyer.py PortfolioTransaction); the older
+                            # names are kept in case a writer ever uses them. UNKNOWN hold time
+                            # must fail CLOSED (0 days → no sell card): a 999-day fallback here
+                            # filtered on actions that were never written and put a "held 6+ months"
+                            # sell card on TT five days after purchase (2026-09-08).
+                            held_days = 0
                             try:
                                 from src.core.database import get_db as _get_db2
                                 from src.portfolio.models import PortfolioTransaction as _PTX
@@ -1334,12 +1339,15 @@ def _review_existing_holdings_monthly(
                                 with _get_db2() as _db2:
                                     first_tx = _db2.query(_func.min(_PTX.created_at)).filter(
                                         _PTX.symbol == symbol,
-                                        _PTX.action.in_(["buy_stock", "put_assigned"]),
+                                        _PTX.action.in_(["buy", "buy_stock", "put_assigned"]),
                                     ).scalar()
                                     if first_tx:
                                         held_days = (_date.today() - first_tx.date()).days
-                            except Exception:
-                                pass
+                                    else:
+                                        log.warning("monthly_review_hold_days_unknown", symbol=symbol,
+                                                    msg="no buy transaction — treating as newly held, no sell card")
+                            except Exception as _e:
+                                log.warning("monthly_review_hold_days_lookup_failed", symbol=symbol, error=str(_e))
                             if held_days > 180:  # held 6+ months with slowing growth, no dividend
                                 rationale = (
                                     f"MONTHLY REVIEW: {symbol} (growth) revenue growth slowing "
