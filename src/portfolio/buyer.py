@@ -70,6 +70,26 @@ _SMART_HANGS_EXCH: set[str] = set()
 _CCY_BOARD_LOT = {"JPY": 100}
 
 
+def _sub_lot_verdict(shares: int, lot: int, lot_value: float | None, eff_max: float | None) -> str:
+    """What to do when a sized buy is below one board lot: "round_up" to exactly one lot, or "skip".
+
+    Flooring to the lot gives 0 shares, and leaving the card 'approved' had the 30s executor
+    re-qualifying the contract and logging portfolio_order_below_one_lot forever — 938 times on
+    2026-09-09 for 6920 (gap 66 sh vs a 100-sh lot) — while the name sat 10% underweight. The
+    lot is the smallest fill the venue allows, so:
+      * gap >= half a lot → buy one lot. Overshoots the target by < half a lot, inside the
+        ~10% band the compounder already tolerates; and never larger than eff_max (the NLV-scaled
+        per-order cap from single_buy_bounds) when that and the lot's value are known.
+      * gap < half a lot → skip: the overshoot would exceed the gap itself. The card is retired
+        (not retried) and the next scan re-sizes once the gap has grown.
+    Pure; lot_value/eff_max may be None (unknown FX / config) → only the half-lot rule applies."""
+    if shares * 2 < lot:
+        return "skip"
+    if lot_value and eff_max and lot_value > eff_max:
+        return "skip"
+    return "round_up"
+
+
 def _board_lot(details, currency: str | None) -> int:
     """Trading unit (board lot) for a contract. Prefer what IBKR reports for THIS contract
     (sizeIncrement, then minSize); fall back to the venue's known unit by currency; default 1
@@ -4332,15 +4352,41 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         if lot > 1:
             rounded = (shares // lot) * lot
             if rounded <= 0:
-                log.warning("portfolio_order_below_one_lot", id=suggestion_id, symbol=symbol,
-                            exchange=exch, shares=shares, lot=lot)
-                with get_db() as db:
-                    s = db.query(TradeSuggestion).filter(
-                        TradeSuggestion.id == suggestion_id).first()
-                    if s:
-                        s.status = "approved"   # can't afford a whole lot yet — retry as the gap grows
-                        s.review_note = f"Below one {lot}-share board lot on {exch} — will retry"
-                return "approved"
+                # Below one lot. Decide once — round UP to a single lot or retire the card — rather
+                # than leave it 'approved' for the 30s executor to retry (and re-qualify) forever.
+                _lot_value = _eff_max = None
+                try:
+                    from src.portfolio.connection import get_cached_portfolio_account
+                    from src.portfolio.compounder import single_buy_bounds
+                    _acct = get_cached_portfolio_account() or {}
+                    _rate = 1.0 if ccy in ("USD", "BASE") else (_acct.get("fx_rates") or {}).get(ccy)
+                    if _rate:
+                        _lot_value = lot * float(limit_price) * float(_rate)
+                    _nlv = float(_acct.get("nlv") or 0)
+                    if _nlv > 0:
+                        _eff_max = single_buy_bounds(_nlv, get_settings().portfolio.compounder)[1]
+                except Exception as _e:
+                    log.warning("portfolio_order_lot_bounds_unavailable", id=suggestion_id, symbol=symbol,
+                                error=str(_e))
+                verdict = _sub_lot_verdict(shares, lot, _lot_value, _eff_max)
+                if verdict == "round_up":
+                    log.info("portfolio_order_lot_rounded_up", id=suggestion_id, symbol=symbol,
+                             exchange=exch, lot=lot, raw_shares=shares, shares=lot,
+                             lot_value=_lot_value, eff_max=_eff_max)
+                    rounded = lot
+                else:
+                    log.warning("portfolio_order_below_one_lot", id=suggestion_id, symbol=symbol,
+                                exchange=exch, shares=shares, lot=lot, lot_value=_lot_value,
+                                eff_max=_eff_max)
+                    with get_db() as db:
+                        s = db.query(TradeSuggestion).filter(
+                            TradeSuggestion.id == suggestion_id).first()
+                        if s:
+                            s.status = "expired"   # retired, NOT retried — the next scan re-sizes it
+                            s.reviewed_at = datetime.utcnow()
+                            s.review_note = (f"Gap {shares} sh is under half a {lot}-share board lot on "
+                                             f"{exch} — skipped until the gap grows")
+                    return "expired"
             if rounded != shares:
                 log.info("portfolio_order_lot_rounded", id=suggestion_id, symbol=symbol,
                          exchange=exch, lot=lot, raw_shares=shares, shares=rounded)

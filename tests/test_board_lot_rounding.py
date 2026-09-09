@@ -7,7 +7,7 @@ sizeIncrement/minSize, else the venue's known unit) so the caller can floor to i
 """
 from types import SimpleNamespace
 
-from src.portfolio.buyer import _board_lot
+from src.portfolio.buyer import _board_lot, _sub_lot_verdict
 
 
 def _details(**kw):
@@ -40,3 +40,27 @@ def test_increment_of_one_falls_through_to_default():
 def test_rounding_math_454_to_400():
     lot = _board_lot(None, "JPY")
     assert (454 // lot) * lot == 400
+
+
+# ── Below one lot: round up or retire, never retry forever (2026-09-09) ─────────────────────
+# 6920: gap 66 sh vs a 100-sh Tokyo lot floored to 0 and the 'approved' card was retried by the
+# 30s executor 938 times in a day while the name sat 10% underweight.
+
+def test_gap_of_at_least_half_a_lot_rounds_up_to_one_lot():
+    assert _sub_lot_verdict(66, 100, lot_value=24_500, eff_max=218_000) == "round_up"
+    assert _sub_lot_verdict(50, 100, None, None) == "round_up"      # exactly half
+
+
+def test_gap_under_half_a_lot_is_skipped():
+    assert _sub_lot_verdict(49, 100, lot_value=24_500, eff_max=218_000) == "skip"
+    assert _sub_lot_verdict(1, 100, None, None) == "skip"
+
+
+def test_one_lot_above_the_per_order_cap_is_skipped():
+    # Half-lot rule passes, but one lot would exceed the NLV-scaled max single buy.
+    assert _sub_lot_verdict(90, 100, lot_value=300_000, eff_max=218_000) == "skip"
+
+
+def test_unknown_bounds_fall_back_to_the_half_lot_rule_only():
+    assert _sub_lot_verdict(66, 100, lot_value=None, eff_max=218_000) == "round_up"
+    assert _sub_lot_verdict(66, 100, lot_value=24_500, eff_max=None) == "round_up"
