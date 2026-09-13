@@ -6,13 +6,35 @@ TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
 # ── Check options gateway ────────────────────────────────
 # RE-ENABLED 2026-06-11: dedicated options account is live (skxholdco / U25878705
-# / port 4002). start-gateway-options.sh targets /opt/ibc/config-options.ini.
+# / port 4002). start-gateway-options.sh targets ~/ibc-config/config-options.ini.
 # Relaunching the gateway needs IB Key 2FA approval on the phone to finish login;
 # the trader's 5-min health check then reconnects once 4002 is open.
+#
+# PACED (2026-09-13): a cold launch sends an IB Key push; if Rain doesn't approve within
+# IBC's 600s the launcher now EXITS (TWOFA_TIMEOUT_ACTION=exit) and we'd be back here in
+# <=5 min to launch again = another push. So hold until the newest push is TFA_GAP old —
+# one push per 30 min, like portfolio-gw-autofill.sh — instead of the 5-in-30-min storm.
+TFA_GAP=1800
+# Minutes since the newest "Second Factor Authentication initiated" line in the options IBC
+# logs. IBC's JVM stamps those lines in the gateway's TimeZone (Europe/Luxembourg, jts.ini),
+# not UTC. Prints nothing if there is no such line.
+last_options_2fa_push_age_min() {
+    local ts ep
+    ts=$(grep -h "Second Factor Authentication initiated" /home/rain/ibc/logs/options/*.txt 2>/dev/null \
+         | sed -E 's/^([0-9-]+ [0-9:]+):[0-9]{3}.*/\1/' | sort | tail -1)
+    [ -n "$ts" ] || return 0
+    ep=$(TZ=Europe/Luxembourg date -d "$ts" +%s 2>/dev/null) || return 0
+    echo $(( ($(date +%s) - ep) / 60 ))
+}
 if ! tmux has-session -t options 2>/dev/null; then
-    echo "$TIMESTAMP [WATCHDOG] options gateway missing — restarting" >> $LOGFILE
-    tmux new-session -d -s options '~/start-gateway-options.sh'
-    echo "$TIMESTAMP [WATCHDOG] options gateway session started" >> $LOGFILE
+    AGE=$(last_options_2fa_push_age_min)
+    if [ -n "$AGE" ] && [ "$AGE" -lt $(( TFA_GAP / 60 )) ]; then
+        echo "$TIMESTAMP [WATCHDOG] options gateway missing — IB Key push sent ${AGE} min ago, holding until $(( TFA_GAP / 60 )) min" >> $LOGFILE
+    else
+        echo "$TIMESTAMP [WATCHDOG] options gateway missing — restarting (last push ${AGE:-never} min ago)" >> $LOGFILE
+        tmux new-session -d -s options '~/start-gateway-options.sh'
+        echo "$TIMESTAMP [WATCHDOG] options gateway session started" >> $LOGFILE
+    fi
 fi
 
 # ── Check portfolio gateway ──────────────────────────────
