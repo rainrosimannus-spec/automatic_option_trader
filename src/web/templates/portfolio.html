@@ -939,6 +939,10 @@ function syncInjections() {
                     <span class="text-emerald-400 font-medium block mb-0.5">Time-in-market</span>
                     Fills the biggest underweight gap first — NO RSI / 52-wk-low / dip triggers (that was the legacy path). Pace throttled by froth + crash tranches; winners run untrimmed.
                 </div>
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <span class="text-emerald-400 font-medium block mb-0.5">Laggard re-fill gate</span>
+                    A name ranked below 50 that was once filled to target is NOT topped back up when its gap re-opens (targets move with NLV) unless its price is ≥15% below the average purchase price. Never-filled names and the top 50 are unaffected; a crash tranche lifts the gate.
+                </div>
             </div>
         </div>
     </div>

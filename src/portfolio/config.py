@@ -63,6 +63,18 @@ class CompounderConfig(BaseModel):
     # freeze_dropped_names=False for pre-2026-08 behaviour (a held drop-out keeps a full target).
     freeze_dropped_names: bool = True
     freeze_buffer_topk: int = 0        # >0: keep buying a drop-out still in the top-K live rank; 0 = total freeze
+    # Laggard re-fill gate (Rain, 2026-09-15). Targets are a % of NLV, so a name that was once bought
+    # to 100% of target drifts back under it whenever its price lags the book — and the gap-filler
+    # would top it up again and again ("continuous gap-filling"). For names ranked BELOW
+    # laggard_refill_rank_min that have ALREADY reached target once, that re-fill is SKIPPED unless
+    # the price is at least laggard_refill_drop_pct below the position's average purchase price —
+    # i.e. only a real pullback earns a low-conviction name more capital. Names never yet filled,
+    # and names ranked at/above the cutoff, are unaffected. A live crash tranche BYPASSES it exactly
+    # as it bypasses the late-session / green-before-yellow gates (the crash regime and its
+    # exceptions are untouched — urgent deploy stays urgent). The "reached target" flag is remembered in portfolio_state (compounder_target_reached) and clears
+    # when the position is closed. 0 disables the gate.
+    laggard_refill_rank_min: int = 50       # applies to names ranked strictly below this (rank > 50)
+    laggard_refill_drop_pct: float = 0.15   # re-fill allowed only when price <= avg_cost × (1 − 15%)
     # Conviction: the top fraction of the ranked universe are "leaders" — they get a higher
     # per-name cap AND are always bought directly (never routed to put-selling), so the engine
     # never under-accumulates or caps the upside of the names most likely to deliver the 10x.

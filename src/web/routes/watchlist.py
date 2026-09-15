@@ -132,9 +132,14 @@ async def watchlist_page(request: Request):
         nlv = inv / (1 - cc.cash_buffer_pct) if inv > 0 else (sum(held.values()) or 1.0)
         # compounder_reserve_unlocked_pct is stored as a PERCENT (buyer writes unlocked*100);
         # build_signals_from_watchlist wants the fraction, same as the buy path.
+        # Laggard re-fill gate inputs — mirror the buyer (avg cost in LOCAL ccy, same unit as the
+        # row price; the buyer's own reached-target map; a live crash tranche lifts the gate).
         signals = cmp.build_signals_from_watchlist(
             rows, held, nlv, cc, tier_alloc,
-            unlocked=_num("compounder_reserve_unlocked_pct") / 100.0)
+            unlocked=_num("compounder_reserve_unlocked_pct") / 100.0,
+            avg_cost={h.symbol: float(h.avg_cost or 0) for h in holds},
+            reached=cmp.parse_target_reached(_state("compounder_target_reached")),
+            crash_active=(_state("market_status") == "crash"))
     except Exception as e:
         log.warning("watchlist_signals_failed", error=str(e))
 

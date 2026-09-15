@@ -144,6 +144,7 @@
                         {% elif s.action == 'put' %}<span class="text-xs px-2 py-0.5 rounded bg-indigo-900/60 text-indigo-300">sell put</span>
                         {% elif s.action == 'put_open' %}<span class="text-xs px-2 py-0.5 rounded bg-indigo-900/40 text-indigo-400">put open</span>
                         {% elif s.action == 'hold' %}<span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400">hold (full)</span>
+                        {% elif s.action == 'held_back' %}<span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-amber-500/80 cursor-help" title="Laggard re-fill gate: ranked below the cutoff and already filled to target once — the re-opened gap is NOT topped up until the price is at least 15% below the average purchase price (a crash tranche lifts this)">hold (laggard)</span>
                         {% else %}<span class="text-xs text-gray-600">—</span>{% endif %}
                     </td>
                     <td class="px-3 py-2">{% if w and w.signal_type %}<span class="text-xs text-gray-400">{{w.signal_type}}</span>{% else %}<span class="text-xs text-gray-600">—</span>{% endif %}</td>

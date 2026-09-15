@@ -1417,7 +1417,7 @@ class PortfolioBuyer:
         # Always publish the ranking/signals to the dashboard — even with no deploy budget,
         # so /watchlist reflects the current universe ranking & intended actions.
         self._persist_compounder_signals(ranked, targets, held, open_put_syms,
-                                         rank_idx, crash_active, cc, leaders)
+                                         rank_idx, crash_active, cc, leaders, held_back=held_back)
 
         # No deploy budget today? Do NOT return here — the deploy loop below naturally no-ops (every
         # brick fails the min_buy floor when budget < min_buy), so no buys happen, but we still fall
@@ -1437,6 +1437,46 @@ class PortfolioBuyer:
         # head of the order is a stable "next buy" the dashboard can show at any hour; `queue` is then
         # the market-open slice of it. Filtering AFTER the sort preserves the relative order, so the
         # deploy loop sees exactly the queue it saw before this split.
+        # Laggard re-fill gate (cc.laggard_refill_*): remember every name that has EVER been filled to
+        # target (FILLED holdings only — resting orders don't count; frozen drop-outs are excluded
+        # because their target is pinned to their holding, so "full" would be artificial). Then, for
+        # names ranked below the cutoff that carry that flag, skip topping the gap back up unless the
+        # price sits at least laggard_refill_drop_pct below the average purchase price. Targets move
+        # with NLV, so a laggard's gap re-opens continuously; this stops the continuous re-fill.
+        # A live crash tranche bypasses it, exactly like the other buy-ordering gates below.
+        reached = cmp.parse_target_reached(self._get_state_value("compounder_target_reached"))
+        _today_iso = _dt.date.today().isoformat()
+        for r in ranked:
+            if r.symbol in frozen_dropouts:
+                continue
+            reached = cmp.update_target_reached(reached, r.symbol, held.get(r.symbol, 0.0),
+                                                targets.get(r.symbol, 0.0), _today_iso)
+        for _sym in [k for k in reached if k not in held]:
+            reached = cmp.update_target_reached(reached, _sym, 0.0, 0.0, _today_iso)  # closed → forget
+        import json as _json
+        self._store_state("compounder_target_reached", _json.dumps(reached))
+        held_back: set[str] = set()
+        _rank_min = int(getattr(cc, "laggard_refill_rank_min", 0) or 0)
+        if _rank_min > 0 and not crash_active:
+            avg_costs = self._get_avg_cost_map()
+            for r in ranked:
+                if targets.get(r.symbol, 0.0) <= 0 or r.symbol in frozen_dropouts:
+                    continue
+                _ac = avg_costs.get(r.symbol)
+                if cmp.laggard_refill_blocked(rank_idx.get(r.symbol), _rank_min, r.symbol in reached,
+                                              r.price, _ac, cc.laggard_refill_drop_pct):
+                    held_back.add(r.symbol)
+                    _cur_f = held.get(r.symbol, 0.0)
+                    _tgt_f = targets.get(r.symbol, 0.0)
+                    if _cur_f < _tgt_f * cmp.TARGET_FULL_FRAC:      # only log names with a real gap
+                        log.info("compounder_laggard_refill_held_back", symbol=r.symbol,
+                                 rank=rank_idx.get(r.symbol, 0), rank_min=_rank_min,
+                                 price=round(r.price, 2), avg_cost=(round(_ac, 2) if _ac else None),
+                                 drop_pct=(round((1 - r.price / _ac) * 100, 1) if _ac else None),
+                                 need_drop_pct=round(cc.laggard_refill_drop_pct * 100, 1),
+                                 target=round(_tgt_f), current=round(_cur_f),
+                                 reached_on=reached.get(r.symbol))
+
         candidates = []
         for r in ranked:
             tgt = targets.get(r.symbol, 0.0)
@@ -1445,6 +1485,8 @@ class PortfolioBuyer:
             cur = held.get(r.symbol, 0.0) + open_buy.get(r.symbol, 0.0)
             if cur >= tgt * 0.98:
                 continue                          # already at/working toward target — hold
+            if r.symbol in held_back:
+                continue                          # laggard re-fill gate: filled once, not −15% vs avg cost
             if r.symbol in open_put_syms:
                 continue                          # legacy: respect any still-open put on the name
             if _is_permission_blocked(r.symbol):
@@ -1476,7 +1518,8 @@ class PortfolioBuyer:
         greens_outstanding = False
         for _r in ranked:
             _tgt = targets.get(_r.symbol, 0.0)
-            if _tgt <= 0 or _r.symbol in open_put_syms or _is_permission_blocked(_r.symbol):
+            if (_tgt <= 0 or _r.symbol in open_put_syms or _is_permission_blocked(_r.symbol)
+                    or _r.symbol in held_back):       # a held-back green must not block yellows
                 continue
             _cur = held.get(_r.symbol, 0.0) + open_buy.get(_r.symbol, 0.0)
             if _cur >= _tgt * 0.98:
@@ -1609,7 +1652,7 @@ class PortfolioBuyer:
         return bought
 
     def _persist_compounder_signals(self, ranked, targets, held, open_put_syms,
-                                    rank_idx, crash_active, cc, leaders=None):
+                                    rank_idx, crash_active, cc, leaders=None, held_back=None):
         """Write the per-name ranking / targets / intended-action table to PortfolioState
         for the /watchlist dashboard. Called every scan (even with no deploy budget) so the
         dashboard always reflects the current universe ranking."""
@@ -1617,6 +1660,7 @@ class PortfolioBuyer:
             import json as _json
             from src.portfolio import compounder as cmp
             leaders = leaders or set()
+            held_back = held_back or set()
             signals = []
             for r in ranked:
                 tgt = targets.get(r.symbol, 0.0)
@@ -1629,6 +1673,8 @@ class PortfolioBuyer:
                     action = "—"
                 elif cur >= tgt * 0.98:
                     action = "hold"
+                elif r.symbol in held_back:
+                    action = "held_back"   # laggard re-fill gate (see run_compounder)
                 elif attractiveness < 0:
                     action = "fill"      # yellow — above fair price; filled after greens, in rank order
                 else:
@@ -1757,6 +1803,15 @@ class PortfolioBuyer:
                 h.symbol: pfx.to_base(h.market_value or h.total_invested or 0, h.currency, rates)
                 for h in holdings if h.symbol != park
             }
+
+    def _get_avg_cost_map(self) -> dict[str, float]:
+        """symbol → average purchase price of every open holding, in the holding's LOCAL currency —
+        the same unit as the ranker's price (both come from IBKR), so price/avg_cost is unit-free.
+        Used by the laggard re-fill gate; the park ETF is excluded like everywhere else."""
+        park = getattr(self.cfg, "cash_yield_symbol", None)
+        with get_db() as db:
+            holdings = db.query(PortfolioHolding).filter(PortfolioHolding.shares > 0).all()
+            return {h.symbol: float(h.avg_cost or 0.0) for h in holdings if h.symbol != park}
 
     def _get_parked_value(self) -> float:
         """Market value of the cash reserve parked in the park ETF (XEON), in the account BASE currency

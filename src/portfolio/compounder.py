@@ -338,6 +338,52 @@ def frozen_dropouts(rows, rank_idx: dict, topk: int) -> set:
     return frozen
 
 
+# ── Laggard re-fill gate ─────────────────────────────────────
+# SINGLE SOURCE OF TRUTH for the buy path (buyer.run_compounder) and the dashboard
+# (build_signals_from_watchlist) — the two must agree on which names are held back.
+TARGET_FULL_FRAC = 0.98   # the buyer's own "at target" threshold (cur >= tgt * 0.98 → hold)
+
+
+def update_target_reached(reached: dict, symbol: str, held_value: float, tgt: float,
+                          today_iso: str, full_frac: float = TARGET_FULL_FRAC) -> dict:
+    """Remember that `symbol` has reached its target at least once (FILLED holdings only — a resting
+    order is not a fill). Records the first date it was seen full; a CLOSED position (held_value<=0)
+    forgets it, so a name sold out and later re-bought starts fresh. Never un-flags on a price drift
+    below target — that drift is exactly the re-fill the gate exists to judge. Pure: returns a new dict."""
+    out = dict(reached or {})
+    if held_value <= 0:
+        out.pop(symbol, None)
+        return out
+    if tgt > 0 and held_value >= tgt * full_frac and symbol not in out:
+        out[symbol] = today_iso
+    return out
+
+
+def laggard_refill_blocked(rank: int | None, rank_min: int, reached_target: bool,
+                           price: float, avg_cost: float | None, drop_pct: float) -> bool:
+    """True when a re-fill of this name must be SKIPPED under the laggard rule:
+    ranked strictly below `rank_min` (1-based), already reached target once, and the price has
+    NOT fallen at least `drop_pct` below the average purchase price. rank_min<=0 disables. An
+    unranked name (no price this scan) can't be bought anyway → not blocked. A flagged name with
+    no usable avg_cost/price FAILS CLOSED (blocked): the −drop_pct condition is unproven, and the
+    name has already had its full allocation once."""
+    if rank_min <= 0 or rank is None or rank <= rank_min or not reached_target:
+        return False
+    if not avg_cost or avg_cost <= 0 or not price or price <= 0:
+        return True
+    return price > avg_cost * (1.0 - drop_pct)
+
+
+def parse_target_reached(raw: str | None) -> dict:
+    """portfolio_state `compounder_target_reached` JSON → {symbol: first-full ISO date}; tolerant."""
+    import json as _json
+    try:
+        d = _json.loads(raw) if raw else {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
 def signal_parity_drift(dashboard: list[dict], snapshot: list[dict],
                         tol: float = 0.03, min_names: int = 10) -> dict | None:
     """Compare the displayed allocation against the buyer's own persisted one.
@@ -382,7 +428,9 @@ def signal_parity_drift(dashboard: list[dict], snapshot: list[dict],
 
 
 def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: dict,
-                                 unlocked: float = 0.0) -> list[dict]:
+                                 unlocked: float = 0.0, avg_cost: dict | None = None,
+                                 reached: dict | None = None,
+                                 crash_active: bool = False) -> list[dict]:
     """Compute the dashboard signal table directly from watchlist DB rows (each with the
     fundamental scores + freshly-updated current_price/sma_200/high_52w/momentum_12_1).
     This makes the /watchlist + Portfolio views show the FULL ranked universe every page
@@ -390,7 +438,10 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
     current market value. `cc` = CompounderConfig; `tier_alloc` = {tier: budget fraction};
     `unlocked` = the FRACTION (0-1) of the crash reserve currently released — note the
     state key that carries it, compounder_reserve_unlocked_pct, is a PERCENT, so callers
-    divide by 100.
+    divide by 100. `avg_cost` = symbol→average purchase price (LOCAL ccy, same unit as the
+    row's current_price) and `reached` = the buyer's compounder_target_reached map; together
+    they let the page show the laggard re-fill gate ("held_back") exactly as the buyer applies it;
+    `crash_active` (state market_status == "crash") lifts it, as every gate is lifted in a crash.
 
     This is the second implementation of the allocation, and it must track buyer.run_compounder
     step for step. It had drifted in three places, all of which made the page overstate every
@@ -459,6 +510,8 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
                                 getattr(cc, "sector_cap_pct", 0.0) * max(0.0, nlv))
     for _s in frozen:
         targets[_s] = held.get(_s, 0.0)   # pin to invested MV → target==current, "hold"
+    avg_cost = avg_cost or {}
+    reached = reached or {}
     out = []
     for r in ranked:
         tgt = targets.get(r.symbol, 0.0)
@@ -467,8 +520,13 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
         uw = (tgt - cur) / tgt if tgt > 0 else 0.0
         if tgt <= 0:
             action = "—"
-        elif cur >= tgt * 0.98:
+        elif cur >= tgt * TARGET_FULL_FRAC:
             action = "hold"
+        elif not crash_active and laggard_refill_blocked(
+                rank_idx[r.symbol], getattr(cc, "laggard_refill_rank_min", 0),
+                                    r.symbol in reached, r.price, avg_cost.get(r.symbol),
+                                    getattr(cc, "laggard_refill_drop_pct", 0.0)):
+            action = "held_back"   # low-rank re-fill: already filled once, not −15% vs avg cost
         elif att < 0:
             action = "fill"      # yellow — above fair price; filled after greens, in rank order
         else:
