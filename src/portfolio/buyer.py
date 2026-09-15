@@ -1414,29 +1414,6 @@ class PortfolioBuyer:
                  drawdown_pct=round(dd * 100, 1), tranches=rstate.tranches_fired,
                  crash_active=crash_active, ranked=len(ranked))
 
-        # Always publish the ranking/signals to the dashboard — even with no deploy budget,
-        # so /watchlist reflects the current universe ranking & intended actions.
-        self._persist_compounder_signals(ranked, targets, held, open_put_syms,
-                                         rank_idx, crash_active, cc, leaders, held_back=held_back)
-
-        # No deploy budget today? Do NOT return here — the deploy loop below naturally no-ops (every
-        # brick fails the min_buy floor when budget < min_buy), so no buys happen, but we still fall
-        # through to PARK idle reserve cash at the end. Parking is treasury management and must run
-        # regardless of whether there's deploy budget this scan; `spent` stays 0, so nothing the loop
-        # intends to buy is wrongly withheld from parking.
-        if budget < min_buy:
-            log.info("compounder_no_budget_today", budget=round(budget), min_buy=round(min_buy))
-
-        # Buy queue — accumulate toward the conviction targets, filling the biggest underweight $ gap
-        # first. GREEN names (at/below fair price, attractiveness >= 0) are filled FIRST; YELLOW names
-        # (above fair price) are NOT skipped — they're filled LAST, only if budget remains after the
-        # greens. So we always make progress toward the targets (time-in-market), preferring better
-        # entries first. Put-selling is retired: we fill the target rather than wait to be paid.
-        # `cur` is FILLED holdings + resting BUY notional so a working name isn't re-laddered/double-counted.
-        # Built over the FULL ranked universe first (not just names whose market is open now), so the
-        # head of the order is a stable "next buy" the dashboard can show at any hour; `queue` is then
-        # the market-open slice of it. Filtering AFTER the sort preserves the relative order, so the
-        # deploy loop sees exactly the queue it saw before this split.
         # Laggard re-fill gate (cc.laggard_refill_*): remember every name that has EVER been filled to
         # target (FILLED holdings only — resting orders don't count; frozen drop-outs are excluded
         # because their target is pinned to their holding, so "full" would be artificial). Then, for
@@ -1444,8 +1421,28 @@ class PortfolioBuyer:
         # price sits at least laggard_refill_drop_pct below the average purchase price. Targets move
         # with NLV, so a laggard's gap re-opens continuously; this stops the continuous re-fill.
         # A live crash tranche bypasses it, exactly like the other buy-ordering gates below.
-        reached = cmp.parse_target_reached(self._get_state_value("compounder_target_reached"))
+        _reached_raw = self._get_state_value("compounder_target_reached")
+        reached = cmp.parse_target_reached(_reached_raw)
         _today_iso = _dt.date.today().isoformat()
+        if _reached_raw is None:
+            # First scan ever with the gate: names filled to target BEFORE it existed would never be
+            # flagged (they may already sit below 98% again — VER: filled 100% on 2026-09-09, 95% by
+            # 09-15). Seed once from the executed buy cards, whose rationale records the order's brick,
+            # target and holding at the time. Never re-runs once the key exists.
+            try:
+                from src.core.suggestions import TradeSuggestion
+                with get_db() as db:
+                    _hist = db.query(TradeSuggestion.symbol, TradeSuggestion.created_at,
+                                     TradeSuggestion.rationale).filter(
+                        TradeSuggestion.source == "portfolio",
+                        TradeSuggestion.action == "buy_stock",
+                        TradeSuggestion.status == "executed",
+                    ).order_by(TradeSuggestion.created_at).all()
+                reached = cmp.seed_target_reached_from_history(
+                    [(h[0], h[1].isoformat() if h[1] else "", h[2]) for h in _hist], set(held))
+                log.info("compounder_target_reached_seeded", names=sorted(reached))
+            except Exception as e:
+                log.warning("compounder_target_reached_seed_failed", error=str(e))
         for r in ranked:
             if r.symbol in frozen_dropouts:
                 continue
@@ -1477,6 +1474,29 @@ class PortfolioBuyer:
                                  target=round(_tgt_f), current=round(_cur_f),
                                  reached_on=reached.get(r.symbol))
 
+        # Always publish the ranking/signals to the dashboard — even with no deploy budget,
+        # so /watchlist reflects the current universe ranking & intended actions.
+        self._persist_compounder_signals(ranked, targets, held, open_put_syms,
+                                         rank_idx, crash_active, cc, leaders, held_back=held_back)
+
+        # No deploy budget today? Do NOT return here — the deploy loop below naturally no-ops (every
+        # brick fails the min_buy floor when budget < min_buy), so no buys happen, but we still fall
+        # through to PARK idle reserve cash at the end. Parking is treasury management and must run
+        # regardless of whether there's deploy budget this scan; `spent` stays 0, so nothing the loop
+        # intends to buy is wrongly withheld from parking.
+        if budget < min_buy:
+            log.info("compounder_no_budget_today", budget=round(budget), min_buy=round(min_buy))
+
+        # Buy queue — accumulate toward the conviction targets, filling the biggest underweight $ gap
+        # first. GREEN names (at/below fair price, attractiveness >= 0) are filled FIRST; YELLOW names
+        # (above fair price) are NOT skipped — they're filled LAST, only if budget remains after the
+        # greens. So we always make progress toward the targets (time-in-market), preferring better
+        # entries first. Put-selling is retired: we fill the target rather than wait to be paid.
+        # `cur` is FILLED holdings + resting BUY notional so a working name isn't re-laddered/double-counted.
+        # Built over the FULL ranked universe first (not just names whose market is open now), so the
+        # head of the order is a stable "next buy" the dashboard can show at any hour; `queue` is then
+        # the market-open slice of it. Filtering AFTER the sort preserves the relative order, so the
+        # deploy loop sees exactly the queue it saw before this split.
         candidates = []
         for r in ranked:
             tgt = targets.get(r.symbol, 0.0)

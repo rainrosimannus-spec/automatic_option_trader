@@ -116,3 +116,27 @@ def test_dashboard_marks_low_rank_refill_held_back_and_lifts_it_in_crash():
     sig = cmp.build_signals_from_watchlist(rows, held, 6_000_000, _cc(), tier_alloc,
                                            avg_cost=avg, reached=reached)
     assert _act(sig, "S059") == "hold"
+
+
+# ── one-time history seed ──────────────────────────────────────────────────────
+def test_seed_from_executed_cards_flags_names_filled_before_the_gate_existed():
+    cards = [
+        ("VER", "2026-09-09T14:29:36", "Compounder #63 dividend. Direct buy $24,735 toward target "
+                                       "$24,735 (now $0, 100% underweight). Price $61.68"),
+        ("XRO", "2026-09-01T10:00:00", "Direct buy $5,000 toward target $40,687 (now $30,748, 24%"),
+        ("XRO", "2026-09-02T10:00:00", "Direct buy $9,017 toward target $39,806 (now $30,790, 23%"),
+        ("MS",  "2026-08-01T10:00:00", "Direct buy $87,986 toward target $116,103 (now $0, 100%"),
+        ("GONE","2026-08-01T10:00:00", "Direct buy $10,000 toward target $10,000 (now $0, 100%"),
+        ("ODD", "2026-08-01T10:00:00", "no brick phrase here"),
+    ]
+    out = cmp.seed_target_reached_from_history(cards, held_syms={"VER", "XRO", "MS", "ODD"})
+    assert out == {"VER": "2026-09-09", "XRO": "2026-09-02"}   # XRO 1st card 88% → no, 2nd 100%; MS 76% → no; GONE not held; ODD unparseable
+
+
+def test_gate_block_runs_before_signals_are_persisted():
+    # Regression: 2026-09-15 the first live version referenced held_back in the signals writer
+    # before the gate block had assigned it → every scan died with UnboundLocalError.
+    import inspect
+    from src.portfolio.buyer import PortfolioBuyer
+    src = inspect.getsource(PortfolioBuyer.run_compounder_scan)
+    assert src.index("held_back: set[str] = set()") < src.index("self._persist_compounder_signals(")

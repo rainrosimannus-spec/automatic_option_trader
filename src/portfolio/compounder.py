@@ -23,6 +23,7 @@ from __future__ import annotations
 from src.portfolio.venues import is_untradable_currency
 
 import bisect
+import re
 from dataclasses import dataclass
 
 
@@ -372,6 +373,28 @@ def laggard_refill_blocked(rank: int | None, rank_min: int, reached_target: bool
     if not avg_cost or avg_cost <= 0 or not price or price <= 0:
         return True
     return price > avg_cost * (1.0 - drop_pct)
+
+
+_BUY_CARD_RE = re.compile(r"Direct buy \$([\d,]+) toward target \$([\d,]+) \(now \$([\d,]+)")
+
+
+def seed_target_reached_from_history(cards, held_syms: set) -> dict:
+    """One-time backfill of the reached-target map from EXECUTED compounder buy cards, for names
+    filled before the gate existed. `cards` = (symbol, created_iso, rationale) in time order; the
+    rationale carries "Direct buy $B toward target $T (now $C" — the name reached target on that
+    card iff C + B >= 98% of T. Only names still held count (a closed position starts fresh).
+    Pure; tolerant of cards without the phrase."""
+    out: dict = {}
+    for sym, created, rat in cards:
+        if sym in out or sym not in held_syms:
+            continue
+        m = _BUY_CARD_RE.search(rat or "")
+        if not m:
+            continue
+        brick, tgt, now = (float(x.replace(",", "")) for x in m.groups())
+        if tgt > 0 and now + brick >= tgt * TARGET_FULL_FRAC:
+            out[sym] = (created or "")[:10]
+    return out
 
 
 def parse_target_reached(raw: str | None) -> dict:
