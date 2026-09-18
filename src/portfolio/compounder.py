@@ -397,6 +397,27 @@ def seed_target_reached_from_history(cards, held_syms: set) -> dict:
     return out
 
 
+def queue_band(attractiveness: float, once_full: bool, prefer_yellow_over_refill: bool) -> int:
+    """Buy-queue band (lower sorts first). Default order: green (0) before yellow (1). With
+    `prefer_yellow_over_refill` (cc.yellow_after_greens_once_full, never in a crash): a green that has
+    ALREADY been filled to target once drops BEHIND the yellows (2) — its re-opened gap is marginal
+    top-up money, and a never-filled yellow has the stronger claim. Never-filled greens stay first."""
+    green = attractiveness >= 0
+    if not green:
+        return 1
+    return 2 if (prefer_yellow_over_refill and once_full) else 0
+
+
+def green_blocks_yellow(attractiveness: float, cur: float, tgt: float, once_full: bool,
+                        prefer_yellow_over_refill: bool, full_frac: float = TARGET_FULL_FRAC) -> bool:
+    """Does this name, as an outstanding green, block every yellow buy? True only for an underweight
+    green; with `prefer_yellow_over_refill` a green that has already been filled once does NOT block
+    (its marginal re-fill sorts after the yellows instead). Callers exclude names that can never fill."""
+    if tgt <= 0 or cur >= tgt * full_frac or attractiveness < 0:
+        return False
+    return not (prefer_yellow_over_refill and once_full)
+
+
 def parse_target_reached(raw: str | None) -> dict:
     """portfolio_state `compounder_target_reached` JSON → {symbol: first-full ISO date}; tolerant."""
     import json as _json

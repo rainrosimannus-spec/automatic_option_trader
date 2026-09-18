@@ -112,6 +112,14 @@ class CompounderConfig(BaseModel):
     # exactly one in-window pass per market per day. late_session_only_green=False restores all-day buying with
     # the plain green-before-yellow queue order (the pre-2026-07-15 behaviour).
     late_session_only_green: bool = True
+    # Amendment (Rain, 2026-09-18): a yellow is unblocked as soon as every green has been filled to target
+    # AT LEAST ONCE (the compounder_target_reached map, same one the laggard gate uses) — not every scan
+    # that a once-full green shows a marginal re-opened gap (targets move with NLV/price, so those gaps
+    # re-open continuously). And the queue then PREFERS yellows over those marginal green re-fills:
+    # never-filled greens → yellows → once-filled greens' re-fills. Only never-filled greens block
+    # yellows. Crash regime untouched: a live crash tranche keeps the plain green-first order and its
+    # gate bypass. False restores "any underweight green blocks every yellow".
+    yellow_after_greens_once_full: bool = True
     late_session_minutes: int = 120
     # After-hours fallback: if a green buy's budget did NOT fill by the close, keep the name buyable for
     # this many minutes AFTER the close (the US after-market). Only outside-RTH-capable venues (US/CA/

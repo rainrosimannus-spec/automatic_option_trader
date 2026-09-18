@@ -1522,19 +1522,30 @@ class PortfolioBuyer:
         # Quality already lives in the targets (rank_score**conviction_power); the buy order only needs
         # to close the gap, so re-ranking by quality here would double-concentrate the path. (tgt=x[3],
         # cur=x[4]; gap = tgt - cur.)
-        candidates.sort(key=lambda x: (0 if x[0] >= 0 else 1, -(x[3] - x[4])))
+        # Amendment (cc.yellow_after_greens_once_full): a green that has ALREADY been filled once sorts
+        # BEHIND the yellows — its re-opened gap is a marginal top-up, and a never-filled yellow has the
+        # stronger claim. Never-filled greens stay first. A live crash tranche keeps the plain
+        # green-first order (crash regime untouched). Band via cmp.queue_band; `reached` is the same
+        # once-full map the laggard gate uses.
+        _prefer_yellow = bool(getattr(cc, "yellow_after_greens_once_full", False)) and not crash_active
+        candidates.sort(key=lambda x: (cmp.queue_band(x[0], x[2].symbol in reached, _prefer_yellow),
+                                       -(x[3] - x[4])))
         # Publish the head of the order for /watchlist (hollow-star ticker). Full-universe, so it
         # survives a scan run while the leader's own market is shut. A yellow can only be at the head
-        # when NO green is outstanding anywhere — greens sort first — so this agrees with the gate below.
+        # when NO blocking green is outstanding anywhere — those sort first — so this agrees with the
+        # gate below.
         self._store_state("compounder_next_buy", candidates[0][2].symbol if candidates else "")
         queue = [c for c in candidates if c[2].symbol in analyses]
 
-        # Is ANY green still short of its target? Greens outrank yellows absolutely: a yellow (extended,
-        # above fair) name may only be bought once the whole GREEN list has reached target — never before,
-        # no matter how much budget is free. Judged over the FULL ranked list, not `queue`, because queue
-        # only holds names whose market is open right now: a US green that is underweight but closed must
-        # still block an EU yellow, or the priority inverts across time zones. Greens that can NEVER fill
-        # (no permission yet, or an open put on the name) are excluded — else they'd block yellow forever.
+        # Is ANY green still short of its target? Greens outrank yellows: a yellow (extended, above
+        # fair) name may only be bought once the whole GREEN list has reached target — never before,
+        # no matter how much budget is free. Amendment (cc.yellow_after_greens_once_full): "reached
+        # target" means AT LEAST ONCE — a green that was filled and has since drifted to a marginal
+        # re-opened gap no longer blocks (it queues behind the yellows instead). Judged over the FULL
+        # ranked list, not `queue`, because queue only holds names whose market is open right now: a US
+        # green that is underweight but closed must still block an EU yellow, or the priority inverts
+        # across time zones. Greens that can NEVER fill (no permission yet, an open put on the name, or
+        # held back by the laggard gate) are excluded — else they'd block yellow forever.
         greens_outstanding = False
         for _r in ranked:
             _tgt = targets.get(_r.symbol, 0.0)
@@ -1542,9 +1553,8 @@ class PortfolioBuyer:
                     or _r.symbol in held_back):       # a held-back green must not block yellows
                 continue
             _cur = held.get(_r.symbol, 0.0) + open_buy.get(_r.symbol, 0.0)
-            if _cur >= _tgt * 0.98:
-                continue                          # this green is at target
-            if cmp.fair_price_attractiveness(_r.price, _r.sma200, _r.high_52w) >= 0:
+            if cmp.green_blocks_yellow(cmp.fair_price_attractiveness(_r.price, _r.sma200, _r.high_52w),
+                                       _cur, _tgt, _r.symbol in reached, _prefer_yellow):
                 greens_outstanding = True
                 break
 
@@ -1601,9 +1611,10 @@ class PortfolioBuyer:
             #   GREEN: bought by rank/underweight, but only in the last cc.late_session_minutes of the
             #          name's OWN session — these pulling-back names drift down intraday, so a late entry
             #          is ≈1% cheaper (29 real buys + the 5-regime sim).
-            #   YELLOW: only ever bought once the ENTIRE green list has reached target (greens_outstanding
-            #          is False) — and then with no late gate, so it fills early in the day. A yellow must
-            #          never take budget a still-underweight green has a claim on.
+            #   YELLOW: only ever bought once the ENTIRE green list has reached target at least once
+            #          (greens_outstanding is False — see cc.yellow_after_greens_once_full) — and then
+            #          with no late gate, so it fills early in the day. A yellow must never take budget
+            #          a never-filled green has a claim on; once-filled greens' re-fills queue AFTER it.
             # Gating green alone is what broke this: greens got skipped all morning and the loop fell
             # through to yellow, which took the day's budget with an order resting under the fair cap that
             # could not fill — and open_buy still charged it against deployed_today, starving the greens in

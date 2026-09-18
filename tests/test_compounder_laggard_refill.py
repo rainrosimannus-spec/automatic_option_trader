@@ -140,3 +140,36 @@ def test_gate_block_runs_before_signals_are_persisted():
     from src.portfolio.buyer import PortfolioBuyer
     src = inspect.getsource(PortfolioBuyer.run_compounder_scan)
     assert src.index("held_back: set[str] = set()") < src.index("self._persist_compounder_signals(")
+
+
+# ── yellow unblocks once every green has been filled at least once (2026-09-18) ──
+def test_queue_band_prefers_yellow_over_once_filled_green_refill():
+    # never-filled green → 0, yellow → 1, once-filled green → 2 (only with the preference on)
+    assert cmp.queue_band(0.1, once_full=False, prefer_yellow_over_refill=True) == 0
+    assert cmp.queue_band(-0.1, once_full=False, prefer_yellow_over_refill=True) == 1
+    assert cmp.queue_band(-0.1, once_full=True, prefer_yellow_over_refill=True) == 1
+    assert cmp.queue_band(0.1, once_full=True, prefer_yellow_over_refill=True) == 2
+    # crash / flag off: the plain green-first order, once-full ignored
+    assert cmp.queue_band(0.1, once_full=True, prefer_yellow_over_refill=False) == 0
+    assert cmp.queue_band(-0.1, once_full=True, prefer_yellow_over_refill=False) == 1
+
+
+def test_only_never_filled_underweight_greens_block_yellows():
+    kw = dict(cur=50.0, tgt=100.0)
+    assert cmp.green_blocks_yellow(0.1, once_full=False, prefer_yellow_over_refill=True, **kw) is True
+    assert cmp.green_blocks_yellow(0.1, once_full=True, prefer_yellow_over_refill=True, **kw) is False
+    assert cmp.green_blocks_yellow(0.1, once_full=True, prefer_yellow_over_refill=False, **kw) is True  # crash/off
+    assert cmp.green_blocks_yellow(-0.1, once_full=False, prefer_yellow_over_refill=True, **kw) is False  # yellow
+    assert cmp.green_blocks_yellow(0.1, cur=98.0, tgt=100.0, once_full=False,
+                                   prefer_yellow_over_refill=True) is False                   # at target
+    assert cmp.green_blocks_yellow(0.1, cur=0.0, tgt=0.0, once_full=False,
+                                   prefer_yellow_over_refill=True) is False                   # no target
+
+
+def test_yellow_preference_locals_defined_before_use():
+    import inspect
+    from src.portfolio.buyer import PortfolioBuyer
+    src = inspect.getsource(PortfolioBuyer.run_compounder_scan)
+    assert src.index("reached = cmp.parse_target_reached(") < src.index("candidates.sort(")
+    assert src.index("_prefer_yellow = ") < src.index("candidates.sort(")
+    assert src.index("_prefer_yellow = ") < src.index("cmp.green_blocks_yellow(")
