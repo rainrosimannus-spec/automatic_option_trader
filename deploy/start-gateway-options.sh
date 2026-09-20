@@ -12,7 +12,12 @@ export TWS_MAJOR_VRSN=1037
 #                          IP, and a STOP on it killed this gateway at 07:00 UTC EVERY Sunday
 #                          since 2026-03-22 (sender unidentified; nothing of ours uses the port).
 #   ReloginAfterSecondFactorAuthenticationTimeout=no — one IB Key push per launch, not a
-#                          re-push every ~10 min; the watchdog paces relaunches (30 min).
+#                          re-push every ~10 min; the watchdog paces relaunches (30 min) and
+#                          kills+relaunches an instance stuck on the 2FA dialog after 30 min.
+#   ColdRestartTime=11:00 AM — IBC's weekly Sunday cold restart (IBKR expires the auto-restart
+#                          token weekly, so this 2FA is unavoidable). It was 07:00 AM = 07:00 UTC
+#                          = 09:00 Luxembourg Sunday, and THAT was the 'Sunday 07:00 kill' —
+#                          not a STOP command. Evaluated in the JVM default zone (system UTC).
 export IBC_INI=/home/rain/ibc-config/config-options.ini
 export TRADING_MODE=live
 # exit, not restart: with 'restart' the launcher re-logged in straight after a 2FA timeout

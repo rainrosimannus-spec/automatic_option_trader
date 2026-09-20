@@ -10,10 +10,12 @@ TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 # Relaunching the gateway needs IB Key 2FA approval on the phone to finish login;
 # the trader's 5-min health check then reconnects once 4002 is open.
 #
-# PACED (2026-09-13): a cold launch sends an IB Key push; if Rain doesn't approve within
-# IBC's 600s the launcher now EXITS (TWOFA_TIMEOUT_ACTION=exit) and we'd be back here in
-# <=5 min to launch again = another push. So hold until the newest push is TFA_GAP old —
-# one push per 30 min, like portfolio-gw-autofill.sh — instead of the 5-in-30-min storm.
+# PACED (2026-09-13): a cold launch sends an IB Key push. Hold until the newest push is
+# TFA_GAP old — one push per 30 min, like portfolio-gw-autofill.sh — instead of the
+# 5-in-30-min storm. The weekly 2FA is unavoidable (IBKR expires the auto-restart token on
+# Sundays; the portfolio gateway needed one Sun 2026-09-13 22:31 too) — it is scheduled by
+# ColdRestartTime in ~/ibc-config/config-options.ini, evaluated in the JVM's default zone =
+# system UTC: 11:00 AM = 11:00 UTC = 13:00 Luxembourg in summer, 12:00 in winter.
 TFA_GAP=1800
 # Minutes since the newest "Second Factor Authentication initiated" line in the options IBC
 # logs. IBC's JVM stamps those lines in the gateway's TimeZone (Europe/Luxembourg, jts.ini),
@@ -34,6 +36,42 @@ if ! tmux has-session -t options 2>/dev/null; then
         echo "$TIMESTAMP [WATCHDOG] options gateway missing — restarting (last push ${AGE:-never} min ago)" >> $LOGFILE
         tmux new-session -d -s options '~/start-gateway-options.sh'
         echo "$TIMESTAMP [WATCHDOG] options gateway session started" >> $LOGFILE
+    fi
+    rm -f /home/rain/ibc/logs/options/api_down_since
+else
+    # Session PRESENT but the API port is down. Two benign cases: the 02:00-local daily
+    # auto-restart (port down ~2 min) and a login in progress. One bad case (2026-09-20): the
+    # Sunday cold restart (ColdRestartTime in ~/ibc-config/config-options.ini) relaunched the
+    # gateway, the IB Key push was missed, and with ReloginAfterSecondFactorAuthenticationTimeout=no
+    # IBC just SITS on the 2FA dialog — session alive, port dead, nothing ever relaunches: offline
+    # until someone notices. So: once the port has been down TFA_GAP continuously AND the last push
+    # is TFA_GAP old, kill this stuck instance and relaunch = one fresh push per 30 min until
+    # approved. `api_down_since` (epoch) tracks the outage across these stateless 5-min runs; it is
+    # seeded from the tmux session's creation time so a watchdog (re)start mid-outage still counts
+    # from the real start, and cleared the moment the port is back.
+    DOWN_FILE=/home/rain/ibc/logs/options/api_down_since
+    if ss -ltn 2>/dev/null | grep -q ":4002 "; then
+        rm -f "$DOWN_FILE"
+    else
+        if [ -s "$DOWN_FILE" ]; then
+            DOWN_SINCE=$(cat "$DOWN_FILE")
+        else
+            DOWN_SINCE=$(tmux display -p -t options '#{session_created}' 2>/dev/null || date +%s)
+            echo "$DOWN_SINCE" > "$DOWN_FILE"
+        fi
+        DOWN_MIN=$(( ($(date +%s) - DOWN_SINCE) / 60 ))
+        AGE=$(last_options_2fa_push_age_min)
+        if [ "$DOWN_MIN" -ge $(( TFA_GAP / 60 )) ] && { [ -z "$AGE" ] || [ "$AGE" -ge $(( TFA_GAP / 60 )) ]; }; then
+            echo "$TIMESTAMP [WATCHDOG] options gateway session up but :4002 down ${DOWN_MIN} min (last push ${AGE:-never} min ago) — killing stuck instance and relaunching" >> $LOGFILE
+            tmux kill-session -t options 2>/dev/null
+            pkill -u rain -f "IbcGateway /home/rain/ibc-config/config-options.ini" 2>/dev/null
+            sleep 3
+            tmux new-session -d -s options '~/start-gateway-options.sh'
+            echo "$DOWN_SINCE" > "$DOWN_FILE"   # keep counting from the original outage; a fresh push follows
+            echo "$TIMESTAMP [WATCHDOG] options gateway session started" >> $LOGFILE
+        elif [ "$DOWN_MIN" -ge 5 ]; then
+            echo "$TIMESTAMP [WATCHDOG] options gateway :4002 down ${DOWN_MIN} min (last push ${AGE:-never} min ago) — waiting" >> $LOGFILE
+        fi
     fi
 fi
 
