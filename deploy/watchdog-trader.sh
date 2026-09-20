@@ -75,6 +75,28 @@ else
     fi
 fi
 
+# ── Portfolio gateway: weekly Sunday recycle at 11:00 UTC ────────────────────
+# IBKR invalidates the auto-restart tokens every Sunday 01:00 ET; the FIRST restart after that
+# needs a full 2FA login (ibkrguides auto_restart_info). Left alone, that first restart is the
+# nightly 23:45 UTC one = 01:45 Luxembourg Monday night — 2026-09-06 it fell to a blank login
+# form for 14h. So recycle the gateway deliberately at 11:00 UTC Sunday (13:00 Luxembourg in
+# summer, 12:00 in winter — the same slot as the options ColdRestartTime): the autofill watcher
+# types the credentials, one IB Key push arrives at lunchtime, and the night restart then runs
+# on a fresh token. Once per Sunday (date stamp in $PGW_RECYCLE), only inside the 11:00-11:09
+# window, and only if the gateway is currently healthy (don't pile onto a login in progress).
+PGW_RECYCLE=/home/rain/ibc/logs/portfolio/sunday_recycle_done
+if [ "$(date -u +%u)" = "7" ] && [ "$(date -u +%H)" = "11" ] && [ "$(date -u +%M)" -lt 10 ] \
+   && [ "$(cat "$PGW_RECYCLE" 2>/dev/null)" != "$(date -u +%F)" ] \
+   && tmux has-session -t portfolio 2>/dev/null && ss -ltn 2>/dev/null | grep -q ":7496 "; then
+    echo "$TIMESTAMP [WATCHDOG] portfolio gateway Sunday recycle — full re-login now (IB Key push follows) so tonight's 23:45 restart runs on a fresh token" >> $LOGFILE
+    date -u +%F > "$PGW_RECYCLE"
+    tmux kill-session -t portfolio 2>/dev/null
+    pkill -u rain -f "IbcGateway /opt/ibc/config-portfolio.ini" 2>/dev/null
+    sleep 3
+    tmux new-session -d -s portfolio '~/start-gateway-portfolio.sh'
+    echo "$TIMESTAMP [WATCHDOG] portfolio gateway session started" >> $LOGFILE
+fi
+
 # ── Check portfolio gateway ──────────────────────────────
 if ! tmux has-session -t portfolio 2>/dev/null; then
     echo "$TIMESTAMP [WATCHDOG] portfolio gateway missing — restarting" >> $LOGFILE
