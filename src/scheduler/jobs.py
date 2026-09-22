@@ -1949,7 +1949,7 @@ def create_scheduler() -> BackgroundScheduler:
             next_run_time=trailing_first_run,
         )
 
-        # BRK-B history refresh — daily at 6 AM ET (after market close data is settled)
+        # Benchmark history refresh (BRK-B + SPY) — daily at 6 AM ET (after market close data is settled)
         from src.portfolio.connection import refresh_brkb_history as _refresh_brkb
         def _job_brkb_refresh():
             try:
@@ -1962,7 +1962,7 @@ def create_scheduler() -> BackgroundScheduler:
             _job_brkb_refresh,
             CronTrigger(hour=6, minute=30, timezone=us_tz),
             id="portfolio_brkb_refresh",
-            name="Portfolio BRK-B History Refresh",
+            name="Portfolio Benchmark History Refresh (BRK-B, SPY)",
             max_instances=1,
             misfire_grace_time=3600,
             coalesce=True,

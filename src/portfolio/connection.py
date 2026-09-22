@@ -527,12 +527,14 @@ def refresh_portfolio_account_cache_from(ib: IB):
         try:
             import json, os
             os.makedirs(os.path.dirname(_CACHE_FILE), exist_ok=True)
-            # Preserve brkb_history from existing cache — it's written by refresh_brkb_history()
+            # Preserve benchmark histories from the existing cache — they're written
+            # by refresh_brkb_history(), not by this hourly account refresh.
             try:
                 with open(_CACHE_FILE, "r") as f:
                     existing = json.load(f)
-                if "brkb_history" in existing and "brkb_history" not in data:
-                    data["brkb_history"] = existing["brkb_history"]
+                for _key in BENCHMARK_CACHE_KEYS:
+                    if _key in existing and _key not in data:
+                        data[_key] = existing[_key]
             except Exception:
                 pass
             with open(_CACHE_FILE, "w") as f:
@@ -544,42 +546,65 @@ def refresh_portfolio_account_cache_from(ib: IB):
         pass
 
 
+# Benchmark lines drawn on the /portfolio return chart. cache key -> IBKR stock
+# (symbol, exchange, currency). Every entry is refreshed together and preserved
+# across the hourly account-cache rewrite.
+BENCHMARKS: dict[str, tuple[str, str, str]] = {
+    "brkb_history": ("BRK B", "SMART", "USD"),
+    "spy_history": ("SPY", "SMART", "USD"),
+}
+BENCHMARK_CACHE_KEYS: tuple[str, ...] = tuple(BENCHMARKS.keys())
+
+
+def _fetch_benchmark_history(ib: IB, symbol: str, exchange: str, currency: str) -> dict:
+    """1-year daily closes for one benchmark, keyed by ISO date. {} on failure."""
+    from ib_insync import Stock as _Stock
+    contract = _Stock(symbol, exchange, currency)
+    # get_portfolio_lock() (not bare _portfolio_lock) so this serializes
+    # against the screener on the shared asyncio loop in merged mode,
+    # in the canonical ib_lock -> _portfolio_lock order.
+    with get_portfolio_lock():
+        bars = ib.reqHistoricalData(
+            contract, endDateTime="",
+            durationStr="365 D", barSizeSetting="1 day",
+            whatToShow="TRADES", useRTH=True,
+            formatDate=1, timeout=15,
+        )
+    return {str(b.date): float(b.close) for b in bars} if bars else {}
+
+
 def refresh_brkb_history(ib: IB):
-    """Fetch BRK-B 1-year daily history via IBKR and store in cache.
-    Called once at startup and daily — NOT in the health check."""
-    try:
-        from ib_insync import Stock as _Stock
-        _brkb = _Stock("BRK B", "SMART", "USD")
-        # get_portfolio_lock() (not bare _portfolio_lock) so this serializes
-        # against the screener on the shared asyncio loop in merged mode,
-        # in the canonical ib_lock -> _portfolio_lock order.
-        with get_portfolio_lock():
-            _bars = ib.reqHistoricalData(
-                _brkb, endDateTime="",
-                durationStr="365 D", barSizeSetting="1 day",
-                whatToShow="TRADES", useRTH=True,
-                formatDate=1, timeout=15,
-            )
-        if _bars:
-            brkb_data = {str(b.date): float(b.close) for b in _bars}
-            with _portfolio_cache_lock:
-                _cached_portfolio_account["brkb_history"] = brkb_data
+    """Fetch 1-year daily history for every chart benchmark (BRK-B, SPY) via IBKR
+    and store each under its own key in the cache.
+    Called once at startup and daily — NOT in the health check.
+    One benchmark failing does not stop the others from refreshing."""
+    for cache_key, (symbol, exchange, currency) in BENCHMARKS.items():
+        try:
+            history = _fetch_benchmark_history(ib, symbol, exchange, currency)
+        except Exception as e:
+            log.warning("benchmark_cache_fetch_failed", benchmark=cache_key,
+                        symbol=symbol, error=str(e))
+            continue
+        if not history:
+            log.warning("benchmark_history_empty", benchmark=cache_key, symbol=symbol)
+            continue
+        with _portfolio_cache_lock:
+            _cached_portfolio_account[cache_key] = history
+        try:
+            import json as _json, os as _os
+            _os.makedirs(_os.path.dirname(_CACHE_FILE), exist_ok=True)
             try:
-                import json as _json, os as _os
-                _os.makedirs(_os.path.dirname(_CACHE_FILE), exist_ok=True)
-                try:
-                    with open(_CACHE_FILE, "r") as f:
-                        existing = _json.load(f)
-                except Exception:
-                    existing = {}
-                existing["brkb_history"] = brkb_data
-                with open(_CACHE_FILE, "w") as f2:
-                    _json.dump(existing, f2)
+                with open(_CACHE_FILE, "r") as f:
+                    existing = _json.load(f)
             except Exception:
-                pass
-            log.info("brkb_history_refreshed", entries=len(brkb_data))
-    except Exception as e:
-        log.warning("brkb_cache_fetch_failed", error=str(e))
+                existing = {}
+            existing[cache_key] = history
+            with open(_CACHE_FILE, "w") as f2:
+                _json.dump(existing, f2)
+        except Exception:
+            pass
+        log.info("benchmark_history_refreshed", benchmark=cache_key,
+                 symbol=symbol, entries=len(history))
 
 
 def get_cached_portfolio_account() -> dict:

@@ -161,41 +161,48 @@ def _build_portfolio_performance() -> dict:
 
 
 
+def _benchmark_return_series(history: dict, labels: list) -> list:
+    """Anchor a {date: close} history to the chart's labels: return % since the
+    first label, forward-filling weekends/holidays from the last prior close.
+    Empty list when the history has no usable anchor price."""
+    if not history or not labels:
+        return []
+    sorted_dates = sorted(history.keys())
+    prices = []
+    for label in labels:
+        p = history.get(label)
+        if p is None:
+            for d in reversed(sorted_dates):
+                if d <= label:
+                    p = history[d]
+                    break
+        prices.append(p)
+    if not prices or not prices[0]:
+        return []
+    anchor = prices[0]
+    return [round((p / anchor - 1.0) * 100.0, 4) if p else None for p in prices]
+
+
 @router.get("/portfolio/brkb-data")
 async def brkb_data_endpoint(request: Request):
-    """Return BRK-B benchmark series as JSON for async chart loading."""
+    """Return the benchmark series (BRK-B and SPY) as JSON for async chart loading.
+    Each series is anchored to 0% at the chart's first label."""
     from fastapi.responses import JSONResponse
-    from src.portfolio.connection import get_cached_portfolio_account
-    import json, os
-    # Read from cache file directly (populated hourly by scheduler)
+    import json
+    # Read from cache file directly (populated at startup + daily by scheduler)
     try:
         cache_file = "data/portfolio_account_cache.json"
         with open(cache_file) as f:
             cache = json.load(f)
-        brkb_history = cache.get("brkb_history", {})
     except Exception:
-        brkb_history = {}
+        cache = {}
     perf = _build_portfolio_performance()
     labels = perf.get("labels", [])
-    if brkb_history and labels:
-        sorted_dates = sorted(brkb_history.keys())
-        prices = []
-        for label in labels:
-            p = brkb_history.get(label)
-            if p is None:
-                for d in reversed(sorted_dates):
-                    if d <= label:
-                        p = brkb_history[d]
-                        break
-            prices.append(p)
-        if prices and prices[0]:
-            anchor = prices[0]
-            brkb = [round((p / anchor - 1.0) * 100.0, 4) if p else None for p in prices]
-        else:
-            brkb = []
-    else:
-        brkb = []
-    return JSONResponse({"labels": labels, "brkb": brkb})
+    return JSONResponse({
+        "labels": labels,
+        "brkb": _benchmark_return_series(cache.get("brkb_history", {}), labels),
+        "spy": _benchmark_return_series(cache.get("spy_history", {}), labels),
+    })
 
 # FX rate cache — refreshed once per page load
 _fx_cache: dict = {}
