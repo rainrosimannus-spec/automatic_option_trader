@@ -70,12 +70,18 @@
                 <h2 class="font-semibold">Ranked Universe ({{signals|length}})</h2>
                 {# Buy-queue heads from the last executed scan. SOLID = could trade that scan
                    (compounder_next_buy_now); HOLLOW = head of the full ranked universe
-                   (compounder_next_buy), shown only when its market was shut so it could not. #}
+                   (compounder_next_buy) when that name was NOT tradeable on that scan.
+                   "not tradeable" is not always "market shut": buyer.py evaluates the
+                   open/after-hours test once per NAME, inside a loop that takes ~0.3s each, so a
+                   scan straddling a venue's close (or the end of its after-hours window) can admit
+                   an early name and skip a later one of the SAME currency. 2026-09-22 21:00 UTC:
+                   MKTX was reached at 20:59:58 and got in, SPGI after 21:00:00 and did not — both
+                   USD. Hence the wording here; don't promise a reason we haven't established. #}
                 {% if next_buy_now %}<span class="text-xs text-gray-500">&#9733; buying now:
                     <span class="text-amber-400 font-semibold">{{next_buy_now}}</span></span>{% endif %}
                 {% if next_buy and next_buy != next_buy_now %}<span class="text-xs text-gray-500">&#9734; next in line:
                     <span class="text-amber-300/70 font-semibold">{{next_buy}}</span>
-                    <span class="text-gray-600">(market shut)</span></span>{% endif %}
+                    <span class="text-gray-600">(not tradeable last scan)</span></span>{% endif %}
             </div>
             <input id="sigFilter" type="text" placeholder="filter symbol…" oninput="filterSig()"
                    class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm w-40">
@@ -106,7 +112,7 @@
                 {% set w = wl_map.get(s.symbol) %}
                 <tr class="border-t border-gray-800 hover:bg-gray-800/40 sigrow" data-sym="{{s.symbol|lower}}">
                     <td class="px-3 py-2 text-gray-500">{{s.rank}}</td>
-                    <td class="px-3 py-2 font-semibold text-white whitespace-nowrap">{{s.symbol}}{% if next_buy_now and s.symbol|upper == next_buy_now %}<span class="ml-1 text-amber-400" title="Head of the compounder buy queue that could trade on the last scan">&#9733;</span>{% elif next_buy and s.symbol|upper == next_buy %}<span class="ml-1 text-amber-300/70" title="Next in line overall — its market was shut on the last scan, so a tradeable name took the budget">&#9734;</span>{% endif %}
+                    <td class="px-3 py-2 font-semibold text-white whitespace-nowrap">{{s.symbol}}{% if next_buy_now and s.symbol|upper == next_buy_now %}<span class="ml-1 text-amber-400" title="Head of the compounder buy queue that could trade on the last scan">&#9733;</span>{% elif next_buy and s.symbol|upper == next_buy %}<span class="ml-1 text-amber-300/70" title="Head of the full ranked universe, but not tradeable on the last scan — its market was shut, or the scan crossed its venue&#39;s close part-way through. A tradeable name took the budget.">&#9734;</span>{% endif %}
                         {# Review card proposing to part with stock — outright, partial, or via a
                            covered call that sells it if exercised. REVIEW-ONLY: never auto-executes,
                            so this means "waiting on your approval", not "about to sell". #}
