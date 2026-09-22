@@ -1753,7 +1753,8 @@ def create_scheduler() -> BackgroundScheduler:
         # and the orders died with <1 min of runway. Catching the window's OPEN makes the grid's phase
         # irrelevant. Once, not per-tick: every scan re-prices all working buys, so polling would never
         # let a below-market limit rest. Serializes on get_portfolio_lock.
-        if (portfolio_cfg.compounder.late_session_only_green
+        if (portfolio_cfg.compounder.late_session_fill_pass
+                and portfolio_cfg.compounder.late_session_only_green
                 and portfolio_cfg.compounder.late_session_minutes > 0):
             scheduler.add_job(
                 partial(job_portfolio_late_session_fill, portfolio_cfg),

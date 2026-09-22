@@ -234,9 +234,17 @@ def _watchlist_currencies() -> set[str] | None:
     try:
         from src.core.database import get_db
         from src.portfolio.models import PortfolioWatchlist
+        from src.portfolio.venues import is_untradable_currency
         with get_db() as db:
             rows = db.query(PortfolioWatchlist.currency).distinct().all()
-        return {(c or "").upper() for (c,) in rows if c} or None
+        # Drop the blocked home markets too. The monthly screen reroutes such a name to a US listing
+        # of the same company or removes it, but that runs once a month — between screens a ZAR/INR row
+        # can sit in the watchlist, and the buyer partitions it out on EVERY scan. Waking for a venue
+        # the buyer is guaranteed to skip is precisely the wasted cancel/replace sweep this filter
+        # exists to stop, so honour the same one list here (venues.py: "one list, two enforcement
+        # points" — this makes three, reading it rather than restating it).
+        return {(c or "").upper() for (c,) in rows
+                if c and not is_untradable_currency(c)} or None
     except Exception as e:
         log.warning("portfolio_late_session_currency_filter_failed", error=str(e))
         return None
@@ -287,6 +295,8 @@ def job_portfolio_late_session_fill(cfg: PortfolioConfig):
         from src.portfolio.buyer import _late_session, _MARKET_HOURS
         _dt = _buyer.datetime
         cc = CompounderConfig()
+        if not getattr(cc, "late_session_fill_pass", False):
+            return                      # OFF by default — see the evidence in config.py
         if not cc.late_session_only_green or cc.late_session_minutes <= 0:
             return                      # gate disabled ⇒ the 2h grid already buys whenever it likes
         runway = int(getattr(cc, "late_session_min_runway_minutes", 0) or 0)

@@ -96,9 +96,8 @@ def test_replays_the_four_dead_cards(at, sym, ccy, placed, runway_s):
     with at(placed):
         assert _late_session(ccy, cc.late_session_minutes) is True, \
             f"{sym}: the old gate admitted this placement with {runway_s}s left"
-        assert _late_session(ccy, cc.late_session_minutes,
-                             cc.late_session_min_runway_minutes) is False, \
-            f"{sym}: the runway floor must refuse a placement with {runway_s}s left"
+        assert _late_session(ccy, cc.late_session_minutes, 5) is False, \
+            f"{sym}: a 5-min floor would refuse a placement with {runway_s}s left"
 
 
 def test_asia_and_au_have_no_afterhours_rescue():
@@ -121,9 +120,9 @@ def test_a_15_min_pass_always_finds_usable_runway(at):
     close_utc = 6 * 60                                     # 06:00 UTC for both Tokyo and Sydney
     window_start = close_utc - cc.late_session_minutes
     usable = [m for m in range(0, 24 * 60, 15)
-              if window_start <= m < close_utc - cc.late_session_min_runway_minutes]
+              if window_start <= m < close_utc - 5]
     assert usable, "a 15-min sub-grid must sample the window somewhere"
-    assert (close_utc - max(usable)) > cc.late_session_min_runway_minutes
+    assert (close_utc - max(usable)) > 5
     # and the earliest pass gets nearly the whole window, not the tail the 2h grid happened to hit
     assert (close_utc - min(usable)) >= cc.late_session_minutes - 15
 
@@ -133,17 +132,27 @@ def test_every_mapped_currency_can_reach_its_window(at):
     cc = CompounderConfig()
     for ccy in _MARKET_HOURS:
         tz_name, _open_h, close_h, _days = _MARKET_HOURS[ccy]
-        assert close_h * 60 - cc.late_session_minutes < close_h * 60 - cc.late_session_min_runway_minutes, \
+        assert close_h * 60 - cc.late_session_minutes < close_h * 60 - 5, \
             f"{ccy}: runway floor swallows the whole window"
 
 
 # ── the once-per-window latch ─────────────────────────────────────────────────
 
-def _fire(monkeypatch, utc_iso):
-    """Run job_portfolio_late_session_fill at a frozen instant; return whether it scanned."""
+def _fire(monkeypatch, utc_iso, enabled=True):
+    """Run job_portfolio_late_session_fill at a frozen instant; return whether it scanned.
+
+    The pass ships OFF (late_session_fill_pass=False), so these tests enable it explicitly to exercise
+    the mechanism. test_pass_is_off_by_default covers the shipped state."""
     import src.portfolio.scheduler as sch
-    from src.portfolio.config import PortfolioConfig
+    from src.portfolio.config import PortfolioConfig, CompounderConfig
     cfg = PortfolioConfig(); cfg.enabled = True
+    if enabled:
+        # Pydantic fields aren't plain class attributes, so override via a subclass and swap the
+        # symbol the job resolves at call time (it imports CompounderConfig inside the function).
+        class _Enabled(CompounderConfig):
+            late_session_fill_pass: bool = True
+            late_session_min_runway_minutes: int = 5
+        monkeypatch.setattr("src.portfolio.config.CompounderConfig", _Enabled)
     calls = []
     monkeypatch.setattr(sch, "job_portfolio_scan", lambda c: calls.append(1))
     with _freeze(utc_iso):
@@ -253,7 +262,7 @@ def test_us_loses_five_minutes_and_keeps_its_after_hours_hour(at):
     def buyable(utc_iso):
         with at(utc_iso):
             return (_late_session("USD", cc.late_session_minutes,
-                                  cc.late_session_min_runway_minutes)
+                                  5)
                     or _aftermarket("USD", cc.aftermarket_deploy_minutes))
 
     assert buyable("2026-09-22T19:50:00") is True      # 15:50 ET, in window
@@ -267,9 +276,37 @@ def test_every_venue_reads_its_own_clock(at):
     cc = CompounderConfig()
     with at("2026-09-22T04:30:00"):
         inside = {c for c in _MARKET_HOURS
-                  if _late_session(c, cc.late_session_minutes, cc.late_session_min_runway_minutes)}
+                  if _late_session(c, cc.late_session_minutes, 5)}
     assert inside == {"JPY", "AUD"}, inside
     with at("2026-09-22T19:00:00"):                    # 15:00 ET
         inside = {c for c in _MARKET_HOURS
-                  if _late_session(c, cc.late_session_minutes, cc.late_session_min_runway_minutes)}
+                  if _late_session(c, cc.late_session_minutes, 5)}
     assert inside == {"USD", "CAD"}, inside
+
+
+# ── the shipped state: both halves OFF, and WHY ───────────────────────────────
+
+def test_floor_and_pass_both_ship_off():
+    """Measured 2026-09-22 and deliberately not enabled. In the sub-5-minute zone the record is 5
+    FILLS against 4 deaths, and the runways interleave — XRO filled at 0.5 min and died at 0.5 min,
+    MA filled at 0.6, BKNG at 1.0, POWL at 1.9, 6920 at 2.5. Time-to-close carries no signal, almost
+    certainly because that minute is the closing auction. A 5-min floor would have refused ~EUR 310k
+    of real fills in three months. If someone flips these on, they need new data, not a hunch."""
+    cc = CompounderConfig()
+    assert cc.late_session_min_runway_minutes == 0
+    assert cc.late_session_fill_pass is False
+
+
+def test_default_config_reproduces_the_old_window(at):
+    """With the shipped defaults every one of the four 'dead' placements is still ADMITTED — because
+    the identically-timed MA/BKNG/XRO placements filled."""
+    cc = CompounderConfig()
+    for ccy, t in [("AUD", "2026-09-22T05:59:22"), ("JPY", "2026-09-22T05:59:05"),
+                   ("USD", "2026-09-22T19:59:22"), ("USD", "2026-09-21T19:59:01")]:
+        with at(t):
+            assert _late_session(ccy, cc.late_session_minutes,
+                                 cc.late_session_min_runway_minutes) is True
+
+
+def test_pass_is_off_by_default(monkeypatch):
+    assert _fire(monkeypatch, "2026-09-22T04:00:00", enabled=False) is False

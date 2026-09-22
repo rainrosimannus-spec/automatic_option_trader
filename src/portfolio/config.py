@@ -121,18 +121,36 @@ class CompounderConfig(BaseModel):
     # gate bypass. False restores "any underweight green blocks every yellow".
     yellow_after_greens_once_full: bool = True
     late_session_minutes: int = 120
-    # RUNWAY FLOOR (2026-09-22). The late window above says "buy in the last 120 min"; it said nothing
-    # about how much of that window must be LEFT. The 2h scan grid is an IntervalTrigger anchored to
-    # process start, so its phase against a venue close is set by the last restart — and with the phase
-    # it happened to hold on 2026-09-21/22 it landed at 05:58 UTC against an 06:00 UTC Tokyo/Sydney
-    # close. Add the one-order-per-30s executor cycle and the orders reached the venue with 38-55
-    # SECONDS of session left: XRO died unfilled at the bell twice, 6146 never left PreSubmitted and was
-    # cancelled two hours later as stale. Four of the last fourteen days' nine dead buy cards were this.
-    # A green buy is now refused inside the final `late_session_min_runway_minutes`; the name simply
-    # waits for the next session's window. There is NO after-hours rescue for these names — _aftermarket
-    # is gated to outside-RTH venues and Asia/AU reject out-of-hours orders — so declining to place is
-    # strictly better than placing something that cannot fill. 0 disables the floor.
-    late_session_min_runway_minutes: int = 5
+    # RUNWAY FLOOR — built 2026-09-22, MEASURED, and shipped OFF. Keep it that way without new data.
+    #
+    # The theory was that a green buy placed seconds before the bell cannot fill: on 09-21 and 09-22 the
+    # 2h scan grid landed at 05:58 UTC against an 06:00 UTC Tokyo/Sydney close and four cards died with
+    # 38-55 seconds of runway. The theory is WRONG. Over the 85 filled orders since 2026-06-25, the
+    # sub-5-minute zone holds 5 FILLS against those 4 deaths, and the runways interleave completely:
+    #
+    #     XRO  0.5 min -> FILLED (09-17)      XRO  0.5 min -> died (09-21)
+    #     MA   0.6 min -> FILLED  $97,880     XRO  0.6 min -> died (09-22)
+    #     BKNG 1.0 min -> FILLED  $95,528     6146 1.0 min -> died (09-21)
+    #     POWL 1.9 min -> FILLED  $69,165     6146 0.9 min -> died (09-22)
+    #     6920 2.5 min -> FILLED  JPY 8.7M
+    #
+    # The same symbol at the same runway filled one day and died the next, so time-to-close carries no
+    # signal — almost certainly because the final minute is the CLOSING AUCTION, the deepest liquidity
+    # of the session rather than the thinnest. A 5-minute floor would have refused ~EUR 310k of real
+    # fills in three months to avoid four dead cards whose only cost was churn. That is a bad trade.
+    #
+    # The mechanism stays (tested, and _late_session takes min_runway) because a value MIGHT earn its
+    # keep on a venue with no closing auction. Do not raise it above 0 without fill data that separates
+    # the two populations — this comment exists because the obvious story was the wrong one.
+    late_session_min_runway_minutes: int = 0
+    # Extra late-session scan pass — also OFF, and dependent on the floor above. The 2h scan grid is an
+    # IntervalTrigger anchored to process start, so against a 120-min window it admits exactly ONE pass
+    # at a phase the last restart chose; job_portfolio_late_session_fill samples the window's opening
+    # instead. That only matters if the grid's phase is harmful, and the fill record says it is not —
+    # fills land right across the window (32 in the 60-120 min band, 15 in 15-60, 3 in 5-15, 5 under 5).
+    # Turning it on also buys one extra cancel/re-price sweep per venue per day, since every scan
+    # re-prices every resting order. Enable only alongside a floor that has been shown to pay.
+    late_session_fill_pass: bool = False
     # After-hours fallback: if a green buy's budget did NOT fill by the close, keep the name buyable for
     # this many minutes AFTER the close (the US after-market). Only outside-RTH-capable venues (US/CA/
     # EU/UK) — orders already carry outsideRth, and Asia/AU/ZA reject out-of-hours. So a limit the market
@@ -352,6 +370,10 @@ class PortfolioConfig(BaseModel):
     # Flex Query (for deposit sync and interest data)
     flex_token: str = ""
     flex_query_id: str = ""
+    # Optional SECOND Flex query for /reports — long-period (e.g. "Year to Date")
+    # with Open Positions included, so account statements can cover a whole tax
+    # year. Falls back to flex_query_id when unset.
+    report_flex_query_id: str = ""
 
     # Schedule
     check_interval_hours: int = 2   # buy-scan cadence; re-prices resting orders to the current market
