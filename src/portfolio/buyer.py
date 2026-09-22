@@ -2286,7 +2286,13 @@ class PortfolioBuyer:
                 for s in rows:
                     if s.symbol not in working_syms:
                         s.status = "expired"
-                        s.review_note = "No live order (filled/cancelled/rejected)"
+                        # Name the case that actually dominates. The old wording listed
+                        # "filled/cancelled/rejected" and omitted the common one — a DAY limit that
+                        # simply ran out the session unfilled — so a routine no-fill read as though
+                        # something had gone wrong at the broker. (2026-09-22: the /suggestions badge
+                        # also keyed off the word "cancelled" inside this very string; that now
+                        # anchors on how the note starts, so this text is free to be accurate.)
+                        s.review_note = "Order no longer live — unfilled at close, cancelled or rejected"
                         n += 1
                 if n:
                     log.info("compounder_expired_dead_order_suggestions", count=n)

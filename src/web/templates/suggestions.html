@@ -229,7 +229,15 @@
                     {% elif s.status == 'approved' %}
                     <span class="px-2 py-0.5 rounded text-xs bg-yellow-900/60 text-yellow-400">⏳ approved</span>
                     {% elif s.status == 'expired' %}
-                        {% if s.review_note and 'cancel' in s.review_note|lower %}
+                        {#- Match how the note STARTS, not a substring anywhere in it. 'cancel' appearing
+                            anywhere flagged "No live order (filled/cancelled/rejected)" as cancelled —
+                            the word is inside that note's list of POSSIBILITIES, and nothing had been
+                            cancelled. Every note the code actually writes for a real cancel begins with
+                            "Cancel…" or "Order cancelled…" (buyer.py / routes/suggestions.py), so anchor
+                            on that. Any accurate wording of the orphan note still contains the word, so
+                            fixing the text alone would not have helped. -#}
+                        {% set _note = (s.review_note or '')|lower %}
+                        {% if _note.startswith('cancel') or _note.startswith('order cancelled') %}
                         <span class="px-2 py-0.5 rounded text-xs bg-orange-900/60 text-orange-400">⊘ cancelled</span>
                         {% elif s.review_note and 'margin' in s.review_note|lower %}
                         <span class="px-2 py-0.5 rounded text-xs bg-red-900/40 text-red-300">⊘ margin</span>
