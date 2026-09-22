@@ -1706,6 +1706,7 @@ def create_scheduler() -> BackgroundScheduler:
             job_portfolio_update_metrics, job_portfolio_monthly_screen,
             job_portfolio_monthly_review, job_portfolio_sync_trades, job_portfolio_trailing_stop_monitor,
             job_portfolio_fx_treasury, job_portfolio_aftermarket_fill,
+            job_portfolio_late_session_fill,
         )
         from src.portfolio.forecaster import job_portfolio_chronos_forecast
 
@@ -1743,6 +1744,26 @@ def create_scheduler() -> BackgroundScheduler:
                 misfire_grace_time=300,
                 coalesce=True,
                 next_run_time=scan_first_run + timedelta(seconds=90),
+            )
+
+        # Late-session pass — ticks every 15 min but SCANS ONCE per venue window, on the first tick after
+        # that window opens; a cheap no-op otherwise. The 2h grid is an IntervalTrigger anchored to
+        # process start, so against a 120-min window it admits exactly one scan at a phase the last
+        # restart chose at random; on 2026-09-21/22 that put it 2 minutes before the Tokyo/Sydney close
+        # and the orders died with <1 min of runway. Catching the window's OPEN makes the grid's phase
+        # irrelevant. Once, not per-tick: every scan re-prices all working buys, so polling would never
+        # let a below-market limit rest. Serializes on get_portfolio_lock.
+        if (portfolio_cfg.compounder.late_session_only_green
+                and portfolio_cfg.compounder.late_session_minutes > 0):
+            scheduler.add_job(
+                partial(job_portfolio_late_session_fill, portfolio_cfg),
+                IntervalTrigger(minutes=15),
+                id="portfolio_late_session_fill",
+                name="Portfolio Late-Session Fill (pre-close)",
+                max_instances=1,
+                misfire_grace_time=300,
+                coalesce=True,
+                next_run_time=scan_first_run + timedelta(seconds=150),
             )
 
         # Price updates — every hour, 24/7

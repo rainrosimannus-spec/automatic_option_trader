@@ -214,6 +214,80 @@ def job_portfolio_aftermarket_fill(cfg: PortfolioConfig):
     job_portfolio_scan(cfg)          # serialized via get_portfolio_lock — safe alongside the 2h grid
 
 
+# Venue-windows already served by job_portfolio_late_session_fill: currency -> venue-local date.
+# Deliberately in-process: a restart re-arms every window, which is the safe direction (an extra pass
+# costs one scan; a missed one costs a day's buy). Bounded by the currency map, so it cannot grow.
+_late_session_served: dict[str, str] = {}
+
+
+def job_portfolio_late_session_fill(cfg: PortfolioConfig):
+    """Late-session pass — the SAME buy scan as the 2h grid, fired ONCE per venue window, as early in
+    that window as the 15-min sub-grid allows.
+
+    ONCE, not every 15 minutes, and that is the whole design. Every scan calls
+    _cancel_stale_compounder_buys, which cancels EVERY working compounder BUY order with no age guard
+    so the scan can re-price it at the current market. On the 2h grid that is one re-price per order.
+    Polling this window every 15 min would cancel and re-place eight times inside it, so a limit resting
+    below market would never live long enough to be hit — and re-pricing to the current market on every
+    pass is precisely the chase that scripts/… A/B-rejected in favour of buying the dip
+    (yellow-pricing-fix-rejected-2026-07-03). The bug was never "too few scans"; it was that the ONE
+    scan landed at a phase that left no runway. One well-placed pass fixes it and adds no churn.
+
+    Why this exists. Green buys are deliberately confined to the last `late_session_minutes` of a name's
+    OWN session, and the main scan runs on a 2h IntervalTrigger. A 120-minute window against a 120-minute
+    grid admits exactly ONE scan, and its position inside the window is set by the grid's phase — which is
+    anchored to process start, so a restart silently re-rolls it. On 2026-09-21/22 the phase put that one
+    scan at 05:58 UTC against an 06:00 UTC Tokyo/Sydney close: after the executor's 30s-per-order cycle the
+    orders reached the venue with 38-55 seconds left and died. The runway floor (buyer._late_session
+    min_runway) now REFUSES those; without this job that refusal would just mean the Asian names never
+    buy on a badly-phased grid, because their one scan lands in the excluded tail.
+
+    This decouples the two: a 15-min sub-grid WATCHES for the window opening, and the first tick inside
+    it runs the scan and latches the venue for that trading day. So the buy is attempted with ~105-120
+    minutes of runway instead of whatever the 2h phase happened to leave — and exactly once, so the
+    stale-buy re-pricer still sees one pass, as on the 2h grid. Shares the sub-grid and the self-gating
+    shape with job_portfolio_aftermarket_fill; that job intentionally has no latch, because its window
+    is a 60-minute fill-or-lose fallback rather than the primary entry.
+
+    Cheap no-op outside every window: gated purely on _late_session (datetime math over the venue map),
+    so it touches no IBKR/FMP until a real window is open. Belt and braces even if the latch is somehow
+    defeated — the scan's own budget math is idempotent: once the day's allowance is deployed,
+    deployed_today is high and a repeat pass no-ops."""
+    if not cfg.enabled:
+        return
+    try:
+        import pytz
+        from src.portfolio.config import CompounderConfig
+        # Take "now" from the buyer module, the same clock _late_session reads. Importing datetime
+        # directly here would give the latch a SECOND source of truth, and the two can disagree across
+        # a venue-local midnight — serving one window twice or skipping one entirely.
+        from src.portfolio import buyer as _buyer
+        from src.portfolio.buyer import _late_session, _MARKET_HOURS
+        _dt = _buyer.datetime
+        cc = CompounderConfig()
+        if not cc.late_session_only_green or cc.late_session_minutes <= 0:
+            return                      # gate disabled ⇒ the 2h grid already buys whenever it likes
+        runway = int(getattr(cc, "late_session_min_runway_minutes", 0) or 0)
+        # Key the latch on the VENUE-LOCAL date, not UTC: an Asian window opens on a UTC day that its
+        # own calendar may already have rolled past, so a UTC key would serve two windows as one.
+        open_now: dict[str, str] = {}
+        for ccy, (tz_name, _o, _c, _d) in _MARKET_HOURS.items():
+            if _late_session(ccy, cc.late_session_minutes, runway):
+                open_now[ccy] = _dt.now(pytz.timezone(tz_name)).strftime("%Y-%m-%d")
+        unserved = [c for c, d in open_now.items() if _late_session_served.get(c) != d]
+        if not unserved:
+            return
+    except Exception as e:
+        log.warning("portfolio_late_session_fill_gate_failed", error=str(e))
+        return
+    # Mark BEFORE the scan: if it raises, we still don't re-enter every 15 min for the rest of the
+    # window. The 2h grid remains the backstop, exactly as it was before this job existed.
+    for ccy, day in open_now.items():
+        _late_session_served[ccy] = day
+    log.info("portfolio_late_session_fill_pass", venues=sorted(unserved))
+    job_portfolio_scan(cfg)          # serialized via get_portfolio_lock — safe alongside the 2h grid
+
+
 def job_portfolio_fx_treasury(cfg: PortfolioConfig):
     """Close any standing non-base foreign-currency debit (FX margin loan) on the portfolio account,
     so we don't pay borrow interest on a CAD/GBP/etc. balance. No-op unless enabled; dry-run by default."""

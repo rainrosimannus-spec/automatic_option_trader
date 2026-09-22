@@ -121,6 +121,18 @@ class CompounderConfig(BaseModel):
     # gate bypass. False restores "any underweight green blocks every yellow".
     yellow_after_greens_once_full: bool = True
     late_session_minutes: int = 120
+    # RUNWAY FLOOR (2026-09-22). The late window above says "buy in the last 120 min"; it said nothing
+    # about how much of that window must be LEFT. The 2h scan grid is an IntervalTrigger anchored to
+    # process start, so its phase against a venue close is set by the last restart — and with the phase
+    # it happened to hold on 2026-09-21/22 it landed at 05:58 UTC against an 06:00 UTC Tokyo/Sydney
+    # close. Add the one-order-per-30s executor cycle and the orders reached the venue with 38-55
+    # SECONDS of session left: XRO died unfilled at the bell twice, 6146 never left PreSubmitted and was
+    # cancelled two hours later as stale. Four of the last fourteen days' nine dead buy cards were this.
+    # A green buy is now refused inside the final `late_session_min_runway_minutes`; the name simply
+    # waits for the next session's window. There is NO after-hours rescue for these names — _aftermarket
+    # is gated to outside-RTH venues and Asia/AU reject out-of-hours orders — so declining to place is
+    # strictly better than placing something that cannot fill. 0 disables the floor.
+    late_session_min_runway_minutes: int = 5
     # After-hours fallback: if a green buy's budget did NOT fill by the close, keep the name buyable for
     # this many minutes AFTER the close (the US after-market). Only outside-RTH-capable venues (US/CA/
     # EU/UK) — orders already carry outsideRth, and Asia/AU/ZA reject out-of-hours. So a limit the market

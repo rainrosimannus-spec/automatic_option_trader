@@ -148,13 +148,22 @@ def _market_open(currency: str | None) -> bool:
     return now.weekday() in days and open_h <= now.hour < close_h
 
 
-def _late_session(currency: str | None, minutes: int) -> bool:
-    """True when the venue that settles `currency` is within its FINAL `minutes` of the regular session.
+def _late_session(currency: str | None, minutes: int, min_runway: int = 0) -> bool:
+    """True when the venue that settles `currency` is within its FINAL `minutes` of the regular session,
+    but with at least `min_runway` minutes still to run.
 
     Used to defer GREEN compounder buys to the late session — those below-fair, pulling-back names drift
     down intraday, so a late entry is measurably cheaper. Shares the _MARKET_HOURS table with _market_open
     (the table must not fork). Unknown currency → True (no venue map ⇒ don't gate, matching _market_open's
-    scan-anyway fallback). minutes<=0 also returns True (gate disabled) so callers can no-op it via config."""
+    scan-anyway fallback). minutes<=0 also returns True (gate disabled) so callers can no-op it via config.
+
+    `min_runway` closes the other end of the window. Being inside the last 120 minutes says nothing about
+    how much of it is LEFT, and an order placed with under a minute to run cannot fill: on 2026-09-21/22
+    the scan grid landed at 05:58 UTC against an 06:00 UTC Tokyo/Sydney close and, after the executor's
+    30s-per-order cycle, XRO reached ASX with 38 seconds and 6146 never left PreSubmitted. Refusing is
+    strictly better than placing — there is no after-hours rescue on these venues (_aftermarket is gated
+    to outside-RTH currencies), so the alternative to waiting for tomorrow's window is a dead order plus
+    two hours of stale-cancel churn. min_runway=0 preserves the original behaviour exactly."""
     if minutes <= 0:
         return True
     import pytz
@@ -166,7 +175,7 @@ def _late_session(currency: str | None, minutes: int) -> bool:
     if now.weekday() not in days:
         return False
     close_dt = now.replace(hour=close_h, minute=0, second=0, microsecond=0)
-    return (close_dt - timedelta(minutes=minutes)) <= now < close_dt
+    return (close_dt - timedelta(minutes=minutes)) <= now < (close_dt - timedelta(minutes=max(0, min_runway)))
 
 
 def _aftermarket(currency: str | None, minutes: int) -> bool:
@@ -1621,13 +1630,22 @@ class PortfolioBuyer:
             # their own window. A crash tranche bypasses both gates (urgent deploy).
             if not crash_active and cc.late_session_only_green:
                 if green:
-                    # Green buys in the last cc.late_session_minutes before close; if that pass didn't
-                    # fill (fast market / cancel), the _aftermarket fallback keeps it buyable for the
-                    # first cc.aftermarket_deploy_minutes after close so it can still fill (outsideRth).
-                    if not (_late_session(stock.currency, cc.late_session_minutes)
+                    # Green buys in the last cc.late_session_minutes before close, MINUS the final
+                    # cc.late_session_min_runway_minutes — an order needs enough session left to fill.
+                    # If that pass didn't fill (fast market / cancel), the _aftermarket fallback keeps it
+                    # buyable for the first cc.aftermarket_deploy_minutes after close (outsideRth) — but
+                    # only on outside-RTH venues, so for Asia/AU the runway floor is the ONLY protection.
+                    _runway = int(getattr(cc, "late_session_min_runway_minutes", 0) or 0)
+                    if not (_late_session(stock.currency, cc.late_session_minutes, _runway)
                             or _aftermarket(stock.currency, cc.aftermarket_deploy_minutes)):
-                        log.info("compounder_defer_green_to_late_session",
-                                 symbol=stock.symbol, currency=stock.currency)
+                        # Distinguish "too early" from "too late to fill": the second means a scan landed
+                        # against the bell and the name is waiting for tomorrow's window, which is the
+                        # signal to check the scan grid's phase, not the gate.
+                        _too_late = _runway > 0 and _late_session(stock.currency, cc.late_session_minutes)
+                        log.info("compounder_defer_green_no_runway" if _too_late
+                                 else "compounder_defer_green_to_late_session",
+                                 symbol=stock.symbol, currency=stock.currency,
+                                 runway_floor_min=_runway if _too_late else None)
                         continue
                 elif greens_outstanding:
                     log.info("compounder_hold_yellow_greens_underweight", symbol=stock.symbol)
