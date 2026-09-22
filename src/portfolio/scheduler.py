@@ -220,6 +220,28 @@ def job_portfolio_aftermarket_fill(cfg: PortfolioConfig):
 _late_session_served: dict[str, str] = {}
 
 
+def _watchlist_currencies() -> set[str] | None:
+    """Currencies the compounder could actually buy today, or None if that can't be determined.
+
+    _MARKET_HOURS maps fifteen currencies; the live watchlist holds seven (USD/EUR/CAD/JPY/HKD/GBP/AUD)
+    — ZAR and INR are dropped outright by the venue policy, and SGD/ILS/CHF/NOK/SEK/DKK have never been
+    screened in. Without this filter the late-session job wakes for Singapore, Mumbai and Tel Aviv too,
+    and since EVERY scan re-prices EVERY resting compounder order regardless of venue, those are three
+    daily cancel/replace sweeps bought with zero exposure. Cheap: one sqlite read, no IBKR.
+
+    None on failure so the caller fails OPEN — an extra scan is the same churn this job had before the
+    filter, whereas failing closed would silently disable the runway fix."""
+    try:
+        from src.core.database import get_db
+        from src.portfolio.models import PortfolioWatchlist
+        with get_db() as db:
+            rows = db.query(PortfolioWatchlist.currency).distinct().all()
+        return {(c or "").upper() for (c,) in rows if c} or None
+    except Exception as e:
+        log.warning("portfolio_late_session_currency_filter_failed", error=str(e))
+        return None
+
+
 def job_portfolio_late_session_fill(cfg: PortfolioConfig):
     """Late-session pass — the SAME buy scan as the 2h grid, fired ONCE per venue window, as early in
     that window as the 15-min sub-grid allows.
@@ -270,8 +292,11 @@ def job_portfolio_late_session_fill(cfg: PortfolioConfig):
         runway = int(getattr(cc, "late_session_min_runway_minutes", 0) or 0)
         # Key the latch on the VENUE-LOCAL date, not UTC: an Asian window opens on a UTC day that its
         # own calendar may already have rolled past, so a UTC key would serve two windows as one.
+        held = _watchlist_currencies()          # None ⇒ couldn't read it ⇒ don't filter
         open_now: dict[str, str] = {}
         for ccy, (tz_name, _o, _c, _d) in _MARKET_HOURS.items():
+            if held is not None and ccy not in held:
+                continue                        # no name settles in this currency — nothing to buy
             if _late_session(ccy, cc.late_session_minutes, runway):
                 open_now[ccy] = _dt.now(pytz.timezone(tz_name)).strftime("%Y-%m-%d")
         unserved = [c for c, d in open_now.items() if _late_session_served.get(c) != d]

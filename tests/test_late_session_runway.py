@@ -209,3 +209,67 @@ def test_first_pass_carries_nearly_the_whole_window(monkeypatch):
     runway = 6 * 60 - fired_at                                     # 06:00 UTC Tokyo/Sydney close
     assert runway >= cc.late_session_minutes - 15, \
         f"first pass had only {runway} min of runway — the point was to land early in the window"
+
+
+# ── currency filter: don't wake for venues we hold nothing in ─────────────────
+
+def test_only_currencies_on_the_watchlist_wake_the_job(monkeypatch):
+    """_MARKET_HOURS maps 15 currencies; the book holds 7. Every scan re-prices EVERY resting order
+    regardless of venue, so waking for Singapore/Mumbai/Tel Aviv buys three daily cancel-replace
+    sweeps with zero exposure. 2026-09-22: 7 firings/day before the filter, 4 after."""
+    import src.portfolio.scheduler as sch
+    monkeypatch.setattr(sch, "_watchlist_currencies", lambda: {"USD", "EUR", "JPY", "AUD", "HKD", "GBP", "CAD"})
+    # Times chosen so ONLY an unheld currency is in window — 07:00 would not do, Hong Kong is
+    # still open then and IS held, so the job would rightly fire and prove nothing.
+    assert _fire(monkeypatch, "2026-09-22T08:30:00") is False     # SGD + INR only — neither held
+    assert _fire(monkeypatch, "2026-09-22T09:00:00") is False     # INR only — not held
+    assert _fire(monkeypatch, "2026-09-22T12:30:00") is False     # ILS only — not held
+    assert _fire(monkeypatch, "2026-09-22T04:00:00") is True      # JPY/AUD — held
+
+
+def test_one_pass_per_real_venue_cluster(monkeypatch):
+    """The whole day should produce exactly four passes: Tokyo/Sydney, Hong Kong, Europe/UK, US/CA."""
+    import src.portfolio.scheduler as sch
+    monkeypatch.setattr(sch, "_watchlist_currencies", lambda: {"USD", "EUR", "JPY", "AUD", "HKD", "GBP", "CAD"})
+    fired = [m for m in range(0, 24 * 60, 15)
+             if _fire(monkeypatch, f"2026-09-22T{m // 60:02d}:{m % 60:02d}:00")]
+    assert [f"{m // 60:02d}:{m % 60:02d}" for m in fired] == ["04:00", "06:00", "13:00", "18:00"]
+
+
+def test_filter_fails_open(monkeypatch):
+    """An unreadable watchlist must not disable the runway fix — fall back to the full venue map."""
+    import src.portfolio.scheduler as sch
+    monkeypatch.setattr(sch, "_watchlist_currencies", lambda: None)
+    assert _fire(monkeypatch, "2026-09-22T08:30:00") is True       # SGD/INR wake it when unfiltered
+
+
+# ── the US path must be strictly better off, not worse ────────────────────────
+
+def test_us_loses_five_minutes_and_keeps_its_after_hours_hour(at):
+    """The floor trims 15:55-16:00 ET. Unlike Asia/AU, USD is outside-RTH capable, so _aftermarket
+    picks the name straight back up at the bell for a full hour — a 5-min gap, not a lost day."""
+    cc = CompounderConfig()
+
+    def buyable(utc_iso):
+        with at(utc_iso):
+            return (_late_session("USD", cc.late_session_minutes,
+                                  cc.late_session_min_runway_minutes)
+                    or _aftermarket("USD", cc.aftermarket_deploy_minutes))
+
+    assert buyable("2026-09-22T19:50:00") is True      # 15:50 ET, in window
+    assert buyable("2026-09-22T19:57:00") is False     # 15:57 ET, the 5-min gap
+    assert buyable("2026-09-22T20:05:00") is True      # 16:05 ET, after-hours
+    assert buyable("2026-09-22T20:55:00") is True      # 16:55 ET, still after-hours
+
+
+def test_every_venue_reads_its_own_clock(at):
+    """No venue inherits another's hours: at 04:30 UTC only Tokyo/Sydney are in window."""
+    cc = CompounderConfig()
+    with at("2026-09-22T04:30:00"):
+        inside = {c for c in _MARKET_HOURS
+                  if _late_session(c, cc.late_session_minutes, cc.late_session_min_runway_minutes)}
+    assert inside == {"JPY", "AUD"}, inside
+    with at("2026-09-22T19:00:00"):                    # 15:00 ET
+        inside = {c for c in _MARKET_HOURS
+                  if _late_session(c, cc.late_session_minutes, cc.late_session_min_runway_minutes)}
+    assert inside == {"USD", "CAD"}, inside
