@@ -49,20 +49,31 @@ else
     # approved. `api_down_since` (epoch) tracks the outage across these stateless 5-min runs; it is
     # seeded from the tmux session's creation time so a watchdog (re)start mid-outage still counts
     # from the real start, and cleared the moment the port is back.
+    # BUG 2026-09-21..26: this used to seed the outage start from the tmux session's creation
+    # time. The gateway's OWN daily auto-restart drops :4002 at 00:00:00 UTC and this cron runs
+    # at 00:00:01, so a healthy restart looked like a day-long outage, got killed, and was
+    # cold-relaunched = an IB Key push at 02:00 Luxembourg EVERY night; when Rain slept through
+    # one, the 30-min retry ran for two days (22 pushes). Now the outage clock starts at the
+    # first tick that sees the port down — never earlier — and repeat relaunches within one
+    # outage back off (2 tries 30 min apart, then every 4 h) so a missed push costs at most a
+    # couple more overnight, not dozens.
     DOWN_FILE=/home/rain/ibc/logs/options/api_down_since
+    TRIES_FILE=/home/rain/ibc/logs/options/api_relaunch_tries
     if ss -ltn 2>/dev/null | grep -q ":4002 "; then
-        rm -f "$DOWN_FILE"
+        rm -f "$DOWN_FILE" "$TRIES_FILE"
     else
         if [ -s "$DOWN_FILE" ]; then
             DOWN_SINCE=$(cat "$DOWN_FILE")
         else
-            DOWN_SINCE=$(tmux display -p -t options '#{session_created}' 2>/dev/null || date +%s)
-            echo "$DOWN_SINCE" > "$DOWN_FILE"
+            DOWN_SINCE=$(date +%s); echo "$DOWN_SINCE" > "$DOWN_FILE"
         fi
         DOWN_MIN=$(( ($(date +%s) - DOWN_SINCE) / 60 ))
+        TRIES=$(cat "$TRIES_FILE" 2>/dev/null || echo 0)
         AGE=$(last_options_2fa_push_age_min)
-        if [ "$DOWN_MIN" -ge $(( TFA_GAP / 60 )) ] && { [ -z "$AGE" ] || [ "$AGE" -ge $(( TFA_GAP / 60 )) ]; }; then
-            echo "$TIMESTAMP [WATCHDOG] options gateway session up but :4002 down ${DOWN_MIN} min (last push ${AGE:-never} min ago) — killing stuck instance and relaunching" >> $LOGFILE
+        if [ "$TRIES" -lt 2 ]; then GAP_MIN=$(( TFA_GAP / 60 )); else GAP_MIN=240; fi
+        if [ "$DOWN_MIN" -ge $(( TFA_GAP / 60 )) ] && { [ -z "$AGE" ] || [ "$AGE" -ge "$GAP_MIN" ]; }; then
+            TRIES=$(( TRIES + 1 )); echo "$TRIES" > "$TRIES_FILE"
+            echo "$TIMESTAMP [WATCHDOG] options gateway session up but :4002 down ${DOWN_MIN} min (last push ${AGE:-never} min ago) — killing stuck instance and relaunching (try $TRIES; next no sooner than $([ "$TRIES" -lt 2 ] && echo 30 || echo 240) min)" >> $LOGFILE
             tmux kill-session -t options 2>/dev/null
             pkill -u rain -f "IbcGateway /home/rain/ibc-config/config-options.ini" 2>/dev/null
             sleep 3
@@ -70,7 +81,7 @@ else
             echo "$DOWN_SINCE" > "$DOWN_FILE"   # keep counting from the original outage; a fresh push follows
             echo "$TIMESTAMP [WATCHDOG] options gateway session started" >> $LOGFILE
         elif [ "$DOWN_MIN" -ge 5 ]; then
-            echo "$TIMESTAMP [WATCHDOG] options gateway :4002 down ${DOWN_MIN} min (last push ${AGE:-never} min ago) — waiting" >> $LOGFILE
+            echo "$TIMESTAMP [WATCHDOG] options gateway :4002 down ${DOWN_MIN} min (last push ${AGE:-never} min ago, tries $TRIES) — waiting" >> $LOGFILE
         fi
     fi
 fi
