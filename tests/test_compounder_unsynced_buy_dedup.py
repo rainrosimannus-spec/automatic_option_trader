@@ -110,3 +110,79 @@ def test_falls_back_to_created_at_when_no_reviewed_at(monkeypatch):
     _sugg(sess, "VRT", "executed", qty=10, price=100.0, created=_t(10), reviewed=None)
     _hold(sess, "VRT", _t(9))
     assert round(_buyer()._unsynced_executed_buy_map().get("VRT", 0.0)) == 1000
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NU 2026-09-30 — the same double-buy, one status short of being caught.
+#
+# The guard above keys on status 'executed', which assumes trade_sync reconciled the fill before the
+# next scan. It hadn't:
+#     19:50:12  order placed, Submitted        -> resting, seen by _open_buy_map
+#     19:58:13  FULLY FILLED                   -> remaining 0, _open_buy_map now sees nothing
+#     20:05:46  next scan, card still 'submitted', holdings not synced -> EVERY signal blind
+#     20:17:05  trade_sync lands the fill
+# USD 223,650 went into a ~112k gap (NU to 170% of target) and two days' DCA budget went in 17 min.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_submitted_but_filled_and_unsynced_is_folded(monkeypatch):
+    """The NU case: card still 'submitted', order already filled, holdings stale."""
+    sess = _setup(monkeypatch)
+    _wl(sess, "NU")
+    _sugg(sess, "NU", "submitted", qty=8840, price=12.68,
+          created=_t(19, 48), reviewed=_t(19, 49))
+    # no holding row yet — the position sync has not run since the fill
+    assert round(_buyer()._unsynced_executed_buy_map().get("NU", 0.0)) == round(8840 * 12.68)
+
+
+def test_submitted_order_still_fully_resting_adds_nothing(monkeypatch):
+    """A submitted card whose order is entirely UNFILLED must not be counted twice: _open_buy_map
+    already has it. Netting `resting` out is what keeps this from starving deployment."""
+    sess = _setup(monkeypatch)
+    _wl(sess, "NU")
+    _sugg(sess, "NU", "submitted", qty=8840, price=12.68,
+          created=_t(19, 48), reviewed=_t(19, 49))
+    resting = {"NU": 8840 * 12.68}
+    assert "NU" not in _buyer()._unsynced_executed_buy_map(resting)
+
+
+def test_submitted_order_partially_filled_adds_only_the_filled_part(monkeypatch):
+    sess = _setup(monkeypatch)
+    _wl(sess, "NU")
+    _sugg(sess, "NU", "submitted", qty=1000, price=10.0,   # 10,000 placed
+          created=_t(19, 48), reviewed=_t(19, 49))
+    got = _buyer()._unsynced_executed_buy_map({"NU": 4000.0})   # 4,000 still working
+    assert round(got.get("NU", 0.0)) == 6000                    # 6,000 filled, unsynced
+
+
+def test_submitted_drops_out_once_holdings_catch_up(monkeypatch):
+    """Self-correcting in the same way as the executed path — it can never block buying forever."""
+    sess = _setup(monkeypatch)
+    _wl(sess, "NU")
+    _sugg(sess, "NU", "submitted", qty=8840, price=12.68,
+          created=_t(19, 48), reviewed=_t(19, 49))
+    _hold(sess, "NU", _t(20, 17))          # position sync ran after the card
+    assert "NU" not in _buyer()._unsynced_executed_buy_map()
+
+
+def test_resting_netting_never_goes_negative(monkeypatch):
+    """A resting figure larger than the card (partial fills across several cards) must not produce a
+    negative that would inflate the apparent gap."""
+    sess = _setup(monkeypatch)
+    _wl(sess, "NU")
+    _sugg(sess, "NU", "submitted", qty=100, price=10.0, created=_t(19, 48), reviewed=_t(19, 49))
+    got = _buyer()._unsynced_executed_buy_map({"NU": 99999.0})
+    assert got.get("NU", 0.0) == 0.0 or "NU" not in got
+
+
+def test_the_second_nu_scan_would_now_see_no_gap(monkeypatch):
+    """End-to-end arithmetic of the incident: gap ~112k, first buy filled-and-unsynced, so the
+    follow-up scan's effective position must already cover the target instead of re-buying."""
+    sess = _setup(monkeypatch)
+    _wl(sess, "NU")
+    _sugg(sess, "NU", "submitted", qty=8840, price=12.68,
+          created=_t(19, 48), reviewed=_t(19, 49))
+    held_before = 78_287.0                       # 5,521 sh from 2026-07-22
+    target = 182_000.0                           # ~EUR 160,920
+    folded = _buyer()._unsynced_executed_buy_map().get("NU", 0.0)
+    effective = held_before + folded
+    assert effective > target, f"still looks underweight by {target - effective:,.0f} — would re-buy"

@@ -1251,6 +1251,9 @@ class PortfolioBuyer:
         except Exception:
             pass
         open_buy = self._open_buy_map()           # symbol -> notional of resting BUY orders
+        # Snapshot the RESTING-ONLY view before in-flight cards are folded in below:
+        # _unsynced_executed_buy_map subtracts it so a working order is not counted twice.
+        _resting_only = dict(open_buy)
         # Expire orphaned buy cards: a 'submitted' suggestion whose order is no longer working (it died
         # on its own — IBKR-rejected, went Inactive, or filled — NOT cancelled by us above, which the
         # _cancel_stale orphan-cleanup already handles) would otherwise linger 'submitted' (inflating the
@@ -1268,7 +1271,7 @@ class PortfolioBuyer:
         # the holdings position-sync ran. Without this a follow-up scan sees the name still underweight
         # (shares not in `held` yet, order no longer resting) and buys it again (VRT 2026-08-26 double-buy,
         # ~$14k past target). Self-correcting: each card drops out once its fill lands in `held`.
-        for _sym, _notional in self._unsynced_executed_buy_map().items():
+        for _sym, _notional in self._unsynced_executed_buy_map(_resting_only).items():
             open_buy[_sym] = open_buy.get(_sym, 0.0) + _notional
         deployed_eff = deployed + sum(open_buy.values())
         target_total = sum(targets.values())
@@ -2379,9 +2382,32 @@ class PortfolioBuyer:
             log.warning("compounder_pending_suggestion_map_failed", error=str(e))
         return out
 
-    def _unsynced_executed_buy_map(self) -> dict[str, float]:
-        """symbol → notional ($) of TODAY's compounder buy_stock suggestions that have EXECUTED
-        (filled) but whose shares are not yet in the holdings snapshot `cur` reads.
+    def _unsynced_executed_buy_map(self, resting: dict[str, float] | None = None) -> dict[str, float]:
+        """symbol → notional ($) of TODAY's compounder buy_stock suggestions that were PLACED at IBKR
+        but whose shares are not yet in the holdings snapshot `cur` reads.
+
+        NU 2026-09-30 — the reason this covers 'submitted' and not just 'executed'. The first version
+        of this guard keyed on status == 'executed' only, which assumes trade_sync has already
+        reconciled the fill. When it hasn't, the card is still 'submitted' and every signal is blind:
+
+            19:50:12  order placed, Submitted                   -> resting, counted by _open_buy_map
+            19:58:13  FULLY FILLED                              -> remaining 0, _open_buy_map sees nothing
+            20:05:46  next scan: card still 'submitted'         -> not in _pending_buy_suggestion_map
+                                  not yet reconciled            -> not in the 'executed' filter here
+                                  holdings not synced           -> not in `held`
+                      => the whole gap reappears and NU is bought AGAIN, 17 min later
+            20:17:05  trade_sync finally lands the fill
+
+        That put USD 223,650 into a USD ~112k gap (NU to 170% of target) and spent two days' DCA
+        budget in 17 minutes. Identical shape to VRT 2026-08-26, also ~17 min apart — that incident is
+        what created this guard, but from a case where the card HAD been reconciled, so 'submitted'
+        was never covered. Whether a fill is reconciled before the next scan is pure timing luck.
+
+        `resting` (symbol → notional of orders still working, from _open_buy_map BEFORE any in-flight
+        cards are folded in) is subtracted per symbol, because that part is already counted by the
+        caller. So a fully-resting order adds nothing here, a partially-filled one adds only the
+        filled part, and a fully-filled-but-unsynced one adds all of it. Pass None to skip that
+        netting (older callers / tests).
 
         Holdings sync from LIVE IBKR positions (sync_ibkr_holdings) on a separate cadence from the
         scan. A buy that fills BETWEEN two scans — e.g. the two green late-session scans near the close —
@@ -2413,7 +2439,9 @@ class PortfolioBuyer:
                 rows = db.query(TradeSuggestion).filter(
                     TradeSuggestion.source == "portfolio",
                     TradeSuggestion.action == "buy_stock",
-                    TradeSuggestion.status == "executed",
+                    # 'submitted' too: the order is AT IBKR but the fill may not be reconciled yet.
+                    # Covering only 'executed' left the fill->reconcile window blind (NU 2026-09-30).
+                    TradeSuggestion.status.in_(("submitted", "executed")),
                     TradeSuggestion.created_at >= today,
                     TradeSuggestion.symbol != (park or "__none__"),
                 ).all()
@@ -2436,6 +2464,14 @@ class PortfolioBuyer:
                     if notional > 0:
                         out[s.symbol] = out.get(s.symbol, 0.0) + pfx.to_base(
                             notional, ccy_map.get(s.symbol, "USD"), rates)
+            # Subtract what is STILL WORKING at IBKR for each symbol — the caller already counts that
+            # via _open_buy_map, so adding the card's full notional on top would double-count a resting
+            # order and needlessly starve deployment. What is left is the filled-but-unsynced part.
+            if resting:
+                for _s in list(out):
+                    out[_s] = out[_s] - float(resting.get(_s, 0.0) or 0.0)
+                    if out[_s] <= 0:
+                        del out[_s]
         except Exception as e:
             log.warning("compounder_unsynced_executed_map_failed", error=str(e))
         return out
