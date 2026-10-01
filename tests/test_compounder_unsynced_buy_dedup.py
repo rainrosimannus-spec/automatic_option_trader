@@ -1,5 +1,10 @@
-"""Double-buy guard: fold TODAY's executed-but-not-yet-synced compounder buys into `cur`
-(2026-08-26 VRT).
+"""Double-buy guard, NOW THE FALLBACK ONLY: fold TODAY's executed-but-not-yet-synced compounder
+buys into `cur` (2026-08-26 VRT).
+
+Since NU 2026-09-30 the PRIMARY guard is _ibkr_position_shortfall_map (live IBKR positions vs the
+holdings snapshot) — see tests/test_compounder_ibkr_position_shortfall.py. This status-based map
+now runs only when IBKR cannot be read, because status inference is defeated by
+_expire_orphan_buy_suggestions rewriting a filled card to 'expired' earlier in the same scan.
 
 VRT was bought by two green late-session scans ~17min apart and overshot its target by ~$14k: the
 first order FILLED between the scans, but the holdings position-sync hadn't run yet, so the second

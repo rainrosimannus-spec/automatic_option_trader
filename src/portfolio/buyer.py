@@ -1268,7 +1268,14 @@ class PortfolioBuyer:
         # the holdings position-sync ran. Without this a follow-up scan sees the name still underweight
         # (shares not in `held` yet, order no longer resting) and buys it again (VRT 2026-08-26 double-buy,
         # ~$14k past target). Self-correcting: each card drops out once its fill lands in `held`.
-        for _sym, _notional in self._unsynced_executed_buy_map().items():
+        # Prefer IBKR's live positions over any card-status inference (see the helper's docstring: the
+        # status route has failed four times because the orphan-expiry rewrites the status first).
+        # Fall back to the status-based map only when IBKR is unreadable, so this is never LESS
+        # protective than before. Either/or, never both — folding both would double-count one fill.
+        _shortfall = self._ibkr_position_shortfall_map()
+        if _shortfall is None:
+            _shortfall = self._unsynced_executed_buy_map()
+        for _sym, _notional in _shortfall.items():
             open_buy[_sym] = open_buy.get(_sym, 0.0) + _notional
         deployed_eff = deployed + sum(open_buy.values())
         target_total = sum(targets.values())
@@ -2378,6 +2385,77 @@ class PortfolioBuyer:
         except Exception as e:
             log.warning("compounder_pending_suggestion_map_failed", error=str(e))
         return out
+
+    def _ibkr_position_shortfall_map(self) -> dict[str, float] | None:
+        """symbol → notional (base ccy) by which IBKR's LIVE stock position EXCEEDS the holdings
+        snapshot this scan reads as `cur`. None when IBKR cannot be read, so the caller can fall back.
+
+        Ground truth, replacing any attempt to infer "did we already buy it" from card status. That
+        inference has failed four times, each fix adding the one status the latest incident exposed —
+        _open_buy_map (resting), _pending_buy_suggestion_map (pending/approved/queued/executing),
+        _unsynced_executed_buy_map (executed), and a reverted attempt at 'submitted'. It cannot be
+        made to work: _expire_orphan_buy_suggestions runs EARLIER in the same scan and rewrites a
+        placed-and-filled card to 'expired', because it cannot tell "the order died" from "the order
+        filled" — both look like a submitted card with no working order — so it destroys the last
+        trace that money went out. NU 2026-09-30 proved it: that expiry fired at 20:05:46, the exact
+        second of the second scan, and NU was bought twice for one gap (USD 223,650 into a ~112k
+        hole, two days' DCA budget in 17 minutes).
+
+        Positions, not fills-plus-a-timestamp: holdings.updated_at is onupdate=utcnow, so the hourly
+        price refresh bumps it without touching shares, which makes it useless as a "has the share
+        count caught up" cutoff. A position difference needs no timestamp, is immune to BOTH lags
+        (fill→transaction and transaction→holdings), and self-zeroes the moment the sync lands. It
+        also follows the standing rule that IBKR is source-of-truth for positions, the same way
+        sell_stock already clamps to ib.positions.
+
+        Can only ever ADD, never subtract: if IBKR is at or below the DB the symbol is omitted, so a
+        stale-high holdings row can never be used to unblock buying. Note the shortfall also reaches
+        deployed_today through open_buy, so a fill already written to PortfolioTransaction but not yet
+        to holdings is briefly charged twice against the day's pace — conservative, and it clears on
+        the next sync."""
+        from src.portfolio import fx as pfx
+        from src.portfolio.models import PortfolioHolding
+        park = getattr(self.cfg, "cash_yield_symbol", None)
+        try:
+            with get_portfolio_lock():
+                positions = self.ib.positions() or []
+            if not positions:
+                return None                 # disconnected / nothing cached -> let the caller fall back
+            rates = pfx.load_fx_rates()
+            with get_db() as db:
+                rows = db.query(PortfolioHolding).all()
+                db_sh = {h.symbol: float(h.shares or 0.0) for h in rows}
+                db_px = {h.symbol: float(h.current_price or 0.0) for h in rows}
+            out: dict[str, float] = {}
+            for p in positions:
+                c = getattr(p, "contract", None)
+                if c is None or getattr(c, "secType", "") != "STK":
+                    continue
+                # RAW IBKR symbol, deliberately: sync.py keys PortfolioHolding off contract.symbol
+                # with no normalisation, so anything else here would fail to match the row it is
+                # being compared against.
+                sym = (getattr(c, "symbol", "") or "").strip()
+                if not sym or sym == park:
+                    continue
+                extra = float(getattr(p, "position", 0.0) or 0.0) - db_sh.get(sym, 0.0)
+                if extra <= 0:
+                    continue                # DB level or ahead -> nothing unsynced to add
+                # Price the extra shares off the stored mark (what `cur` itself is denominated in),
+                # else IBKR's own average cost for the position.
+                px = db_px.get(sym) or float(getattr(p, "avgCost", 0.0) or 0.0)
+                if px <= 0:
+                    continue
+                out[sym] = out.get(sym, 0.0) + pfx.to_base(
+                    extra * px, getattr(c, "currency", "USD") or "USD", rates)
+            if out:
+                log.info("compounder_ibkr_position_shortfall",
+                         symbols=sorted(out), total=round(sum(out.values())),
+                         note="IBKR holds more than the holdings snapshot — folded in so the gap "
+                              "cannot be bought twice")
+            return out
+        except Exception as e:
+            log.warning("compounder_ibkr_position_shortfall_failed", error=str(e))
+            return None
 
     def _unsynced_executed_buy_map(self) -> dict[str, float]:
         """symbol → notional ($) of TODAY's compounder buy_stock suggestions that have EXECUTED
