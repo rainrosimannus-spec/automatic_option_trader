@@ -1274,6 +1274,12 @@ class PortfolioBuyer:
         # protective than before. Either/or, never both — folding both would double-count one fill.
         _shortfall = self._ibkr_position_shortfall_map()
         if _shortfall is None:
+            # Say so. Both paths are silent on success, so without this line nobody can tell which
+            # guard is actually live — and running on the weaker one unnoticed is how the double-buy
+            # survived four fixes. A warning, because the fallback is known-defeatable.
+            log.warning("compounder_position_truth_unavailable",
+                        note="IBKR positions unreadable — falling back to the status-based unsynced "
+                             "map, which _expire_orphan_buy_suggestions can defeat (NU 2026-09-30)")
             _shortfall = self._unsynced_executed_buy_map()
         for _sym, _notional in _shortfall.items():
             open_buy[_sym] = open_buy.get(_sym, 0.0) + _notional
