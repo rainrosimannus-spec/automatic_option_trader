@@ -1242,6 +1242,33 @@ def _send_rescreen_alert(stocks_screened: int, review_suggestions: list[dict]):
     alert._send("\n".join(lines), priority="high", tags="clipboard")
 
 
+def _fmp_matches_holding(symbol: str, name: str | None, currency: str | None) -> bool:
+    """Is the company FMP returns for `symbol` the company we hold?
+
+    FMP is keyed by US ticker and tickers collide across markets: Verbund (VSE: VER) comes back
+    as VEREIT, Inc. — a US REIT whose record shows a dividend cut, which the dividend health
+    check would have turned into a sell card for an Austrian utility. A USD holding shares
+    FMP's ticker space and is trusted as-is. A non-USD holding is trusted only when FMP's
+    company name matches ours under the screener's strict same-issuer rule (Suncor on TSE and
+    AstraZeneca on LSE resolve to their own US lines and pass). No profile, no name, or any
+    doubt => False: the review makes no fundamentals-based suggestion for that holding."""
+    if (currency or "USD").upper() == "USD":
+        return True
+    try:
+        from src.portfolio.fmp import _get as _fmp_get_raw
+        from tools.screen_universe import _same_company
+        prof = _fmp_get_raw("profile", symbol)
+        fmp_name = (prof[0] or {}).get("companyName") if isinstance(prof, list) and prof else None
+        ok = bool(name and fmp_name and _same_company(name, fmp_name))
+        if not ok:
+            log.warning("monthly_review_fmp_identity_mismatch", symbol=symbol, held=name,
+                        fmp=fmp_name, msg="FMP data is not this company — no fundamentals-based card")
+        return ok
+    except Exception as e:
+        log.warning("monthly_review_fmp_identity_check_failed", symbol=symbol, error=str(e))
+        return False
+
+
 def _review_existing_holdings_monthly(
     ib: IB,
     cfg: PortfolioConfig,
@@ -1254,13 +1281,18 @@ def _review_existing_holdings_monthly(
       - SELL (profit): dropped off watchlist but still profitable
       - REDUCE: overweight position (>12% of portfolio)
       - SELL COVERED CALL: dividend tier above SMA + profitable
-                           growth tier: only when FMP shows growth slowing (future)
-      - RECLASSIFY: growth→dividend when dividends started
+                           growth tier: only when the name is a REAL growth drop-off
+      - RECLASSIFY: growth→dividend when growth has stopped and dividends started
 
     Rules:
       - Breakthrough tier: never suggest sell/CC based on price/metrics alone
-      - Growth tier: CC only when revenue growth slows (pending FMP integration)
-      - Dividend tier: CC when above SMA + profitable
+      - Growth tier: sell / CC only for a REAL DROP-OFF, defined by the same growth gate the
+        screener uses for entry (src/portfolio/growth_gate.py): durable revenue growth below
+        the floor AND the latest half-year below it too. A name that is merely slower than it
+        was (the old rule fired below 15% trailing growth — about half the tier, including
+        names the screener ranks at the top), or one that fails the floor on history but is
+        growing again, gets no card. Missing data never produces a card.
+      - Dividend tier: CC when above SMA + profitable (own disqualification rules, unchanged)
       - Never auto-execute any suggestion here
       - Skip CC if open covered call already exists on that symbol
     """
@@ -1268,7 +1300,8 @@ def _review_existing_holdings_monthly(
     from src.portfolio.models import PortfolioHolding
     from src.core.suggestions import create_suggestion, TradeSuggestion
     from src.portfolio.connection import get_portfolio_stock_price as get_stock_price
-    from src.portfolio.fmp import get_full_fundamentals
+    from src.portfolio.fmp import get_full_fundamentals, get_growth_trend
+    from src.portfolio import growth_gate
     from datetime import datetime, timedelta
 
     suggestions = []
@@ -1351,31 +1384,43 @@ def _review_existing_holdings_monthly(
         if tier == "breakthrough":
             continue
 
+        # Every fundamentals-based suggestion below reads FMP by ticker; make sure FMP is
+        # talking about THIS company before believing any of it.
+        fmp_ok = _fmp_matches_holding(symbol, holding.name, holding.currency)
+
         # ── 1b. Dividend disqualification ──────────────────
-        # Primary: dividend cut OR payout >90% OR revenue declining 2yr
-        # Secondary (2+ triggers): dividend growth stopped 3yr, FCF negative 2yr, D/E deteriorating
-        if tier == "dividend":
+        # Primary: dividend cut OR payout >90%
+        # Secondary (2+ triggers): FCF negative 2yr, high debt, revenue shrinking in both windows
+        if tier == "dividend" and fmp_ok:
             try:
                 fmp = get_full_fundamentals(symbol)
                 if fmp:
                     payout = fmp.get("payout_ratio", 0)
                     div_cut = fmp.get("dividend_cut", False)
                     rev_yoy = fmp.get("revenue_yoy_pct", 0)
-                    rev_avg = fmp.get("revenue_avg_pct", 0)
+                    # The key is revenue_avg_annual_pct (src/portfolio/fmp.py). This used to read
+                    # "revenue_avg_pct", which that module never writes, so the value was always
+                    # 0 and the revenue test below could never fire.
+                    rev_avg = fmp.get("revenue_avg_annual_pct", 0)
                     fcf_neg = fmp.get("fcf_negative_years", 0)
                     de = fmp.get("debt_to_equity", 0)
+                    revenue_shrinking = rev_yoy < 0 and rev_avg < 0   # last year AND 3yr average
 
-                    # Primary disqualifiers
+                    # Primary disqualifiers — the dividend itself is in trouble
                     primary_fail = (
                         div_cut
                         or payout > 90
-                        or (rev_yoy < 0 and rev_avg < 0)  # declining 2+ years
                     )
 
-                    # Secondary disqualifiers
+                    # Secondary disqualifiers — need two. Shrinking revenue sits HERE, not among
+                    # the primaries where it was (dead) before: for a dividend payer it is
+                    # corroboration, not proof. On its own it mostly reflects commodity prices
+                    # (Suncor: -3.5% last year, -5.4% average, dividend well covered) and would
+                    # put a sell card on every energy name in a soft oil year.
                     secondary_count = sum([
                         fcf_neg >= 2,          # FCF negative 2+ years
                         de > 2.0,              # high and rising debt
+                        revenue_shrinking,     # sales falling in both windows
                     ])
 
                     if primary_fail or secondary_count >= 2:
@@ -1384,8 +1429,9 @@ def _review_existing_holdings_monthly(
                             reason_parts.append("dividend cut detected")
                         if payout > 90:
                             reason_parts.append(f"payout ratio {payout:.0f}%")
-                        if rev_yoy < 0 and rev_avg < 0:
-                            reason_parts.append(f"revenue declining YoY {rev_yoy:+.1f}%")
+                        if revenue_shrinking:
+                            reason_parts.append(
+                                f"revenue shrinking ({rev_yoy:+.1f}% last year, {rev_avg:+.1f}%/yr 3yr average)")
                         if fcf_neg >= 2:
                             reason_parts.append(f"FCF negative {fcf_neg} years")
                         if de > 2.0:
@@ -1423,16 +1469,36 @@ def _review_existing_holdings_monthly(
             except Exception:
                 pass
 
-        # ── 1c. Growth reclassification check ─────────────
-        # Growth → Dividend: revenue slowing (<15% YoY) + dividend started (yield >2.5%)
-        # Growth → Exit suggestion: revenue slowing + NO dividend after holding 6+ months
-        if tier == "growth":
+        # ── 1c. Growth drop-off check ─────────────────────
+        # One verdict per held growth name, in the screener's own terms. `real_dropoff` =
+        # durable growth below the entry floor AND the latest half-year below it too.
+        #   real drop-off + dividend started (yield >2.5%)  → reclassify to dividend
+        #   real drop-off + no dividend + held 6+ months    → sell card
+        #   real drop-off + well above SMA + in profit      → covered-call card (section 4)
+        # Anything else — including a name the screen dropped for failing the floor on history
+        # while it is growing again now — gets nothing here; the buyer simply freezes it.
+        growth_v = None
+        if tier == "growth" and fmp_ok:
             try:
-                fmp = get_full_fundamentals(symbol)
-                if fmp:
-                    rev_yoy = fmp.get("revenue_yoy_pct", 999)
+                _trend = get_growth_trend(symbol)
+                if _trend:
+                    growth_v = growth_gate.growth_verdict(
+                        _trend.get("revenue_cagr_pct"), _trend.get("revenue_ttm_pct"),
+                        _trend.get("revenue_recent_half_pct"))
+                    log.info("monthly_review_growth_verdict", symbol=symbol,
+                             real_dropoff=growth_v.real_dropoff,
+                             passes_floor=growth_v.passes_growth_floor, reason=growth_v.reason)
+                else:
+                    log.warning("monthly_review_growth_unknown", symbol=symbol,
+                                msg="no revenue history from FMP — no growth-based card")
+            except Exception as _e:
+                log.warning("monthly_review_growth_verdict_failed", symbol=symbol, error=str(_e))
+        if tier == "growth" and growth_v is not None:
+            try:
+                fmp = get_full_fundamentals(symbol) or {}
+                if fmp is not None:
                     div_yield = fmp.get("dividend_yield", 0)
-                    growth_slowing = rev_yoy < 15
+                    growth_slowing = growth_v.real_dropoff
 
                     if growth_slowing:
                         if div_yield > 2.5:
@@ -1447,7 +1513,7 @@ def _review_existing_holdings_monthly(
                                     _db.commit()
                             suggestions.append({
                                 "symbol": symbol, "action": "RECLASSIFIED",
-                                "reason": f"Growth→Dividend: rev growth {rev_yoy:+.1f}%, div yield {div_yield:.1f}%",
+                                "reason": f"Growth→Dividend: {growth_v.reason}, div yield {div_yield:.1f}%",
                             })
                         else:
                             # Growth slowing, no dividend — check how long held.
@@ -1477,10 +1543,11 @@ def _review_existing_holdings_monthly(
                                 log.warning("monthly_review_hold_days_lookup_failed", symbol=symbol, error=str(_e))
                             if held_days > 180:  # held 6+ months with slowing growth, no dividend
                                 rationale = (
-                                    f"MONTHLY REVIEW: {symbol} (growth) revenue growth slowing "
-                                    f"({rev_yoy:+.1f}% YoY, below 15% threshold). "
-                                    f"No dividend started after {held_days} days. "
-                                    f"Consider exiting — growth thesis weakening. "
+                                    f"MONTHLY REVIEW: {symbol} (growth) is a real growth drop-off — "
+                                    f"{growth_v.reason}. "
+                                    f"It no longer meets the growth tier's entry rule and the latest "
+                                    f"half-year confirms it. No dividend started after {held_days} days. "
+                                    f"Consider exiting. "
                                     f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}. "
                                     f"P&L: {pnl_pct:+.1f}%."
                                 )
@@ -1504,7 +1571,7 @@ def _review_existing_holdings_monthly(
                                 )
                                 suggestions.append({
                                     "symbol": symbol, "action": "CONSIDER SELL",
-                                    "reason": f"Growth slowing {rev_yoy:+.1f}% YoY, no dividend after {held_days}d",
+                                    "reason": f"Real growth drop-off ({growth_v.reason}), no dividend after {held_days}d",
                                 })
             except Exception:
                 pass
@@ -1579,16 +1646,8 @@ def _review_existing_holdings_monthly(
 
         # ── 4. SELL COVERED CALL ────────────────────────────
         # Dividend tier: above SMA + profitable + no open CC + enough shares
-        # Growth tier: above SMA + profitable + revenue growth slowing (<15% YoY)
-        growth_slowing = False
-        if tier == "growth":
-            try:
-                fmp = get_full_fundamentals(symbol)
-                if fmp:
-                    rev_yoy = fmp.get("revenue_yoy_pct", 999)
-                    growth_slowing = rev_yoy < 15
-            except Exception:
-                pass
+        # Growth tier: above SMA + profitable + a real growth drop-off (verdict from 1c)
+        growth_slowing = bool(tier == "growth" and growth_v is not None and growth_v.real_dropoff)
 
         cc_trigger = (
             pct_vs_sma > 15
@@ -1629,7 +1688,8 @@ def _review_existing_holdings_monthly(
             rationale = (
                 f"MONTHLY REVIEW: {symbol} ({tier}) is {pct_vs_sma:+.1f}% above "
                 f"200d SMA and up {pnl_pct:+.1f}%. "
-                f"Suggest selling covered call to harvest premium. "
+                + (f"Real growth drop-off — {growth_v.reason}. " if growth_slowing else "")
+                + f"Suggest selling covered call to harvest premium. "
                 f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}. "
                 f"Suggested: {shares // 100} contract(s), strike ${strike:.0f}, "
                 f"expiry {third_friday.strftime('%b %d %Y')} (~30 DTE)."

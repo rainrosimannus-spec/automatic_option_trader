@@ -287,7 +287,7 @@ CANDIDATE_POOLS = {
             "CRM", "AMD", "NFLX", "ADBE", "NOW", "UBER", "PLTR", "PANW",
             "CRWD", "SHOP", "COIN", "MELI", "ANET", "DDOG", "TTD", "NET",
             "ARM", "SNOW", "ABNB", "SQ", "RIVN", "SOFI", "RBLX", "DASH",
-            "ORCL", "INTC", "QCOM", "MU", "LRCX", "KLAC", "CDNS", "SNPS",
+            "ORCL", "INTC", "QCOM", "MU", "MRVL", "LRCX", "KLAC", "CDNS", "SNPS",
             "LLY", "UNH", "ABBV", "JNJ", "MRK", "PFE", "TMO", "ABT",
             "ISRG", "VRTX", "REGN", "DXCM", "MRNA", "GILD", "AMGN",
             "JPM", "V", "MA", "GS", "BLK", "SCHW", "AXP", "C", "MS",

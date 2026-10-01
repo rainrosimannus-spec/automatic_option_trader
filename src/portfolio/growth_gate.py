@@ -17,12 +17,11 @@ This module is pure (no I/O) so the two enforcement points cannot drift:
   1. tools/screen_universe.py — the monthly screen. A growth-tier candidate must pass
      `passes_entry_gate` (durable growth >= GROWTH_FLOOR_PCT and quality >= QUALITY_FLOOR) before
      it is ranked. The tier may hold fewer than its nominal size; no filler.
-  2. (NOT YET WIRED — drafted, awaiting Rain's review of the sell path.) The monthly holdings
-     review in src/portfolio/scheduler.py: a held growth name would get a sell / covered-call
-     card only when it is a `real_dropoff` — it fails the growth floor AND the most recent
+  2. src/portfolio/scheduler.py — the monthly holdings review, which only MAKES SUGGESTIONS
+     (cards for manual approval; it never sells). A held growth name gets a sell / covered-call
+     card only when it is a `real_dropoff`: it fails the growth floor AND the most recent
      half-year confirms it. A name that fails the floor on history but is growing again
-     (AAPL: 3%/yr over four years, 14% trailing) is frozen by the screen, not sold. Until this
-     is wired the review still uses its old "trailing growth < 15%" test.
+     (AAPL: 3%/yr over four years, 14% trailing) is frozen by the screen and gets no card.
 
 Durable growth = the mean of the multi-year compound rate and the trailing-12-month rate, capped
 at DECEL_CAP x the weaker of the two. The cap is the "growing over the history AND growing now"
@@ -166,7 +165,7 @@ def growth_verdict(cagr_pct: Optional[float], ttm_pct: Optional[float],
         return GrowthVerdict(durable, cagr_pct, ttm_pct, recent_half_pct, False, False,
                              f"below growth floor but re-accelerating: {nums}")
     return GrowthVerdict(durable, cagr_pct, ttm_pct, recent_half_pct, False, True,
-                         f"growth has stopped: {nums}")
+                         f"below growth floor and the latest half-year confirms it: {nums}")
 
 
 def passes_entry_gate(durable_pct: Optional[float], quality: Optional[float],

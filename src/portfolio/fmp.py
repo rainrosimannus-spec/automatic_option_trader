@@ -167,6 +167,33 @@ def get_year_high(symbol: str) -> Optional[float]:
     return None
 
 
+def get_growth_trend(symbol: str) -> Optional[dict]:
+    """Revenue-growth evidence for the monthly holdings review, in the SAME terms the screener's
+    growth gate uses (src/portfolio/growth_gate.py): the multi-year compound rate, trailing-12-month
+    growth, and the latest half-year against the same half a year earlier.
+
+    Deliberately NOT cached: get_full_fundamentals caches for 30 days and carries annual-only
+    growth, so a sell decision built on it can be a year stale. Two requests per held growth name,
+    once a month. Returns None when FMP has no annual revenue history for the symbol; individual
+    keys are None when that window cannot be computed."""
+    from src.portfolio import growth_gate
+    annual = _get("income-statement", symbol, {"limit": 5, "period": "annual"})
+    if not annual or not isinstance(annual, list):
+        return None
+    quarterly = _get("income-statement", symbol, {"limit": 8, "period": "quarter"})
+    q_rev = [x.get("revenue") for x in quarterly] if isinstance(quarterly, list) else []
+    a_rev = [x.get("revenue") for x in annual]
+    ttm = growth_gate.ttm_growth_pct(q_rev)
+    if ttm is None and len(a_rev) >= 2 and a_rev[1]:
+        # Fewer than eight quarters on file: fall back to the latest annual year-on-year.
+        ttm = (a_rev[0] - a_rev[1]) / abs(a_rev[1]) * 100.0
+    return {
+        "revenue_cagr_pct": growth_gate.compound_growth_pct(a_rev),
+        "revenue_ttm_pct": ttm,
+        "revenue_recent_half_pct": growth_gate.recent_half_growth_pct(q_rev),
+    }
+
+
 def get_full_fundamentals(symbol: str) -> Optional[dict]:
     """
     Fetch all fundamental metrics needed for screening.
