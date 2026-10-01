@@ -848,6 +848,23 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig):
                     if r.get("tier") == "breakthrough"
                 ],
             }
+            # Growth-gate visibility: which candidates the entry gate (durable growth + quality,
+            # src/portfolio/growth_gate.py) kept OUT of the growth tier and why, held names first.
+            # A tier that runs short of its nominal size shows up here as slots_filled < slots.
+            from src.portfolio import growth_gate as _gg
+            _gate_rejects = [r for r in getattr(screener, "_rejects", [])
+                             if r.get("category") == "growth_gate"]
+            _growth_gate = {
+                "growth_floor_pct": _gg.GROWTH_FLOOR_PCT,
+                "quality_floor": _gg.QUALITY_FLOOR,
+                "slots_filled": sum(1 for s in portfolio_universe if s.tier == "growth"),
+                "rejected": sorted(
+                    ({"symbol": r.get("symbol"), "held": r.get("symbol") in open_positions,
+                      "score": r.get("score"), "durable_growth_pct": r.get("durable_growth_pct"),
+                      "quality": r.get("quality"), "reason": r.get("detail")}
+                     for r in _gate_rejects),
+                    key=lambda d: (not d["held"], -(d["score"] or 0))),
+            }
             _log_path.write_text(_json.dumps({
                 "status": "success",
                 "run_date": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
@@ -869,6 +886,7 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig):
                 "flagged_removal": flagged_removal,
                 "reclassified": reclassified,
                 "breakthrough_scan": _bt_scan,
+                "growth_gate": _growth_gate,
                 "suggestions_created": [],
             }, indent=2))
 

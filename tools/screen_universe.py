@@ -33,6 +33,13 @@ except RuntimeError:
 
 from ib_insync import IB, Stock, Option
 
+# The growth gate is the tier's membership rule, so unlike the logger below it has no degraded
+# fallback: make the repo root importable even on a standalone run from another cwd.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from src.portfolio import growth_gate
+
 # Structured logger for screener_reject events (lands in trader.log + console.log
 # when run in-process). Degrades to a stdlib logger if src isn't importable
 # (standalone run from an unusual cwd).
@@ -802,7 +809,8 @@ def _get_breakthrough_candidates() -> list[dict]:
 # with discovered names that score better than current weakest members.
 
 _AUGMENTATION_RUBRIC_SUMMARY = """RUBRIC (composite is weighted 25/25/20/15/15):
-- revenue_durability: 5yr revenue CAGR + YoY consistency
+- revenue_durability: DURABLE revenue growth = mean of the multi-year compound rate and
+  trailing-12-month growth, capped at 1.5x the weaker of the two (0%->0, 10%->50, 20%->85, 30%+->100)
 - compounding_quality: 5yr ROIC sustained (Buffett-style compounder)
 - operating_leverage: margin level + trend + growth × profitability
 - innovation_investment: R&D vs sector peers + R&D growth trend
@@ -854,9 +862,19 @@ EXCLUDED — already in our universe, do NOT propose:
 
 {_AUGMENTATION_RUBRIC_SUMMARY}
 
+ENTRY GATE — BOTH must hold or the proposal is rejected regardless of its score:
+- GROWTH: durable revenue growth of at least {growth_gate.GROWTH_FLOOR_PCT:.0f}% a year — compounding at that
+  pace over the last four years AND still growing at that pace over the last twelve months.
+  A high-quality business that has stopped growing does NOT qualify.
+- QUALITY: the average of cmp/op/rd/cap (weights 25/20/15/15) of at least {growth_gate.QUALITY_FLOOR:.0f}.
+  A fast grower without returns on capital does NOT qualify.
+
 YOUR TASK:
-Propose 5-10 high-conviction company names that would likely score ABOVE {cutoff_score:.1f}
-(our current rank-60 cutoff) under this rubric. Focus on:
+Propose 5-10 high-conviction company names that pass the entry gate and would likely score
+ABOVE {cutoff_score:.1f} (our current cutoff; 0.0 means the tier has free slots and passing
+the gate is enough) under this rubric. We are SHORT of names that have both pillars — that
+is what to look for. Focus on:
+- Revenue compounding at 10%+ a year with no recent deceleration
 - Sustained high ROIC (15%+ over 5 years)
 - Profitable AND growing (positive operating margin, expanding)
 - Smart capital allocation (low share dilution, no goodwill bloat from M&A)
@@ -1836,6 +1854,19 @@ def _process_augmentation_proposal(
     else:  # dividend
         proposal_score = score.dividend_total_return_score or 0.0
     
+    # Growth tier: the entry gate comes first. A proposal that out-scores the cutoff on quality
+    # alone is precisely the kind of name the gate exists to keep out.
+    if tier == "growth" and not getattr(score, "growth_gate_ok", False):
+        audit_session.add(AugmentationAudit(
+            run_date=run_date, tier=tier,
+            proposed_symbol=symbol, proposed_score=proposal_score, cutoff_score=cutoff_score,
+            displaced_symbol=None, displaced_score=None,
+            accepted=False, reason="growth_gate",
+            notes=f"{getattr(score, 'growth_gate_reason', '')} | thesis: {thesis[:200]}",
+            raw_proposal_json=_proposal_json,
+        ))
+        return False
+
     # Acceptance check (margin = 0)
     if proposal_score > cutoff_score:
         score.tier = tier
@@ -1890,17 +1921,35 @@ def _fmp_get(endpoint: str, symbol: str, params: dict = {}) -> Optional[list]:
     key = _fmp_key()
     if not key:
         return None
-    try:
-        all_params = {"symbol": symbol, "apikey": key}
-        all_params.update(params)
-        r = requests.get(
-            f"https://financialmodelingprep.com/stable/{endpoint}",
-            params=all_params, timeout=10,
-        )
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
+    all_params = {"symbol": symbol, "apikey": key}
+    all_params.update(params)
+    # Retry TRANSIENT failures only (rate limit, server error, timeout). A failed request used to
+    # return None silently, every sub-score then fell back to its neutral default, and a strong
+    # name scored ~50 and fell out of its tier. With the growth gate a missing revenue history is
+    # a hard reject, so a rate-limit blip must not be allowed to look like "no growth".
+    # Other 4xx (unknown symbol, plan limits) are permanent: no retry, they would only add hours.
+    for attempt in range(3):
+        try:
+            r = requests.get(
+                f"https://financialmodelingprep.com/stable/{endpoint}",
+                params=all_params, timeout=10,
+            )
+            if r.status_code == 429 or r.status_code >= 500:
+                raise requests.HTTPError(f"transient {r.status_code}")
+            r.raise_for_status()
+            return r.json()
+        except (requests.Timeout, requests.ConnectionError) as e:
+            _transient = e
+        except requests.HTTPError as e:
+            if "transient" not in str(e):
+                return None
+            _transient = e
+        except Exception:
+            return None
+        if attempt < 2:
+            time.sleep(2.0 * (attempt + 1))
+    print(f"  ⚠ FMP {endpoint} {symbol}: gave up after 3 attempts ({_transient})")
+    return None
 
 
 def _get_fmp_fundamentals(symbol: str) -> dict:
@@ -1928,6 +1977,12 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
                 (rev_latest - rev_oldest) / abs(rev_oldest) * 100 / years
                 if rev_oldest and years > 0 else 0
             )
+            # True compound rate over the same window. revenue_avg_pct above is total growth
+            # divided by years — NOT compound (it reads 77%/yr for a 42%/yr grower) — and is
+            # kept only for the legacy _score_growth blend. The growth gate uses this one.
+            _cagr = growth_gate.compound_growth_pct([x.get("revenue") for x in income])
+            if _cagr is not None:
+                result["revenue_cagr_pct"] = _cagr
             result["net_income_latest"] = income[0].get("netIncome", 0)
             # Gross margin — key indicator of pricing power and scalability
             gross_profit = income[0].get("grossProfit", 0)
@@ -1986,6 +2041,12 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
     # neg-NI-years) intentionally remain on annual data — they measure durability, not this quarter.
     # Falls back to the annual values if a name lacks 8 quarters of history (e.g. a recent IPO).
     q_income = _fmp_get("income-statement", symbol, {"limit": 8, "period": "quarter"})
+    if q_income:
+        # Latest two quarters vs the same two a year earlier — the sell-side "is it still true
+        # right now" check (growth_gate.growth_verdict). Needs six quarters, not eight.
+        _half = growth_gate.recent_half_growth_pct([x.get("revenue") for x in q_income])
+        if _half is not None:
+            result["revenue_recent_half_pct"] = _half
     if q_income and len(q_income) >= 8:
         try:
             q_rev = [(x.get("revenue") or 0) for x in q_income]
@@ -2544,63 +2605,37 @@ def _rd_threshold_for_sector(sector: str) -> float:
     return 8.0
 
 
+def _durable_growth(fmp: dict) -> Optional[float]:
+    """Durable revenue growth, % per year — see src/portfolio/growth_gate.py. None when the
+    name has no usable revenue history from FMP or the IBKR fallback."""
+    cagr = fmp.get("revenue_cagr_pct")
+    if cagr is None and fmp.get("revenue_avg_pct") is not None:
+        # Only reachable for fundamentals that predate revenue_cagr_pct (legacy simple average).
+        cagr = growth_gate.simple_avg_to_compound_pct(fmp.get("revenue_avg_pct"))
+    return growth_gate.durable_growth_pct(cagr, fmp.get("revenue_yoy_pct"))
+
+
 def _score_revenue_durability(fmp: dict) -> float:
     """
-    Score 0-100 for revenue durability — the foundation of long-term
-    compounding. Three components:
-      - 5yr revenue CAGR raw level (60 pts)
-      - YoY consistency vs 5yr average (25 pts)
-      - Floor for no-growth structural fail (caps at 30 if revenue is flat/declining)
+    Score 0-100 for growth strength. Rewritten 2026-10-01 (name kept: it is the "rev" column
+    of the augmentation prompt and the first term of the composite).
+
+    Durable growth = mean of the multi-year COMPOUND rate and trailing-12-month growth, capped
+    at 1.5x the weaker of the two, mapped on a continuous rising curve
+    (0%->0, 5%->20, 10%->50, 15%->70, 20%->85, 30%+->100).
+
+    The old scorer used a non-compound average, scored >30% growth below 20-30%, penalised
+    acceleration as much as deceleration, and gave a 5% grower 60/100. Unknown growth stays a
+    neutral 50 here; the growth-tier entry gate is what rejects it.
     """
-    avg = fmp.get("revenue_avg_pct")
-    yoy = fmp.get("revenue_yoy_pct")
-    if avg is None or yoy is None:
-        return 50.0  # neutral when data is missing
+    return growth_gate.growth_strength_score(_durable_growth(fmp))
 
-    # ── Component A: 5yr CAGR raw (60 pts) ──
-    if avg < 0:
-        cagr_score = 0
-    elif avg < 5:
-        cagr_score = 15
-    elif avg < 10:
-        cagr_score = 30
-    elif avg < 15:
-        cagr_score = 45
-    elif avg < 20:
-        cagr_score = 55
-    elif avg < 30:
-        cagr_score = 60   # sweet spot
-    else:
-        cagr_score = 50   # >30% might be unsustainable acceleration
 
-    # ── Component B: YoY consistency vs avg (25 pts) ──
-    if avg == 0:
-        consistency_score = 12  # neutral, can't compute ratio
-    else:
-        # Distance from YoY to 5yr avg, normalized
-        deviation_pct = abs(yoy - avg) / max(abs(avg), 1.0) * 100
-        if deviation_pct <= 20:
-            consistency_score = 25
-        elif deviation_pct <= 50:
-            consistency_score = 25 - (deviation_pct - 20) * (20.0 / 30.0)
-        else:
-            consistency_score = 5
-
-    # ── Component C: 15 pts for positive growth signal (catches simple "growing" baseline) ──
-    if avg > 0 and yoy > 0:
-        positive_score = 15
-    elif avg > 0 or yoy > 0:
-        positive_score = 8
-    else:
-        positive_score = 0
-
-    total = cagr_score + consistency_score + positive_score
-
-    # Structural floor: if avg revenue growth is non-positive, cap at 30
-    if avg <= 0:
-        total = min(total, 30)
-
-    return round(min(100, max(0, total)), 1)
+def _quality_pillar(fmp: dict, sector: str = "") -> float:
+    """0-100 quality pillar — the four non-growth sub-scores at their composite weights."""
+    return growth_gate.quality_pillar(
+        _score_compounding_quality(fmp), _score_operating_leverage(fmp),
+        _score_innovation_investment(fmp, sector), _score_capital_efficiency(fmp))
 
 
 def _score_compounding_quality(fmp: dict) -> float:
@@ -2867,6 +2902,11 @@ class StockScore:
     sub_operating_leverage: float = 0
     sub_innovation_investment: float = 0
     sub_capital_efficiency: float = 0
+    # Growth-tier entry gate (src/portfolio/growth_gate.py): BOTH pillars must be present.
+    durable_growth_pct: Optional[float] = None   # None = no usable revenue history
+    quality_pillar: float = 0
+    growth_gate_ok: bool = False
+    growth_gate_reason: str = ""
     dividend_yield: float = 0
     dividend_total_return_score: float = 0
     options_available: bool = False
@@ -3215,8 +3255,10 @@ class UniverseScreener:
             # Split same way PHASE 3 does (yield routing)
             _div_universe_aug = _get_dividend_universe()
             _div_pool_syms_aug = {str(sym) for pool in _div_universe_aug.values() for sym in pool["symbols"]}
+            # Gated: the AI's proposals compete against names that can actually be members.
             growth_pool = [s for s in non_breakthrough
-                          if s.symbol not in _div_pool_syms_aug and s.dividend_yield <= 2.5]
+                          if s.symbol not in _div_pool_syms_aug and s.dividend_yield <= 2.5
+                          and s.growth_gate_ok]
             dividend_pool = [s for s in non_breakthrough
                             if s.symbol in _div_pool_syms_aug or s.dividend_yield > 2.5]
 
@@ -3233,11 +3275,18 @@ class UniverseScreener:
             audit_session = get_session_factory()()
             try:
                 # ── Growth tier augmentation ──
-                if len(growth_pool) >= 60:
-                    top_60 = growth_pool[:60]
-                    ranks_61_120 = growth_pool[60:120]
-                    cutoff_growth = top_60[-1].forward_growth_score or 0.0
-                    print(f"\n  Growth: cutoff={cutoff_growth:.1f} (rank-60 of {len(growth_pool)} candidates)")
+                if growth_pool:
+                    top_60 = growth_pool[:growth_count]
+                    ranks_61_120 = growth_pool[growth_count:growth_count + 60]
+                    # The entry gate can leave the tier SHORT of growth_count — that is exactly
+                    # when new names are most needed, so augmentation must still run (it used to
+                    # be skipped below 60 candidates). With free slots there is nobody to beat:
+                    # the cutoff is 0 and any proposal that passes the gate is admitted.
+                    _tier_full = len(growth_pool) >= growth_count
+                    cutoff_growth = (top_60[-1].forward_growth_score or 0.0) if _tier_full else 0.0
+                    print(f"\n  Growth: cutoff={cutoff_growth:.1f} "
+                          f"({len(growth_pool)} gate-passing candidates for {growth_count} slots"
+                          f"{'' if _tier_full else ' — tier under-filled, any gate-passing proposal is admitted'})")
 
                     proposals = _get_growth_swaps(top_60, ranks_61_120, cutoff_growth, exclusion)
                     # Fix C: client-side dedup against exclusion before scoring/audit
@@ -3252,7 +3301,7 @@ class UniverseScreener:
                             exclusion.add(prop.get("symbol", ""))  # don't propose same symbol for dividend tier
                     print(f"  Growth: {accepted_count}/{len(proposals)} proposals accepted")
                 else:
-                    print(f"\n  Growth: skipped (only {len(growth_pool)} candidates, need 60+)")
+                    print(f"\n  Growth: skipped (no candidate passed the growth gate)")
 
                 # ── Dividend tier augmentation ──
                 if len(dividend_pool) >= 15:
@@ -3307,6 +3356,28 @@ class UniverseScreener:
         _dividend_pool_symbols = {str(sym) for pool in _dividend_universe.values() for sym in pool["symbols"]}
         dividend_candidates = [s for s in all_scores if s.tier != "breakthrough" and (s.symbol in _dividend_pool_symbols or s.dividend_yield > 2.5)]
         growth_candidates = [s for s in all_scores if s.tier != "breakthrough" and s.symbol not in _dividend_pool_symbols and s.dividend_yield <= 2.5]
+
+        # ── Growth-tier entry gate (src/portfolio/growth_gate.py) ──────────────────────────
+        # The tier holds names with BOTH quality and growth; if one is missing the name is not
+        # wanted, however high its blended score. Applied BEFORE ranking, so a failing name
+        # frees its slot and the tier may run short of growth_count rather than take filler.
+        # A held name rejected here is frozen by the buyer (no new capital, never sold); the
+        # monthly review decides separately whether it is a real drop-off worth a sell card.
+        _gate_failed = [s for s in growth_candidates if not s.growth_gate_ok]
+        growth_candidates = [s for s in growth_candidates if s.growth_gate_ok]
+        for s in sorted(_gate_failed, key=lambda s: s.portfolio_score, reverse=True):
+            self._reject(
+                s.symbol, "growth_gate", detail=s.growth_gate_reason, tier="growth",
+                durable_growth_pct=(None if s.durable_growth_pct is None else round(s.durable_growth_pct, 1)),
+                quality=s.quality_pillar, score=s.portfolio_score)
+        print(f"\n  Growth gate (durable growth >= {growth_gate.GROWTH_FLOOR_PCT:.0f}%, "
+              f"quality >= {growth_gate.QUALITY_FLOOR:.0f}): "
+              f"{len(growth_candidates)} pass, {len(_gate_failed)} fail")
+        for s in sorted(_gate_failed, key=lambda s: s.portfolio_score, reverse=True)[:40]:
+            print(f"    ⛔ {s.symbol:8s} | score {s.portfolio_score:5.1f} | {s.growth_gate_reason}")
+        if len(growth_candidates) < growth_count:
+            print(f"  ⚠ growth tier under-filled: {len(growth_candidates)} of {growth_count} slots "
+                  f"(no filler — the gate is the rule)")
 
         dividend_candidates.sort(key=lambda s: s.dividend_total_return_score, reverse=True)
         growth_candidates.sort(key=lambda s: s.portfolio_score, reverse=True)
@@ -3429,6 +3500,10 @@ class UniverseScreener:
             for k in ("revenue_yoy_pct", "revenue_avg_pct"):
                 if k in ibkr and not fmp.get(k):
                     fmp[k] = ibkr[k]
+            # IBKR's revenue_avg_pct is already a true 5-year compound rate (unlike FMP's
+            # simple average), so it can stand in directly for the gate's history window.
+            if fmp.get("revenue_cagr_pct") is None and ibkr.get("revenue_avg_pct") is not None:
+                fmp["revenue_cagr_pct"] = ibkr["revenue_avg_pct"]
         score.growth_score = _score_growth(fmp)
         score.valuation_score = _score_valuation(fmp)
         score.quality_score = _score_quality(fmp)
@@ -3439,6 +3514,10 @@ class UniverseScreener:
         score.sub_operating_leverage = _score_operating_leverage(fmp)
         score.sub_innovation_investment = _score_innovation_investment(fmp, score.sector)
         score.sub_capital_efficiency = _score_capital_efficiency(fmp)
+        score.durable_growth_pct = _durable_growth(fmp)
+        score.quality_pillar = _quality_pillar(fmp, score.sector)
+        score.growth_gate_ok, score.growth_gate_reason = growth_gate.passes_entry_gate(
+            score.durable_growth_pct, score.quality_pillar)
 
         # Detect complete-fundamentals-missing: when all three scorers returned
         # the exact default 50.0, neither FMP nor IBKR had fundamental data for
