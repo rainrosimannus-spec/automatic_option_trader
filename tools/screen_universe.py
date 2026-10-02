@@ -667,34 +667,104 @@ Verify all of:
 Return raw JSON array only. No markdown, no surrounding prose, no commentary."""
 
 
-def _anthropic_messages(prompt: str, max_tokens: int, label: str) -> str:
-    """Send a single-user-message request to Claude and return the concatenated text.
+# ── Model profile for the screener's AI calls ───────────────────────────────────────────────
+# ONE switch for all three calls (breakthrough scan, breakthrough selection, growth/dividend swap
+# proposals). Changing the model changes which names are picked, so the default stays on the
+# profile Rain last approved; the candidate profile is run side by side first
+# (scripts/screener_ai_side_by_side.py) and the default is flipped only on his say-so.
+#
+#   opus-4-8          claude-opus-4-8, no tools. Names companies purely from the model's memory
+#                     (knowledge ends early 2026), so anything listed later is invisible to it.
+#   opus-5-5-search   claude-opus-5-5 (knowledge to June 2026, cheaper per token) + WEB SEARCH on
+#                     the calls that look for NEW names. Search is what removes the "cannot see a
+#                     recent IPO" blind spot — a newer model only moves it forward a few months.
+#                     Thinking is always on for this model and counts against max_tokens, and its
+#                     default effort is `medium`, so effort is set explicitly and the output cap
+#                     is raised. A safety-classifier decline (possible on the genomics megatrend)
+#                     is re-run server-side on a fallback model instead of failing the scan.
+SCREENER_AI_PROFILES = {
+    "opus-4-8": {"model": "claude-opus-4-8"},
+    "opus-5-5-search": {
+        "model": "claude-opus-5-5", "effort": "high", "min_max_tokens": 64000,
+        "web_search": True, "web_search_max_uses": 8, "fallbacks": True, "read_timeout": 180,
+    },
+}
+SCREENER_AI_PROFILE = "opus-4-8"
+
+_WEB_SEARCH_HINT = """
+
+## WEB SEARCH
+
+Today is {today}. You have a web search tool. Use it — a few targeted searches, not an essay —
+for what your own knowledge cannot be trusted on:
+- companies that listed in roughly the last 18 months (recent IPOs, spin-offs, direct listings),
+  which you may not know at all;
+- the CURRENT ticker, listing venue and approximate market cap of any name you are unsure of;
+- whether a name you remember as private has since gone public, or a listed one was acquired
+  or delisted.
+Every exclusion, quota and output rule above still applies to names found by search. Your final
+answer must be the raw JSON described above and nothing else — no commentary before or after it."""
+
+# Filled by every _anthropic_messages call: what the last call actually used (model that served
+# it, tokens, searches, seconds). Read by the side-by-side script; harmless otherwise.
+LAST_AI_CALL: dict = {}
+
+
+def _anthropic_messages(prompt: str, max_tokens: int, label: str, *,
+                        web_search: bool = False, profile: str | None = None) -> str:
+    """POST one user message to the Anthropic Messages API and return the answer text.
+
+    `web_search=True` marks a call that LOOKS FOR NEW NAMES; it only has an effect under a
+    profile that enables search (see SCREENER_AI_PROFILES). `profile` overrides the module
+    default for one call (used by the side-by-side script).
 
     STREAMS the response (Server-Sent Events). Streaming makes the read timeout apply
-    PER CHUNK instead of to the whole response body, so a long generation can't trip a
+    PER CHUNK, so a slow-but-progressing long generation can never trip a
     fixed wall-clock read timeout the way a non-streaming request does. The 2026-07-06
     breakthrough scan died on exactly that: a non-streaming 8000-token generation behind
     a 120s read timeout, tipped over by normal latency variance — NOT an API outage (the
-    selection + augmentation calls in the same run succeeded seconds apart). Streaming is
+    API answered 529 in 0.24s to a tiny request during the same window). Streaming is
     also Anthropic's own guidance for any high-max_tokens request.
 
+    Only the answer is kept. With thinking on, the reply starts with thinking blocks; with
+    search, it contains tool-use and result blocks and sometimes a sentence of text before a
+    search. Text is therefore read by block TYPE, and anything written before the last search
+    result is discarded, so the caller's JSON parse only ever sees the final answer.
+
     Transient timeout / connection errors are bounded-retried (3 attempts, short backoff);
-    a 4xx/5xx or a stream `error` event is raised immediately (retrying won't help). On the
-    final failed attempt the underlying error is re-raised so each caller's ❌ path logs it.
+    a 4xx/5xx or a stream `error` event is raised immediately (retrying won't help). A search
+    call that does not finish cleanly (server loop paused, or the answer came back empty) is
+    re-run ONCE without search rather than returning half an answer. On the final failure the
+    exception propagates so the caller's existing `except` reports it.
     """
     from src.core.config import get_settings
     _ant_key = get_settings().raw.get("anthropic", {}).get("api_key", "")
+    prof_name = profile or SCREENER_AI_PROFILE
+    prof = SCREENER_AI_PROFILES[prof_name]
+    use_search = bool(web_search and prof.get("web_search"))
     headers = {
         "Content-Type": "application/json",
         "x-api-key": _ant_key,
         "anthropic-version": "2023-06-01",
     }
     payload = {
-        "model": "claude-opus-4-8",
-        "max_tokens": max_tokens,
+        "model": prof["model"],
+        "max_tokens": max(max_tokens, prof.get("min_max_tokens", 0)),
         "stream": True,
         "messages": [{"role": "user", "content": prompt}],
     }
+    if prof.get("effort"):
+        payload["output_config"] = {"effort": prof["effort"]}
+    if prof.get("fallbacks"):
+        payload["fallbacks"] = "default"
+        headers["anthropic-beta"] = "server-side-fallback-2026-07-01"
+    if use_search:
+        payload["tools"] = [{"type": "web_search_20260209", "name": "web_search",
+                             "max_uses": prof.get("web_search_max_uses", 8)}]
+        payload["messages"] = [{"role": "user", "content": prompt + _WEB_SEARCH_HINT.format(
+            today=datetime.utcnow().strftime("%Y-%m-%d"))}]
+    read_timeout = prof.get("read_timeout", 60)
+    _started = time.time()
     last_err: Exception | None = None
     for attempt in range(3):
         if attempt:
@@ -703,12 +773,20 @@ def _anthropic_messages(prompt: str, max_tokens: int, label: str) -> str:
         try:
             parts: list[str] = []
             stop_reason = None
+            served_by = prof["model"]
+            usage: dict = {}
+            searches = 0
             with requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers=headers, json=payload, stream=True,
-                timeout=(10, 60),  # (connect, per-chunk read) — resets on every SSE chunk
+                timeout=(10, read_timeout),  # (connect, per-chunk read) — resets on every SSE chunk
             ) as resp:
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    # Surface the API's own message — a bare "400 Client Error" hides which
+                    # field it objected to.
+                    raise requests.HTTPError(
+                        f"{resp.status_code} from Anthropic ({label}, {prof['model']}): {resp.text[:500]}",
+                        response=resp)
                 for raw in resp.iter_lines(decode_unicode=True):
                     if not raw or not raw.startswith("data:"):
                         continue
@@ -720,22 +798,51 @@ def _anthropic_messages(prompt: str, max_tokens: int, label: str) -> str:
                     except Exception:
                         continue
                     etype = ev.get("type")
-                    if etype == "content_block_delta":
+                    if etype == "message_start":
+                        msg = ev.get("message") or {}
+                        served_by = msg.get("model") or served_by
+                        usage.update(msg.get("usage") or {})
+                    elif etype == "content_block_start":
+                        btype = (ev.get("content_block") or {}).get("type") or ""
+                        if btype == "server_tool_use":
+                            searches += 1
+                        if btype == "server_tool_use" or btype.endswith("_tool_result"):
+                            parts = []  # text written before a search is narration, not the answer
+                    elif etype == "content_block_delta":
                         delta = ev.get("delta") or {}
                         if delta.get("type") == "text_delta":
                             parts.append(delta.get("text", ""))
                     elif etype == "message_delta":
                         stop_reason = (ev.get("delta") or {}).get("stop_reason") or stop_reason
+                        usage.update(ev.get("usage") or {})
                     elif etype == "error":
                         raise RuntimeError(f"anthropic stream error: {ev.get('error')}")
                     elif etype == "message_stop":
                         break
+            text = "".join(parts)
+            LAST_AI_CALL.clear()
+            LAST_AI_CALL.update({
+                "label": label, "profile": prof_name, "model": served_by, "web_search": use_search,
+                "searches": searches, "stop_reason": stop_reason,
+                "input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens"),
+                "seconds": round(time.time() - _started, 1)})
+            if stop_reason == "refusal":
+                # Declined by a safety classifier (and by the fallback too, if one ran). There is
+                # no answer to parse — say so instead of handing the caller an empty string.
+                raise RuntimeError(f"{label}: request declined by the model's safety classifier "
+                                   f"(served by {served_by})")
+            if use_search and (stop_reason == "pause_turn" or not text.strip()):
+                print(f"  ⚠️  {label}: web-search call did not finish cleanly "
+                      f"(stop_reason={stop_reason}, {searches} searches) — re-running without search")
+                return _anthropic_messages(prompt, max_tokens, label, web_search=False, profile=prof_name)
             # A max_tokens stop truncates the JSON mid-string → the caller's json.loads fails with a
             # cryptic "Unterminated string". Surface it plainly so the fix (raise max_tokens) is obvious.
             if stop_reason == "max_tokens":
-                print(f"  ⚠️  {label}: response hit max_tokens ({max_tokens}) — output truncated; "
+                print(f"  ⚠️  {label}: response hit max_tokens ({payload['max_tokens']}) — output truncated; "
                       f"raise max_tokens for this call")
-            return "".join(parts)
+            if served_by != prof["model"]:
+                print(f"  ℹ️  {label}: served by fallback model {served_by} (not {prof['model']})")
+            return text
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             last_err = e  # transient — back off and retry
     raise last_err  # exhausted retries; surface to the caller's ❌ path
@@ -778,7 +885,8 @@ def _get_breakthrough_candidates() -> list[dict]:
         # larger cap costs nothing on latency, so give real headroom; the salvage parse below then
         # tolerates any residual truncation in an unusually verbose month.
         text = _anthropic_messages(
-            _build_breakthrough_prompt(), max_tokens=24000, label="breakthrough scan"
+            _build_breakthrough_prompt(), max_tokens=24000, label="breakthrough scan",
+            web_search=True,  # the call that must be able to see recent listings
         ).strip()
         if text.startswith("```"):
             text = text.split("```")[1]
@@ -1032,7 +1140,8 @@ def _call_claude_for_swaps(prompt: str, label: str) -> list[dict]:
     Empty list on failure. Matches _get_breakthrough_candidates pattern."""
     try:
         text = _anthropic_messages(
-            prompt, max_tokens=4000, label=label  # smaller than breakthrough — only 5-10 names
+            prompt, max_tokens=4000, label=label,  # smaller than breakthrough — only 5-10 names
+            web_search=True,  # proposing NEW names that must pass gates on current figures
         ).strip()
         if text.startswith("```"):
             text = text.split("```")[1]
