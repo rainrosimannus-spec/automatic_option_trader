@@ -689,7 +689,12 @@ SCREENER_AI_PROFILES = {
         "web_search": True, "web_search_max_uses": 8, "fallbacks": True, "read_timeout": 180,
     },
 }
-SCREENER_AI_PROFILE = "opus-4-8"
+SCREENER_AI_PROFILE = "opus-5-5-search"   # switched 2026-10-02 on Rain's go, after the side-by-side
+# Safety net: if a call on the active profile fails for a NON-transient reason (the API rejects
+# a field, a beta header is retired, the model declines, the answer comes back empty), the same
+# call is made once on this profile instead of failing the monthly screen. It is the previously
+# approved configuration, so the worst case is "last month's behaviour", never "no screen".
+SCREENER_AI_FALLBACK_PROFILE = "opus-4-8"
 
 _WEB_SEARCH_HINT = """
 
@@ -712,6 +717,29 @@ LAST_AI_CALL: dict = {}
 
 def _anthropic_messages(prompt: str, max_tokens: int, label: str, *,
                         web_search: bool = False, profile: str | None = None) -> str:
+    """The screener's one entry point to the model: `_anthropic_messages_once` on the active
+    profile, and — if that raises or returns nothing — once more on SCREENER_AI_FALLBACK_PROFILE.
+    An explicit `profile` (the side-by-side script) is used as given, with no fallback, so a
+    comparison can never silently report one model's answer under the other's name."""
+    if profile is not None:
+        return _anthropic_messages_once(prompt, max_tokens, label, web_search=web_search, profile=profile)
+    active, fallback = SCREENER_AI_PROFILE, SCREENER_AI_FALLBACK_PROFILE
+    try:
+        text = _anthropic_messages_once(prompt, max_tokens, label, web_search=web_search, profile=active)
+        if text.strip() or active == fallback:
+            return text
+        reason = "empty answer"
+    except Exception as e:
+        if active == fallback:
+            raise
+        reason = f"{type(e).__name__}: {str(e)[:300]}"
+    print(f"  ⚠️  {label}: profile '{active}' failed ({reason}) — falling back to '{fallback}'")
+    log.warning("screener_ai_profile_fallback", label=label, profile=active, fallback=fallback, reason=reason)
+    return _anthropic_messages_once(prompt, max_tokens, label, web_search=web_search, profile=fallback)
+
+
+def _anthropic_messages_once(prompt: str, max_tokens: int, label: str, *,
+                             web_search: bool = False, profile: str | None = None) -> str:
     """POST one user message to the Anthropic Messages API and return the answer text.
 
     `web_search=True` marks a call that LOOKS FOR NEW NAMES; it only has an effect under a
@@ -834,7 +862,7 @@ def _anthropic_messages(prompt: str, max_tokens: int, label: str, *,
             if use_search and (stop_reason == "pause_turn" or not text.strip()):
                 print(f"  ⚠️  {label}: web-search call did not finish cleanly "
                       f"(stop_reason={stop_reason}, {searches} searches) — re-running without search")
-                return _anthropic_messages(prompt, max_tokens, label, web_search=False, profile=prof_name)
+                return _anthropic_messages_once(prompt, max_tokens, label, web_search=False, profile=prof_name)
             # A max_tokens stop truncates the JSON mid-string → the caller's json.loads fails with a
             # cryptic "Unterminated string". Surface it plainly so the fix (raise max_tokens) is obvious.
             if stop_reason == "max_tokens":

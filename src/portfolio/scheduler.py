@@ -387,7 +387,7 @@ def job_portfolio_update_metrics(cfg: PortfolioConfig):
 
 def _assess_structural_risks():
     """
-    Call Claude Sonnet to reassess structural risks for all current watchlist symbols.
+    Ask the screener's AI model to reassess structural risks for all current watchlist symbols.
     Rewrites config/structural_risks.yaml completely.
     Called monthly after screener phase 2.
     Processes in batches of 40 to stay within token limits.
@@ -449,22 +449,16 @@ def _assess_structural_risks():
             "Stocks:",
             json.dumps(batch, indent=2),
         ]
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": ant_key,
-                "anthropic-version": "2023-06-01",
-            },
-            json={
-                "model": "claude-sonnet-4-6",
-                "max_tokens": 4000,
-                "messages": [{"role": "user", "content": "\n".join(prompt_lines)}],
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        text = resp.json()["content"][0]["text"].strip()
+        # Same entry point as the screener's other AI calls (tools/screen_universe.py), so this
+        # job follows the one model switch (SCREENER_AI_PROFILE) instead of pinning its own. It
+        # used to POST to claude-sonnet-4-6 and read content[0].text — on a current model the
+        # first block is thinking, not the answer, and a non-streaming request behind a 60s
+        # timeout cannot wait for it. The helper streams, reads the answer by block type and
+        # falls back to the previously approved model if the active one fails. No web search:
+        # these are judgement flags on names we already hold data for, 40 per batch.
+        from tools.screen_universe import _anthropic_messages
+        text = _anthropic_messages("\n".join(prompt_lines), max_tokens=4000,
+                                   label="structural risks").strip()
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):

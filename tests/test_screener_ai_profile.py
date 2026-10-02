@@ -67,7 +67,9 @@ def test_default_profile_is_the_approved_one():
     assert su.SCREENER_AI_PROFILE in su.SCREENER_AI_PROFILES
     # Flipping this line is a SELECTION change — run scripts/screener_ai_side_by_side.py and get
     # Rain's go first, then update this assertion in the same commit.
-    assert su.SCREENER_AI_PROFILE == "opus-4-8"
+    # 2026-10-02: switched from "opus-4-8" on Rain's go after the side-by-side.
+    assert su.SCREENER_AI_PROFILE == "opus-5-5-search"
+    assert su.SCREENER_AI_FALLBACK_PROFILE == "opus-4-8"
 
 
 def test_legacy_profile_sends_no_tools_effort_or_beta(api):
@@ -139,3 +141,36 @@ def test_http_error_carries_the_api_message(api):
 def test_only_the_discovery_calls_ask_for_search():
     src = Path(su.__file__).read_text()
     assert src.count("web_search=True,  #") == 2      # breakthrough scan + swap proposals
+
+
+# ── safety net: the active profile failing must not fail the screen ──────────
+
+def test_api_rejection_on_the_active_profile_falls_back_to_the_approved_one(api):
+    api.queue.append(_Resp([], status=400, text='{"error":{"message":"unknown field fallbacks"}}'))
+    api.queue.append(_Resp([_start(0, "text"), _text(0, "[3]"), *_end()]))
+    out = su._anthropic_messages("p", 4000, "scan", web_search=True)
+    assert out == "[3]"
+    assert api.sent[0]["payload"]["model"] == "claude-opus-5-5"
+    assert api.sent[1]["payload"]["model"] == "claude-opus-4-8" and "tools" not in api.sent[1]["payload"]
+
+
+def test_refusal_on_the_active_profile_falls_back(api):
+    api.queue.append(_Resp([_start(0, "text"), *_end("refusal")]))
+    api.queue.append(_Resp([_start(0, "text"), _text(0, "{}"), *_end()]))
+    assert su._anthropic_messages("p", 8000, "selection") == "{}"
+    assert api.sent[1]["payload"]["model"] == "claude-opus-4-8"
+
+
+def test_explicit_profile_never_falls_back(api):
+    api.queue.append(_Resp([], status=400, text="nope"))
+    with pytest.raises(su.requests.HTTPError):
+        su._anthropic_messages("p", 4000, "scan", profile="opus-5-5-search")
+    assert len(api.sent) == 1
+
+
+def test_fallback_profile_failure_still_raises(api, monkeypatch):
+    monkeypatch.setattr(su, "SCREENER_AI_PROFILE", "opus-4-8")
+    api.queue.append(_Resp([], status=500, text="down"))
+    with pytest.raises(su.requests.HTTPError):
+        su._anthropic_messages("p", 4000, "scan")
+    assert len(api.sent) == 1
