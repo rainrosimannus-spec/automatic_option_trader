@@ -169,3 +169,13 @@ def test_graduates_join_the_right_growth_pool_region():
     jp = next(r for r, p in su.CANDIDATE_POOLS.items() if p.get("currency") == "JPY")
     assert su._growth_region_for(su.CANDIDATE_POOLS[jp]["exchange"], "JPY") == jp
     assert su._growth_region_for("XYZ", "PLN") == "GRAD_XYZ_PLN"
+
+
+def test_v2_names_water_scarcity_explicitly():
+    # Rain, 2026-10-04. v1 covered water only as one word inside climate adaptation, and the
+    # first v2 runs returned no water name at all.
+    p = su._build_breakthrough_prompt("v2")
+    assert "8. Climate adaptation & water scarcity" in p
+    for needle in ("desalination", "water reuse", "leak detection", "efficient irrigation"):
+        assert needle in p
+    assert "water scarcity" not in su._build_breakthrough_prompt("v1")

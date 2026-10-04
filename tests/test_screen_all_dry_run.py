@@ -126,10 +126,9 @@ def test_real_anchor_still_contains_the_names_this_test_relies_on():
 def test_screen_runs_end_to_end_and_tiers_are_well_formed(dry_run, version):
     r = dry_run(version)
     all_syms = [s.symbol for s in r.universe]
-    # Keyed by listing, not ticker: the candidate pools carry a few tickers in two regions
-    # (AIR in Paris and Frankfurt, SHL in Frankfurt and Sydney) and always have.
-    listings = [(s.symbol, s.exchange) for s in r.universe]
-    assert len(listings) == len(set(listings)), "a listing landed in two tiers"
+    # One ticker = one listing (tests/test_pool_ticker_collisions.py), so the bare ticker is
+    # unique across the whole universe.
+    assert len(all_syms) == len(set(all_syms)), "a ticker landed in the universe twice"
     by_tier = {t: set(v) for t, v in r.tiers.items()}
     assert not (by_tier["breakthrough"] & by_tier["growth"]), "overlap between breakthrough and growth"
     assert 0 < len(r.tiers["growth"]) <= 60

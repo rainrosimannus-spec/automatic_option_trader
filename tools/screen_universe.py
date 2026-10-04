@@ -132,6 +132,12 @@ def _load_evicted_names() -> set:
 
 
 def _get_growth_universe() -> dict:
+    """The growth candidate universe, with one venue per ticker across growth AND dividend pools."""
+    growth, dividend = _raw_growth_universe(), _raw_dividend_universe()
+    return _one_venue_per_ticker(growth, _ticker_venue_winners(growth, dividend), "growth")
+
+
+def _raw_growth_universe() -> dict:
     """
     Build the growth universe by merging CANDIDATE_POOLS with the
     discovered_pool["growth"] entries, then filtering out evicted symbols.
@@ -174,6 +180,68 @@ def _get_growth_universe() -> dict:
     return _canonicalize_universe(merged)
 
 
+# One ticker = one listing. The whole system — scores, watchlist rows, holdings, orders — is keyed
+# on the bare ticker, so the same ticker on two venues cannot coexist: whichever is scored second
+# overwrites the first, and when the two are DIFFERENT companies (Merck & Co / Merck KGaA, Suncor /
+# Schneider Electric, Santander / Sanofi) one company ends up carrying the other's figures.
+# The pools are kept collision-free by hand (tests/test_pool_ticker_collisions.py fails on a new
+# one). This ranking is the safety net for names added at run time: when a ticker still turns up
+# on two venues, it falls to the MOST TRADABLE one and the other entry is dropped with a warning.
+# Order = how reliably this account trades the venue: US first (deepest, options, verified fills),
+# then London and Amsterdam (verified native fills), the large continental venues, Toronto, the
+# Nordics, the rest of Europe, Japan, the rest of Asia-Pacific, other emerging markets, Milan
+# (orders have stalled there for lack of market data), and last the venues the account cannot
+# trade at all.
+VENUE_TRADABILITY = [
+    ("SMART", "USD"), ("LSE", "GBP"), ("AEB", "EUR"), ("IBIS", "EUR"), ("SBF", "EUR"),
+    ("SWX", "CHF"), ("SMART", "CAD"), ("SFB", "SEK"), ("CSE", "DKK"), ("HEX", "EUR"),
+    ("OSE", "NOK"), ("BM", "EUR"), ("ENEXT.BE", "EUR"), ("VSE", "EUR"), ("ISE", "EUR"),
+    ("TSEJ", "JPY"), ("ASX", "AUD"), ("SEHK", "HKD"), ("SGX", "SGD"), ("KSE", "KRW"),
+    ("TASE", "ILS"), ("MEXI", "MXN"), ("BVMF", "BRL"), ("IDX", "IDR"), ("BVME", "EUR"),
+    ("NSE", "INR"), ("JSE", "ZAR"),
+]
+
+
+def _venue_rank(exchange: str, currency: str) -> int:
+    """Lower is more tradable. An unknown venue ranks after every known one."""
+    try:
+        return VENUE_TRADABILITY.index((exchange, currency))
+    except ValueError:
+        return len(VENUE_TRADABILITY)
+
+
+def _ticker_venue_winners(*universes: dict) -> dict:
+    """ticker -> (exchange, currency) of the most tradable venue it appears on, across the
+    given universes. Ties keep the first venue seen."""
+    best: dict = {}
+    for universe in universes:
+        for pool in universe.values():
+            venue = (pool.get("exchange"), pool.get("currency"))
+            for sym in pool.get("symbols", []):
+                sym = canonical_symbol(str(sym))
+                if sym not in best or _venue_rank(*venue) < _venue_rank(*best[sym]):
+                    best[sym] = venue
+    return best
+
+
+def _one_venue_per_ticker(merged: dict, winners: dict, label: str) -> dict:
+    """Drop every pool entry whose ticker lives on a more tradable venue elsewhere."""
+    for region, pool in merged.items():
+        venue = (pool.get("exchange"), pool.get("currency"))
+        kept = []
+        for sym in pool.get("symbols", []):
+            win = winners.get(canonical_symbol(str(sym)), venue)
+            if win == venue:
+                kept.append(sym)
+            else:
+                print(f"  ⚠ ticker collision: {sym} dropped from {label} pool {region} "
+                      f"({venue[0]}/{venue[1]}) — it falls to {win[0]}/{win[1]}")
+                log.warning("screener_ticker_collision", symbol=str(sym), dropped_region=region,
+                            dropped_venue=f"{venue[0]}/{venue[1]}", kept_venue=f"{win[0]}/{win[1]}")
+        pool["symbols"] = kept
+    return merged
+
+
 def _canonicalize_universe(merged: dict) -> dict:
     """Collapse share-class aliases (e.g. GOOGL -> GOOG) and drop the resulting
     duplicates, preserving order. Keeps the same company from entering the universe
@@ -191,6 +259,12 @@ def _canonicalize_universe(merged: dict) -> dict:
 
 
 def _get_dividend_universe() -> dict:
+    """The dividend candidate universe, with one venue per ticker across growth AND dividend pools."""
+    growth, dividend = _raw_growth_universe(), _raw_dividend_universe()
+    return _one_venue_per_ticker(dividend, _ticker_venue_winners(growth, dividend), "dividend")
+
+
+def _raw_dividend_universe() -> dict:
     """
     Build the dividend universe by merging DIVIDEND_CANDIDATES with the
     discovered_pool["dividend"] entries, filtering out evicted symbols.
@@ -248,7 +322,7 @@ DIVIDEND_CANDIDATES = {
         "exchange": "OSE", "currency": "NOK",
         "symbols": [
             "BWLPG", "HAUTO", "EQNR", "MOWI", "AKRBP",
-            "DNB", "ORK", "YAR", "SUBC", "SFL",
+            "DNB", "ORK", "YAR", "SUBC",   # SFL: its US line only (ADR_DIV); "SFL" does not exist on OSE
         ],
     },
     "UK_DIV": {
@@ -286,6 +360,10 @@ CANDIDATE_POOLS = {
         "currency": "USD",
         "symbols": [
             "AAPL", "MSFT", "NVDA", "GOOG", "AMZN", "META", "TSLA", "AVGO",
+            # US lines of companies whose home-venue ticker collided with another pool entry or did
+            # not exist at the broker (2026-10-04, one ticker = one listing): CRH (primary listing
+            # NYSE), Prudential plc (PUK), Sanofi (SNY), STMicroelectronics (STM).
+            "CRH", "PUK", "SNY", "STM",
             "SPCX",   # SpaceX, listed 2026-06. Far too large for the breakthrough tier and, until
                       # added here (Rain, 2026-10-04), in no funnel at all. Scored like any pool
                       # name: it enters the growth tier only if it passes the growth gate.
@@ -306,7 +384,7 @@ CANDIDATE_POOLS = {
     "CA": {
         "exchange": "SMART", "currency": "CAD", "primary_exchange": "TSE",
         "symbols": [
-            "SHOP", "RY", "TD", "ENB", "CNR", "CP", "BMO", "BNS",
+            "RY", "TD", "ENB", "CNR", "CP", "BMO", "BNS",   # Shopify: US line only
             "SU", "TRP", "BCE", "MFC", "ATD", "CNQ", "WCN", "CSU",
             "BAM", "FTS", "QSR", "LSPD",
         ],
@@ -314,26 +392,27 @@ CANDIDATE_POOLS = {
     "UK": {
         "exchange": "LSE", "currency": "GBP",
         "symbols": [
-            "SHEL", "AZN", "ULVR", "HSBA", "BP", "GSK", "RIO", "LSEG",
-            "REL", "DGE", "BATS", "ABF", "PRU", "LLOY", "BARC",
+            "SHEL", "AZN", "ULVR", "HSBA", "BP", "GSK", "LSEG",   # RIO: US line only (ADR_DIV)
+            "REL", "DGE", "BATS", "ABF", "LLOY", "BARC",   # Prudential plc: US line PUK (PRU is Prudential Financial)
             "VOD", "NG", "SSE", "AAL", "GLEN", "EXPN",
-            "CPG", "IMB", "TSCO", "ANTO", "RKT", "CRH", "SMIN",
+            "CPG", "IMB", "TSCO", "ANTO", "RKT", "SMIN",   # CRH: primary listing is NYSE, see US pool
         ],
     },
     "DE": {
         "exchange": "IBIS", "currency": "EUR",
         "symbols": [
             "SAP", "SIE", "ALV", "MUV2", "DTE", "BAS", "BAYN", "BMW",
-            "MBG", "ADS", "IFX", "DBK", "HEN3", "MRK", "FRE",
-            "VOW3", "RHM", "SHL", "DHL", "AIR", "MTX", "QIA",
+            "MBG", "ADS", "IFX", "DBK", "HEN3", "FRE",   # Merck KGaA dropped: its only ticker, MRK, is Merck & Co in the US
+            "VOW3", "RHM", "SHL", "DHL", "MTX", "QIA",   # Airbus: Paris only (FR pool), its primary venue
         ],
     },
     "FR": {
         "exchange": "SBF", "currency": "EUR",
         "symbols": [
-            "MC", "OR", "TTE", "SAN", "AI", "SU", "BN", "CS",
+            "MC", "OR", "TTE", "AI", "BN", "CS",   # Sanofi: US line SNY (SAN is Santander; Sanofi is SAN1 in Paris).
+            # Schneider Electric dropped: its only ticker, SU, is Suncor, which the account holds.
             "AIR", "SAF", "RI", "KER", "DSY", "CAP", "HO",
-            "SGO", "DG", "RMS", "STM", "ACA", "BNP",
+            "SGO", "DG", "RMS", "ACA", "BNP",   # STMicro: US line STM (no "STM" in Paris or Milan)
         ],
     },
     "NL": {
@@ -357,7 +436,7 @@ CANDIDATE_POOLS = {
     },
     "IE": {
         "exchange": "ISE", "currency": "EUR",
-        "symbols": ["CRH", "RYA", "KRX", "SKG", "FLT"],
+        "symbols": ["RYA", "KRX", "SKG", "FLT"],   # CRH left Dublin for NYSE, see US pool
     },
     "ES": {
         "exchange": "BM", "currency": "EUR",
@@ -368,7 +447,7 @@ CANDIDATE_POOLS = {
     },
     "IT": {
         "exchange": "BVME", "currency": "EUR",
-        "symbols": ["ENEL", "ISP", "UCG", "ENI", "STM", "CNHI", "TEN", "AMP", "MONC"],   # RACE moved to US pool (NYSE)
+        "symbols": ["ENEL", "ISP", "UCG", "ENI", "CNHI", "TEN", "AMP", "MONC"],   # RACE and STM moved to US pool (NYSE)
     },
     "AT": {
         "exchange": "VSE", "currency": "EUR",
@@ -428,9 +507,9 @@ CANDIDATE_POOLS = {
     "AU": {
         "exchange": "ASX", "currency": "AUD",
         "symbols": [
-            "CSL", "BHP", "CBA", "WDS", "XRO", "ALL", "WBC", "ANZ",
-            "NAB", "FMG", "WOW", "COL", "RIO", "TLS", "REA", "GMG",
-            "MQG", "TCL", "SHL", "JHX", "WES", "TWE", "CPU",
+            "CSL", "CBA", "WDS", "XRO", "ALL", "WBC", "ANZ",   # BHP: US line only (ADR_DIV)
+            "NAB", "FMG", "WOW", "COL", "TLS", "REA", "GMG",
+            "MQG", "TCL", "JHX", "WES", "TWE", "CPU",   # Sonic Healthcare dropped: SHL is Siemens Healthineers on Xetra
         ],
     },
     "IN": {
@@ -814,8 +893,10 @@ capacity.
 6. Energy transition (solar, wind, batteries, EVs, hydrogen)
 7. Energy bridge (gas, nuclear/SMR, uranium, conventional and enhanced
    geothermal — what powers the transition)
-8. Climate adaptation (water, cooling, flood defense, drought-resistant
-   agriculture, irrigation, weather modeling)
+8. Climate adaptation & water scarcity (cooling, flood defense, weather
+   modeling, drought-resistant agriculture; and fresh water itself, which is
+   running short on every continent: desalination, water reuse and treatment,
+   leak detection and network efficiency, efficient irrigation, metering)
 9. Critical minerals & advanced materials (lithium, rare earths, copper and
    the other electrification metals, specialty chemicals, battery thermal
    management, recycling of critical materials)
