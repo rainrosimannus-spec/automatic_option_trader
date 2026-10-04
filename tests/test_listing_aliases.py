@@ -101,7 +101,10 @@ def test_registry_is_consistent_with_the_pools():
     assert len(ids) == len(set(ids)) and all(ids)
     pools = {**su.CANDIDATE_POOLS, **su.DIVIDEND_CANDIDATES}
     for name, a in sym.LISTING_ALIASES.items():
-        assert name != a.symbol and name.split(".")[0] == a.symbol
+        assert name != a.symbol
+        # two kinds of alias: a venue suffix for a shared ticker (SU.PA -> SU), or a broker
+        # ticker that ends in a dot (BP -> "BP.")
+        assert name.split(".")[0] == a.symbol or a.symbol == name + "."
         # the aliased company sits in a pool on its own venue under its INTERNAL name...
         homes = [r for r, p in pools.items() if name in p["symbols"]]
         assert homes and all((pools[r]["exchange"], pools[r]["currency"]) == (a.exchange, a.currency) for r in homes), name
@@ -170,3 +173,10 @@ def test_schneider_row_takes_its_tier_from_its_own_watchlist_entry(holdings):
     rows = holdings.run([_item(SUNCOR_TSE, 700, 50.0), _item(SCHNEIDER, 120, 240.0)])
     assert rows["SU"].tier == "dividend" and rows["SU.PA"].tier == "growth"
     assert rows["SU.PA"].name == "SCHNEIDER ELECTRIC SE"
+
+
+def test_tickers_the_broker_ends_with_a_dot_use_a_clean_internal_name():
+    c = sym.broker_stock("BP", "LSE", "GBP")
+    assert (c.symbol, c.currency, c.conId) == ("BP.", "GBP", 228891)
+    assert sym.internal_symbol(NS(symbol="BP.", secType="STK", currency="GBP", conId=228891)) == "BP"
+    assert sym.internal_symbol(NS(symbol="NG.", secType="STK", currency="GBP", conId=0)) == "NG"

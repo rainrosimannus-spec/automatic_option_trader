@@ -39,6 +39,7 @@ EXCHANGE_COUNTRY: dict[str, str] = {
     "SBF": "France", "BVME": "Italy", "BM": "Spain", "VSE": "Austria",
     "ENEXT.BE": "Belgium", "EBS": "Switzerland", "SWX": "Switzerland",
     "HEX": "Finland", "OSE": "Norway", "SFB": "Sweden", "CPH": "Denmark",
+    "KRX": "South Korea", "ISED": "Ireland", "MEXI": "Mexico", "TASE": "Israel",
     "SGX": "Singapore", "NSE": "India", "JSE": "South Africa",
 }
 

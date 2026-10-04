@@ -100,7 +100,7 @@ def is_portfolio_connected() -> bool:
 # ── Stock price (PORTFOLIO connection) ───────────────────────
 # Exchanges where SMART re-routing breaks historical data (keep original).
 _NON_SMART_EXCHANGES = {"SEHK", "JSE", "SGX", "TASE", "NSE", "ASX",
-                        "BSE", "KSE", "TWSE", "BKK", "IDX"}
+                        "BSE", "KSE", "KRX", "TWSE", "BKK", "IDX"}
 
 
 def get_portfolio_stock_price(

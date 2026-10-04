@@ -133,7 +133,7 @@ class PortfolioAnalyzer:
 
             # Only override to SMART for exchanges that support it
             _non_smart_exchanges = {"SEHK", "JSE", "SGX", "TASE", "NSE", "ASX",
-                                    "BSE", "KSE", "TWSE", "BKK", "IDX"}
+                                    "BSE", "KSE", "KRX", "TWSE", "BKK", "IDX"}
             if exchange not in _non_smart_exchanges:
                 contract.exchange = "SMART"
 

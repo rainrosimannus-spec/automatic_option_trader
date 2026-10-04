@@ -195,10 +195,10 @@ def _raw_growth_universe() -> dict:
 # trade at all.
 VENUE_TRADABILITY = [
     ("SMART", "USD"), ("LSE", "GBP"), ("AEB", "EUR"), ("IBIS", "EUR"), ("SBF", "EUR"),
-    ("SWX", "CHF"), ("SMART", "CAD"), ("SFB", "SEK"), ("CSE", "DKK"), ("HEX", "EUR"),
-    ("OSE", "NOK"), ("BM", "EUR"), ("ENEXT.BE", "EUR"), ("VSE", "EUR"), ("ISE", "EUR"),
-    ("TSEJ", "JPY"), ("ASX", "AUD"), ("SEHK", "HKD"), ("SGX", "SGD"), ("KSE", "KRW"),
-    ("TASE", "ILS"), ("MEXI", "MXN"), ("BVMF", "BRL"), ("IDX", "IDR"), ("BVME", "EUR"),
+    ("EBS", "CHF"), ("SMART", "CAD"), ("SFB", "SEK"), ("CPH", "DKK"), ("HEX", "EUR"),
+    ("OSE", "NOK"), ("BM", "EUR"), ("ENEXT.BE", "EUR"), ("VSE", "EUR"), ("SMART", "EUR"),
+    ("TSEJ", "JPY"), ("ASX", "AUD"), ("SEHK", "HKD"), ("SGX", "SGD"), ("KRX", "KRW"),
+    ("TASE", "ILS"), ("MEXI", "MXN"), ("BVME", "EUR"),
     ("NSE", "INR"), ("JSE", "ZAR"),
 ]
 
@@ -313,9 +313,9 @@ DIVIDEND_CANDIDATES = {
             "TXN", "CSCO", "IBM", "WFC", "BAC", "USB",
             "PRU", "AFL", "MET", "MMM", "EMR", "ETN",
             "NEE", "D", "SO", "DUK", "AEP",  # utilities
-            "CVS", "WBA",  # pharmacy
+            "CVS",  # pharmacy
             "NLY", "MAIN", "ARCC",  # BDCs/mREITs
-            "EPD", "ET", "MMP",  # midstream energy
+            "EPD", "ET",  # midstream energy
             "XOM", "CVX",  # already in US but strong dividend
         ],
     },
@@ -329,14 +329,14 @@ DIVIDEND_CANDIDATES = {
     "UK_DIV": {
         "exchange": "LSE", "currency": "GBP",
         "symbols": [
-            "SHEL", "BP", "BATS", "IMB", "LGEN", "AVST",
+            "SHEL", "BP", "BATS", "IMB", "LGEN",
             "NG", "SSE", "WPP", "MNG", "HWDN",
         ],
     },
     "EU_DIV": {
         "exchange": "AEB", "currency": "EUR",
         "symbols": [
-            "PHIA", "UNA", "RAND", "ABN",  # Netherlands
+            "PHIA", "RAND", "ABN",  # Netherlands (Unilever: London line ULVR)
         ],
     },
     "ES_DIV": {
@@ -365,12 +365,17 @@ CANDIDATE_POOLS = {
             # not exist at the broker (2026-10-04, one ticker = one listing): CRH (primary listing
             # NYSE), Prudential plc (PUK), Sanofi (SNY), STMicroelectronics (STM).
             "CRH", "PUK", "SNY", "STM",
+            # Same clean-up, entries the broker did not recognise at all on their old venue
+            # (each verified by company name at the broker, 2026-10-04):
+            "CHKP",                                  # Check Point (was on TASE)
+            "CNH", "SW", "FLUT",                     # CNH Industrial, Smurfit Westrock, Flutter (moved to New York)
+            "ITUB", "BBD", "ABEV", "SUZ", "TLK",     # US lines of Brazilian and Indonesian companies
             "SPCX",   # SpaceX, listed 2026-06. Far too large for the breakthrough tier and, until
                       # added here (Rain, 2026-10-04), in no funnel at all. Scored like any pool
                       # name: it enters the growth tier only if it passes the growth gate.
             "CRM", "AMD", "NFLX", "ADBE", "NOW", "UBER", "PLTR", "PANW",
             "CRWD", "SHOP", "COIN", "MELI", "ANET", "DDOG", "TTD", "NET",
-            "ARM", "SNOW", "ABNB", "SQ", "RIVN", "SOFI", "RBLX", "DASH",
+            "ARM", "SNOW", "ABNB", "XYZ", "RIVN", "SOFI", "RBLX", "DASH",
             "ORCL", "INTC", "QCOM", "MU", "MRVL", "LRCX", "KLAC", "CDNS", "SNPS",
             "LLY", "UNH", "ABBV", "JNJ", "MRK", "PFE", "TMO", "ABT",
             "ISRG", "VRTX", "REGN", "DXCM", "MRNA", "GILD", "AMGN",
@@ -396,7 +401,7 @@ CANDIDATE_POOLS = {
             "SHEL", "AZN", "ULVR", "HSBA", "BP", "GSK", "LSEG",   # RIO: US line only (ADR_DIV)
             "REL", "DGE", "BATS", "ABF", "LLOY", "BARC",   # Prudential plc: US line PUK (PRU is Prudential Financial)
             "VOD", "NG", "SSE", "AAL", "GLEN", "EXPN",
-            "CPG", "IMB", "TSCO", "ANTO", "RKT", "SMIN",   # CRH: primary listing is NYSE, see US pool
+            "IMB", "TSCO", "ANTO", "RKT", "SMIN",   # CRH: primary listing is NYSE, see US pool. Compass: see end of pools
         ],
     },
     "DE": {
@@ -422,14 +427,14 @@ CANDIDATE_POOLS = {
     "NL": {
         "exchange": "AEB", "currency": "EUR",
         "symbols": [
-            "ASML", "INGA", "PHIA", "AD", "WKL", "UNA", "HEIA",
+            "ASML", "INGA", "PHIA", "AD", "WKL", "HEIA",   # Unilever: London line ULVR (UK pool)
             "AKZA", "ASM", "BESI", "PRX", "REN", "ABN", "RAND",
         ],
     },
     "CH": {
-        "exchange": "SWX", "currency": "CHF",
+        "exchange": "EBS", "currency": "CHF",   # the broker's code for SIX Swiss Exchange ("SWX" matched nothing)
         "symbols": [
-            "NESN", "NOVN", "ROG", "SIKA", "LONN", "GIVN", "GEBN",
+            "NESN", "NOVN", "ROP", "SIKA", "LONN", "GIVN", "GEBN",   # ROP = Roche (the liquid non-voting line)
             "UBSG", "ZURN", "SREN", "ABBN", "SLHN",
             "PGHN", "TEMN", "VACN", "LOGN", "AMS", "BARN", "SCMN",
         ],
@@ -439,8 +444,8 @@ CANDIDATE_POOLS = {
         "symbols": ["ABI", "UCB", "KBC", "SOLB", "ACKB", "AGS", "COLR"],
     },
     "IE": {
-        "exchange": "ISE", "currency": "EUR",
-        "symbols": ["RYA", "KRX", "SKG", "FLT"],   # CRH left Dublin for NYSE, see US pool
+        "exchange": "SMART", "currency": "EUR",   # Euronext Dublin resolves only via SMART/EUR at the broker
+        "symbols": ["RYA", "KRX"],   # CRH, Smurfit Westrock (SW) and Flutter (FLUT) list in New York: US pool
     },
     "ES": {
         "exchange": "BM", "currency": "EUR",
@@ -451,7 +456,7 @@ CANDIDATE_POOLS = {
     },
     "IT": {
         "exchange": "BVME", "currency": "EUR",
-        "symbols": ["ENEL", "ISP", "UCG", "ENI", "CNHI", "TEN", "AMP", "MONC"],   # RACE and STM moved to US pool (NYSE)
+        "symbols": ["ENEL", "ISP", "UCG", "ENI", "TEN", "AMP2", "MONC"],   # RACE, STM, CNH: US pool (NYSE). AMP2 = Amplifon
     },
     "AT": {
         "exchange": "VSE", "currency": "EUR",
@@ -460,16 +465,16 @@ CANDIDATE_POOLS = {
     "SE": {
         "exchange": "SFB", "currency": "SEK",
         "symbols": [
-            "ATCO-A", "INVE-B", "VOLV-B", "SAND", "ERIC-B", "HEXA-B",
-            "ASSA-B", "ALFA", "SEB-A", "SWED-A", "SHB-A", "ESSITY-B",
+            "ATCO.A", "INVE.B", "VOLV.B", "SAND", "ERIC.B", "HEXA.B",   # share class after a DOT, as the broker writes it
+            "ASSA.B", "ALFA", "SEB.A", "SWED.A", "SHB.A", "ESSITY.B",
             "EVO", "SINCH", "HMS",
         ],
     },
     "DK": {
-        "exchange": "CSE", "currency": "DKK",
+        "exchange": "CPH", "currency": "DKK",   # the broker's code for Nasdaq Copenhagen ("CSE" matched nothing)
         "symbols": [
-            "NOVO-B", "MAERSK-B", "DSV", "VWS", "CARL-B", "COLO-B",
-            "NZYM-B", "ORSTED", "PNDORA", "GN", "DEMANT", "FLS",
+            "NOVO.B", "MAERSK.B", "DSV", "VWS", "CARL.B", "COLO.B",
+            "NSIS.B", "ORSTED", "PNDORA", "GN", "DEMANT", "FLS",   # NSIS.B = Novonesis (was Novozymes)
         ],
     },
     "FI": {
@@ -480,7 +485,7 @@ CANDIDATE_POOLS = {
         "exchange": "OSE", "currency": "NOK",
         "symbols": [
             "EQNR", "MOWI", "DNB", "TEL", "ORK", "SALM", "YAR",
-            "AKRBP", "SUBC", "AKER", "SCHA", "BAKKA",
+            "AKRBP", "SUBC", "AKER", "VEND", "BAKKA",   # VEND = Vend Marketplaces (was Schibsted, SCHA)
         ],
     },
     "JP": {
@@ -495,9 +500,9 @@ CANDIDATE_POOLS = {
     "HK": {
         "exchange": "SEHK", "currency": "HKD",
         "symbols": [
-            "0700", "9988", "0005", "0941", "2318", "0388", "1299",
-            "0883", "2269", "1211", "0001", "0016", "0002", "0066",
-            "1810", "0669", "3690", "9618", "0175", "1928",
+            "700", "9988", "941", "2318", "388", "1299",   # the broker writes HK tickers WITHOUT leading zeros
+            "883", "2269", "1211", "1", "16", "2", "66",        # (700 Tencent, 1 CK Hutchison, 2 CLP, 16 SHKP, 66 MTR);
+            "1810", "669", "3690", "9618", "175", "1928",       # HSBC is HSBA in London (UK pool)
         ],
     },
     "SG": {
@@ -505,7 +510,7 @@ CANDIDATE_POOLS = {
         "symbols": ["D05", "O39", "U11", "Z74", "BN4", "C6L", "C38U", "A17U", "G13", "S58", "F34", "S68", "BS6"],
     },
     "KR": {
-        "exchange": "KSE", "currency": "KRW",
+        "exchange": "KRX", "currency": "KRW",   # the broker's code for the Korea Exchange ("KSE" matched nothing)
         "symbols": ["005930", "000660", "035420", "051910", "006400", "035720", "068270", "028260", "055550", "105560", "003550", "034730"],
     },
     "AU": {
@@ -521,18 +526,17 @@ CANDIDATE_POOLS = {
         "exchange": "NSE", "currency": "INR",
         "symbols": [
             "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK",
-            "HINDUNILVR", "ITC", "SBIN", "BHARTIARTL", "KOTAKBANK",
-            "LT", "HCLTECH", "AXISBANK", "WIPRO", "ASIANPAINT",
-            "MARUTI", "TITAN", "BAJFINANCE", "NESTLEIND", "TECHM",
+            "HINDUNILV", "ITC", "SBIN", "BHARTIART", "KOTAKBANK",   # the broker cuts long tickers to nine characters
+            "LT", "HCLTECH", "AXISBANK", "WIPRO", "ASIANPAIN",
+            "MARUTI", "TITAN", "BAJFINANC", "NESTLEIND", "TECHM",
         ],
     },
-    "ID": {
-        "exchange": "IDX", "currency": "IDR",
-        "symbols": ["BBCA", "BBRI", "BMRI", "TLKM", "ASII", "UNVR", "HMSP", "GGRM", "ICBP", "KLBF"],
-    },
+    # Indonesia (IDX) and Brazil (B3) are not offered by the broker at all. Companies with a US
+    # listing are in the US pool under it (TLK; VALE, PBR, ITUB, BBD, ABEV, SUZ); the rest cannot
+    # be traded and were removed 2026-10-04.
     "IL": {
         "exchange": "TASE", "currency": "ILS",
-        "symbols": ["TEVA", "LUMI", "ICL", "BEZQ", "NICE", "CHKP"],
+        "symbols": ["TEVA", "LUMI", "ICL", "BEZQ", "NICE"],   # Check Point lists on NASDAQ only: US pool
     },
     "ZA": {
         "exchange": "JSE", "currency": "ZAR",
@@ -540,12 +544,12 @@ CANDIDATE_POOLS = {
     },
     "MX": {
         "exchange": "MEXI", "currency": "MXN",
-        "symbols": ["AMXL", "WALMEX", "FEMSAUBD", "GMEXICOB", "GFNORTEO", "BIMBOA", "CEMEXCPO", "AC"],
+        "symbols": ["AMXB", "WALMEX", "FEMSAUBD", "GMEXICOB", "GFNORTEO", "BIMBOA", "CEMEXCPO", "AC"],   # AMXB = America Movil after its share-class merger
     },
-    "BR": {
-        "exchange": "BVMF", "currency": "BRL",
-        "symbols": ["VALE3", "PETR4", "ITUB4", "BBDC4", "ABEV3", "B3SA3", "WEGE3", "RENT3", "SUZB3", "RAIL3"],
-    },
+    # Compass Group (CPG) is deliberately absent: since its 2025 redenomination it trades in
+    # London in US DOLLARS. The buyer keys trading hours on currency, so a USD name is treated as
+    # open during New York hours — after London has closed — and its orders would never reach
+    # the exchange. It can return when hours are keyed on the venue.
 }
 
 # Which breakthrough-scan prompt the monthly screen uses. The prompt decides which companies are
@@ -752,9 +756,9 @@ consensus is underweighting (where the actual 10-baggers historically hide).
   currency="USD". This is our internal convention. Do NOT return NYSE or
   NASDAQ as an exchange code.
 - Among the 5+ non-USD names, include at least 3 from underweighted
-  markets: Japan (TSEJ, JPY), Korea (KSE, KRW), India (NSE, INR), Brazil
-  (BVMF, BRL), Israel (TASE, ILS), Eastern Europe (WSE, BUX, etc.),
-  Nordics (HEX, OSE, SFB, CSE).
+  markets: Japan (TSEJ, JPY), Korea (KRX, KRW), India (NSE, INR), Brazil
+  (US listing only), Israel (TASE, ILS), Eastern Europe (WSE, BUX, etc.),
+  Nordics (HEX, OSE, SFB, CPH).
 
 ## EXCLUSIONS:
 
@@ -805,7 +809,7 @@ JSON array. Each entry must include:
 - symbol: ticker
 - name: company name
 - exchange: SMART for US, native exchange code for non-US (LSE, AEB,
-  BVME, TSEJ, KSE, NSE, BVMF, TASE, BIT, etc.)
+  BVME, TSEJ, KRX, EBS, CPH, TASE, etc.)
 - currency: USD/EUR/GBP/JPY/KRW/INR/BRL/ILS as appropriate
 - market_cap_usd: approximate, in billions, current
 - sector: GICS-style primary sector
@@ -1004,11 +1008,14 @@ equivalent of {ceiling} rose tenfold less than half as often as those below it.
   currency="USD". This is our internal convention. Do NOT return NYSE or
   NASDAQ as an exchange code.
 - Among the 5+ non-USD names, include at least 3 from underweighted
-  markets: Japan (TSEJ, JPY), Korea (KSE, KRW), India, South Africa, Brazil
-  (BVMF, BRL), Israel (TASE, ILS), Eastern Europe (WSE, BUX, etc.), Nordics
-  (HEX, OSE, SFB, CSE).
+  markets: Japan (TSEJ, JPY), Korea (KRX, KRW), India, South Africa, Brazil,
+  Israel (TASE, ILS), Eastern Europe (WSE, BUX, etc.), Nordics (HEX, OSE,
+  SFB, CPH). Use the broker's own spelling: Nordic share classes take a dot
+  (NOVO.B, ATCO.A); Hong Kong tickers have no leading zeros (700); the Swiss
+  exchange code is EBS.
 - Indian and South African COMPANIES are wanted; their home VENUES are not —
-  we cannot trade NSE/BSE (INR) or JSE (ZAR). Return such a company through
+  we cannot trade NSE/BSE (INR) or JSE (ZAR), and the broker does not offer
+  Brazil (B3) or Indonesia at all. Return such a company through
   a listing of the SAME company on a venue we can trade: a US ADR, a London
   or Luxembourg GDR, or a European line (e.g. Prosus in Amsterdam for the
   Naspers assets). Give that listing's ticker, exchange and currency. If the
@@ -1066,7 +1073,7 @@ JSON array. Each entry must include:
 - symbol: ticker
 - name: company name
 - exchange: SMART for US, native exchange code for non-US (LSE, AEB,
-  BVME, TSEJ, KSE, NSE, BVMF, TASE, BIT, etc.)
+  BVME, TSEJ, KRX, EBS, CPH, TASE, etc.)
 - currency: USD/EUR/GBP/JPY/KRW/INR/BRL/ILS as appropriate
 - market_cap_usd: approximate, in billions, current
 - sector: GICS-style primary sector
@@ -1478,24 +1485,27 @@ fail on FP/TotalEnergies before). Use these conventions:
   France (CAC 40)      SBF              EUR
   Germany (DAX)        IBIS             EUR
   Netherlands (AEX)    AEB              EUR
-  Switzerland (SIX)    SWX              CHF
+  Switzerland (SIX)    EBS              CHF
   Italy (FTSE MIB)     BVME             EUR
   Spain                BM               EUR
   Belgium              ENEXT.BE         EUR
-  Ireland              ISE              EUR
+  Ireland              SMART            EUR
   Austria              VSE              EUR
   Sweden               SFB              SEK
-  Denmark              CSE              DKK
+  Denmark              CPH              DKK
   Finland              HEX              EUR
   Norway               OSE              NOK
   Japan                TSEJ             JPY
   Hong Kong            SEHK             HKD
   Singapore            SGX              SGD
-  Korea                KSE              KRW
+  Korea                KRX              KRW
   Australia            ASX              AUD
 
 TICKER CONVENTIONS: use the IBKR symbol for each stock, which may differ
-from common-knowledge tickers. Examples: TotalEnergies is TTE (not FP),
+from common-knowledge tickers. Nordic share classes take a DOT (NOVO.B,
+ATCO.A, VOLV.B). Hong Kong tickers have NO leading zeros (700, not 0700).
+Brazil and Indonesia are not available locally: propose such a company only
+through its US listing (SMART/USD). Examples: TotalEnergies is TTE (not FP),
 LVMH is MC (not LVMUY), ASML is ASML on AEB (not ASML.AS). When in doubt,
 verify the modern IBKR ticker for that local exchange. If you propose an
 ADR (NYSE-listed foreign stock with US trading), use SMART/USD as for any
@@ -1576,24 +1586,27 @@ fail on FP/TotalEnergies before). Use these conventions:
   France (CAC 40)      SBF              EUR
   Germany (DAX)        IBIS             EUR
   Netherlands (AEX)    AEB              EUR
-  Switzerland (SIX)    SWX              CHF
+  Switzerland (SIX)    EBS              CHF
   Italy (FTSE MIB)     BVME             EUR
   Spain                BM               EUR
   Belgium              ENEXT.BE         EUR
-  Ireland              ISE              EUR
+  Ireland              SMART            EUR
   Austria              VSE              EUR
   Sweden               SFB              SEK
-  Denmark              CSE              DKK
+  Denmark              CPH              DKK
   Finland              HEX              EUR
   Norway               OSE              NOK
   Japan                TSEJ             JPY
   Hong Kong            SEHK             HKD
   Singapore            SGX              SGD
-  Korea                KSE              KRW
+  Korea                KRX              KRW
   Australia            ASX              AUD
 
 TICKER CONVENTIONS: use the IBKR symbol for each stock, which may differ
-from common-knowledge tickers. Examples: TotalEnergies is TTE (not FP),
+from common-knowledge tickers. Nordic share classes take a DOT (NOVO.B,
+ATCO.A, VOLV.B). Hong Kong tickers have NO leading zeros (700, not 0700).
+Brazil and Indonesia are not available locally: propose such a company only
+through its US listing (SMART/USD). Examples: TotalEnergies is TTE (not FP),
 LVMH is MC (not LVMUY), ASML is ASML on AEB (not ASML.AS). When in doubt,
 verify the modern IBKR ticker for that local exchange. If you propose an
 ADR (NYSE-listed foreign stock with US trading), use SMART/USD as for any

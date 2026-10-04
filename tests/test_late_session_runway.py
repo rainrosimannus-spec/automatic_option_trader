@@ -272,16 +272,17 @@ def test_us_loses_five_minutes_and_keeps_its_after_hours_hour(at):
 
 
 def test_every_venue_reads_its_own_clock(at):
-    """No venue inherits another's hours: at 04:30 UTC only Tokyo/Sydney are in window."""
+    """No venue inherits another's hours: at 04:30 UTC only Tokyo/Sydney/Seoul are in window.
+    (Seoul added 2026-10-04 with the KRW hours: 04:30 UTC is 13:30 KST, inside its last two hours.)"""
     cc = CompounderConfig()
     with at("2026-09-22T04:30:00"):
         inside = {c for c in _MARKET_HOURS
                   if _late_session(c, cc.late_session_minutes, 5)}
-    assert inside == {"JPY", "AUD"}, inside
+    assert inside == {"JPY", "AUD", "KRW"}, inside
     with at("2026-09-22T19:00:00"):                    # 15:00 ET
         inside = {c for c in _MARKET_HOURS
                   if _late_session(c, cc.late_session_minutes, 5)}
-    assert inside == {"USD", "CAD"}, inside
+    assert inside == {"USD", "CAD", "MXN"}, inside     # Mexico City (added 2026-10-04) is 13:00, its last two hours
 
 
 # ── the shipped state: both halves OFF, and WHY ───────────────────────────────

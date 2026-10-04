@@ -91,6 +91,10 @@ LISTING_ALIASES: dict[str, BrokerListing] = {
     "SU.PA": BrokerListing("SU", "SBF", "EUR", 29612196, "Schneider Electric SE"),
     "MRK.DE": BrokerListing("MRK", "IBIS", "EUR", 1015559, "Merck KGaA"),
     "SHL.AX": BrokerListing("SHL", "ASX", "AUD", 12370176, "Sonic Healthcare Ltd"),
+    # Same mechanism, different reason: the broker's ticker ends in a dot ("BP.", "NG."), which
+    # is awkward as a name inside the system (URLs, file names). Internal name without the dot.
+    "BP": BrokerListing("BP.", "LSE", "GBP", 228891, "BP plc"),
+    "NG": BrokerListing("NG.", "LSE", "GBP", 273234647, "National Grid plc"),
 }
 
 

@@ -133,6 +133,8 @@ _MARKET_HOURS = {
     "ZAR": ("Africa/Johannesburg", 9, 17, _MON_FRI),
     "INR": ("Asia/Kolkata", 9, 15, _MON_FRI),            # NSE: 09:15–15:30 IST (hours truncate, as for JPY/GBP)
     "ILS": ("Asia/Jerusalem", 10, 17, (6, 0, 1, 2, 3)),   # TASE: Sun–Thu
+    "KRW": ("Asia/Seoul", 9, 15, _MON_FRI),               # KRX: 09:00–15:30 KST (hours truncate)
+    "MXN": ("America/Mexico_City", 8, 15, _MON_FRI),      # BMV: 08:30–15:00 (hours truncate)
 }
 
 
@@ -4004,7 +4006,7 @@ class PortfolioBuyer:
                     # Only override to SMART for exchanges that support it
                     # Non-US/EU/developed exchanges must keep their original exchange
                     _non_smart_exchanges = {"SEHK", "JSE", "SGX", "TASE", "NSE", "ASX",
-                                            "BSE", "KSE", "TWSE", "BKK", "IDX"}
+                                            "BSE", "KSE", "KRX", "TWSE", "BKK", "IDX"}
                     if h.exchange not in _non_smart_exchanges:
                         contract.exchange = "SMART"
                     price = None
