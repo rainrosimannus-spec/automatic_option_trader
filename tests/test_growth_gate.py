@@ -150,3 +150,46 @@ def test_stockscore_defaults_fail_the_gate():
 def test_augmentation_prompt_states_the_gate():
     p = su._build_growth_augmentation_prompt([], [], 0.0, set())
     assert "ENTRY GATE" in p and f"{gg.GROWTH_FLOOR_PCT:.0f}%" in p
+
+
+# ── why a held name left the tier: written by the screen, read by the review ──
+
+def test_removal_reason_round_trips_the_quality_score_and_the_substance():
+    failures = ["return on capital 3.8% over five years, below the 8% it takes to cover the cost of that capital",
+                "net loss in 2 of the last five years"]
+    r = gg.removal_reason({"detail": "quality 38 < 50 floor", "quality": 38.4, "quality_failures": failures})
+    assert r.startswith("growth gate: quality 38.4 below the 50 floor [in substance: ")
+    score, substance = gg.quality_dropout_from_reason(f"No longer in screened universe — {r}. Pending removal.")
+    assert score == 38.4 and substance == "; ".join(failures)
+
+
+def test_removal_reason_without_substance_still_carries_the_score():
+    r = gg.removal_reason({"detail": "quality 47 < 50 floor", "quality": 47.0})
+    assert r == "growth gate: quality 47.0 below the 50 floor"
+    assert gg.quality_dropout_from_reason(r + ". Pending removal.") == (47.0, "")
+
+
+def test_removal_reason_for_growth_and_for_missing_data_is_not_a_quality_drop():
+    growth = gg.removal_reason({"detail": "durable growth 4.2% < 8% floor", "quality": 65.3})
+    nodata = gg.removal_reason({"detail": "quality unmeasured — no return-on-capital or operating-margin data", "quality": 50.8})
+    assert growth == "growth gate: durable growth 4.2% < 8% floor" and "unmeasured" in nodata
+    for r in (growth, nodata, None, "", "No longer in screened universe. Pending removal."):
+        assert gg.quality_dropout_from_reason(r) is None
+
+
+def test_sell_threshold_is_well_under_the_entry_floor():
+    assert gg.QUALITY_SELL_THRESHOLD == 40.0 and gg.QUALITY_FLOOR - gg.QUALITY_SELL_THRESHOLD >= 10
+    assert gg.is_quality_selloff(40.0) and gg.is_quality_selloff(18.7)
+    assert not gg.is_quality_selloff(40.1) and not gg.is_quality_selloff(49.9)
+    assert not gg.is_quality_selloff(None)
+
+
+def test_failures_in_substance_are_facts_about_the_business():
+    xero = {"roic_5yr_avg": 3.8, "net_income_negative_years_5yr": 2, "fcf_negative_years_5yr": 0, "operating_margin_pct": 11.5}
+    out = gg.essential_quality_failures(xero)
+    assert len(out) == 2 and "return on capital 3.8%" in out[0] and "net loss in 2" in out[1]
+    meituan = {"roic_5yr_avg": 2.1, "net_income_negative_years_5yr": 3, "fcf_negative_years_5yr": 2, "operating_margin_pct": -5.7}
+    assert len(gg.essential_quality_failures(meituan)) == 4
+    sound = {"roic_5yr_avg": 21.4, "net_income_negative_years_5yr": 0, "fcf_negative_years_5yr": 0, "operating_margin_pct": 34.6}
+    assert gg.essential_quality_failures(sound) == []
+    assert gg.essential_quality_failures({}) == []          # missing data is never a failure

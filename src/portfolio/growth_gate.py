@@ -36,6 +36,9 @@ from typing import Optional, Sequence
 GROWTH_FLOOR_PCT = 8.0   # durable revenue growth a growth-tier name must clear, % per year
 QUALITY_FLOOR = 50.0     # quality pillar (0-100) a growth-tier name must clear
 DECEL_CAP = 1.5          # durable growth may not exceed this multiple of the weaker window
+QUALITY_SELL_THRESHOLD = 40.0   # a SELL card needs the quality score at or below this — see is_quality_selloff
+ROIC_HURDLE_PCT = 8.0    # five-year return on capital below this does not cover the cost of capital
+LOSS_YEARS = 2           # loss-making (or cash-burning) years out of five that count as a failure
 
 # Growth strength, 0-100: monotone, continuous (no bucket cliffs -> no month-to-month churn at a
 # boundary), saturating at 30%/yr. More growth never scores less.
@@ -166,6 +169,76 @@ def growth_verdict(cagr_pct: Optional[float], ttm_pct: Optional[float],
                              f"below growth floor but re-accelerating: {nums}")
     return GrowthVerdict(durable, cagr_pct, ttm_pct, recent_half_pct, False, True,
                          f"below growth floor and the latest half-year confirms it: {nums}")
+
+
+def essential_quality_failures(f: dict) -> list[str]:
+    """Quality failures IN SUBSTANCE — facts about the business, not a position in a ranking.
+
+    The quality pillar is a 0-100 composite; a score alone says nothing a shareholder would
+    recognise. These statements EXPLAIN a low score on the sell card and the screener page (the
+    trigger for the card is the score itself, is_quality_selloff). Each is a plain statement
+    that the business is failing at what a compounder must do:
+
+      * it does not earn its cost of capital — five-year return on capital under ROIC_HURDLE_PCT;
+      * it loses money — a net loss in at least LOSS_YEARS of the last five years;
+      * it burns cash — negative free cash flow in at least LOSS_YEARS of the last five years;
+      * it has no operating profit — operating margin at or below zero.
+
+    `f` is the fundamentals dict the screen scores from. A figure that is missing produces no
+    statement: absent data is never a failure in substance."""
+    out: list[str] = []
+    roic = f.get("roic_5yr_avg")
+    if roic is not None and roic < ROIC_HURDLE_PCT:
+        out.append(f"return on capital {roic:.1f}% over five years, below the "
+                   f"{ROIC_HURDLE_PCT:.0f}% it takes to cover the cost of that capital")
+    losses = f.get("net_income_negative_years_5yr")
+    if losses is not None and losses >= LOSS_YEARS:
+        out.append(f"net loss in {int(losses)} of the last five years")
+    burn = f.get("fcf_negative_years_5yr")
+    if burn is not None and burn >= LOSS_YEARS:
+        out.append(f"negative free cash flow in {int(burn)} of the last five years")
+    margin = f.get("operating_margin_pct")
+    if margin is not None and margin <= 0:
+        out.append(f"operating margin {margin:.1f}%")
+    return out
+
+
+def is_quality_selloff(quality: Optional[float]) -> bool:
+    """Has the quality score fallen far enough for a sell suggestion?
+
+    Three different lines, deliberately:
+      * ranking outside the 60        -> nothing. Being out-ranked says nothing about the business.
+      * quality below QUALITY_FLOOR   -> the name leaves the tier and is FROZEN (no new money).
+      * quality at or below QUALITY_SELL_THRESHOLD -> a SELL card as well.
+    The sell line sits a clear ten points under the entry floor (Rain, 2026-10-04: "the quality
+    score should have dropped below significant threshold"), so a score hovering around the
+    floor month to month freezes a position but never asks to sell it. On the composite, 40 is
+    roughly a business earning under its cost of capital with thin or falling margins."""
+    return quality is not None and quality <= QUALITY_SELL_THRESHOLD
+
+
+def removal_reason(reject: dict) -> str:
+    """Human-readable reason a held name left the growth tier, from the screen's reject record.
+    Written to the watchlist row at screen time; `quality_dropout_from_reason` reads it back, so
+    the monthly review acts on the SCREEN'S verdict instead of recomputing quality."""
+    detail = (reject.get("detail") or "").strip()
+    quality = reject.get("quality")
+    if detail.startswith("quality unmeasured"):
+        return "growth gate: quality unmeasured (no return-on-capital or operating-margin data)"
+    if detail.startswith("quality") and quality is not None:
+        substance = "; ".join(reject.get("quality_failures") or [])
+        return (f"growth gate: quality {float(quality):.1f} below the {QUALITY_FLOOR:.0f} floor"
+                + (f" [in substance: {substance}]" if substance else ""))
+    return f"growth gate: {detail}" if detail else "growth gate"
+
+
+def quality_dropout_from_reason(reason: Optional[str]) -> Optional[tuple[float, str]]:
+    """(quality score, failures in substance) if the watchlist reason says the name left the tier
+    on MEASURED quality, else None. The second element is "" when the screen found the score low
+    but no failure in substance — such a name is frozen, and nothing more."""
+    import re
+    m = re.search(r"growth gate: quality (-?\d+(?:\.\d+)?) below[^\[]*(?:\[in substance: ([^\]]*)\])?", reason or "")
+    return (float(m.group(1)), (m.group(2) or "").strip()) if m else None
 
 
 def passes_entry_gate(durable_pct: Optional[float], quality: Optional[float],

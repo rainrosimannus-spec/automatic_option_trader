@@ -3489,6 +3489,7 @@ class StockScore:
     growth_gate_ok: bool = False
     growth_gate_reason: str = ""
     quality_measured: bool = False   # real return-on-capital AND operating-margin figures exist
+    quality_failures: list[str] = field(default_factory=list)   # failures in substance (growth_gate)
     fundamentals_source: str = ""    # "fmp", "ibkr", "fmp+ibkr", or "" when there is none
     dividend_yield: float = 0
     dividend_total_return_score: float = 0
@@ -4096,7 +4097,8 @@ class UniverseScreener:
             self._reject(
                 s.symbol, "growth_gate", detail=s.growth_gate_reason, tier="growth",
                 durable_growth_pct=(None if s.durable_growth_pct is None else round(s.durable_growth_pct, 1)),
-                quality=s.quality_pillar, score=s.portfolio_score)
+                quality=s.quality_pillar, score=s.portfolio_score,
+                quality_failures=list(getattr(s, "quality_failures", []) or []))
         print(f"\n  Growth gate (durable growth >= {growth_gate.GROWTH_FLOOR_PCT:.0f}%, "
               f"quality >= {growth_gate.QUALITY_FLOOR:.0f}): "
               f"{len(growth_candidates)} pass, {len(_gate_failed)} fail")
@@ -4270,6 +4272,7 @@ class UniverseScreener:
                     _used_ibkr_quality = True
         score.quality_measured = (fmp.get("roic_5yr_avg") is not None
                                   and fmp.get("operating_margin_pct") is not None)
+        score.quality_failures = growth_gate.essential_quality_failures(fmp)
         score.fundamentals_source = "+".join(
             s for s, on in (("fmp", _has_fmp), ("ibkr", _used_ibkr_quality or bool(ibkr))) if on)
         score.growth_score = _score_growth(fmp)

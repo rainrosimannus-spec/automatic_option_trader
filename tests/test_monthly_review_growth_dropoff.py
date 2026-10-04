@@ -77,7 +77,7 @@ def review(monkeypatch):
     for i in range(12):
         hold(f"PAD{i}", tier="breakthrough")
     return SimpleNamespace(hold=hold, run=run, trends=trends, fundamentals=fundamentals,
-                           profiles=profiles, state=state, broker=broker)
+                           profiles=profiles, state=state, broker=broker, sess=sess)
 
 
 def _trend(cagr, ttm, half):
@@ -289,3 +289,103 @@ def test_verbund_is_judged_on_its_own_broker_figures_not_vereits(review):
 def test_nothing_from_either_source_means_no_card(review):
     review.hold("2318", tier="dividend", currency="HKD", name="PING AN INSURANCE GROUP CO-H")
     assert _cards_for(review.run(), "2318") == []
+
+
+# ── quality drop-outs: the other pillar ──────────────────────────────────────
+
+SUBSTANCE = ("return on capital 3.8% over five years, below the 8% it takes to cover the cost of "
+             "that capital; net loss in 2 of the last five years")
+
+
+def _reason(quality, substance=""):
+    return ("No longer in screened universe — growth gate: quality "
+            f"{quality} below the 50 floor" + (f" [in substance: {substance}]" if substance else "")
+            + ". Pending removal — open position exists.")
+
+
+def _dropped(review, symbol, reason, **hold_kw):
+    from src.portfolio.models import PortfolioWatchlist
+    review.hold(symbol, **hold_kw)
+    review.sess.add(PortfolioWatchlist(symbol=symbol, name=symbol, tier="growth",
+                                       currency=hold_kw.get("currency", "USD"),
+                                       pending_removal=True, pending_removal_reason=reason))
+    review.sess.flush()
+
+
+def test_quality_fallen_below_the_sell_threshold_gets_a_card_that_says_why(review):
+    _dropped(review, "XRO", _reason("38.4", SUBSTANCE), currency="AUD", name="XERO LTD", held_days=60)
+    review.broker["XRO"] = _btrend(25.1, 17.1, 13.8)            # growth is fine
+    cards = review.run()
+    assert _cards_for(cards, "XRO") == [("sell_stock_review", "monthly_quality_dropout")]
+    text = cards[0]["rationale"]
+    assert "quality has fallen to 38.4" in text and "sell threshold of 40" in text
+    assert "return on capital 3.8%" in text and "net loss in 2 of the last five years" in text
+    assert "Growth is not the problem" in text and "frozen" in text
+
+
+def test_sell_threshold_is_ten_points_under_the_entry_floor(review):
+    _dropped(review, "AT40", _reason("40.0", SUBSTANCE))
+    _dropped(review, "AT41", _reason("40.1", SUBSTANCE))
+    cards = review.run()
+    assert _cards_for(cards, "AT40") == [("sell_stock_review", "monthly_quality_dropout")]
+    assert _cards_for(cards, "AT41") == []
+
+
+def test_score_that_only_slipped_under_the_floor_is_frozen_not_carded(review):
+    # 47: fails the gate, leaves the tier, gets no new money — and no sell card, whatever the facts.
+    _dropped(review, "EDGE", _reason("47.0", SUBSTANCE))
+    assert _cards_for(review.run(), "EDGE") == []
+
+
+def test_low_score_is_carded_even_without_a_single_standout_failure(review):
+    _dropped(review, "LOWALL", _reason("36.0"))
+    cards = review.run()
+    assert _cards_for(cards, "LOWALL") == [("sell_stock_review", "monthly_quality_dropout")]
+    assert "In substance" not in cards[0]["rationale"]
+
+
+def test_quality_card_does_not_wait_for_the_holding_period(review):
+    _dropped(review, "MEIT", _reason("18.7", "net loss in 3 of the last five years"), held_days=5)
+    assert _cards_for(review.run(), "MEIT") == [("sell_stock_review", "monthly_quality_dropout")]
+
+
+def test_unmeasured_quality_gets_no_card(review):
+    _dropped(review, "NODATA", "No longer in screened universe — growth gate: quality unmeasured "
+                               "(no return-on-capital or operating-margin data). Pending removal — open position exists.")
+    assert _cards_for(review.run(), "NODATA") == []
+
+
+def test_being_outranked_or_dropped_for_growth_is_not_a_quality_card(review):
+    # "Out of the selected 60" on its own is never a reason to sell.
+    _dropped(review, "RANK61", "No longer in screened universe. Pending removal — open position exists.")
+    _dropped(review, "SLOW", "No longer in screened universe — growth gate: durable growth 4.2% < 8% floor. "
+                             "Pending removal — open position exists.", held_days=20)
+    cards = review.run()
+    assert _cards_for(cards, "RANK61") == [] and _cards_for(cards, "SLOW") == []
+
+
+def test_current_member_is_never_carded_on_a_stale_reason(review):
+    from src.portfolio.models import PortfolioWatchlist
+    review.hold("MEMBER")
+    review.sess.add(PortfolioWatchlist(symbol="MEMBER", tier="growth", currency="USD", pending_removal=False,
+                                       pending_removal_reason=_reason("20.0", SUBSTANCE)))
+    review.sess.flush()
+    assert _cards_for(review.run(), "MEMBER") == []
+
+
+def test_one_card_when_both_growth_and_quality_have_failed(review):
+    _dropped(review, "BOTH", _reason("30.0", SUBSTANCE), held_days=200)
+    review.trends["BOTH"] = _trend(4.9, 3.4, 2.0)
+    review.fundamentals["BOTH"] = {"dividend_yield": 0.0}
+    assert _cards_for(review.run(), "BOTH") == [("sell_stock_review", "monthly_growth_thesis_weak")]
+
+
+def test_dividend_and_breakthrough_names_are_not_judged_on_growth_tier_quality(review):
+    from src.portfolio.models import PortfolioWatchlist
+    for sym, tier in (("DIVQ", "dividend"), ("BTQ", "breakthrough")):
+        review.hold(sym, tier=tier)
+        review.sess.add(PortfolioWatchlist(symbol=sym, tier=tier, currency="USD", pending_removal=True,
+                                           pending_removal_reason=_reason("10.0", SUBSTANCE)))
+    review.sess.flush()
+    cards = review.run()
+    assert _cards_for(cards, "DIVQ") == [] and _cards_for(cards, "BTQ") == []

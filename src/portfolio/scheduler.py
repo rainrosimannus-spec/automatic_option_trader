@@ -714,6 +714,17 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig):
                             w.pending_removal = False
                             w.pending_removal_reason = None
 
+                # WHY each name fell out, where the screen recorded it (growth gate, size ceiling).
+                # Stored on the watchlist row so the dashboard can show it and the monthly review
+                # can raise a sell card on the screen's own verdict.
+                from src.portfolio import growth_gate as _gg_reason
+                _why_dropped: dict = {}
+                for _r in getattr(screener, "_rejects", []) or []:
+                    if _r.get("category") == "growth_gate":
+                        _why_dropped[_r.get("symbol")] = _gg_reason.removal_reason(_r)
+                    elif _r.get("category") == "market_cap_ceiling":
+                        _why_dropped.setdefault(_r.get("symbol"), f"size ceiling: {_r.get('detail') or ''}".strip())
+
                 # Flag stocks no longer in screener results
                 for sym, wl_entry in current_watchlist.items():
                     if sym not in new_symbols:
@@ -721,9 +732,11 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig):
                             # Cannot remove — open position exists
                             if hasattr(wl_entry, "pending_removal"):
                                 wl_entry.pending_removal = True
+                                _why = _why_dropped.get(sym)
                                 wl_entry.pending_removal_reason = (
-                                    "No longer in screened universe. "
-                                    "Pending removal — open position exists."
+                                    "No longer in screened universe"
+                                    + (f" — {_why}. " if _why else ". ")
+                                    + "Pending removal — open position exists."
                                 )
                             flagged_removal.append(sym)
                         else:
@@ -859,7 +872,8 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig):
                 "rejected": sorted(
                     ({"symbol": r.get("symbol"), "held": r.get("symbol") in open_positions,
                       "score": r.get("score"), "durable_growth_pct": r.get("durable_growth_pct"),
-                      "quality": r.get("quality"), "reason": r.get("detail")}
+                      "quality": r.get("quality"), "reason": r.get("detail"),
+                      "substance": "; ".join(r.get("quality_failures") or [])}
                      for r in _gate_rejects),
                     key=lambda d: (not d["held"], -(d["score"] or 0))),
             }
@@ -1307,6 +1321,10 @@ def _review_existing_holdings_monthly(
         was (the old rule fired below 15% trailing growth — about half the tier, including
         names the screener ranks at the top), or one that fails the floor on history but is
         growing again, gets no card. Missing data never produces a card.
+      - Growth tier, quality: a sell card when a held name's quality score has fallen to the
+        sell threshold (40) or below — ten points under the entry floor (section 1d). The card
+        says what is wrong in substance. Never for ranking outside the 60, and not for a score
+        that has only slipped under the floor (that name is frozen, nothing more).
       - Dividend tier: CC when above SMA + profitable (own disqualification rules, unchanged)
       - Data: the same figures the screen scores on. The data provider (FMP) where it describes
         this company, the BROKER'S OWN figures otherwise — which is every non-US holding FMP has
@@ -1339,6 +1357,13 @@ def _review_existing_holdings_monthly(
         )
         if total_value <= 0:
             return suggestions
+
+        # Why each dropped holding left its tier, as the screen recorded it on the watchlist row.
+        from src.portfolio.models import PortfolioWatchlist as _PWL_reason
+        dropped_reason = {
+            w.symbol: (w.pending_removal_reason or "")
+            for w in db.query(_PWL_reason).filter(_PWL_reason.pending_removal == True).all()  # noqa: E712
+        }
 
         # Check which symbols already have open covered call suggestions
         open_cc_symbols = {
@@ -1612,6 +1637,58 @@ def _review_existing_holdings_monthly(
                                 })
             except Exception:
                 pass
+
+        # ── 1d. Quality drop-out ─────────────────────────────
+        # A held growth name the SCREEN dropped on quality, whose quality score has fallen to
+        # growth_gate.QUALITY_SELL_THRESHOLD or below — a clear ten points under the entry floor.
+        # Ranking outside the 60 is not a reason to sell and gets no card; nor is a score that has
+        # merely slipped under the floor (that name is frozen and nothing more). The card states
+        # what is wrong in substance (growth_gate.essential_quality_failures). The growth test
+        # above cannot see this case: Xero and Meituan grow 17% and 8% a year and earn almost
+        # nothing on their capital.
+        # The verdict and the facts are the screen's own, read from the watchlist row, so card
+        # and tier can never disagree. No holding-period gate: the reason is structural, not a
+        # slow quarter.
+        _already_carded = any(s_.get("symbol") == symbol and s_.get("action") in ("SELL", "CONSIDER SELL")
+                              for s_ in suggestions)
+        _q_drop = growth_gate.quality_dropout_from_reason(dropped_reason.get(symbol))
+        if tier == "growth" and not _already_carded and _q_drop and growth_gate.is_quality_selloff(_q_drop[0]):
+            _q_score, _q_substance = _q_drop
+            _growth_note = (f" Growth is not the problem: {growth_v.reason}."
+                            if growth_v is not None and not growth_v.real_dropoff else "")
+            rationale = (
+                f"MONTHLY REVIEW: {symbol} (growth) quality has fallen to {_q_score:.1f} — below the "
+                f"sell threshold of {growth_gate.QUALITY_SELL_THRESHOLD:.0f} (the tier's entry floor "
+                f"is {growth_gate.QUALITY_FLOOR:.0f})."
+                + (f" In substance: {_q_substance}." if _q_substance else "")
+                + f"{_growth_note} "
+                f"The position is frozen: held, no new money. Consider exiting. "
+                f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}. "
+                f"P&L: {pnl_pct:+.1f}%."
+            )
+            _cu=_get_chronos_trend(symbol)=="up"
+            (not _cu) and create_suggestion(
+                symbol=symbol,
+                action="sell_stock_review",
+                quantity=shares,
+                limit_price=round(current_price * 0.998, 2),
+                source="rescreen",
+                tier=tier,
+                signal="monthly_quality_dropout",
+                trailing_stop_pct=0.05,
+                trailing_peak_price=current_price,
+                rationale=rationale,
+                current_price=current_price,
+                sma_200=sma_200,
+                rank=0,
+                funding_source="n/a",
+                expires_hours=720,
+            )
+            suggestions.append({
+                "symbol": symbol, "action": "CONSIDER SELL",
+                "reason": f"Quality {_q_score:.1f} below sell threshold {growth_gate.QUALITY_SELL_THRESHOLD:.0f}"
+                          + (f": {_q_substance}" if _q_substance else ""),
+            })
 
         # ── 2. SELL: dropped off + losing + below SMA ──────
         if dropped_off and pnl_pct < -10 and pct_vs_sma < -10:

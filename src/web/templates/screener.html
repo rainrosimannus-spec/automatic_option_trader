@@ -264,7 +264,7 @@
                     {% if d.held %}held · frozen{% else %}not held{% endif %}
                 </span>
                 <span class="text-gray-400 text-xs w-20 shrink-0">score {{ d.score }}</span>
-                <span class="text-gray-500 text-xs">{{ d.reason }}</span>
+                <span class="text-gray-500 text-xs">{{ d.reason }}{% if d.substance %} — in substance: {{ d.substance }}{% endif %}</span>
             </div>
             {% endfor %}
         </div>
