@@ -179,7 +179,11 @@ def _cancel_live_order_for_suggestion(s: TradeSuggestion) -> int:
             st = getattr(getattr(t, "orderStatus", None), "status", "") or ""
             if c is None or o is None or st in _DONE:
                 continue
-            if (getattr(c, "symbol", "") or "").upper() != sym:
+            # Stocks are matched on the internal name: cancelling a Suncor ("SU") card must not
+            # cancel a working Schneider order, which the broker also calls "SU".
+            from src.portfolio.symbols import internal_symbol as _internal_symbol
+            _c_sym = _internal_symbol(c) if getattr(c, "secType", "") == "STK" else (getattr(c, "symbol", "") or "")
+            if (_c_sym or "").upper() != sym:
                 continue
             if is_opt:
                 if getattr(c, "secType", "") != "OPT":

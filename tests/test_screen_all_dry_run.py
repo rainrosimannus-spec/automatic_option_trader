@@ -110,6 +110,7 @@ def dry_run(monkeypatch, tmp_path):
                  for t in ("breakthrough", "growth", "dividend")}
         pool = yaml.safe_load((tools / "discovered_pool.yaml").read_text()) or {}
         return SimpleNamespace(screener=screener, universe=universe, tiers=tiers, seen=seen,
+                               options=options, all_scores=all_scores,
                                pool=pool, rejects={r["symbol"]: r for r in screener._rejects})
     return run
 
@@ -230,3 +231,18 @@ def test_v2_rules_failing_to_initialise_fall_back_to_v1_behaviour(dry_run, monke
     # pipeline's own initialisation is under test
     r = dry_run("v2")
     assert "GEV" in r.tiers["breakthrough"] and r.screener._breakthrough_graduated == []
+
+
+def test_both_companies_of_a_shared_ticker_are_scored_under_their_own_names(dry_run):
+    # Suncor ("SU") and Schneider Electric ("SU.PA") are separate candidates end to end.
+    r = dry_run("v2")
+    scored = {(s.symbol, s.currency) for s in r.all_scores}
+    assert ("SU", "CAD") in scored and ("SU.PA", "EUR") in scored
+    assert ("MRK", "USD") in scored and ("MRK.DE", "EUR") in scored
+    assert ("SHL", "EUR") in scored and ("SHL.AX", "AUD") in scored
+
+
+def test_aliased_names_are_kept_out_of_the_options_universe(dry_run):
+    from src.portfolio.symbols import is_aliased
+    r = dry_run("v2")
+    assert not [s.symbol for s in r.options if is_aliased(s.symbol)]

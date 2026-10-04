@@ -15,6 +15,7 @@ from ib_insync import IB
 
 from src.core.logger import get_logger
 from src.portfolio.config import PortfolioConfig
+from src.portfolio.symbols import broker_stock as _broker_stock
 from src.portfolio.buyer import PortfolioBuyer
 from src.portfolio.symbols import canonical_symbol
 from src.portfolio.connection import (
@@ -1871,7 +1872,10 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                     continue
 
                 contract = fill.contract
-                symbol = contract.symbol
+                # Internal name: a fill in Schneider ("SU", EUR) must not be booked as Suncor ("SU").
+                # Options keep their underlying ticker (internal_symbol only translates stocks).
+                from src.portfolio.symbols import internal_symbol as _internal_symbol
+                symbol = _internal_symbol(contract)
                 execution = fill.execution
                 side = execution.side  # "BOT" or "SLD"
 
@@ -1947,7 +1951,7 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                             # Check current stock price vs strike to distinguish
                             try:
                                 from ib_insync import Stock
-                                stock_contract = Stock(symbol, wl.exchange or "SMART", wl.currency or "USD")
+                                stock_contract = _broker_stock(symbol, wl.exchange or "SMART", wl.currency or "USD")
                                 ib.qualifyContracts(stock_contract)
                                 ticker = ib.reqMktData(stock_contract, "", False, False)
                                 ib.sleep(2)
@@ -1989,7 +1993,7 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                         if price <= 0.01:
                             try:
                                 from ib_insync import Stock
-                                stock_contract = Stock(symbol, wl.exchange or "SMART", wl.currency or "USD")
+                                stock_contract = _broker_stock(symbol, wl.exchange or "SMART", wl.currency or "USD")
                                 ib.qualifyContracts(stock_contract)
                                 ticker = ib.reqMktData(stock_contract, "", False, False)
                                 ib.sleep(2)

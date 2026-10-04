@@ -9,6 +9,8 @@ from datetime import datetime
 
 from ib_insync import IB
 
+from src.portfolio.symbols import internal_symbol
+
 from src.core.database import get_db
 from src.core.logger import get_logger
 
@@ -47,13 +49,24 @@ def sync_ibkr_holdings(ib: IB) -> int:
             })())
 
     count = 0
+    _seen_contracts: dict[str, str] = {}
     with get_db() as db:
         for item in portfolio_items:
             contract = item.contract
             if contract.secType != "STK":
                 continue
 
-            symbol = contract.symbol
+            # Internal name, not the raw broker ticker: two companies can share a ticker
+            # (src/portfolio/symbols.py). Without this, Schneider ("SU", EUR) and Suncor ("SU", CAD)
+            # would overwrite each other on one holdings row.
+            symbol = internal_symbol(contract)
+            if symbol in _seen_contracts and _seen_contracts[symbol] != (contract.currency or "USD"):
+                # Same internal name from two contracts in different currencies = an unregistered
+                # ticker collision. Behaviour is unchanged (last one wins, as before); say so loudly.
+                log.error("holdings_sync_same_ticker_two_contracts", symbol=symbol,
+                          currencies=[_seen_contracts[symbol], contract.currency],
+                          msg="two different broker contracts map to one holdings row — register an alias")
+            _seen_contracts[symbol] = contract.currency or "USD"
             shares = int(item.position)
             avg_cost = float(item.averageCost)
 
@@ -111,7 +124,7 @@ def sync_ibkr_holdings(ib: IB) -> int:
             count += 1
 
         # Zero out stale holdings
-        synced_symbols = {item.contract.symbol for item in portfolio_items if item.contract.secType == "STK"}
+        synced_symbols = {internal_symbol(item.contract) for item in portfolio_items if item.contract.secType == "STK"}
         stale = db.query(PortfolioHolding).filter(
             PortfolioHolding.shares > 0,
             ~PortfolioHolding.symbol.in_(synced_symbols) if synced_symbols else True

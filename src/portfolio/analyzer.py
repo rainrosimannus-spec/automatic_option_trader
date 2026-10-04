@@ -122,7 +122,8 @@ class PortfolioAnalyzer:
         analysis.currency = currency
 
         try:
-            contract = Stock(symbol, exchange, currency)
+            from src.portfolio.symbols import broker_stock
+            contract = broker_stock(symbol, exchange, currency)   # internal name -> broker contract
             with get_portfolio_lock():
                 qualified = self.ib.qualifyContracts(contract)
             if not qualified:

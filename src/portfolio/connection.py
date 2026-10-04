@@ -128,7 +128,8 @@ def get_portfolio_stock_price(
         _ensure_event_loop()
         with get_portfolio_lock():
             ib = get_portfolio_ib()
-            contract = Stock(symbol, exchange, currency)
+            from src.portfolio.symbols import broker_stock
+            contract = broker_stock(symbol, exchange, currency)   # internal name -> broker contract
             ib.qualifyContracts(contract)
             # Only override to SMART for exchanges that support it.
             if exchange not in _NON_SMART_EXCHANGES:
@@ -732,8 +733,11 @@ def refresh_portfolio_pending_orders_cache() -> None:
                 if remaining <= 0 and filled >= total_qty > 0:
                     continue
                 c = oo.contract
+                from src.portfolio.symbols import internal_symbol
                 new_cache.append({
-                    "symbol": getattr(c, "symbol", "?"),
+                    # internal name, so a Schneider order ("SU", EUR) is never counted as Suncor's
+                    "symbol": (internal_symbol(c) or "?") if getattr(c, "secType", "") == "STK"
+                              else getattr(c, "symbol", "?"),
                     "sec_type": getattr(c, "secType", ""),
                     "action": oo.order.action,
                     "qty": int(oo.order.totalQuantity),

@@ -47,7 +47,8 @@ def _fetch_prices(ib, symbol: str, exchange: str, currency: str) -> np.ndarray |
     try:
         from ib_insync import Stock
         from src.portfolio.connection import get_portfolio_lock
-        contract = Stock(symbol, exchange, currency)
+        from src.portfolio.symbols import broker_stock
+        contract = broker_stock(symbol, exchange, currency)   # internal name -> broker contract
         with get_portfolio_lock():
             ib.qualifyContracts(contract)
             bars = ib.reqHistoricalData(

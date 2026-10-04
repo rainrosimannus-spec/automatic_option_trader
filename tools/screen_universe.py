@@ -50,6 +50,7 @@ except Exception:  # pragma: no cover
     import logging
     log = logging.getLogger("screener")
 
+from src.portfolio.symbols import broker_stock, is_aliased
 try:
     from src.portfolio.symbols import canonical_symbol, alias_expand
 except Exception:  # pragma: no cover — standalone run from an unusual cwd
@@ -402,7 +403,9 @@ CANDIDATE_POOLS = {
         "exchange": "IBIS", "currency": "EUR",
         "symbols": [
             "SAP", "SIE", "ALV", "MUV2", "DTE", "BAS", "BAYN", "BMW",
-            "MBG", "ADS", "IFX", "DBK", "HEN3", "FRE",   # Merck KGaA dropped: its only ticker, MRK, is Merck & Co in the US
+            "MBG", "ADS", "IFX", "DBK", "HEN3", "FRE",
+            "MRK.DE",   # Merck KGaA. The broker calls it MRK, which here is Merck & Co (US) —
+                        # internal name + contract id in src/portfolio/symbols.py LISTING_ALIASES
             "VOW3", "RHM", "SHL", "DHL", "MTX", "QIA",   # Airbus: Paris only (FR pool), its primary venue
         ],
     },
@@ -410,7 +413,8 @@ CANDIDATE_POOLS = {
         "exchange": "SBF", "currency": "EUR",
         "symbols": [
             "MC", "OR", "TTE", "AI", "BN", "CS",   # Sanofi: US line SNY (SAN is Santander; Sanofi is SAN1 in Paris).
-            # Schneider Electric dropped: its only ticker, SU, is Suncor, which the account holds.
+            "SU.PA",    # Schneider Electric. The broker calls it SU, which here is Suncor (held) —
+                        # internal name + contract id in src/portfolio/symbols.py LISTING_ALIASES
             "AIR", "SAF", "RI", "KER", "DSY", "CAP", "HO",
             "SGO", "DG", "RMS", "ACA", "BNP",   # STMicro: US line STM (no "STM" in Paris or Milan)
         ],
@@ -509,7 +513,8 @@ CANDIDATE_POOLS = {
         "symbols": [
             "CSL", "CBA", "WDS", "XRO", "ALL", "WBC", "ANZ",   # BHP: US line only (ADR_DIV)
             "NAB", "FMG", "WOW", "COL", "TLS", "REA", "GMG",
-            "MQG", "TCL", "JHX", "WES", "TWE", "CPU",   # Sonic Healthcare dropped: SHL is Siemens Healthineers on Xetra
+            "MQG", "TCL", "JHX", "WES", "TWE", "CPU",
+            "SHL.AX",   # Sonic Healthcare. The broker calls it SHL, which here is Siemens Healthineers
         ],
     },
     "IN": {
@@ -4132,7 +4137,9 @@ class UniverseScreener:
         print(f"PHASE 4: Building options universe (top {options_count})")
         print(f"{'='*60}")
 
-        options_eligible = [s for s in portfolio_universe if s.options_available]
+        # Aliased names stay out of the options universe: the options side builds its contracts
+        # from the bare symbol and knows nothing of aliases.
+        options_eligible = [s for s in portfolio_universe if s.options_available and not is_aliased(s.symbol)]
         options_eligible.sort(key=lambda s: s.options_score, reverse=True)
         options_universe = options_eligible[:options_count]
 
@@ -4148,7 +4155,10 @@ class UniverseScreener:
         return portfolio_universe, options_universe, all_scores
 
     def _score_stock(self, symbol: str, exchange: str, currency: str) -> Optional[StockScore]:
-        contract = Stock(symbol, exchange, currency)
+        # `symbol` is the INTERNAL name and stays on the score; the broker contract is built from
+        # it (src/portfolio/symbols.py) — identical for ordinary names, the real ticker + contract
+        # id for one of two companies that share a ticker (e.g. "SU.PA" = Schneider Electric).
+        contract = broker_stock(symbol, exchange, currency)
         qualified = self.ib.qualifyContracts(contract)
         if not qualified:
             print(f"  🔎 {symbol}: qualifyContracts returned empty -> None")

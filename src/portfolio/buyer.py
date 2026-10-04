@@ -17,6 +17,8 @@ from typing import Optional
 
 from ib_insync import IB, Stock, Option, LimitOrder, MarketOrder, Forex
 
+from src.portfolio.symbols import broker_stock, broker_symbol, internal_symbol
+
 from src.core import quote_units as qu
 from src.core.logger import get_logger
 from src.core.database import get_db
@@ -2216,7 +2218,7 @@ class PortfolioBuyer:
                 st = getattr(getattr(t, "orderStatus", None), "status", "") or ""
                 if c is None or o is None:
                     continue
-                sym = getattr(c, "symbol", None)
+                sym = internal_symbol(c)          # internal name (two companies can share a ticker)
                 if getattr(c, "secType", "") != "STK" \
                         or str(getattr(o, "action", "")).upper() != "BUY":
                     continue
@@ -2437,10 +2439,10 @@ class PortfolioBuyer:
                 c = getattr(p, "contract", None)
                 if c is None or getattr(c, "secType", "") != "STK":
                     continue
-                # RAW IBKR symbol, deliberately: sync.py keys PortfolioHolding off contract.symbol
-                # with no normalisation, so anything else here would fail to match the row it is
-                # being compared against.
-                sym = (getattr(c, "symbol", "") or "").strip()
+                # The SAME name sync.py keys PortfolioHolding by — internal_symbol(contract): the raw
+                # broker ticker for every ordinary name, the aliased name where two companies share
+                # a ticker. Anything else here would fail to match the row it is compared against.
+                sym = internal_symbol(c)
                 if not sym or sym == park:
                     continue
                 extra = float(getattr(p, "position", 0.0) or 0.0) - db_sh.get(sym, 0.0)
@@ -2703,12 +2705,12 @@ class PortfolioBuyer:
             target_strike = analysis.current_price * (1 - target_discount)
 
             # Find available option chain
-            contract = Stock(stock.symbol, stock.exchange, stock.currency)
+            contract = broker_stock(stock.symbol, stock.exchange, stock.currency)
             with get_portfolio_lock():
                 self.ib.qualifyContracts(contract)
 
                 chains = self.ib.reqSecDefOptParams(
-                    stock.symbol, '', 'STK', contract.conId
+                    broker_symbol(stock.symbol), '', 'STK', contract.conId
                 )
             if not chains:
                 log.debug("portfolio_no_option_chains", symbol=stock.symbol)
@@ -2904,7 +2906,7 @@ class PortfolioBuyer:
                     with get_portfolio_lock():
                         positions = self.ib.positions()
                     assigned = any(
-                        p.contract.symbol == entry.symbol and
+                        internal_symbol(p.contract) == entry.symbol and
                         p.position > 0 and
                         isinstance(p.contract, Stock)
                         for p in positions
@@ -3245,7 +3247,7 @@ class PortfolioBuyer:
                 return True
 
             # Live mode — place actual order
-            contract = Stock(stock.symbol, stock.exchange, stock.currency)
+            contract = broker_stock(stock.symbol, stock.exchange, stock.currency)
             with get_portfolio_lock():
                 self.ib.qualifyContracts(contract)
 
@@ -3427,7 +3429,7 @@ class PortfolioBuyer:
         core_placed = 0.0
         total_placed = 0.0
         try:
-            contract = Stock(stock.symbol, stock.exchange, stock.currency)
+            contract = broker_stock(stock.symbol, stock.exchange, stock.currency)
             with get_portfolio_lock():
                 self.ib.qualifyContracts(contract)
 
@@ -3996,7 +3998,7 @@ class PortfolioBuyer:
             ).all()
             for h in holdings:
                 try:
-                    contract = Stock(h.symbol, h.exchange, h.currency)
+                    contract = broker_stock(h.symbol, h.exchange, h.currency)
                     with get_portfolio_lock():
                         self.ib.qualifyContracts(contract)
                     # Only override to SMART for exchanges that support it
@@ -4341,7 +4343,8 @@ def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool
         with get_portfolio_lock():
             positions = ib.positions()
         pos = next((p for p in positions
-                    if getattr(getattr(p, "contract", None), "symbol", None) == sym), None)
+                    if getattr(p, "contract", None) is not None
+                    and internal_symbol(p.contract) == sym), None)
         held_shares = int(getattr(pos, "position", 0) or 0) if pos else 0
         if held_shares <= 0:
             # Nothing parked. The upstream free_cash gate already bounds deployment to settled cash +
@@ -4478,8 +4481,8 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                 open_trades = ib.openTrades()
             for t in open_trades:
                 c = getattr(t, "contract", None)
-                if c is not None and getattr(c, "symbol", None) == symbol \
-                        and getattr(c, "secType", "STK") == "STK":
+                if c is not None and getattr(c, "secType", "STK") == "STK" \
+                        and internal_symbol(c) == symbol:
                     with get_db() as db:
                         s = db.query(TradeSuggestion).filter(
                             TradeSuggestion.id == suggestion_id).first()
@@ -4512,10 +4515,10 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         # is now used ONLY to read validExchanges for the routing decision.
         details = None      # set on the foreign path; also feeds the tick-grid lookup below
         if exch and exch != "SMART":
-            contract = Stock(symbol, exch, ccy)                     # NATIVE listing — resolves conId
+            contract = broker_stock(symbol, exch, ccy)              # NATIVE listing — resolves conId
             with get_portfolio_lock():
                 qualified = ib.qualifyContracts(contract)
-                details = ib.reqContractDetails(Stock(symbol, exch, ccy))
+                details = ib.reqContractDetails(broker_stock(symbol, exch, ccy))
             if not qualified or not details:
                 log.warning("portfolio_order_qualify_failed", id=suggestion_id, symbol=symbol,
                             exchange=exch, currency=ccy)
@@ -4534,7 +4537,7 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                      forced_native=force_native,
                      valid_exchanges=details[0].validExchanges)
         else:
-            contract = Stock(symbol, "SMART", ccy)
+            contract = broker_stock(symbol, "SMART", ccy)
             with get_portfolio_lock():
                 ib.qualifyContracts(contract)
 
