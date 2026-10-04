@@ -474,7 +474,8 @@ def signal_parity_drift(dashboard: list[dict], snapshot: list[dict],
 def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: dict,
                                  unlocked: float = 0.0, avg_cost: dict | None = None,
                                  reached: dict | None = None,
-                                 crash_active: bool = False) -> list[dict]:
+                                 crash_active: bool = False,
+                                 review_sold: dict | None = None) -> list[dict]:
     """Compute the dashboard signal table directly from watchlist DB rows (each with the
     fundamental scores + freshly-updated current_price/sma_200/high_52w/momentum_12_1).
     This makes the /watchlist + Portfolio views show the FULL ranked universe every page
@@ -486,6 +487,8 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
     row's current_price) and `reached` = the buyer's compounder_target_reached map; together
     they let the page show the laggard re-fill gate ("held_back") exactly as the buyer applies it;
     `crash_active` (state market_status == "crash") lifts it, as every gate is lifted in a crash.
+    `review_sold` = symbol→reason for names sold on a hand-approved review card
+    (review_orders.review_sale_blocks); the buyer skips them, so the page says so instead of "buy".
 
     This is the second implementation of the allocation, and it must track buyer.run_compounder
     step for step. It had drifted in three places, all of which made the page overstate every
@@ -556,6 +559,7 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
         targets[_s] = held.get(_s, 0.0)   # pin to invested MV → target==current, "hold"
     avg_cost = avg_cost or {}
     reached = reached or {}
+    review_sold = review_sold or {}
     out = []
     for r in ranked:
         tgt = targets.get(r.symbol, 0.0)
@@ -566,6 +570,8 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
             action = "—"
         elif cur >= tgt * TARGET_FULL_FRAC:
             action = "hold"
+        elif r.symbol in review_sold:
+            action = "review_sold"   # sold on an approved review card — the buyer does not re-buy
         elif not crash_active and laggard_refill_blocked(
                 rank_idx[r.symbol], getattr(cc, "laggard_refill_rank_min", 0),
                                     r.symbol in reached, r.price, avg_cost.get(r.symbol),
@@ -582,6 +588,7 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
             "price": round(r.price, 2), "target": round(tgt), "current": round(cur),
             "underweight_pct": round(uw * 100, 0), "attractiveness": round(att, 3),
             "action": action,
+            **({"action_note": review_sold[r.symbol]} if action == "review_sold" else {}),
         })
     return out
 

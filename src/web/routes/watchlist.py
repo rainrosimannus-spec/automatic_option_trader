@@ -21,6 +21,17 @@ log = get_logger(__name__)
 router = APIRouter()
 
 
+def _review_sale_blocks() -> dict[str, str]:
+    """Names sold on a hand-approved review card, with the reason — the buyer skips them, so the
+    page labels them instead of showing "buy". A read failure must not break the page."""
+    try:
+        from src.portfolio.review_orders import review_sale_blocks
+        return review_sale_blocks()
+    except Exception as e:
+        log.warning("watchlist_review_sale_blocks_failed", error=str(e))
+        return {}
+
+
 def _state(key: str, default: str = "") -> str:
     try:
         with get_db() as db:
@@ -139,7 +150,8 @@ async def watchlist_page(request: Request):
             unlocked=_num("compounder_reserve_unlocked_pct") / 100.0,
             avg_cost={h.symbol: float(h.avg_cost or 0) for h in holds},
             reached=cmp.parse_target_reached(_state("compounder_target_reached")),
-            crash_active=(_state("market_status") == "crash"))
+            crash_active=(_state("market_status") == "crash"),
+            review_sold=_review_sale_blocks())
     except Exception as e:
         log.warning("watchlist_signals_failed", error=str(e))
 

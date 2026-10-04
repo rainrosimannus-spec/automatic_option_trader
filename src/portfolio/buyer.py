@@ -1502,8 +1502,18 @@ class PortfolioBuyer:
 
         # Always publish the ranking/signals to the dashboard — even with no deploy budget,
         # so /watchlist reflects the current universe ranking & intended actions.
+        # A name being sold — or sold in the last 90 days — on a hand-approved review card is not
+        # bought: the sale opens the biggest gap in the queue, and the buyer would otherwise put
+        # straight back what was just taken out. Unreadable ⇒ empty, i.e. the behaviour before.
+        try:
+            from src.portfolio.review_orders import review_sale_blocks
+            review_sold = review_sale_blocks()
+        except Exception as _e:
+            log.warning("compounder_review_sale_block_unavailable", error=str(_e))
+            review_sold = {}
         self._persist_compounder_signals(ranked, targets, held, open_put_syms,
-                                         rank_idx, crash_active, cc, leaders, held_back=held_back)
+                                         rank_idx, crash_active, cc, leaders, held_back=held_back,
+                                         review_sold=review_sold)
 
         # No deploy budget today? Do NOT return here — the deploy loop below naturally no-ops (every
         # brick fails the min_buy floor when budget < min_buy), so no buys happen, but we still fall
@@ -1523,15 +1533,6 @@ class PortfolioBuyer:
         # head of the order is a stable "next buy" the dashboard can show at any hour; `queue` is then
         # the market-open slice of it. Filtering AFTER the sort preserves the relative order, so the
         # deploy loop sees exactly the queue it saw before this split.
-        # A name being sold — or sold in the last 90 days — on a hand-approved review card is not
-        # bought: the sale opens the biggest gap in the queue, and the buyer would otherwise put
-        # straight back what was just taken out. Unreadable ⇒ empty set, i.e. yesterday's behaviour.
-        try:
-            from src.portfolio.review_orders import review_sale_blocked_symbols
-            review_sold = review_sale_blocked_symbols()
-        except Exception as _e:
-            log.warning("compounder_review_sale_block_unavailable", error=str(_e))
-            review_sold = set()
         candidates = []
         for r in ranked:
             tgt = targets.get(r.symbol, 0.0)
@@ -1731,7 +1732,8 @@ class PortfolioBuyer:
         return bought
 
     def _persist_compounder_signals(self, ranked, targets, held, open_put_syms,
-                                    rank_idx, crash_active, cc, leaders=None, held_back=None):
+                                    rank_idx, crash_active, cc, leaders=None, held_back=None,
+                                    review_sold=None):
         """Write the per-name ranking / targets / intended-action table to PortfolioState
         for the /watchlist dashboard. Called every scan (even with no deploy budget) so the
         dashboard always reflects the current universe ranking."""
@@ -1740,6 +1742,7 @@ class PortfolioBuyer:
             from src.portfolio import compounder as cmp
             leaders = leaders or set()
             held_back = held_back or set()
+            review_sold = review_sold or {}
             signals = []
             for r in ranked:
                 tgt = targets.get(r.symbol, 0.0)
@@ -1752,6 +1755,8 @@ class PortfolioBuyer:
                     action = "—"
                 elif cur >= tgt * 0.98:
                     action = "hold"
+                elif r.symbol in review_sold:
+                    action = "review_sold"  # sold on an approved review card — not re-bought
                 elif r.symbol in held_back:
                     action = "held_back"   # laggard re-fill gate (see run_compounder)
                 elif attractiveness < 0:

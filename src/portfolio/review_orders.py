@@ -603,21 +603,32 @@ def execute_review_card(suggestion_id: int, action: str) -> str:
     return execute_review_stock_sale(suggestion_id)
 
 
-def review_sale_blocked_symbols(days: int = REBUY_BLOCK_DAYS) -> set[str]:
-    """Names the compounder must not buy: a hand-approved sale is in flight, partly done, or was
-    filled within the last `days`. Without this the buyer sees the freshly opened gap to target —
-    the biggest in the queue — and buys back what was just sold."""
+def review_sale_blocks(days: int = REBUY_BLOCK_DAYS) -> dict[str, str]:
+    """Names the compounder must not buy, each with the reason shown on /watchlist: a hand-approved
+    sale is in flight, partly done, or was filled within the last `days`. Without this the buyer
+    sees the freshly opened gap to target — the biggest in the queue — and buys back what was
+    just sold."""
     from src.core.suggestions import TradeSuggestion, is_manual_review_approval
-    cutoff = datetime.utcnow() - timedelta(days=days)
-    out: set[str] = set()
+    now = datetime.utcnow()
+    cutoff = now - timedelta(days=days)
+    out: dict[str, str] = {}
     with get_db() as db:
         for s in db.query(TradeSuggestion).filter(
                 TradeSuggestion.action.in_(STOCK_ACTIONS),
-                TradeSuggestion.status.in_(("approved", "executing", "submitted", "executed", "pending"))).all():
+                TradeSuggestion.status.in_(("approved", "executing", "submitted", "executed", "pending"))
+        ).order_by(TradeSuggestion.id.asc()).all():
             note = s.review_note or ""
-            if (s.status in ("executing", "submitted")
-                    or (s.status == "approved" and is_manual_review_approval(note))
-                    or (s.status == "executed" and s.reviewed_at and s.reviewed_at >= cutoff)
-                    or (s.status == "pending" and note.startswith(_PARTLY))):
-                out.add(s.symbol)
+            if s.status in ("executing", "submitted") or (
+                    s.status == "approved" and is_manual_review_approval(note)):
+                out[s.symbol] = "A sale you approved on a review card is being sent or is working at the broker."
+            elif s.status == "pending" and note.startswith(_PARTLY):
+                out[s.symbol] = "A sale you approved on a review card is partly filled; the rest awaits your approval."
+            elif s.status == "executed" and s.reviewed_at and s.reviewed_at >= cutoff:
+                until = s.reviewed_at + timedelta(days=days)
+                out[s.symbol] = (f"Sold on a review card you approved on {s.reviewed_at:%Y-%m-%d}. "
+                                 f"Not bought back before {until:%Y-%m-%d} ({days} days).")
     return out
+
+
+def review_sale_blocked_symbols(days: int = REBUY_BLOCK_DAYS) -> set[str]:
+    return set(review_sale_blocks(days))

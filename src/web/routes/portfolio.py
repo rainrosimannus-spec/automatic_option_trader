@@ -566,10 +566,17 @@ async def portfolio_page(request: Request):
             # the row price; the buyer's own reached-target map; crash lifts the gate).
             _avg_cost = {h.symbol: float(h.avg_cost or 0) for h in holdings}
             _reached = _cmp.parse_target_reached(_get_state("compounder_target_reached"))
+            # Names sold on an approved review card are not re-bought — not "active" buy signals.
+            try:
+                from src.portfolio.review_orders import review_sale_blocks as _rsb
+                _review_sold = _rsb()
+            except Exception:
+                _review_sold = {}
             _compounder_signals = _cmp.build_signals_from_watchlist(
                 watchlist, _held, portfolio_nlv or 0, _cc, _tier_alloc, unlocked=_unlocked,
                 avg_cost=_avg_cost, reached=_reached,
-                crash_active=(_get_state("market_status") == "crash"))
+                crash_active=(_get_state("market_status") == "crash"),
+                review_sold=_review_sold)
         except Exception as _e:
             log.warning("compounder_dashboard_signals_failed", error=str(_e))
 

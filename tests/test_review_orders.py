@@ -408,3 +408,37 @@ def test_one_pass_sends_one_order_per_name_and_skips_cards_that_must_wait(wired,
     assert _get(sale).status == "submitted"
     assert _get(call).status == "approved"                                  # same name: next pass
     assert len(ib.placed) == 1 and ib.placed[0][1].totalQuantity == 100
+
+
+def test_watchlist_labels_a_sold_name_instead_of_buy(temp_db):
+    """The page must say what the buyer does: a name sold on review is skipped, not a "buy"."""
+    from src.portfolio import compounder as cmp
+    from src.portfolio.config import PortfolioConfig
+    CC = PortfolioConfig().compounder
+    NLV = 10_000_000.0
+    TIER_ALLOC = {"breakthrough": CC.tier_breakthrough, "dividend": CC.tier_dividend,
+                  "growth": CC.tier_growth}
+
+    def _row(symbol, sector):
+        return SimpleNamespace(
+            symbol=symbol, tier="growth", sector=sector, currency="USD", current_price=100.0,
+            growth_score=70.0, forward_growth_score=70.0, quality_score=70.0, valuation_score=70.0,
+            dividend_total_return_score=70.0, risk_total_penalty=0.0, sma_200=110.0, high_52w=150.0,
+            momentum_12_1=0.2, pending_removal=False, category="growth")
+    rows = [_row("AAA", "Technology"), _row("BBB", "Healthcare")]
+    plain = {s["symbol"]: s for s in cmp.build_signals_from_watchlist(rows, {}, NLV, CC, TIER_ALLOC)}
+    assert plain["AAA"]["action"] in ("direct", "fill")
+    sold = {s["symbol"]: s for s in cmp.build_signals_from_watchlist(
+        rows, {}, NLV, CC, TIER_ALLOC, review_sold={"AAA": "Sold on a review card"})}
+    assert sold["AAA"]["action"] == "review_sold" and sold["AAA"]["action_note"] == "Sold on a review card"
+    assert sold["AAA"]["target"] == plain["AAA"]["target"]            # label only — targets untouched
+    assert sold["BBB"]["action"] == plain["BBB"]["action"] and "action_note" not in sold["BBB"]
+
+
+def test_block_reasons_say_until_when(temp_db):
+    when = datetime(2026, 10, 6, 14, 0)
+    with db_mod.get_db() as db:
+        db.add(TradeSuggestion(symbol="SOLD", action="sell_stock_review", status="executed",
+                               source="rescreen", quantity=1, review_note="Filled", reviewed_at=when))
+    blocks = ro.review_sale_blocks(days=36500)
+    assert "2026-10-06" in blocks["SOLD"]
