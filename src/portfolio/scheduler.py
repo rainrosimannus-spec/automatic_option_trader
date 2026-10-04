@@ -833,6 +833,9 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig):
             _bt_scan = {
                 "proposed": getattr(screener, "_breakthrough_proposed", []),
                 "accepted": sorted(s.symbol for s in portfolio_universe if s.tier == "breakthrough"),
+                # v2 rules: breakthrough names whose financials earned them a place in the
+                # growth tier this run (moved there, not dropped).
+                "graduated": getattr(screener, "_breakthrough_graduated", []),
                 "dropped": [
                     {"symbol": r.get("symbol"),
                      "stage": "eligibility" if r.get("category") in _ELIG_STAGE else "qualify/fundamentals",

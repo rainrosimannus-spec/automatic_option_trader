@@ -23,9 +23,16 @@ WHAT IT DOES (read-only: no IBKR, no database, no watchlist or universe file is 
   Stage B/C of the live pipeline (IBKR qualification, anchored selection of the final 25) are
   NOT run — this compares what each model PROPOSES, which is where the two differ.
 
+  With --prompts, the comparison is between PROMPT versions on one model profile instead
+  (see BREAKTHROUGH_PROMPT_VERSION). Each US name additionally gets a growth-gate verdict from
+  FMP fundamentals: a name that already has growth-tier financials (durable growth >= 8% and
+  quality >= 50) is one the growth tier should own, not a breakthrough slot — the overlap the
+  v2 prompt's TIER BOUNDARY is meant to remove.
+
 USAGE
   python scripts/screener_ai_side_by_side.py [--profiles opus-4-8 opus-5-5-search]
-Costs real API money: one scan per profile (a few dollars at most).
+  python scripts/screener_ai_side_by_side.py --prompts v1 v2 [--profile opus-5-5-search]
+Costs real API money: one scan per run (a few dollars at most).
 """
 import argparse, json, os, sys, time
 from datetime import datetime, timedelta
@@ -38,6 +45,30 @@ os.chdir(ROOT)
 import screen_universe as su  # noqa: E402
 
 OUT = "data/screener_ai_side_by_side.json"
+
+_FMP_TO_SECTOR = {
+    "Technology": "Technology", "Financial Services": "Financial", "Healthcare": "Consumer, Non-cyclical",
+    "Consumer Cyclical": "Consumer, Cyclical", "Consumer Defensive": "Consumer, Non-cyclical",
+    "Industrials": "Industrial", "Communication Services": "Communications", "Energy": "Energy",
+    "Basic Materials": "Basic Materials", "Utilities": "Utilities", "Real Estate": "Financial"}
+
+
+def _growth_gate(c: dict) -> dict:
+    """Does this US name already have growth-tier financials? FMP only, so the sector (which
+    drives the R&D sub-score) is FMP's, not IBKR's — the live screen may differ by a few points."""
+    if (c.get("currency") or "USD").upper() != "USD" or c["check"]["verdict"] in ("unknown", "mismatch"):
+        return {"gate": "n/a"}
+    sym = str(c["symbol"])
+    f = su._get_fmp_fundamentals(sym)
+    prof = su._fmp_get("profile", sym) or [{}]
+    sector = _FMP_TO_SECTOR.get((prof[0] or {}).get("sector"), "")
+    durable = su._durable_growth(f)
+    if durable is None:
+        return {"gate": "no_data"}
+    quality = su._quality_pillar(f, sector)
+    ok, why = su.growth_gate.passes_entry_gate(durable, quality)
+    return {"gate": "PASS" if ok else "fail", "why": why, "durable_pct": round(durable, 1),
+            "quality": quality, "growth_score": su._score_forward_growth(f, sector)}
 
 
 def _fmp_check(c: dict) -> dict:
@@ -72,15 +103,16 @@ def _names_agree(a: str, b: str) -> bool:
     return bool(ta and tb and (ta[0] == tb[0] or ta[0].startswith(tb[0]) or tb[0].startswith(ta[0])))
 
 
-def run_profile(profile: str, prompt: str) -> dict:
-    print(f"\n=== {profile}: scanning … ({datetime.utcnow():%H:%M:%S} UTC)")
+def run_profile(profile: str, prompt: str, label: str | None = None, gate: bool = False) -> dict:
+    run_label = label or profile
+    print(f"\n=== {run_label}: scanning … ({datetime.utcnow():%H:%M:%S} UTC)")
     t0 = time.time()
     try:
         text = su._anthropic_messages(prompt, max_tokens=24000, label=f"scan[{profile}]",
                                       web_search=True, profile=profile).strip()
     except Exception as e:
         print(f"  ❌ {profile}: {type(e).__name__}: {e}")
-        return {"profile": profile, "error": f"{type(e).__name__}: {e}", "candidates": []}
+        return {"profile": run_label, "error": f"{type(e).__name__}: {e}", "candidates": []}
     call = dict(su.LAST_AI_CALL)
     if text.startswith("```"):
         text = text.split("```")[1]
@@ -89,18 +121,31 @@ def run_profile(profile: str, prompt: str) -> dict:
     for c in cands:
         c["symbol"] = su.canonical_symbol(str(c["symbol"]))
         c["check"] = _fmp_check(c)
+        c["growth_gate"] = _growth_gate(c) if gate else {"gate": "n/a"}
         time.sleep(0.15)
     print(f"  {len(cands)} names in {time.time() - t0:.0f}s | served by {call.get('model')} | "
           f"searches {call.get('searches')} | tokens in/out {call.get('input_tokens')}/{call.get('output_tokens')}")
-    return {"profile": profile, "call": call, "candidates": cands}
+    return {"profile": run_label, "call": call, "candidates": cands}
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--profiles", nargs="+", default=["opus-4-8", "opus-5-5-search"])
+    ap.add_argument("--prompts", nargs="+", help="compare prompt versions (e.g. v1 v2) on one profile")
+    ap.add_argument("--profile", default=su.SCREENER_AI_PROFILE, help="profile used with --prompts")
+    ap.add_argument("--out", help="write the result JSON here instead of the default path")
     args = ap.parse_args()
-    prompt = su._build_breakthrough_prompt()
-    runs = [run_profile(p, prompt) for p in args.profiles]
+    global OUT
+    if args.prompts:
+        OUT = "data/screener_prompt_side_by_side.json"
+    if args.out:
+        OUT = args.out
+    if args.prompts:
+        runs = [run_profile(args.profile, su._build_breakthrough_prompt(v), label=f"prompt-{v}", gate=True)
+                for v in args.prompts]
+    else:
+        prompt = su._build_breakthrough_prompt()
+        runs = [run_profile(p, prompt) for p in args.profiles]
     json.dump({"run_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"), "runs": runs},
               open(OUT, "w"), indent=1, default=str)
 
@@ -114,7 +159,9 @@ def main():
             print(f"  {c['symbol']:8s} {str(c.get('currency') or ''):4s} {k['verdict']:9s} "
                   f"{(str(k.get('market_cap_bn')) + 'B') if k.get('market_cap_bn') else '':>9s}  "
                   f"{(c.get('name') or '')[:30]:30s} | {(c.get('megatrend') or '')[:26]:26s}{only}"
-                  + (f"  [{k['note']}]" if k.get("note") and k["verdict"] not in ("ok", "unknown") else ""))
+                  + (f"  [{k['note']}]" if k.get("note") and k["verdict"] not in ("ok", "unknown") else "")
+                  + (f"  ⇒ GROWTH-TIER FINANCIALS (score {c['growth_gate']['growth_score']})"
+                     if c.get("growth_gate", {}).get("gate") == "PASS" else ""))
         tally = {}
         for c in r["candidates"]:
             tally[c["check"]["verdict"]] = tally.get(c["check"]["verdict"], 0) + 1

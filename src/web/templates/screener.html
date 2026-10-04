@@ -210,6 +210,19 @@
         </div>
         {% endif %}
 
+        {% set bt_grad = bt.get('graduated', []) %}
+        {% if bt_grad %}
+        <div class="mb-4">
+            <div class="text-xs font-medium text-emerald-400 uppercase tracking-wider mb-2">🎓 Moved to the growth tier ({{ bt_grad|length }})</div>
+            <div class="flex flex-wrap gap-1.5">
+                {% for g in bt_grad %}
+                <span class="px-2 py-0.5 rounded text-xs font-mono bg-emerald-900/50 text-emerald-300"
+                      title="growth-tier financials: score {{ g.score }}, durable growth {{ g.durable_growth_pct }}%, quality {{ g.quality }}">{{ g.symbol }}</span>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
         {% if bt_dropped %}
         <div>
             <div class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">⛔ Proposed but dropped ({{ bt_dropped|length }})</div>

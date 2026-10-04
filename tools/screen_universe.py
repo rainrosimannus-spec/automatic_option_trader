@@ -65,6 +65,8 @@ def _reject_category(reason: str) -> str:
     r = (reason or "").lower()
     if "etf" in r:
         return "etf"
+    if "size ceiling" in r:
+        return "market_cap_ceiling"
     if "market_cap" in r or "market cap" in r:
         return "market_cap_floor"
     if "reverse split" in r:
@@ -284,6 +286,9 @@ CANDIDATE_POOLS = {
         "currency": "USD",
         "symbols": [
             "AAPL", "MSFT", "NVDA", "GOOG", "AMZN", "META", "TSLA", "AVGO",
+            "SPCX",   # SpaceX, listed 2026-06. Far too large for the breakthrough tier and, until
+                      # added here (Rain, 2026-10-04), in no funnel at all. Scored like any pool
+                      # name: it enters the growth tier only if it passes the growth gate.
             "CRM", "AMD", "NFLX", "ADBE", "NOW", "UBER", "PLTR", "PANW",
             "CRWD", "SHOP", "COIN", "MELI", "ANET", "DDOG", "TTD", "NET",
             "ARM", "SNOW", "ABNB", "SQ", "RIVN", "SOFI", "RBLX", "DASH",
@@ -459,7 +464,96 @@ CANDIDATE_POOLS = {
     },
 }
 
-def _build_breakthrough_prompt() -> str:
+# Which breakthrough-scan prompt the monthly screen uses. The prompt decides which companies are
+# proposed, so — like SCREENER_AI_PROFILE — the default stays on the version Rain last approved
+# and a new version is run side by side first (scripts/screener_ai_side_by_side.py --prompts).
+#   v1  the 17-megatrend prompt in use since 2026-05.
+#   v2  2026-10-04 revision: adds the missing themes (robotics & physical AI, the power grid,
+#       medical technology, EM consumer, structural shortages & bottlenecks, food security,
+#       tokenised finance), a TIER BOUNDARY telling the model that names with growth-tier
+#       financials belong to the growth tier, one or two wildcard themes, a size rule that no
+#       longer contradicts the $200B ceiling, and fewer forced "unloved sector" large caps.
+BREAKTHROUGH_PROMPT_VERSION = "v1"
+
+# ── Breakthrough size ceiling (v2 rules) ────────────────────────────────────────────────────
+# Tenfold returns come from small companies. In a twelve-year study of the US pool (2014 -> 2026,
+# sizes restated to today's market level) about a third of names that started below the
+# equivalent of $50B rose tenfold; above it the rate more than halved (13% at $50-100B, 6% above
+# $200B). So:
+#   ENTRY      a NEW breakthrough name must be at or below the ceiling;
+#   RETENTION  an EXISTING member may stay up to RETENTION_MULT x the ceiling ($100B at the
+#              reference level) — a winner is not dropped the moment it crosses the line. Above
+#              that it leaves the tier: to the growth tier if its financials qualify (see
+#              `_graduates_to_growth`), otherwise it is frozen by the buyer (held, no new money).
+# The ceiling is a RELATIVE size, so it moves with the overall market in both directions: it is
+# scaled by the 200-day average of a world-equity ETF against that average on the day the rule
+# was set. The 200-day average follows sustained growth or compression and ignores short swings,
+# so membership does not flap in a volatile month. v1 had a fixed "$2T at year 12" figure that
+# went stale (five companies are above $2T today) and was never enforced in code.
+BREAKTHROUGH_ENTRY_CEILING_USD = 50e9
+BREAKTHROUGH_RETENTION_MULT = 2.0
+BREAKTHROUGH_CEILING_INDEX = "VT"            # Vanguard Total World Stock ETF
+BREAKTHROUGH_CEILING_REF_LEVEL = 151.27      # VT 200-day average on 2026-10-04, when $50B was set
+_ceiling_memo: dict = {}
+
+
+def breakthrough_ceilings() -> tuple[float, float, str]:
+    """(entry_ceiling_usd, retention_ceiling_usd, note) at today's market level.
+
+    Scale factor = index 200-day average / reference level, clamped to [0.25, 4] so a bad quote
+    cannot produce an absurd ceiling, and rounded to the nearest $1B. If the index cannot be read
+    the reference ceiling is used unchanged and the note says so. Memoised per calendar day."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    if _ceiling_memo.get("day") == today:
+        return _ceiling_memo["value"]
+    factor, note = 1.0, "index unavailable — reference ceiling used"
+    try:
+        q = _fmp_get("quote", BREAKTHROUGH_CEILING_INDEX) or []
+        level = float((q[0] or {}).get("priceAvg200") or 0) if q else 0.0
+        if level > 0:
+            factor = min(4.0, max(0.25, level / BREAKTHROUGH_CEILING_REF_LEVEL))
+            note = (f"{BREAKTHROUGH_CEILING_INDEX} 200-day average {level:.2f} vs "
+                    f"{BREAKTHROUGH_CEILING_REF_LEVEL:.2f} at reference = x{factor:.2f}")
+    except Exception as e:
+        note = f"index read failed ({type(e).__name__}) — reference ceiling used"
+    entry = max(1e9, round(BREAKTHROUGH_ENTRY_CEILING_USD * factor / 1e9) * 1e9)
+    value = (entry, entry * BREAKTHROUGH_RETENTION_MULT, note)
+    if "unavailable" not in note and "failed" not in note:
+        _ceiling_memo.update(day=today, value=value)     # never memoise a failed read
+    return value
+
+
+def _graduates_to_growth(score, growth_cutoff: float) -> bool:
+    """A breakthrough candidate whose financials already qualify it for the growth tier belongs
+    THERE (Rain, 2026-10-04: no overlap). It graduates when it passes the growth gate and its
+    score would make the growth tier's cut. Dividend-tier yields are left alone."""
+    return bool(getattr(score, "growth_gate_ok", False)
+                and (score.portfolio_score or 0.0) > growth_cutoff
+                and (score.dividend_yield or 0.0) <= 2.5)
+
+
+def _growth_cutoff_score(all_scores: list, dividend_pool_symbols: set, growth_count: int) -> float:
+    """Score a name must beat to be in the growth tier right now: the growth_count-th best
+    gate-passing growth candidate, or 0.0 while the tier has free slots."""
+    passing = sorted(
+        (s.portfolio_score or 0.0 for s in all_scores
+         if s.tier != "breakthrough" and s.symbol not in dividend_pool_symbols
+         and (s.dividend_yield or 0.0) <= 2.5 and getattr(s, "growth_gate_ok", False)),
+        reverse=True)
+    return passing[growth_count - 1] if len(passing) >= growth_count else 0.0
+
+
+def _growth_region_for(exchange: str, currency: str) -> str:
+    """Region key under which a graduating name joins the growth candidate pool."""
+    if (currency or "USD").upper() == "USD":
+        return "US"
+    for region, pool in CANDIDATE_POOLS.items():
+        if pool.get("exchange") == exchange and pool.get("currency") == currency:
+            return region
+    return f"GRAD_{exchange}_{currency}"     # _get_growth_universe creates the region from the entry
+
+
+def _build_breakthrough_prompt(version: str | None = None) -> str:
     """
     Build the breakthrough prompt with the current CANDIDATE_POOLS and
     DIVIDEND_CANDIDATES injected as 'do not return' exclusion list.
@@ -472,7 +566,11 @@ def _build_breakthrough_prompt() -> str:
         | {sym for pool in _get_dividend_universe().values() for sym in pool["symbols"]}
     )
     excluded_str = ", ".join(excluded)
-    return BREAKTHROUGH_PROMPT_TEMPLATE.format(excluded_symbols=excluded_str)
+    template = {"v1": BREAKTHROUGH_PROMPT_TEMPLATE,
+                "v2": BREAKTHROUGH_PROMPT_TEMPLATE_V2}[version or BREAKTHROUGH_PROMPT_VERSION]
+    # v1 has no {ceiling} placeholder; str.format ignores the unused argument.
+    return template.format(excluded_symbols=excluded_str,
+                           ceiling=f"${breakthrough_ceilings()[0] / 1e9:.0f}B")
 
 
 BREAKTHROUGH_PROMPT_TEMPLATE = """Generate a portfolio of up to 30 publicly listed companies for a 10-15 year
@@ -653,6 +751,266 @@ Verify all of:
 - Risk-tier barbell: at least 18 in_motion, at least 6 speculative
 - Category split target 6/6/6/6/6 (adjust if returning fewer total)
 - Size split roughly 12/10/8 (proportional if fewer total)
+- 5+ names with currency != USD
+- 3+ from underweighted markets
+- No name in the global top 20 by market cap
+- No ETFs / funds / index products
+- Each ticker verified — do not return private companies or wrong-ticker
+  conflations
+- Each thesis is specific (mechanism stated), not vague
+- Each mortality risk is specific (failure mode stated), not generic
+- Mortality risks spread — no more than 5 names share the same primary
+  failure mode
+
+Return raw JSON array only. No markdown, no surrounding prose, no commentary."""
+
+
+BREAKTHROUGH_PROMPT_TEMPLATE_V2 = """Generate a portfolio of up to 30 publicly listed companies for a 10-15 year
+holding period, optimized to produce 2-4 names that deliver >=10x returns.
+The remainder will likely underperform — that is acceptable. The goal is
+portfolio shape, not 30 winners.
+
+## ALREADY-COVERED UNIVERSE — DO NOT RETURN THESE NAMES:
+
+The following names are already in the growth/dividend tier of our
+portfolio universe. The breakthrough scan exists to find names OUTSIDE
+this set. Do not return any of these:
+
+{excluded_symbols}
+
+If you would have selected one of these names, surface a comparable but
+NOT-already-covered alternative instead.
+
+## TIER BOUNDARY — WHAT BELONGS HERE AND WHAT DOES NOT:
+
+We run a separate GROWTH tier for companies whose financials already prove
+the case: durable revenue growth of at least 8% a year AND strong, sustained
+returns on capital and margins. A company you return that already meets that
+bar is MOVED to the growth tier automatically, and the slot you spent on it
+here is wasted.
+
+So spend breakthrough slots on companies whose 10x case is NOT yet visible in
+the financials: pre-profit or newly profitable, sub-scale, in turnaround, or
+earning low returns today because the scarce capacity is still being built.
+
+This matters most for megatrends 19 and 22 and for picks-and-shovels names.
+The established, highly profitable bottleneck owner — a ten-year record and a
+20% return on capital — belongs to the growth tier, not here. Return instead
+the smaller or earlier-stage company that owns, or is building, the scarce
+capacity.
+
+## MEGATRENDS (assign each company to ONE primary):
+
+1. AI/compute applications (end-user AI products, AI-enabled SaaS)
+2. Compute infrastructure — the AI buildout's full stack: silicon, advanced
+   packaging, networking, data center electrical and cooling, HBM/DRAM/NAND
+   memory, semicap equipment, power generation for compute load. Currently the
+   largest single capital-cycle in technology
+3. Genomics & medical biotech (gene editing, AI drug discovery, cell therapy)
+4. GLP-1 & preventive consumer health (metabolic, mental health, wearables,
+   continuous monitoring, age-related joint/vision/hearing)
+5. Aging populations & elder care (Japanese/European demographic crisis;
+   robotics for elder care, longevity therapeutics, senior housing)
+6. Energy transition (solar, wind, batteries, EVs, hydrogen)
+7. Energy bridge (gas, nuclear/SMR, uranium, conventional and enhanced
+   geothermal — what powers the transition)
+8. Climate adaptation (water, cooling, flood defense, drought-resistant
+   agriculture, irrigation, weather modeling)
+9. Critical minerals & advanced materials (lithium, rare earths, copper and
+   the other electrification metals, specialty chemicals, battery thermal
+   management, recycling of critical materials)
+10. Defense & sovereignty (drones, sensors, shipbuilding, munitions and
+    rocket-motor capacity, NATO/Korean/Japanese defense primes, supply-chain
+    reshoring components)
+11. Reindustrialization & automation (factory automation, industrial
+    software, specialty industrial)
+12. Cybersecurity & digital sovereignty
+13. Quantum computing
+14. Space (launch, satellites, ground systems)
+15. Nuclear fusion (early-stage, accept high mortality)
+16. EM digital finance & fintech (unbanked populations coming online)
+17. Frontier biotech / synthetic biology in industrial applications
+18. Robotics & physical AI (humanoid and service robots, autonomous vehicles
+    and trucks, warehouse and logistics robots, surgical robotics, and the
+    actuators, sensors and motion components they all need)
+19. Power grid & the electricity shortage (transmission, transformers and
+    switchgear, grid-scale storage, grid software, interconnection, power
+    semiconductors) — the binding constraint on electrification and on the
+    AI buildout alike
+20. Medical technology & healthcare productivity (devices, diagnostics,
+    surgical systems, neurotechnology, software that takes cost or labour
+    out of care delivery)
+21. EM consumer & infrastructure (the rising middle class in India, Southeast
+    Asia, Latin America and Africa beyond finance: consumption, healthcare,
+    logistics, digital platforms)
+22. Structural shortages & bottlenecks — capacity the world will be short of
+    for a decade: skilled labour and the tools that replace it, housing and
+    construction productivity, commercial aircraft/engines/aftermarket,
+    shipyard capacity, drug-manufacturing capacity, subsea cables. Whoever
+    owns the scarce capacity has pricing power regardless of who wins
+    downstream
+23. Food security & agricultural technology (precision agriculture, crop
+    science, aquaculture, alternative inputs)
+24. Tokenised finance & payment rails (stablecoin and tokenisation
+    infrastructure, exchanges, custody)
+
+## REQUIRED DISTRIBUTION:
+
+**Megatrend spread:** Maximum 3 names per megatrend — except up to 4 each in
+megatrends 2 and 19, the two largest capital cycles. Aim for at least 14 of
+the 24 megatrends represented.
+
+**Wildcard:** up to 2 names may sit in a megatrend that is NOT on the list —
+a problem, shortage or development you judge to be large and under-recognised.
+Name it yourself in the megatrend field. The list above is our map, not the
+territory.
+
+**Risk-tier barbell (this is non-negotiable — most 10x returns come from
+asymmetric bets, but most asymmetric bets fail; the portfolio must have
+both):**
+
+- AT LEAST 18 names in trends already in motion (consensus-or-near-consensus
+  is acceptable for these — they pay the bills and occasionally produce a
+  10x via execution): aging populations, energy bridge, defense/sovereignty,
+  climate adaptation, compute infrastructure, GLP-1/preventive health,
+  reindustrialization, cybersecurity, EM digital finance, energy transition,
+  critical minerals, power grid, medical technology, structural shortages,
+  EM consumer, food security.
+
+- AT LEAST 6 names in genuinely speculative / contrarian megatrends where
+  consensus has NOT arrived: nuclear fusion, quantum computing, true
+  longevity therapeutics, room-temperature superconductors, sovereign-cloud
+  infrastructure, ammonia as marine fuel, superhot-rock deep geothermal,
+  AGI agent platforms, deep-sea mineral extraction, frontier synthetic
+  biology, novel space economy applications. The 6 should NOT be limited
+  to these examples — surface other genuinely under-priced theses.
+  Accept that 4-5 of these 6 may go to zero. The point is asymmetric upside.
+
+- The remaining ~6 names span mid-conviction megatrends: AI applications,
+  genomics, space, synthetic biology, robotics & physical AI, tokenised
+  finance.
+
+This barbell is the central design: most allocation in trends already in
+motion (high hit-rate), but explicit allocation to speculative trends that
+consensus is underweighting (where the actual 10-baggers historically hide).
+
+**Category shape (assign each company to ONE):**
+- 6 names: category-creators (companies building markets that don't yet exist)
+- 6 names: incumbent-replacers (taking share in $50B+ existing TAMs)
+- 9 names: picks-and-shovels and bottleneck owners (selling the tools,
+  components or scarce capacity that whoever wins must buy)
+- 3 names: unloved sectors (boring industries with secular tailwinds —
+  fertilizer, aggregates, specialty chemicals). Only where a 10x is
+  arithmetically possible: no mature, fully valued large caps
+- 6 names: underdog geographies (non-USD-currency listings — see geographic
+  spread below). At least 4 names must end up in this category.
+
+**Size distribution:**
+- 16 names: $1B-$10B market cap (a name between $500M and $1B is acceptable)
+- 14 names: $10B-{ceiling} market cap
+No name above {ceiling} — see the exclusions. Tenfold returns come from small
+companies: over the last twelve years names that started above the
+equivalent of {ceiling} rose tenfold less than half as often as those below it.
+
+**Geographic spread:**
+- 5+ names with currency != USD (count by currency, not by exchange label).
+- For ANY US-listed name (NYSE/NASDAQ/AMEX/Pink), use exchange="SMART" and
+  currency="USD". This is our internal convention. Do NOT return NYSE or
+  NASDAQ as an exchange code.
+- Among the 5+ non-USD names, include at least 3 from underweighted
+  markets: Japan (TSEJ, JPY), Korea (KSE, KRW), India, South Africa, Brazil
+  (BVMF, BRL), Israel (TASE, ILS), Eastern Europe (WSE, BUX, etc.), Nordics
+  (HEX, OSE, SFB, CSE).
+- Indian and South African COMPANIES are wanted; their home VENUES are not —
+  we cannot trade NSE/BSE (INR) or JSE (ZAR). Return such a company through
+  a listing of the SAME company on a venue we can trade: a US ADR, a London
+  or Luxembourg GDR, or a European line (e.g. Prosus in Amsterdam for the
+  Naspers assets). Give that listing's ticker, exchange and currency. If the
+  company has no such listing, leave it out. It counts toward the
+  underweighted-market quota by where the business is, not where it trades.
+
+## EXCLUSIONS:
+
+**HARD EXCLUSIONS — REJECT BEFORE RETURNING:**
+
+1. The top 20 companies globally by market cap as of today. Specifically
+   reject these names if considered: Apple (AAPL), Microsoft (MSFT),
+   Nvidia (NVDA), Alphabet (GOOG), Amazon (AMZN), Meta (META), Tesla
+   (TSLA), Eli Lilly (LLY), Berkshire Hathaway (BRK.B), Saudi Aramco (2222),
+   JPMorgan (JPM), Walmart (WMT), Visa (V), Mastercard (MA), TSMC (TSM),
+   Broadcom (AVGO), ExxonMobil (XOM), Costco (COST), UnitedHealth (UNH),
+   Oracle (ORCL). These cannot 10x at current cap (would exceed share of
+   global GDP).
+
+2. ETFs and funds. Reject any ticker pattern matching ETF/FND/INDEX/FUND
+   in the name. Reject any company whose primary product is exposure to
+   a basket of stocks. Specific examples to avoid: Defiance Quantum ETF
+   (QTUM), iShares anything, Vanguard anything, ARK anything.
+
+3. Companies with a market cap above {ceiling} today. This tier exists for
+   tenfold outcomes and the odds of one fall sharply above that size; larger
+   companies are the growth tier's job.
+
+4. Recent reverse stock splits (last 18 months).
+
+**SOFT EXCLUSIONS:**
+- Single-product biotech with binary trial dependence
+- Companies with >50% revenue from a single customer
+
+## EXISTENCE CHECK — VERIFY EACH TICKER:
+
+For each ticker you return, verify the symbol matches a real company —
+not a ticker conflation with a different company.
+
+Examples of conflations to avoid:
+- WCN is Waste Connections, NOT Welltower (Welltower is WELL).
+- DHER is Delivery Hero (Frankfurt FSE), NOT John Deere (Deere is DE).
+- BYD on NYSE is Boyd Gaming; the EV company BYD trades as 1211 on HKEX.
+- LIN is Linde; many "lin"/"li" prefixes are unrelated.
+
+When in doubt about a ticker, return fewer companies rather than wrong
+tickers. If a name comes to mind that you suspect is private (e.g., TAE
+Technologies for fusion, Stripe for payments), do NOT return it — only
+public listings with verifiable tickers.
+
+## REQUIRED OUTPUT FIELDS PER COMPANY:
+
+JSON array. Each entry must include:
+
+- symbol: ticker
+- name: company name
+- exchange: SMART for US, native exchange code for non-US (LSE, AEB,
+  BVME, TSEJ, KSE, NSE, BVMF, TASE, BIT, etc.)
+- currency: USD/EUR/GBP/JPY/KRW/INR/BRL/ILS as appropriate
+- market_cap_usd: approximate, in billions, current
+- sector: GICS-style primary sector
+- megatrend: which of the 24 megatrends above (use the number + name).
+  For speculative or wildcard entries that don't fit the 24, use the literal
+  name of the trend.
+- risk_tier: one of {{in_motion, mid_conviction, speculative}}
+- category: one of {{category_creator, incumbent_replacer, picks_and_shovels,
+  unloved_sector, underdog_geography}}
+- size_bucket: one of {{early, mid, late}}
+- thesis: 25-35 words. WHY this company is a 10-bagger candidate. State
+  the specific mechanism (revenue growth, margin expansion, multiple
+  re-rating, market share capture). Vague theses are rejected.
+- mortality_risk: ONE specific failure mode in 10-15 words.
+- year_4_check: 8-15 words describing what observable signal at year 4
+  would confirm the thesis is on track.
+
+## VALIDATION CHECKLIST (before returning):
+
+IMPORTANT: if you cannot satisfy ALL items below, return your best honest
+attempt with as many names as you can — do not return an empty array. A
+shorter list of high-conviction names is strictly preferred to no list.
+
+Verify all of:
+- No name from the ALREADY-COVERED list above
+- No company that already has growth-tier financials (see TIER BOUNDARY)
+- Each megatrend <=3 names (<=4 for megatrends 2 and 19)
+- Risk-tier barbell: at least 18 in_motion, at least 6 speculative
+- Category split target 6/6/9/3/6 (adjust if returning fewer total)
+- Size split roughly 16/14 (proportional if fewer total); none above {ceiling}
 - 5+ names with currency != USD
 - 3+ from underweighted markets
 - No name in the global top 20 by market cap
@@ -3059,7 +3417,9 @@ class StockScore:
     notes: list[str] = field(default_factory=list)
 
 
-def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0) -> tuple[bool, str]:
+def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0, *,
+                                    currency: str = "USD", ceiling_usd: float | None = None
+                                    ) -> tuple[bool, str]:
     """
     For breakthrough-tier candidates ONLY: validate against quality floors.
     Returns (eligible, reason_if_not).
@@ -3068,8 +3428,14 @@ def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0) ->
     - Reject ETFs (isEtf=true in FMP profile)
     - Reject if market_cap < 500M (use FMP profile mktCap as backup if score has 0)
     - Reject if any reverse stock split in the last 18 months
+    - Reject if above `ceiling_usd` (v2 rules; the caller passes the entry ceiling for a new
+      name and the retention ceiling for an existing member). Enforced for USD names only, on
+      FMP's market cap: the scorer's own figure is not safe for this — it is IBKR's value in
+      the listing currency, or a price x 100M-shares guess when IBKR has none, so a Korean or
+      Japanese name would read as trillions. Non-USD names rely on the prompt's ceiling.
     """
     from datetime import datetime, timedelta
+    fmp_cap_usd = 0.0
 
     # ── Profile: ETF check + market cap backup ──
     profile = _fmp_get("profile", symbol)
@@ -3078,7 +3444,11 @@ def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0) ->
             p = profile[0]
             if p.get("isEtf") is True:
                 return False, "ETF (isEtf=true)"
-            mcap = p.get("mktCap") or 0
+            # FMP's stable API calls it marketCap; "mktCap" was the legacy name and reading only
+            # that one left this backup dead.
+            mcap = p.get("marketCap") or p.get("mktCap") or 0
+            if (currency or "USD").upper() == "USD":
+                fmp_cap_usd = float(mcap or 0)
             if mcap and (not score_market_cap or score_market_cap == 0):
                 score_market_cap = float(mcap)
         except Exception:
@@ -3086,6 +3456,10 @@ def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0) ->
 
     if score_market_cap and score_market_cap < 500_000_000:
         return False, f"market_cap=${score_market_cap/1e6:.0f}M below $500M floor"
+
+    if ceiling_usd and fmp_cap_usd > ceiling_usd:
+        return False, (f"market_cap=${fmp_cap_usd/1e9:.0f}B above the "
+                       f"${ceiling_usd/1e9:.0f}B size ceiling")
 
     # ── Stock splits: reverse split detection ──
     splits = _fmp_get("historical-stock-splits", symbol)
@@ -3221,6 +3595,48 @@ class UniverseScreener:
         # 4b: accumulate metadata for call B; persist hook deferred to post-loop
         breakthrough_fresh_meta: list[dict] = []
 
+        # v2 rules (one switch with the v2 prompt): size ceiling + graduation to the growth tier.
+        _v2_rules = BREAKTHROUGH_PROMPT_VERSION == "v2"
+        self._breakthrough_graduated: list[dict] = []
+        _grad_additions: list[dict] = []
+        _entry_ceiling = _retention_ceiling = None
+        _member_syms: set = set()
+        _growth_cutoff_bt = 0.0
+        if _v2_rules:
+            try:
+                _entry_ceiling, _retention_ceiling, _ceil_note = breakthrough_ceilings()
+                _member_syms = {e.get("symbol") for e in _load_breakthrough_anchor() if e.get("symbol")}
+                _div_syms_bt = {str(sym) for pool in _get_dividend_universe().values() for sym in pool["symbols"]}
+                _growth_cutoff_bt = _growth_cutoff_score(all_scores, _div_syms_bt, growth_count)
+                print(f"  Size ceiling: new names <= ${_entry_ceiling/1e9:.0f}B, existing members "
+                      f"<= ${_retention_ceiling/1e9:.0f}B ({_ceil_note}). "
+                      f"Graduation to growth above score {_growth_cutoff_bt:.1f}.")
+            except Exception as _e_v2:
+                # Never let the new rules stop the scan: fall back to v1 behaviour for this run.
+                print(f"  ⚠ v2 breakthrough rules unavailable this run ({type(_e_v2).__name__}: {_e_v2})")
+                _v2_rules, _entry_ceiling, _retention_ceiling = False, None, None
+
+        def _graduate(_score, _exchange, _currency, _thesis) -> None:
+            """Hand a breakthrough candidate with growth-tier financials to the growth tier."""
+            _score.tier = "growth"
+            all_scores.append(_score)
+            _grad_additions.append({
+                "symbol": _score.symbol, "exchange": _exchange, "currency": _currency,
+                "region": _growth_region_for(_exchange, _currency),
+                "score": float(_score.portfolio_score or 0.0),
+                "added_date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "thesis": f"Graduated from the breakthrough tier (growth-tier financials). {(_thesis or '')[:300]}",
+            })
+            self._breakthrough_graduated.append({
+                "symbol": _score.symbol, "score": _score.portfolio_score,
+                "durable_growth_pct": (None if _score.durable_growth_pct is None
+                                       else round(_score.durable_growth_pct, 1)),
+                "quality": _score.quality_pillar})
+            log.info("screener_breakthrough_graduated", symbol=_score.symbol,
+                     score=_score.portfolio_score, cutoff=_growth_cutoff_bt)
+            print(f"  🎓 {_score.symbol:8s} | growth-tier financials (score {_score.portfolio_score:.1f} "
+                  f"> {_growth_cutoff_bt:.1f}) — moved to the growth tier")
+
         for candidate in breakthrough_candidates:
             symbol = candidate.get("symbol", "")
             if not symbol:
@@ -3232,11 +3648,20 @@ class UniverseScreener:
                     currency=candidate.get("currency", "USD"),
                 )
                 if score:
-                    eligible, reject_reason = _check_breakthrough_eligibility(symbol, score.market_cap)
+                    _is_member = symbol in _member_syms
+                    eligible, reject_reason = _check_breakthrough_eligibility(
+                        symbol, score.market_cap, currency=candidate.get("currency", "USD"),
+                        ceiling_usd=((_retention_ceiling if _is_member else _entry_ceiling)
+                                     if _v2_rules else None))
                     if not eligible:
                         print(f"  ⛔  {symbol:8s} | REJECTED: {reject_reason}")
                         self._reject(symbol, _reject_category(reject_reason), detail=reject_reason,
                                      tier="breakthrough", market_cap=score.market_cap)
+                        continue
+                    if _v2_rules and _graduates_to_growth(score, _growth_cutoff_bt):
+                        _graduate(score, candidate.get("exchange", "SMART"),
+                                  candidate.get("currency", "USD"),
+                                  candidate.get("thesis", "") or candidate.get("rationale", ""))
                         continue
                     score.tier = "breakthrough"
                     score.megatrend = candidate.get("megatrend", "")
@@ -3274,6 +3699,29 @@ class UniverseScreener:
             from src.core.database import get_session_factory as _gsf_sel
             _run_date_sel = _dt_sel.now()
             _anchor_sel = _load_breakthrough_anchor()
+            if _v2_rules and _retention_ceiling:
+                # Retention ceiling: an existing member above it leaves the tier here, BEFORE the
+                # selection call, so it cannot be re-picked from the pool of past names. USD names
+                # only (same reason as in _check_breakthrough_eligibility).
+                _kept_anchor = []
+                for _e_anchor in _anchor_sel:
+                    _sym_anchor = _e_anchor.get("symbol")
+                    _cap_anchor = 0.0
+                    if (_e_anchor.get("currency") or "USD").upper() == "USD":
+                        try:
+                            _p_anchor = _fmp_get("profile", _sym_anchor) or []
+                            _cap_anchor = float((_p_anchor[0] or {}).get("marketCap") or 0) if _p_anchor else 0.0
+                        except Exception:
+                            _cap_anchor = 0.0
+                    if _cap_anchor > _retention_ceiling:
+                        _why_anchor = (f"market_cap=${_cap_anchor/1e9:.0f}B above the "
+                                       f"${_retention_ceiling/1e9:.0f}B size ceiling for existing members")
+                        print(f"  ⛔  {_sym_anchor:8s} | LEAVES THE TIER: {_why_anchor}")
+                        self._reject(_sym_anchor, "market_cap_ceiling", detail=_why_anchor,
+                                     tier="breakthrough", market_cap=_cap_anchor)
+                    else:
+                        _kept_anchor.append(_e_anchor)
+                _anchor_sel = _kept_anchor
             _audit_session_sel = _gsf_sel()()
             try:
                 _sel_result = _run_breakthrough_selection(
@@ -3309,6 +3757,13 @@ class UniverseScreener:
                     )
                     if _score_ao is None:
                         raise ValueError("_score_stock returned None")
+                    if _v2_rules and _graduates_to_growth(_score_ao, _growth_cutoff_bt):
+                        # An existing member that has earned growth-tier financials. Not appended
+                        # to the breakthrough tier and not refreshed in the anchor (Step 3), so
+                        # it drops out of next month's anchor on its own.
+                        _graduate(_score_ao, _exch_ao, _curr_ao, _entry_ao.get("thesis_latest", ""))
+                        _selected_syms = _selected_syms - {_sym_ao}
+                        continue
                     _score_ao.tier = "breakthrough"
                     _score_ao.megatrend = _entry_ao.get("megatrend", "")
                     _score_ao.rationale = _entry_ao.get("thesis_latest", "")
@@ -3360,6 +3815,14 @@ class UniverseScreener:
         except Exception as _se:
             print(f"  ⚠ breakthrough selection wrapper failed: {type(_se).__name__}: {_se}")
             print(f"  ⚠ leaving breakthrough_scores untouched ({len(breakthrough_scores)} entries), skipping persist")
+
+        # Graduates join the growth candidate pool, so from next month they are scored with the
+        # growth names and the breakthrough scan is told not to propose them.
+        if _grad_additions:
+            try:
+                _persist_augmentation_acceptances({"growth": _grad_additions, "dividend": []})
+            except Exception as _e_grad:
+                print(f"  ⚠ could not persist graduates to the growth pool: {type(_e_grad).__name__}: {_e_grad}")
 
         # Step B: trim breakthrough_history pool to cap, protecting recent names.
         # Fires once per screener run, after all breakthrough names have been
