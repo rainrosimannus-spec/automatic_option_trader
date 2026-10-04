@@ -1267,6 +1267,23 @@ def _fmp_matches_holding(symbol: str, name: str | None, currency: str | None) ->
         return False
 
 
+def _broker_review_figures(ib, holding, symbol: str, current_price: float | None) -> dict:
+    """The broker's own figures for one holding (revenue trend, dividend health, cash flow, net
+    debt) — src/portfolio/ibkr_fundamentals.get_ibkr_review_fundamentals. Identity is certain:
+    the contract is built from the holding's own listing, not looked up by ticker at a data
+    provider. {} on any failure: the review then makes no fundamentals-based suggestion."""
+    try:
+        from src.portfolio.ibkr_fundamentals import get_ibkr_review_fundamentals
+        contract = _broker_stock(symbol, holding.exchange or "SMART", holding.currency or "USD")
+        with get_portfolio_lock():
+            if not ib.qualifyContracts(contract):
+                return {}
+        return get_ibkr_review_fundamentals(ib, contract, current_price=current_price) or {}
+    except Exception as e:
+        log.warning("monthly_review_broker_figures_failed", symbol=symbol, error=str(e))
+        return {}
+
+
 def _review_existing_holdings_monthly(
     ib: IB,
     cfg: PortfolioConfig,
@@ -1291,6 +1308,11 @@ def _review_existing_holdings_monthly(
         names the screener ranks at the top), or one that fails the floor on history but is
         growing again, gets no card. Missing data never produces a card.
       - Dividend tier: CC when above SMA + profitable (own disqualification rules, unchanged)
+      - Data: the same figures the screen scores on. The data provider (FMP) where it describes
+        this company, the BROKER'S OWN figures otherwise — which is every non-US holding FMP has
+        no statements for. Before 2026-10-04 the review read FMP only and could never produce a
+        card for those holdings. Dividend cut and payout come from the broker whenever it has
+        them, as in the screen: FMP's "cut" is a drop in YIELD, which a rising price also causes.
       - Never auto-execute any suggestion here
       - Skip CC if open covered call already exists on that symbol
     """
@@ -1389,19 +1411,24 @@ def _review_existing_holdings_monthly(
         # ── 1b. Dividend disqualification ──────────────────
         # Primary: dividend cut OR payout >90%
         # Secondary (2+ triggers): FCF negative 2yr, high debt, revenue shrinking in both windows
-        if tier == "dividend" and fmp_ok:
+        if tier == "dividend":
             try:
-                fmp = get_full_fundamentals(symbol)
-                if fmp:
-                    payout = fmp.get("payout_ratio", 0)
-                    div_cut = fmp.get("dividend_cut", False)
-                    rev_yoy = fmp.get("revenue_yoy_pct", 0)
+                fmp = (get_full_fundamentals(symbol) or {}) if fmp_ok else {}
+                brk = _broker_review_figures(ib, holding, symbol, current_price)
+                _src = "+".join(n for n, d in (("provider", fmp), ("broker", brk)) if d)
+                if fmp or brk:
+                    # Broker first for the dividend itself (per-share history, so a cut is a cut);
+                    # provider first for the rest, broker where the provider has nothing.
+                    payout = brk["payout_ratio"] if brk.get("payout_ratio") is not None else fmp.get("payout_ratio", 0)
+                    div_cut = brk["dividend_cut"] if "dividend_cut" in brk else fmp.get("dividend_cut", False)
+                    rev_yoy = fmp["revenue_yoy_pct"] if fmp.get("revenue_yoy_pct") is not None else (brk.get("revenue_yoy_pct") or 0)
                     # The key is revenue_avg_annual_pct (src/portfolio/fmp.py). This used to read
                     # "revenue_avg_pct", which that module never writes, so the value was always
                     # 0 and the revenue test below could never fire.
-                    rev_avg = fmp.get("revenue_avg_annual_pct", 0)
-                    fcf_neg = fmp.get("fcf_negative_years", 0)
-                    de = fmp.get("debt_to_equity", 0)
+                    rev_avg = fmp["revenue_avg_annual_pct"] if fmp.get("revenue_avg_annual_pct") is not None else (
+                        brk.get("revenue_cagr_pct") if brk.get("revenue_cagr_pct") is not None else (brk.get("revenue_avg_pct") or 0))
+                    fcf_neg = fmp["fcf_negative_years"] if fmp.get("fcf_negative_years") is not None else (brk.get("fcf_negative_years_5yr") or 0)
+                    de = fmp["debt_to_equity"] if fmp.get("debt_to_equity") is not None else (brk.get("net_debt_to_equity") or 0)
                     revenue_shrinking = rev_yoy < 0 and rev_avg < 0   # last year AND 3yr average
 
                     # Primary disqualifiers — the dividend itself is in trouble
@@ -1437,7 +1464,7 @@ def _review_existing_holdings_monthly(
 
                         rationale = (
                             f"MONTHLY REVIEW: {symbol} (dividend) failing health check. "
-                            f"{', '.join(reason_parts)}. "
+                            f"{', '.join(reason_parts)} (figures: {_src}). "
                             f"Position: {shares} shares @ ${avg_cost:.2f}, now ${current_price:.2f}. "
                             f"P&L: {pnl_pct:+.1f}%."
                         )
@@ -1476,26 +1503,38 @@ def _review_existing_holdings_monthly(
         # Anything else — including a name the screen dropped for failing the floor on history
         # while it is growing again now — gets nothing here; the buyer simply freezes it.
         growth_v = None
-        if tier == "growth" and fmp_ok:
+        _growth_src = ""
+        _growth_brk: dict = {}
+        if tier == "growth":
             try:
-                _trend = get_growth_trend(symbol)
+                _trend = get_growth_trend(symbol) if fmp_ok else None
+                _growth_src = "provider"
+                if not _trend or _trend.get("revenue_ttm_pct") is None:
+                    # The provider has nothing for this company (most non-US names): use the
+                    # broker's revenue history — the same source the screen scores it on.
+                    _growth_brk = _broker_review_figures(ib, holding, symbol, current_price)
+                    if _growth_brk.get("revenue_ttm_pct") is not None or _growth_brk.get("revenue_cagr_pct") is not None:
+                        _trend = {"revenue_cagr_pct": _growth_brk.get("revenue_cagr_pct"),
+                                  "revenue_ttm_pct": _growth_brk.get("revenue_ttm_pct"),
+                                  "revenue_recent_half_pct": _growth_brk.get("revenue_recent_half_pct")}
+                        _growth_src = "broker"
                 if _trend:
                     growth_v = growth_gate.growth_verdict(
                         _trend.get("revenue_cagr_pct"), _trend.get("revenue_ttm_pct"),
                         _trend.get("revenue_recent_half_pct"))
-                    log.info("monthly_review_growth_verdict", symbol=symbol,
+                    log.info("monthly_review_growth_verdict", symbol=symbol, source=_growth_src,
                              real_dropoff=growth_v.real_dropoff,
                              passes_floor=growth_v.passes_growth_floor, reason=growth_v.reason)
                 else:
                     log.warning("monthly_review_growth_unknown", symbol=symbol,
-                                msg="no revenue history from FMP — no growth-based card")
+                                msg="no revenue history from the provider or the broker — no growth-based card")
             except Exception as _e:
                 log.warning("monthly_review_growth_verdict_failed", symbol=symbol, error=str(_e))
         if tier == "growth" and growth_v is not None:
             try:
-                fmp = get_full_fundamentals(symbol) or {}
+                fmp = (get_full_fundamentals(symbol) or {}) if fmp_ok else {}
                 if fmp is not None:
-                    div_yield = fmp.get("dividend_yield", 0)
+                    div_yield = fmp.get("dividend_yield") or _growth_brk.get("dividend_yield") or 0
                     growth_slowing = growth_v.real_dropoff
 
                     if growth_slowing:
@@ -1542,7 +1581,7 @@ def _review_existing_holdings_monthly(
                             if held_days > 180:  # held 6+ months with slowing growth, no dividend
                                 rationale = (
                                     f"MONTHLY REVIEW: {symbol} (growth) is a real growth drop-off — "
-                                    f"{growth_v.reason}. "
+                                    f"{growth_v.reason} (figures: {_growth_src}). "
                                     f"It no longer meets the growth tier's entry rule and the latest "
                                     f"half-year confirms it. No dividend started after {held_days} days. "
                                     f"Consider exiting. "

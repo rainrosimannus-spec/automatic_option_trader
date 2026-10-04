@@ -490,6 +490,11 @@ def parse_quality_fundamentals(resc_xml: Optional[str], snapshot_xml: Optional[s
     if eps:
         result["net_income_negative_years_5yr"] = sum(1 for x in eps if x < 0)
 
+    # ── net debt to equity (for the dividend health check; not used by the screen's scores) ──
+    net_debt, bvps = (a.get("NETDEBT") or {}).get(latest), (a.get("BVPS") or {}).get(latest)
+    if shares and net_debt is not None and bvps and bvps > 0:
+        result["net_debt_to_equity"] = net_debt / (bvps * shares)
+
     result["quality_source"] = "ibkr_resc"
     result["quality_fiscal_year"] = latest
     return result
@@ -511,3 +516,120 @@ def get_ibkr_quality_fundamentals(ib, contract) -> dict:
     except Exception as e:
         log.warning("ibkr_quality_fundamentals_parse_failed", symbol=contract.symbol, error=str(e))
         return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# Revenue trend from the broker — for the monthly holdings review (2026-10-04)
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# The review's "real growth drop-off" test needs three numbers: the multi-year compound rate,
+# trailing-12-month growth, and the latest half-year against the same half a year earlier. It
+# read them from FMP only, so it was blind to every holding FMP has no statements for — most
+# non-US names. ReportsFinSummary has what is needed for any covered company: annual revenue for
+# 6-7 years and a trailing-12-month revenue figure at every reporting date.
+def _rev_rows(root: ET.Element) -> list[tuple[str, str, str, float]]:
+    rows = []
+    for rev in root.findall(".//TotalRevenues/TotalRevenue"):
+        try:
+            rows.append((rev.get("asofDate") or "", rev.get("reportType") or "",
+                         rev.get("period") or "", float(rev.text)))   # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+    return [r for r in rows if r[0]]
+
+
+def _days_between(a: str, b: str) -> int:
+    from datetime import date
+    ya, ma, da = (int(x) for x in a[:10].split("-"))
+    yb, mb, db = (int(x) for x in b[:10].split("-"))
+    return (date(ya, ma, da) - date(yb, mb, db)).days
+
+
+def _entry_near(series: dict[str, float], anchor: str, days_back: int, tolerance: int = 40) -> Optional[float]:
+    """Value in `series` dated about `days_back` days before `anchor` (within `tolerance`)."""
+    best, best_gap = None, tolerance + 1
+    for d, v in series.items():
+        gap = abs(_days_between(anchor, d) - days_back)
+        if gap < best_gap:
+            best, best_gap = v, gap
+    return best
+
+
+def parse_revenue_trend(finsummary_xml: Optional[str], today: Optional[str] = None) -> dict:
+    """{revenue_cagr_pct, revenue_ttm_pct, revenue_recent_half_pct, revenue_asof} from a
+    ReportsFinSummary document. Pure. A figure that cannot be computed is ABSENT.
+
+      revenue_cagr_pct          compound rate across the latest five annual figures
+      revenue_ttm_pct           latest trailing-12-month revenue vs the figure a year earlier
+      revenue_recent_half_pct   latest half-year vs the same half a year earlier. Exact from
+                                quarterly figures where the report has them; otherwise from two
+                                trailing-12-month figures six months apart — their difference IS
+                                the change between the two halves, expressed against half of the
+                                earlier trailing year (equal halves assumed; seasonality can move
+                                it by a point or two).
+    Figures older than 15 months are treated as no data."""
+    result: dict = {}
+    if not finsummary_xml:
+        return result
+    try:
+        rows = _rev_rows(ET.fromstring(finsummary_xml))
+    except ET.ParseError:
+        return result
+
+    annual = {d: v for d, rt, per, v in rows if rt == "A" and per == "12M"}
+    ttm = {d: v for d, rt, per, v in rows if rt == "TTM" and per == "12M"}
+    quarterly: dict[str, float] = {}
+    for prefer in ("P", "A", "R"):                       # later assignments win: R > A > P
+        quarterly.update({d: v for d, rt, per, v in rows if rt == prefer and per == "3M"})
+
+    if len(annual) >= 2:
+        latest_years = sorted(annual)[-5:]
+        first, last = annual[latest_years[0]], annual[latest_years[-1]]
+        if first > 0 and last > 0:
+            result["revenue_cagr_pct"] = ((last / first) ** (1.0 / (len(latest_years) - 1)) - 1.0) * 100
+
+    if not ttm:
+        return result
+    asof = max(ttm)
+    if today and _days_between(today, asof) > 460:
+        return {}                                        # stale: say nothing rather than mislead
+    result["revenue_asof"] = asof
+    now = ttm[asof]
+    year_ago = _entry_near(ttm, asof, 365)
+    if year_ago and year_ago > 0:
+        result["revenue_ttm_pct"] = (now / year_ago - 1.0) * 100
+
+    q = [_entry_near(quarterly, asof, back, 25) for back in (0, 91, 365, 456)]
+    if all(x is not None and x > 0 for x in q) and max(quarterly) >= asof:
+        result["revenue_recent_half_pct"] = ((q[0] + q[1]) / (q[2] + q[3]) - 1.0) * 100   # type: ignore[operator]
+    else:
+        half_ago = _entry_near(ttm, asof, 182)
+        if half_ago and half_ago > 0:
+            result["revenue_recent_half_pct"] = (now - half_ago) / (half_ago / 2.0) * 100
+    return result
+
+
+def get_ibkr_review_fundamentals(ib, contract, current_price: Optional[float] = None) -> dict:
+    """Everything the monthly holdings review needs about one holding, from the broker: the
+    revenue trend, dividend health (yield, payout, DPS-based cut detection — get_ibkr_fundamentals)
+    and the quality-report figures (negative free-cash-flow years, net debt to equity).
+    {} if the broker has nothing; individual keys absent when they cannot be computed."""
+    from datetime import datetime
+    out: dict = {}
+    try:
+        from src.portfolio.connection import get_portfolio_lock
+        with get_portfolio_lock():
+            fin_xml = ib.reqFundamentalData(contract, "ReportsFinSummary")
+        out.update(parse_revenue_trend(fin_xml, today=datetime.utcnow().strftime("%Y-%m-%d")))
+    except Exception as e:
+        log.warning("ibkr_review_revenue_trend_failed", symbol=contract.symbol, error=str(e))
+    try:
+        for k, v in (get_ibkr_fundamentals(ib, contract, current_price=current_price) or {}).items():
+            out.setdefault(k, v)
+    except Exception as e:
+        log.warning("ibkr_review_dividend_data_failed", symbol=contract.symbol, error=str(e))
+    try:
+        for k, v in get_ibkr_quality_fundamentals(ib, contract).items():
+            out.setdefault(k, v)
+    except Exception as e:
+        log.warning("ibkr_review_quality_data_failed", symbol=contract.symbol, error=str(e))
+    return out

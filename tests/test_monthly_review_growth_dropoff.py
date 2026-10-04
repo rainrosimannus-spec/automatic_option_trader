@@ -39,7 +39,7 @@ def review(monkeypatch):
     def fake_get_db():
         yield sess
 
-    cards, trends, fundamentals, profiles = [], {}, {}, {}
+    cards, trends, fundamentals, profiles, broker = [], {}, {}, {}, {}
     state = SimpleNamespace(sma=100.0)
 
     monkeypatch.setattr(database_mod, "get_db", fake_get_db)
@@ -51,6 +51,9 @@ def review(monkeypatch):
     monkeypatch.setattr(fmp_mod, "get_full_fundamentals", lambda s: fundamentals.get(s))
     monkeypatch.setattr(fmp_mod, "_get", lambda endpoint, s, params={}: profiles.get(s))
     monkeypatch.setattr(sched, "_get_chronos_trend", lambda s: None)
+    # The broker's own figures for a holding (src/portfolio/ibkr_fundamentals). {} = broker has nothing.
+    monkeypatch.setattr(sched, "_broker_review_figures",
+                        lambda ib, holding, symbol, price: broker.get(symbol, {}))
 
     def hold(symbol, tier="growth", shares=50, pnl_pct=0.0, held_days=200, currency="USD",
              name=None, value=10_000.0):
@@ -74,7 +77,7 @@ def review(monkeypatch):
     for i in range(12):
         hold(f"PAD{i}", tier="breakthrough")
     return SimpleNamespace(hold=hold, run=run, trends=trends, fundamentals=fundamentals,
-                           profiles=profiles, state=state)
+                           profiles=profiles, state=state, broker=broker)
 
 
 def _trend(cagr, ttm, half):
@@ -200,3 +203,89 @@ def test_shrinking_revenue_plus_negative_cash_flow_cards_a_dividend_payer(review
     cards = review.run()
     assert _cards_for(cards, "WEAK") == [("sell_stock_review", "monthly_dividend_disqualified")]
     assert "revenue shrinking" in cards[0]["rationale"]
+
+
+# ── broker figures: holdings the data provider cannot see ────────────────────
+
+def _btrend(cagr, ttm, half, **more):
+    return {"revenue_cagr_pct": cagr, "revenue_ttm_pct": ttm, "revenue_recent_half_pct": half, **more}
+
+
+def test_foreign_growth_dropoff_is_carded_from_broker_figures(review):
+    # No provider data at all for this listing (no profile -> identity check fails closed).
+    review.hold("XRO", currency="AUD", name="XERO LTD")
+    review.broker["XRO"] = _btrend(4.0, 2.0, 1.0)
+    cards = review.run()
+    assert _cards_for(cards, "XRO") == [("sell_stock_review", "monthly_growth_thesis_weak")]
+    assert "figures: broker" in cards[0]["rationale"] and "floor 8%" in cards[0]["rationale"]
+
+
+def test_foreign_grower_gets_no_card_from_broker_figures(review):
+    review.hold("XRO", currency="AUD", name="XERO LTD")
+    review.broker["XRO"] = _btrend(25.1, 17.1, 13.8)            # Xero's real figures
+    assert _cards_for(review.run(), "XRO") == []
+
+
+def test_provider_figures_are_used_when_they_describe_this_company(review):
+    # ASML: Amsterdam holding, provider has its US line under the same name.
+    review.hold("ASML", currency="EUR", name="ASML HOLDING NV")
+    review.profiles["ASML"] = [{"companyName": "ASML Holding N.V."}]
+    review.trends["ASML"] = _trend(15.0, 12.0, 11.0)
+    review.fundamentals["ASML"] = {"dividend_yield": 0.9}
+    review.broker["ASML"] = _btrend(1.0, 1.0, 1.0)             # would be a drop-off if it were used
+    assert _cards_for(review.run(), "ASML") == []
+
+
+def test_broker_dropoff_without_a_latest_half_year_gets_no_card(review):
+    review.hold("PRX", currency="EUR", name="PROSUS NV")
+    review.broker["PRX"] = _btrend(2.0, 1.0, None)
+    assert _cards_for(review.run(), "PRX") == []
+
+
+def test_foreign_dividend_cut_is_carded_from_broker_figures(review):
+    review.hold("INGA", tier="dividend", currency="EUR", name="ING GROEP NV")
+    review.broker["INGA"] = {"dividend_cut": True, "payout_ratio": 45.0}
+    cards = review.run()
+    assert _cards_for(cards, "INGA") == [("sell_stock_review", "monthly_dividend_disqualified")]
+    assert "dividend cut detected" in cards[0]["rationale"] and "figures: broker" in cards[0]["rationale"]
+
+
+def test_healthy_foreign_dividend_payer_gets_no_card(review):
+    review.hold("WKL", tier="dividend", currency="EUR", name="WOLTERS KLUWER")
+    review.broker["WKL"] = {"dividend_cut": False, "payout_ratio": 48.0, "revenue_yoy_pct": 6.0,
+                            "revenue_cagr_pct": 5.0, "fcf_negative_years_5yr": 0, "net_debt_to_equity": 1.4}
+    assert _cards_for(review.run(), "WKL") == []
+
+
+def test_foreign_payer_with_two_secondary_weaknesses_is_carded(review):
+    review.hold("WEAKEU", tier="dividend", currency="EUR", name="WEAK NV")
+    review.broker["WEAKEU"] = {"dividend_cut": False, "payout_ratio": 60.0, "revenue_yoy_pct": -4.0,
+                               "revenue_cagr_pct": -3.0, "fcf_negative_years_5yr": 3, "net_debt_to_equity": 0.5}
+    cards = review.run()
+    assert _cards_for(cards, "WEAKEU") == [("sell_stock_review", "monthly_dividend_disqualified")]
+    assert "revenue shrinking" in cards[0]["rationale"] and "FCF negative 3 years" in cards[0]["rationale"]
+
+
+def test_broker_dividend_record_overrides_the_providers_yield_based_cut(review):
+    # The provider calls it a "cut" when the YIELD falls 30%, which a rising price also does.
+    # The broker reads dividends per share. Same precedence as the screen.
+    review.hold("PEP", tier="dividend")
+    review.fundamentals["PEP"] = {"dividend_cut": True, "payout_ratio": 0, "fcf_negative_years": 0,
+                                  "debt_to_equity": 1.0, "revenue_yoy_pct": 3.0, "revenue_avg_annual_pct": 3.0}
+    review.broker["PEP"] = {"dividend_cut": False, "payout_ratio": 70.0}
+    assert _cards_for(review.run(), "PEP") == []
+
+
+def test_verbund_is_judged_on_its_own_broker_figures_not_vereits(review):
+    review.hold("VER", tier="dividend", currency="EUR", name="VERBUND AG")
+    review.profiles["VER"] = [{"companyName": "VEREIT, Inc."}]
+    review.fundamentals["VER"] = DIV_CUT                        # VEREIT's record: ignored
+    review.broker["VER"] = {"dividend_cut": False, "payout_ratio": 55.0}
+    assert _cards_for(review.run(), "VER") == []
+    review.broker["VER"] = {"dividend_cut": True, "payout_ratio": 55.0}   # Verbund itself cuts
+    assert ("sell_stock_review", "monthly_dividend_disqualified") in _cards_for(review.run(), "VER")
+
+
+def test_nothing_from_either_source_means_no_card(review):
+    review.hold("2318", tier="dividend", currency="HKD", name="PING AN INSURANCE GROUP CO-H")
+    assert _cards_for(review.run(), "2318") == []

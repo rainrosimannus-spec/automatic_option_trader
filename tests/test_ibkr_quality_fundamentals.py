@@ -154,3 +154,56 @@ def test_broker_figures_feed_the_screeners_quality_pillar():
     # 22% margin, ~16% return on capital, improving cash flow: a real, non-neutral pillar
     assert su._quality_pillar(q, "Technology") != su._quality_pillar({}, "Technology")
     assert su._score_compounding_quality(q) != 50.0 and su._score_operating_leverage(q) != 50.0
+
+
+# ── revenue trend for the holdings review ────────────────────────────────────
+
+from src.portfolio.ibkr_fundamentals import parse_revenue_trend
+
+
+def _fin(rows) -> str:
+    body = "".join(f'<TotalRevenue asofDate="{d}" reportType="{rt}" period="{per}">{v}</TotalRevenue>'
+                   for d, rt, per, v in rows)
+    return f'<FinancialSummary><TotalRevenues currency="EUR">{body}</TotalRevenues></FinancialSummary>'
+
+
+ANNUAL = [("2021-12-31", "A", "12M", 100), ("2022-12-31", "A", "12M", 110), ("2023-12-31", "A", "12M", 121),
+          ("2024-12-31", "A", "12M", 133.1), ("2025-12-31", "A", "12M", 146.41)]
+
+
+def test_compound_rate_over_the_latest_five_annual_figures():
+    r = parse_revenue_trend(_fin(ANNUAL + [("2025-12-31", "TTM", "12M", 146.41), ("2024-12-31", "TTM", "12M", 133.1)]))
+    assert r["revenue_cagr_pct"] == pytest.approx(10.0)
+    assert r["revenue_ttm_pct"] == pytest.approx(10.0) and r["revenue_asof"] == "2025-12-31"
+
+
+def test_half_yearly_reporter_recent_half_comes_from_two_trailing_figures():
+    # Xero's real shape: trailing-12-month figures every six months, no quarterly values.
+    rows = [("2025-09-30", "TTM", "12M", 2043), ("2025-03-31", "TTM", "12M", 1911),
+            ("2024-09-30", "TTM", "12M", 1744), ("2024-03-31", "TTM", "12M", 1572)]
+    r = parse_revenue_trend(_fin(rows))
+    assert r["revenue_ttm_pct"] == pytest.approx((2043 / 1744 - 1) * 100)
+    # TTM(Sep-25) - TTM(Mar-25) is exactly the latest half minus the same half a year earlier
+    assert r["revenue_recent_half_pct"] == pytest.approx((2043 - 1911) / (1911 / 2) * 100)
+
+
+def test_quarterly_reporter_recent_half_is_exact():
+    q = [("2025-12-31", "R", "3M", 30), ("2025-09-30", "R", "3M", 25), ("2025-06-30", "R", "3M", 22),
+         ("2025-03-31", "R", "3M", 23), ("2024-12-31", "R", "3M", 26), ("2024-09-30", "R", "3M", 24)]
+    ttm = [("2025-12-31", "TTM", "12M", 100), ("2025-06-30", "TTM", "12M", 95), ("2024-12-31", "TTM", "12M", 90)]
+    r = parse_revenue_trend(_fin(q + ttm))
+    assert r["revenue_recent_half_pct"] == pytest.approx(((30 + 25) / (26 + 24) - 1) * 100)
+
+
+def test_stale_or_missing_revenue_gives_no_trend():
+    old = [("2023-12-31", "TTM", "12M", 100), ("2022-12-31", "TTM", "12M", 90)]
+    assert parse_revenue_trend(_fin(old), today="2026-10-04") == {}
+    assert "revenue_ttm_pct" in parse_revenue_trend(_fin(old), today="2024-06-01")
+    assert parse_revenue_trend(None) == {} and parse_revenue_trend("<broken") == {}
+    assert "revenue_ttm_pct" not in parse_revenue_trend(_fin(ANNUAL))        # no trailing figures at all
+
+
+def test_net_debt_to_equity_for_the_dividend_health_check():
+    doc = _company(NETDEBT=("M", dict(zip(YEARS, (500, 500, 500, 500, 2500)))))
+    q = parse_quality_fundamentals(doc, SNAPSHOT)
+    assert q["net_debt_to_equity"] == pytest.approx(2500e6 / (5.0 * 1e9))
