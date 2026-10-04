@@ -59,7 +59,7 @@ def test_every_pool_currency_has_trading_hours():
 
 
 @pytest.mark.parametrize("gone", ["SQ", "WBA", "MMP", "AVST", "CNHI", "SKG", "FLT", "SCHA", "AMXL",
-                                   "ROG", "NZYM-B", "UNA", "0005", "VALE3", "BBCA", "CPG"])
+                                   "NZYM-B", "UNA", "0005", "VALE3", "BBCA", "CPG"])
 def test_renamed_moved_and_delisted_tickers_are_gone(gone):
     assert gone not in {s for _, _, _, s in _entries()}
 
@@ -67,7 +67,7 @@ def test_renamed_moved_and_delisted_tickers_are_gone(gone):
 @pytest.mark.parametrize("ticker,exchange,currency", [
     ("XYZ", "SMART", "USD"), ("CHKP", "SMART", "USD"), ("CNH", "SMART", "USD"), ("SW", "SMART", "USD"),
     ("FLUT", "SMART", "USD"), ("ITUB", "SMART", "USD"), ("TLK", "SMART", "USD"),
-    ("ROP", "EBS", "CHF"), ("NESN", "EBS", "CHF"), ("NOVO.B", "CPH", "DKK"), ("NSIS.B", "CPH", "DKK"),
+    ("ROG", "EBS", "CHF"), ("NESN", "EBS", "CHF"), ("NOVO.B", "CPH", "DKK"), ("NSIS.B", "CPH", "DKK"),
     ("ATCO.A", "SFB", "SEK"), ("700", "SEHK", "HKD"), ("005930", "KRX", "KRW"),
     ("RYA", "SMART", "EUR"), ("AMP2", "BVME", "EUR"), ("VEND", "OSE", "NOK"), ("AMXB", "MEXI", "MXN"),
 ])
@@ -85,3 +85,10 @@ def test_prompts_teach_the_model_the_brokers_spelling():
                    su._build_breakthrough_prompt("v2")):
         assert "KSE" not in prompt and "SWX" not in prompt
         assert "NOVO.B" in prompt and "leading zeros" in prompt
+
+
+def test_no_pool_ticker_is_silently_dropped_by_the_collision_guard(capsys):
+    # The guard resolves a ticker found on two venues by dropping one side. With the pools kept
+    # clean (including names added to the discovered pool at run time) it must have nothing to do.
+    su._get_growth_universe(); su._get_dividend_universe()
+    assert "ticker collision" not in capsys.readouterr().out

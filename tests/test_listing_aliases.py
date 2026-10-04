@@ -104,7 +104,9 @@ def test_registry_is_consistent_with_the_pools():
         assert name != a.symbol
         # two kinds of alias: a venue suffix for a shared ticker (SU.PA -> SU), or a broker
         # ticker that ends in a dot (BP -> "BP.")
-        assert name.split(".")[0] == a.symbol or a.symbol == name + "."
+        # ...or an outright different broker ticker where the broker's own collides (Roche: ROG -> ROP)
+        assert (name.split(".")[0] == a.symbol or a.symbol == name + "."
+                or (name, a.symbol) in {("ROG", "ROP")})
         # the aliased company sits in a pool on its own venue under its INTERNAL name...
         homes = [r for r, p in pools.items() if name in p["symbols"]]
         assert homes and all((pools[r]["exchange"], pools[r]["currency"]) == (a.exchange, a.currency) for r in homes), name
@@ -180,3 +182,12 @@ def test_tickers_the_broker_ends_with_a_dot_use_a_clean_internal_name():
     assert (c.symbol, c.currency, c.conId) == ("BP.", "GBP", 228891)
     assert sym.internal_symbol(NS(symbol="BP.", secType="STK", currency="GBP", conId=228891)) == "BP"
     assert sym.internal_symbol(NS(symbol="NG.", secType="STK", currency="GBP", conId=0)) == "NG"
+
+
+def test_roche_and_roper_do_not_share_a_name():
+    # The broker calls Roche's liquid line ROP; ROP inside the system is Roper Technologies.
+    roche = NS(symbol="ROP", secType="STK", currency="CHF", conId=864274091)
+    roper = NS(symbol="ROP", secType="STK", currency="USD", conId=4967)
+    assert sym.internal_symbol(roche) == "ROG" and sym.internal_symbol(roper) == "ROP"
+    c = sym.broker_stock("ROG", "EBS", "CHF")
+    assert (c.symbol, c.currency, c.conId) == ("ROP", "CHF", 864274091)

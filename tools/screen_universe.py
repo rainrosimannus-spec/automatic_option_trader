@@ -434,7 +434,8 @@ CANDIDATE_POOLS = {
     "CH": {
         "exchange": "EBS", "currency": "CHF",   # the broker's code for SIX Swiss Exchange ("SWX" matched nothing)
         "symbols": [
-            "NESN", "NOVN", "ROP", "SIKA", "LONN", "GIVN", "GEBN",   # ROP = Roche (the liquid non-voting line)
+            "NESN", "NOVN", "ROG", "SIKA", "LONN", "GIVN", "GEBN",   # ROG = Roche. The broker calls its liquid
+            # non-voting line ROP, which here is Roper Technologies (US) — see LISTING_ALIASES
             "UBSG", "ZURN", "SREN", "ABBN", "SLHN",
             "PGHN", "TEMN", "VACN", "LOGN", "AMS", "BARN", "SCMN",
         ],

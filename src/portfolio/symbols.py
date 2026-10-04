@@ -93,6 +93,9 @@ LISTING_ALIASES: dict[str, BrokerListing] = {
     "SHL.AX": BrokerListing("SHL", "ASX", "AUD", 12370176, "Sonic Healthcare Ltd"),
     # Same mechanism, different reason: the broker's ticker ends in a dot ("BP.", "NG."), which
     # is awkward as a name inside the system (URLs, file names). Internal name without the dot.
+    # Roche: the broker's ticker for the liquid non-voting line is ROP — Roper Technologies in the
+    # US pool. Internal name is Roche's familiar ticker, ROG.
+    "ROG": BrokerListing("ROP", "EBS", "CHF", 864274091, "Roche Holding AG"),
     "BP": BrokerListing("BP.", "LSE", "GBP", 228891, "BP plc"),
     "NG": BrokerListing("NG.", "LSE", "GBP", 273234647, "National Grid plc"),
 }
