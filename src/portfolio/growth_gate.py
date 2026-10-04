@@ -170,12 +170,21 @@ def growth_verdict(cagr_pct: Optional[float], ttm_pct: Optional[float],
 
 def passes_entry_gate(durable_pct: Optional[float], quality: Optional[float],
                       floor_pct: float = GROWTH_FLOOR_PCT,
-                      quality_floor: float = QUALITY_FLOOR) -> tuple[bool, str]:
-    """Growth-tier entry: BOTH pillars must be present. Returns (ok, reason-if-not)."""
+                      quality_floor: float = QUALITY_FLOOR,
+                      quality_measured: bool = True) -> tuple[bool, str]:
+    """Growth-tier entry: BOTH pillars must be present. Returns (ok, reason-if-not).
+
+    `quality_measured` is False when the quality score was built without a real return-on-capital
+    figure or a real operating margin — i.e. mostly from neutral defaults. Those defaults sum to
+    just above the floor, so before this flag a company with NO quality data at all cleared it.
+    A pillar that cannot be shown is, by the tier's rule, a pillar that is missing (Rain,
+    2026-10-04: "add a fail if there is no data")."""
     if durable_pct is None:
         return False, "growth unknown"
     if durable_pct < floor_pct:
         return False, f"durable growth {durable_pct:.1f}% < {floor_pct:.0f}% floor"
+    if not quality_measured:
+        return False, "quality unmeasured — no return-on-capital or operating-margin data"
     if quality is None or quality < quality_floor:
         q = "n/a" if quality is None else f"{quality:.0f}"
         return False, f"quality {q} < {quality_floor:.0f} floor"

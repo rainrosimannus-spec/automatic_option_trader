@@ -317,3 +317,197 @@ def get_next_earnings_date(ib, contract) -> EarningsResult:
                     symbol=getattr(contract, "symbol", "?"), raw=raw, error=str(e))
         return EarningsResult(next_date=None, status="fetch_failed")
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# Quality figures from the broker (2026-10-04)
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# FMP has no statements for most non-US tickers on our plan, and the ReportsFinSummary fallback
+# above carries only revenue, EPS and dividends. So for a foreign name every QUALITY input used
+# to be missing and the quality pillar was built entirely from neutral defaults (50.8 — just
+# above the 50 floor): such a name was in the growth tier on growth alone.
+#
+# The account's subscription does not include full statements (ReportsFinStatements returns
+# "not available" for every stock), but the analyst-estimates report RESC carries about five
+# years of annual ACTUALS for every covered company: revenue, EBIT, pretax income, EPS, return
+# on assets and equity, capex, cash flow per share, net debt, gross margin. Those are enough for
+# three of the four quality sub-scores. Each derived figure was calibrated against FMP on 70 US
+# names that have both sources:
+#
+#   operating_margin_pct    the LOWER of EBIT/revenue and pretax/revenue. Analysts' EBIT is often
+#                           adjusted (it excludes stock compensation and amortisation), which
+#                           flatters software and acquirers; taking the lower of the two had the
+#                           best agreement (correlation 0.94, median gap +1.1 points).
+#   roic_5yr_avg / _min     1.17 x return on assets - 0.45. A direct EBIT/(equity + net debt)
+#                           estimate did not track FMP's ROIC at all (correlation -0.17); return
+#                           on assets did (0.83 on the average, 0.89 on the minimum), and the
+#                           regression puts it on FMP's scale.
+#   fcf_margin_trend        (cash flow per share x shares - capex) / revenue, latest year minus
+#                           two years earlier (correlation 0.92, median gap 0.2 points).
+#
+# NOT available from the broker, and left absent (their sub-scores stay neutral): R&D intensity,
+# share dilution, goodwill. A name is "quality-measured" only if it has BOTH a return-on-capital
+# figure and an operating margin — see growth_gate.passes_entry_gate.
+ROA_TO_ROIC_SLOPE = 1.17
+ROA_TO_ROIC_INTERCEPT = -0.45
+_PERCENT_TYPES = ("ROAPCT", "ROEPCT")
+
+
+def _resc_actuals(resc_xml: str) -> dict[str, dict[int, float]]:
+    """{measure: {fiscal_year: value}} of ANNUAL actuals from a RESC report, in plain units.
+    The report mixes scales: unit="M" is millions; the two percentage measures are left RAW here
+    because their multiplier varies by market (see _percent_scale)."""
+    out: dict[str, dict[int, float]] = {}
+    root = ET.fromstring(resc_xml)
+    for fy in root.findall("./Actuals/FYActuals/FYActual"):
+        measure = fy.get("type") or ""
+        years: dict[int, float] = {}
+        for period in fy.findall("FYPeriod"):
+            if period.get("periodType") != "A":
+                continue
+            val = period.find("ActValue")
+            try:
+                x = float(val.text)          # type: ignore[union-attr]
+                year = int(period.get("fYear") or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if not year:
+                continue
+            if fy.get("unit") == "M":
+                x *= 1e6
+            years[year] = x
+        if years:
+            out[measure] = years
+    return out
+
+
+def _percent_scale(a: dict[str, dict[int, float]]) -> float:
+    """Multiplier the report applied to its percentage measures (ROAPCT, ROEPCT).
+
+    They are stored scaled by the reporting unit — a million for most markets (28359000 =
+    28.359%), a billion for Japanese companies. The report does not say which, so it is
+    recovered from the report itself: return on equity must be close to EPS / book value per
+    share, and the ratio of the stored figure to that is the multiplier (rounded to a power of a
+    thousand). Without a usable anchor year, a million is assumed."""
+    import math
+    eps, bvps, roe = a.get("EPS") or {}, a.get("BVPS") or {}, a.get("ROEPCT") or {}
+    ratios = []
+    for year, raw in roe.items():
+        e, b = eps.get(year), bvps.get(year)
+        if e is None or not b or b <= 0 or not raw:
+            continue
+        implied = e / b * 100.0
+        if abs(implied) < 0.5 or (raw > 0) != (implied > 0):
+            continue                     # too close to zero, or signs disagree: no anchor
+        ratios.append(raw / implied)
+    if not ratios:
+        return 1e6
+    ratios.sort()
+    power = round(math.log(ratios[len(ratios) // 2], 1000))
+    return float(1000 ** min(4, max(0, power)))
+
+
+def _snapshot_shares(snapshot_xml: str) -> Optional[float]:
+    try:
+        node = ET.fromstring(snapshot_xml).find("./CoGeneralInfo/SharesOut")
+        shares = float(node.text)             # type: ignore[union-attr]
+        return shares if shares > 0 else None
+    except Exception:
+        return None
+
+
+def parse_quality_fundamentals(resc_xml: Optional[str], snapshot_xml: Optional[str] = None) -> dict:
+    """Quality inputs, under the same keys FMP's path produces, from the broker's RESC report
+    (plus ReportSnapshot for the share count). Pure: no I/O. Absent data -> absent key."""
+    result: dict = {}
+    if not resc_xml:
+        return result
+    try:
+        a = _resc_actuals(resc_xml)
+    except ET.ParseError:
+        return result
+    rev = a.get("SREV") or {}
+    years = sorted(rev)[-5:]
+    if len(years) < 2:
+        return result
+    latest = years[-1]
+
+    def series(measure: str) -> list[Optional[float]]:
+        d = a.get(measure) or {}
+        return [d.get(y) for y in years]
+
+    # ── revenue (fallback only; the caller prefers what it already has) ──
+    revs = [rev[y] for y in years]
+    if revs[0] > 0 and revs[-1] > 0:
+        result["revenue_cagr_pct"] = ((revs[-1] / revs[0]) ** (1.0 / (len(revs) - 1)) - 1.0) * 100
+    if revs[-2]:
+        result["revenue_yoy_pct"] = (revs[-1] - revs[-2]) / abs(revs[-2]) * 100
+
+    # ── operating margin: the lower of EBIT margin and pretax margin, level and 3-year trend ──
+    ebit, pretax = series("EBIT"), series("EIBT")
+    margins: list[Optional[float]] = []
+    for e, p, r in zip(ebit, pretax, revs):
+        cands = [x / r * 100 for x in (e, p) if x is not None and r]
+        margins.append(min(cands) if cands else None)
+    if margins[-1] is not None:
+        result["operating_margin_pct"] = margins[-1]
+        if len(margins) >= 3 and margins[-3] is not None:
+            result["operating_margin_trend"] = margins[-1] - margins[-3]
+
+    # ── return on capital: return on assets, put on FMP's ROIC scale ──
+    pct_scale = _percent_scale(a)
+    roa = [x / pct_scale for x in series("ROAPCT") if x is not None]
+    # A return on assets outside +/-100% means the scale could not be trusted: leave the figure
+    # ABSENT (the name then counts as quality-unmeasured) rather than score a nonsense number.
+    if roa and all(abs(x) <= 100 for x in roa):
+        scaled = [ROA_TO_ROIC_SLOPE * x + ROA_TO_ROIC_INTERCEPT for x in roa]
+        result["roic_5yr_avg"] = sum(scaled) / len(scaled)
+        result["roic_5yr_min"] = min(scaled)
+        result["compounding_quality_raw"] = result["roic_5yr_avg"]
+
+    # ── gross margin ──
+    gm = series("GROSMGN")
+    if gm[-1] is not None:
+        result["gross_margin_pct"] = gm[-1]
+        if len(gm) >= 3 and gm[-3] is not None:
+            result["gross_margin_trend"] = gm[-1] - gm[-3]
+
+    # ── free cash flow margin: trend and count of negative years ──
+    shares = _snapshot_shares(snapshot_xml) if snapshot_xml else None
+    cfps, capex = series("CFSHR"), series("SCEX")
+    if shares:
+        fcf_margin: list[Optional[float]] = []
+        for c, x, r in zip(cfps, capex, revs):
+            fcf_margin.append(((c * shares) - abs(x or 0.0)) / r * 100 if c is not None and r else None)
+        if fcf_margin[-1] is not None and len(fcf_margin) >= 3 and fcf_margin[-3] is not None:
+            result["fcf_margin_trend"] = fcf_margin[-1] - fcf_margin[-3]
+        known = [m for m in fcf_margin if m is not None]
+        if known:
+            result["fcf_negative_years_5yr"] = sum(1 for m in known if m < 0)
+
+    # ── loss years (GAAP EPS where the report has it) ──
+    eps = [x for x in (series("GPS") if a.get("GPS") else series("EPS")) if x is not None]
+    if eps:
+        result["net_income_negative_years_5yr"] = sum(1 for x in eps if x < 0)
+
+    result["quality_source"] = "ibkr_resc"
+    result["quality_fiscal_year"] = latest
+    return result
+
+
+def get_ibkr_quality_fundamentals(ib, contract) -> dict:
+    """Fetch RESC (+ ReportSnapshot for the share count) and return the quality inputs.
+    {} when the company has no analyst coverage or the request fails — never a default."""
+    try:
+        from src.portfolio.connection import get_portfolio_lock
+        with get_portfolio_lock():
+            resc = ib.reqFundamentalData(contract, "RESC")
+            snapshot = ib.reqFundamentalData(contract, "ReportSnapshot") if resc else None
+    except Exception as e:
+        log.warning("ibkr_quality_fundamentals_failed", symbol=contract.symbol, error=str(e))
+        return {}
+    try:
+        return parse_quality_fundamentals(resc, snapshot)
+    except Exception as e:
+        log.warning("ibkr_quality_fundamentals_parse_failed", symbol=contract.symbol, error=str(e))
+        return {}

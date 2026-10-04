@@ -3488,6 +3488,8 @@ class StockScore:
     quality_pillar: float = 0
     growth_gate_ok: bool = False
     growth_gate_reason: str = ""
+    quality_measured: bool = False   # real return-on-capital AND operating-margin figures exist
+    fundamentals_source: str = ""    # "fmp", "ibkr", "fmp+ibkr", or "" when there is none
     dividend_yield: float = 0
     dividend_total_return_score: float = 0
     options_available: bool = False
@@ -4205,7 +4207,23 @@ class UniverseScreener:
         score.price = float(price)
         score.market_cap = self._estimate_market_cap(contract, price)
 
-        fmp = _get_fmp_fundamentals(symbol)
+        # FMP is keyed by US ticker, and tickers collide across markets (Verbund's VER is
+        # VEREIT; Airbus's AIR is AAR Corp). For a non-USD listing, FMP figures are used only
+        # when FMP is describing the SAME company the broker qualified; otherwise they are
+        # discarded and the broker's own figures below are the source. USD listings share FMP's
+        # ticker space and are trusted as before.
+        _fmp_trusted = True
+        if (currency or "USD").upper() != "USD":
+            try:
+                _prof = _fmp_get("profile", symbol) or []
+                _fmp_name = (_prof[0] or {}).get("companyName") if _prof else None
+            except Exception:
+                _fmp_name = None
+            _fmp_trusted = bool(_fmp_name and _same_company(score.name, _fmp_name))
+            if _fmp_name and not _fmp_trusted:
+                log.info("screener_fmp_identity_mismatch", symbol=symbol, broker=score.name, fmp=_fmp_name)
+        fmp = _get_fmp_fundamentals(symbol) if _fmp_trusted else {}
+        _has_fmp = bool(fmp)
 
         # IBKR fundamentals fallback — covers LSE/AEB/HKEX/etc. where FMP
         # returns nothing, and overrides FMP fields known to be broken
@@ -4234,6 +4252,26 @@ class UniverseScreener:
             # simple average), so it can stand in directly for the gate's history window.
             if fmp.get("revenue_cagr_pct") is None and ibkr.get("revenue_avg_pct") is not None:
                 fmp["revenue_cagr_pct"] = ibkr["revenue_avg_pct"]
+
+        # Quality figures from the broker (analyst-estimates report: ~5 years of annual actuals)
+        # wherever FMP has none — in practice every non-US listing. Fills gaps only; a figure FMP
+        # supplied is never overwritten. See src/portfolio/ibkr_fundamentals.py for what each
+        # figure is and how it was calibrated against FMP.
+        _used_ibkr_quality = False
+        if fmp.get("roic_5yr_avg") is None or fmp.get("operating_margin_pct") is None:
+            try:
+                from src.portfolio.ibkr_fundamentals import get_ibkr_quality_fundamentals
+                _ibkr_q = get_ibkr_quality_fundamentals(self.ib, contract)
+            except Exception:
+                _ibkr_q = {}
+            for _k, _v in _ibkr_q.items():
+                if _v is not None and fmp.get(_k) is None:
+                    fmp[_k] = _v
+                    _used_ibkr_quality = True
+        score.quality_measured = (fmp.get("roic_5yr_avg") is not None
+                                  and fmp.get("operating_margin_pct") is not None)
+        score.fundamentals_source = "+".join(
+            s for s, on in (("fmp", _has_fmp), ("ibkr", _used_ibkr_quality or bool(ibkr))) if on)
         score.growth_score = _score_growth(fmp)
         score.valuation_score = _score_valuation(fmp)
         score.quality_score = _score_quality(fmp)
@@ -4247,7 +4285,8 @@ class UniverseScreener:
         score.durable_growth_pct = _durable_growth(fmp)
         score.quality_pillar = _quality_pillar(fmp, score.sector)
         score.growth_gate_ok, score.growth_gate_reason = growth_gate.passes_entry_gate(
-            score.durable_growth_pct, score.quality_pillar)
+            score.durable_growth_pct, score.quality_pillar,
+            quality_measured=score.quality_measured)
 
         # Detect complete-fundamentals-missing: when all three scorers returned
         # the exact default 50.0, neither FMP nor IBKR had fundamental data for
