@@ -473,7 +473,7 @@ CANDIDATE_POOLS = {
 #       tokenised finance), a TIER BOUNDARY telling the model that names with growth-tier
 #       financials belong to the growth tier, one or two wildcard themes, a size rule that no
 #       longer contradicts the $200B ceiling, and fewer forced "unloved sector" large caps.
-BREAKTHROUGH_PROMPT_VERSION = "v1"
+BREAKTHROUGH_PROMPT_VERSION = "v2"   # switched 2026-10-04 on Rain's go, after the side-by-side and the dry run
 
 # ── Breakthrough size ceiling (v2 rules) ────────────────────────────────────────────────────
 # Tenfold returns come from small companies. In a twelve-year study of the US pool (2014 -> 2026,
@@ -3618,8 +3618,13 @@ class UniverseScreener:
 
         def _graduate(_score, _exchange, _currency, _thesis) -> None:
             """Hand a breakthrough candidate with growth-tier financials to the growth tier."""
+            if any(_g["symbol"] == _score.symbol for _g in self._breakthrough_graduated):
+                return  # already handed over this run (a member that was also proposed fresh)
             _score.tier = "growth"
-            all_scores.append(_score)
+            # Guard against a second copy: if the symbol is somehow already among the scored
+            # growth candidates, the growth tier already has it — just keep it out of this tier.
+            if not any(_s.symbol == _score.symbol for _s in all_scores):
+                all_scores.append(_score)
             _grad_additions.append({
                 "symbol": _score.symbol, "exchange": _exchange, "currency": _currency,
                 "region": _growth_region_for(_exchange, _currency),
@@ -3722,6 +3727,40 @@ class UniverseScreener:
                     else:
                         _kept_anchor.append(_e_anchor)
                 _anchor_sel = _kept_anchor
+            # Graduation of existing members happens HERE, before the selection call, so the
+            # selection fills all 25 slots from names that are staying. (Doing it after the
+            # selection would leave the tier short by however many members graduated.) Each
+            # member is scored once and the score is reused in Step 2 below.
+            _anchor_scores: dict = {}
+            if _v2_rules:
+                _fresh_scored = {s.symbol for s in breakthrough_scores}
+                _graduated_syms = {g["symbol"] for g in self._breakthrough_graduated}
+                _staying_anchor = []
+                for _e_anchor in _anchor_sel:
+                    _sym_anchor = _e_anchor.get("symbol")
+                    if _sym_anchor in _graduated_syms:
+                        continue                      # graduated as a fresh proposal a moment ago
+                    if _sym_anchor in _fresh_scored:
+                        _staying_anchor.append(_e_anchor)   # scored in the fresh loop, did not graduate
+                        continue
+                    try:
+                        _sc_anchor = self._score_stock(
+                            symbol=_sym_anchor,
+                            exchange=_e_anchor.get("exchange", "SMART"),
+                            currency=_e_anchor.get("currency", "USD"),
+                        )
+                    except Exception as _e_sc:
+                        print(f"  ⚠ member pre-score failed for {_sym_anchor}: {type(_e_sc).__name__}: {_e_sc}")
+                        _sc_anchor = None
+                    time.sleep(0.3)
+                    if _sc_anchor is not None and _graduates_to_growth(_sc_anchor, _growth_cutoff_bt):
+                        _graduate(_sc_anchor, _e_anchor.get("exchange", "SMART"),
+                                  _e_anchor.get("currency", "USD"), _e_anchor.get("thesis_latest", ""))
+                        continue
+                    if _sc_anchor is not None:
+                        _anchor_scores[_sym_anchor] = _sc_anchor
+                    _staying_anchor.append(_e_anchor)
+                _anchor_sel = _staying_anchor
             _audit_session_sel = _gsf_sel()()
             try:
                 _sel_result = _run_breakthrough_selection(
@@ -3750,7 +3789,7 @@ class UniverseScreener:
                 _exch_ao = _entry_ao.get("exchange", "SMART")
                 _curr_ao = _entry_ao.get("currency", "USD")
                 try:
-                    _score_ao = self._score_stock(
+                    _score_ao = _anchor_scores.get(_sym_ao) or self._score_stock(
                         symbol=_sym_ao,
                         exchange=_exch_ao,
                         currency=_curr_ao,

@@ -11,8 +11,9 @@ su = pytest.importorskip("screen_universe")
 
 
 def test_default_prompt_version_is_the_approved_one():
-    assert su.BREAKTHROUGH_PROMPT_VERSION == "v1"
-    assert su._build_breakthrough_prompt() == su._build_breakthrough_prompt("v1")
+    # 2026-10-04: switched from "v1" on Rain's go ("switch, commit, push").
+    assert su.BREAKTHROUGH_PROMPT_VERSION == "v2"
+    assert su._build_breakthrough_prompt() == su._build_breakthrough_prompt("v2")
 
 
 def test_both_versions_build_and_carry_the_exclusion_list():
