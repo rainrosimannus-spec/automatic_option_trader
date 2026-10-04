@@ -129,6 +129,9 @@
             {% if s.rationale %}
             <p class="text-sm text-gray-400 mb-2">{{ s.rationale }}</p>
             {% endif %}
+            {% if 'review' in s.action and s.review_note %}
+            <p class="text-sm text-amber-400 mb-2">{{ s.review_note }}</p>
+            {% endif %}
 
             <p class="text-xs text-gray-600">Signal: {{ s.signal or 'manual' }} · Created: {{ s.created_at.strftime('%b %d %H:%M') }}</p>
         </div>
@@ -147,10 +150,19 @@
                 </button>
             </form>
             {% elif s.status in ('approved', 'queued') and 'review' in s.action %}
+            {# Approved by hand: the portfolio review executor sends the order within a minute, or
+               as soon as the market is open. The note says what it is waiting for. #}
             <div class="w-24 px-3 py-2 rounded-lg text-center bg-emerald-900/50 border border-emerald-600/50"
-                 title="Review-only card: acknowledged, nothing is sent to IBKR — act on it manually if you agree">
-                <span class="text-emerald-300 text-xs font-medium">✓ Noted<br>manual</span>
+                 title="{{ s.review_note or 'Approved — the order is sent to IBKR within a minute' }}">
+                <span class="text-emerald-300 text-xs font-medium">✓ Approved<br>sending…</span>
             </div>
+            <form method="post" action="/suggestions/cancel/{{ s.id }}"
+                  onsubmit="return confirm('Withdraw the approval for {{ s.symbol }} before the order is sent?');">
+                <input type="hidden" name="source" value="{{ source }}">
+                <button class="w-24 px-4 py-2 rounded-lg font-medium bg-red-700 hover:bg-red-600 text-white text-sm transition">
+                    🛑 Cancel
+                </button>
+            </form>
             {% elif s.status in ('approved', 'queued') %}
             <div class="w-24 px-3 py-2 rounded-lg text-center bg-emerald-900/50 border border-emerald-600/50">
                 <span class="text-emerald-300 text-xs font-medium">✓ Approved<br>executing…</span>
@@ -167,14 +179,16 @@
                 <span class="text-yellow-300 text-xs font-medium">⏳ Sending<br>to IBKR</span>
             </div>
             {% else %}
-            {# Review-only cards (sell/reduce/CC review from the monthly review) are NEVER sent to
-               IBKR, even under auto-approve — approve_suggestion returns before execution for
-               REVIEW_ONLY_ACTIONS. So they always get buttons, and the button says what it does. #}
-            <form method="post" action="/suggestions/approve/{{ s.id }}">
+            {# Review cards (sell/reduce/covered call from the monthly review) are NEVER approved
+               automatically, whatever the auto-approve switch says — so they always get buttons.
+               Approving one by hand sends a real order on the portfolio account: the size is
+               clamped to the live IBKR position and the price is taken from the market then. #}
+            <form method="post" action="/suggestions/approve/{{ s.id }}"
+                  {% if 'review' in s.action %}onsubmit="return confirm('Send this order to IBKR for {{ s.symbol }}?{% if 'call' in s.action %} Sells up to {{ s.quantity }} covered call(s), strike {{ s.strike }} or higher.{% else %} Sells up to {{ s.quantity }} shares at the current market price.{% endif %}');"{% endif %}>
                 <input type="hidden" name="source" value="{{ source }}">
                 <button class="w-24 px-4 py-2 rounded-lg font-medium bg-emerald-600 hover:bg-emerald-500 text-white text-sm transition"
-                        {% if 'review' in s.action %}title="Marks the review as acknowledged. Nothing is sent to IBKR — you act on it manually."{% endif %}>
-                    {% if 'review' in s.action %}✅ Noted{% else %}✅ Approve{% endif %}
+                        {% if 'review' in s.action %}title="Sends a limit order to IBKR on the portfolio account, good for the day. Nothing is sent unless you press this."{% endif %}>
+                    {% if 'review' in s.action %}✅ Approve<br>&amp; send{% else %}✅ Approve{% endif %}
                 </button>
             </form>
             <form method="post" action="/suggestions/reject/{{ s.id }}">

@@ -1,0 +1,410 @@
+"""Review cards (sell / reduce / covered call from the monthly review) send a real order on the
+PORTFOLIO account — but only after a manual approval, and only for what IBKR shows is free to sell.
+
+Three things are pinned here:
+  * manual only — no auto-approve switch, bare status change or non-dashboard note sells anything;
+  * the broker's position sizes the order — shares under short calls or already in sell orders are
+    never sold twice, and an unreadable position sends nothing;
+  * the loss-call rule — strike at the break-even or 5% above the price, whichever is higher, and
+    the strike actually sent is never below the broker's average cost.
+"""
+from datetime import date, datetime, timedelta
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+import src.core.database as db_mod
+import src.portfolio.models  # noqa: F401 (registers the holdings table)
+from src.core.models import Base, SystemState
+from src.core.suggestions import (REVIEW_MANUAL_APPROVAL_NOTE, TradeSuggestion, approve_suggestion,
+                                  create_suggestion)
+from src.portfolio import review_orders as ro
+
+MANUAL = REVIEW_MANUAL_APPROVAL_NOTE
+
+
+@pytest.fixture
+def temp_db(tmp_path, monkeypatch):
+    eng = create_engine(f"sqlite:///{tmp_path/'t.db'}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(eng)
+    src.portfolio.models.Base.metadata.create_all(eng)
+    monkeypatch.setattr(db_mod, "_engine", eng)
+    monkeypatch.setattr(db_mod, "_SessionLocal", sessionmaker(bind=eng))
+    return eng
+
+
+def _stk(symbol="ACME", qty=0, avg=100.0):
+    return SimpleNamespace(account="", position=qty, avgCost=avg,
+                           contract=SimpleNamespace(secType="STK", symbol=symbol, currency="USD", conId=111))
+
+
+def _short_call(symbol="ACME", contracts=1):
+    return SimpleNamespace(account="", position=-contracts, avgCost=0.0,
+                           contract=SimpleNamespace(secType="OPT", symbol=symbol, right="C",
+                                                    multiplier="100", currency="USD", conId=333))
+
+
+def _working(sec="STK", action="SELL", qty=100, symbol="ACME", right=""):
+    return SimpleNamespace(
+        contract=SimpleNamespace(secType=sec, symbol=symbol, right=right, multiplier="100",
+                                 currency="USD", conId=111),
+        order=SimpleNamespace(action=action, totalQuantity=qty),
+        orderStatus=SimpleNamespace(status="Submitted", remaining=qty))
+
+
+class FakeIB:
+    def __init__(self, positions, open_trades=(), close=100.0, bid=1.00, ask=1.20,
+                 strikes=(90, 95, 100, 105, 110, 115, 120), order_status="Submitted"):
+        self._positions, self._open = list(positions), list(open_trades)
+        self.close, self.bid, self.ask, self.strikes = close, bid, ask, strikes
+        self.order_status = order_status
+        self.placed = []
+
+    def positions(self):
+        return list(self._positions)
+
+    def openTrades(self):
+        return list(self._open)
+
+    def qualifyContracts(self, c):
+        c.conId = c.conId or (222 if getattr(c, "secType", "") == "OPT" else 111)
+        return [c]
+
+    def reqContractDetails(self, c):
+        return [SimpleNamespace(validExchanges="SMART", minTick=0.01, marketRuleIds="")]
+
+    def reqHistoricalData(self, *a, **k):
+        return [SimpleNamespace(close=self.close)]
+
+    def reqSecDefOptParams(self, *a):
+        exp = (date.today() + timedelta(days=40)).strftime("%Y%m%d")
+        soon = (date.today() + timedelta(days=5)).strftime("%Y%m%d")
+        return [SimpleNamespace(exchange="SMART", expirations=[soon, exp], strikes=list(self.strikes))]
+
+    def reqMktData(self, *a):
+        return SimpleNamespace(bid=self.bid, ask=self.ask)
+
+    def cancelMktData(self, *a):
+        pass
+
+    def sleep(self, *a):
+        pass
+
+    def placeOrder(self, contract, order):
+        self.placed.append((contract, order))
+        return SimpleNamespace(contract=contract, order=order, log=[],
+                               orderStatus=SimpleNamespace(status=self.order_status, filled=0, permId=9))
+
+
+@pytest.fixture
+def wired(temp_db, monkeypatch):
+    """Portfolio connection replaced by a fake; markets open; account writable."""
+    import src.portfolio.buyer as buyer
+    import src.portfolio.connection as conn
+    from src.core.config import get_settings
+    holder = {}
+    monkeypatch.setattr(conn, "get_portfolio_ib", lambda: holder["ib"])
+    monkeypatch.setattr(conn, "is_portfolio_connected", lambda: True)
+    monkeypatch.setattr(conn, "_ensure_event_loop", lambda: None)
+    monkeypatch.setattr(conn, "refresh_portfolio_pending_orders_cache", lambda: None)
+    monkeypatch.setattr(buyer, "_market_open", lambda ccy: True)
+    monkeypatch.setattr(ro, "_us_options_open", lambda now=None: True)
+    monkeypatch.setattr(get_settings().portfolio, "readonly", False)
+    monkeypatch.setattr(get_settings().portfolio, "ibkr_account", "")
+    buyer._MIN_TICK_CACHE.clear()
+    return holder
+
+
+def _card(action="sell_stock_review", qty=500, status="approved", note=MANUAL, symbol="ACME", **kw):
+    with db_mod.get_db() as db:
+        s = TradeSuggestion(symbol=symbol, action=action, status=status, source="rescreen",
+                            quantity=qty, review_note=note, reviewed_at=datetime.utcnow(), **kw)
+        db.add(s)
+        db.flush()
+        return s.id
+
+
+def _get(sid):
+    with db_mod.get_db() as db:
+        s = db.query(TradeSuggestion).filter(TradeSuggestion.id == sid).first()
+        return SimpleNamespace(status=s.status, note=s.review_note or "", quantity=s.quantity,
+                               strike=s.strike, limit_price=s.limit_price)
+
+
+# ── The rules themselves ───────────────────────────────────────────────────────────────────
+
+def test_loss_call_strike_is_break_even_or_five_percent_whichever_is_higher():
+    assert ro.loss_call_strike(avg_cost=100, price=90) == 100          # break-even wins
+    assert ro.loss_call_strike(avg_cost=100, price=99) == pytest.approx(103.95)   # 5% wins
+
+
+def test_loss_call_gets_no_card_when_the_break_even_is_out_of_reach():
+    assert ro.loss_call_worth_a_card(avg_cost=100, price=85)
+    assert not ro.loss_call_worth_a_card(avg_cost=100, price=70)       # 43% away: no bid there
+
+
+def test_strike_is_never_picked_below_the_floor():
+    assert ro.pick_strike([90, 95, 100, 105], 97.5) == 100
+    assert ro.pick_strike([90, 95], 97.5) is None
+
+
+def test_expiry_keeps_clear_of_the_next_two_weeks():
+    today = date(2026, 10, 6)
+    assert ro.pick_expiry(["20261009", "20261120", "20261218"], "20261120", today) == "20261120"
+    assert ro.pick_expiry(["20261009"], "20261009", today) is None
+
+
+def test_free_shares_exclude_short_calls_and_working_sells():
+    book = ro.Book(long_shares=500, short_call_shares=200, working_stock_sells=100)
+    assert book.free_shares == 200
+    assert ro.sale_size(500, book) == 200
+    assert ro.call_size(5, book) == 2
+    assert ro.sale_size(500, ro.Book(long_shares=454), lot=100) == 400
+
+
+# ── Manual only ────────────────────────────────────────────────────────────────────────────
+
+def test_review_card_is_never_auto_approved_and_lives_thirty_days(temp_db):
+    with db_mod.get_db() as db:
+        db.add(SystemState(key="auto_approve_rescreen", value="true"))
+    create_suggestion(symbol="ACME", action="sell_stock_review", quantity=10, limit_price=99.0,
+                      source="rescreen", tier="growth", rationale="x", rank=1, expires_hours=720)
+    with db_mod.get_db() as db:
+        row = db.query(TradeSuggestion).filter(TradeSuggestion.symbol == "ACME").one()
+        assert row.status == "pending"
+        assert row.expires_at > datetime.utcnow() + timedelta(days=29)
+
+
+def test_only_the_dashboard_note_approves_a_review_card(temp_db):
+    sid = _card(status="pending", note=None)
+    assert approve_suggestion(sid, note="auto-approved") is False
+    assert approve_suggestion(sid, note="") is False
+    assert _get(sid).status == "pending"
+    assert approve_suggestion(sid, note=MANUAL) is True
+    assert _get(sid).status == "approved"
+
+
+def test_approved_without_the_manual_marker_sells_nothing(wired):
+    wired["ib"] = FakeIB([_stk(qty=500)])
+    for note in ("auto-approved", "auto-approved (portfolio auto-execute)", "", None):
+        sid = _card(note=note)
+        assert ro.execute_review_stock_sale(sid) == "skip"
+        assert ro.execute_review_covered_call(_card(action="sell_covered_call_review", qty=1, note=note)) == "skip"
+    assert ro.approved_review_cards() == []
+    assert wired["ib"].placed == []
+
+
+def test_pending_card_sells_nothing(wired):
+    wired["ib"] = FakeIB([_stk(qty=500)])
+    assert ro.execute_review_stock_sale(_card(status="pending", note=MANUAL)) == "skip"
+    assert wired["ib"].placed == []
+
+
+# ── Stock sale ─────────────────────────────────────────────────────────────────────────────
+
+def test_sale_is_clamped_to_what_the_broker_shows_free(wired):
+    ib = wired["ib"] = FakeIB([_stk(qty=300), _short_call(contracts=1)], close=100.0)
+    sid = _card(qty=500)                       # card is a month old and says 500
+    assert ro.execute_review_stock_sale(sid) == "submitted"
+    (contract, order), = ib.placed
+    assert (order.action, order.totalQuantity, order.tif) == ("SELL", 200, "DAY")
+    assert order.lmtPrice == pytest.approx(99.80)          # last trade less 0.2%
+    card = _get(sid)
+    assert card.quantity == 200 and "position before 300" in card.note
+
+
+def test_working_sell_order_is_not_sold_again(wired):
+    ib = wired["ib"] = FakeIB([_stk(qty=300)], open_trades=[_working(qty=300)])
+    sid = _card(qty=300)
+    assert ro.execute_review_stock_sale(sid) == "rejected"
+    assert ib.placed == [] and "already in sell orders" in _get(sid).note
+
+
+def test_no_position_at_the_broker_sends_nothing(wired):
+    ib = wired["ib"] = FakeIB([_stk(symbol="OTHER", qty=50)])
+    sid = _card()
+    assert ro.execute_review_stock_sale(sid) == "rejected"
+    assert ib.placed == []
+
+
+def test_unreadable_positions_send_nothing_and_stay_manual(wired):
+    ib = wired["ib"] = FakeIB([])              # positions not loaded
+    sid = _card()
+    assert ro.execute_review_stock_sale(sid) == "approved"
+    assert ib.placed == []
+    assert _get(sid).note.startswith(MANUAL)   # still a hand approval on the retry
+
+
+def test_market_shut_waits_without_sending(wired, monkeypatch):
+    import src.portfolio.buyer as buyer
+    monkeypatch.setattr(buyer, "_market_open", lambda ccy: False)
+    ib = wired["ib"] = FakeIB([_stk(qty=300)])
+    sid = _card()
+    assert ro.execute_review_stock_sale(sid) == "approved"
+    assert ib.placed == [] and "market opens" in _get(sid).note
+
+
+def test_order_the_broker_refuses_returns_the_card_for_a_new_approval(wired):
+    wired["ib"] = FakeIB([_stk(qty=300)], order_status="Inactive")
+    sid = _card(qty=300)
+    assert ro.execute_review_stock_sale(sid) == "pending"
+    assert ro.approved_review_cards() == []          # never retried on its own
+
+
+# ── Covered call ───────────────────────────────────────────────────────────────────────────
+
+def test_call_strike_is_never_below_the_brokers_average_cost(wired):
+    # Card said 100 a month ago; the broker's average cost is 108; price 95.
+    ib = wired["ib"] = FakeIB([_stk(qty=250, avg=108.0)], close=95.0, bid=1.00, ask=1.20)
+    sid = _card(action="sell_covered_call_review", qty=3, strike=100.0,
+                expiry=(date.today() + timedelta(days=40)).strftime("%Y%m%d"), right="C")
+    assert ro.execute_review_covered_call(sid) == "submitted"
+    (opt, order), = ib.placed
+    assert opt.strike == 110 and opt.right == "C"           # first listed strike at/above 108
+    assert (order.action, order.totalQuantity) == ("SELL", 2)   # 250 shares cover two, not three
+    assert order.lmtPrice == 1.00                           # at the bid, like the option side
+    assert _get(sid).strike == 110
+
+
+def test_call_keeps_five_percent_above_todays_price(wired):
+    ib = wired["ib"] = FakeIB([_stk(qty=100, avg=50.0)], close=100.0)
+    sid = _card(action="sell_covered_call_review", qty=1, strike=90.0, right="C")
+    assert ro.execute_review_covered_call(sid) == "submitted"
+    assert ib.placed[0][0].strike == 105
+
+
+def test_shares_already_under_a_call_get_no_second_call(wired):
+    ib = wired["ib"] = FakeIB([_stk(qty=100), _short_call(contracts=1)])
+    sid = _card(action="sell_covered_call_review", qty=1, strike=110.0, right="C")
+    assert ro.execute_review_covered_call(sid) == "rejected"
+    assert ib.placed == []
+
+
+def test_sale_and_call_approved_together_cannot_both_take_the_shares(wired):
+    ib = wired["ib"] = FakeIB([_stk(qty=100)], open_trades=[_working(qty=100)])   # the sale is working
+    sid = _card(action="sell_covered_call_review", qty=1, strike=110.0, right="C")
+    assert ro.execute_review_covered_call(sid) == "rejected"
+    assert ib.placed == []
+
+
+def test_call_without_a_bid_is_not_sent(wired):
+    ib = wired["ib"] = FakeIB([_stk(qty=100)], bid=0.15, ask=0.30)      # under the $0.20 floor
+    sid = _card(action="sell_covered_call_review", qty=1, strike=110.0, right="C")
+    assert ro.execute_review_covered_call(sid) == "approved"
+    assert ib.placed == [] and "no bid" in _get(sid).note
+
+
+def test_foreign_listing_gets_no_call(wired):
+    from src.portfolio.models import PortfolioHolding
+    with db_mod.get_db() as db:
+        db.add(PortfolioHolding(symbol="XRO", exchange="ASX", currency="AUD", shares=500))
+    ib = wired["ib"] = FakeIB([_stk(symbol="XRO", qty=500)])
+    sid = _card(action="sell_covered_call_review", qty=5, strike=110.0, right="C", symbol="XRO")
+    assert ro.execute_review_covered_call(sid) == "rejected"
+    assert ib.placed == []
+
+
+# ── After the order ────────────────────────────────────────────────────────────────────────
+
+def _sent(note, qty=300, action="sell_stock_review"):
+    with db_mod.get_db() as db:
+        s = TradeSuggestion(symbol="ACME", action=action, status="submitted", source="rescreen",
+                            quantity=qty, review_note=note,
+                            reviewed_at=datetime.utcnow() - timedelta(minutes=10))
+        db.add(s)
+        db.flush()
+        return s.id
+
+
+def test_unfilled_order_returns_to_pending_and_is_not_resent(wired):
+    ib = wired["ib"] = FakeIB([_stk(qty=300)])
+    sid = _sent("Sent to IBKR: SELL 300 @ 99.8, good for today (order 7; position before 300)")
+    ro.reconcile_review_orders()
+    assert _get(sid).status == "pending"
+    assert ro.approved_review_cards() == [] and ib.placed == []
+
+
+def test_filled_order_is_marked_executed(wired):
+    wired["ib"] = FakeIB([_stk(symbol="OTHER", qty=10)])       # ACME gone from the account
+    sid = _sent("Sent to IBKR: SELL 300 @ 99.8, good for today (order 7; position before 300)")
+    ro.reconcile_review_orders()
+    assert _get(sid).status == "executed"
+
+
+def test_partly_filled_order_asks_again_for_the_rest_only(wired):
+    wired["ib"] = FakeIB([_stk(qty=180)])
+    sid = _sent("Sent to IBKR: SELL 300 @ 99.8, good for today (order 7; position before 300)")
+    ro.reconcile_review_orders()
+    card = _get(sid)
+    assert card.status == "pending" and card.quantity == 180 and card.note.startswith("Partly filled")
+
+
+def test_order_still_working_is_left_alone(wired):
+    wired["ib"] = FakeIB([_stk(qty=300)], open_trades=[_working(qty=300)])
+    sid = _sent("Sent to IBKR: SELL 300 @ 99.8, good for today (order 7; position before 300)")
+    ro.reconcile_review_orders()
+    assert _get(sid).status == "submitted"
+
+
+def test_sold_names_are_not_bought_back(temp_db):
+    now = datetime.utcnow()
+    with db_mod.get_db() as db:
+        def add(sym, status, note="", when=now, action="sell_stock_review"):
+            db.add(TradeSuggestion(symbol=sym, action=action, status=status, source="rescreen",
+                                   quantity=1, review_note=note, reviewed_at=when))
+        add("SOLD", "executed", "Filled: sold 1")
+        add("OLD", "executed", "Filled: sold 1", when=now - timedelta(days=120))
+        add("WORKING", "submitted")
+        add("APPROVED", "approved", MANUAL)
+        add("PARTLY", "pending", "Partly filled: sold 1 of 2 shares")
+        add("JUSTACARD", "pending")
+        add("NOTED", "approved", "")                      # old-style acknowledgement, not a sale
+        add("CALL", "executed", action="sell_covered_call_review")
+    assert ro.review_sale_blocked_symbols() == {"SOLD", "WORKING", "APPROVED", "PARTLY"}
+
+
+# ── The card the monthly review writes ─────────────────────────────────────────────────────
+
+def test_review_writes_a_break_even_call_beside_a_sell_card_at_a_loss(monkeypatch):
+    import src.core.suggestions as sugg
+    from src.portfolio.scheduler import _loss_call_cards
+    made = []
+    monkeypatch.setattr(sugg, "create_suggestion", lambda **kw: made.append(kw))
+    facts = {
+        "LOSS": {"shares": 250, "avg_cost": 100.0, "price": 92.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
+        "NEAR": {"shares": 100, "avg_cost": 100.0, "price": 99.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
+        "GAIN": {"shares": 300, "avg_cost": 100.0, "price": 120.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
+        "DEEP": {"shares": 300, "avg_cost": 100.0, "price": 60.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
+        "ODD":  {"shares": 60, "avg_cost": 100.0, "price": 92.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
+        "XRO":  {"shares": 500, "avg_cost": 100.0, "price": 92.0, "tier": "growth", "currency": "AUD", "sma_200": 95.0},
+        "HASCC": {"shares": 500, "avg_cost": 100.0, "price": 92.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
+        "UNFLAGGED": {"shares": 500, "avg_cost": 100.0, "price": 92.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
+    }
+    flagged = [{"symbol": s, "action": "CONSIDER SELL"} for s in facts if s != "UNFLAGGED"]
+    out = _loss_call_cards(flagged, facts, open_cc_symbols={"HASCC"})
+
+    by = {kw["symbol"]: kw for kw in made}
+    assert set(by) == {"LOSS", "NEAR"}
+    assert by["LOSS"]["strike"] == 100 and by["LOSS"]["quantity"] == 2      # break-even
+    assert by["NEAR"]["strike"] == 104                                       # 5% above 99, rounded up
+    assert all(kw["action"] == "sell_covered_call_review" and kw["source"] == "rescreen" for kw in made)
+    assert {o["symbol"] for o in out} == {"LOSS", "NEAR"}
+
+
+def test_one_pass_sends_one_order_per_name_and_skips_cards_that_must_wait(wired, monkeypatch):
+    import src.portfolio.buyer as buyer
+    from src.portfolio.models import PortfolioHolding
+    with db_mod.get_db() as db:
+        db.add(PortfolioHolding(symbol="6920", exchange="TSEJ", currency="JPY", shares=100))
+    monkeypatch.setattr(buyer, "_market_open", lambda ccy: ccy == "USD")     # Tokyo shut
+    ib = wired["ib"] = FakeIB([_stk(qty=100), _stk(symbol="6920", qty=100)])
+    tokyo = _card(symbol="6920", qty=100)                                   # oldest, must wait
+    sale = _card(qty=100)
+    call = _card(action="sell_covered_call_review", qty=1, strike=110.0, right="C")
+    ro.run_review_orders()
+    assert _get(tokyo).status == "approved"                                 # waiting, not blocking
+    assert _get(sale).status == "submitted"
+    assert _get(call).status == "approved"                                  # same name: next pass
+    assert len(ib.placed) == 1 and ib.placed[0][1].totalQuantity == 100

@@ -1705,6 +1705,7 @@ def create_scheduler() -> BackgroundScheduler:
             job_portfolio_scan, job_portfolio_update_prices,
             job_portfolio_update_metrics, job_portfolio_monthly_screen,
             job_portfolio_monthly_review, job_portfolio_sync_trades, job_portfolio_trailing_stop_monitor,
+            job_portfolio_review_orders,
             job_portfolio_fx_treasury, job_portfolio_aftermarket_fill,
             job_portfolio_late_session_fill,
         )
@@ -1969,6 +1970,17 @@ def create_scheduler() -> BackgroundScheduler:
             misfire_grace_time=600,
             coalesce=True,
             next_run_time=trailing_first_run,
+        )
+
+        # Review-card orders — every minute. Sends the order for a sell / reduce / covered-call
+        # review card ONLY after it was approved by hand on the dashboard; idle otherwise.
+        scheduler.add_job(
+            partial(job_portfolio_review_orders, portfolio_cfg),
+            IntervalTrigger(seconds=60),
+            id="portfolio_review_orders",
+            name="Portfolio Review Orders (manual approval only)",
+            max_instances=1,
+            coalesce=True,
         )
 
         # Benchmark history refresh (BRK-B + SPY) — daily at 6 AM ET (after market close data is settled)

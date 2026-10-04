@@ -125,14 +125,23 @@ class TradeSuggestion(Base):
 FORBIDDEN_ACTIONS = {"sell_stock", "buy_put", "buy_call", "buy_option"}
 MAX_MARGIN_UTIL = 0.70  # 70% — never suggest beyond this
 
-# Review actions — can be suggested but NEVER auto-executed.
-# These require explicit manual approval AND manual execution by the user.
-# The system will never place these orders, even if approved.
+# Review actions (portfolio account) — can be suggested but NEVER auto-approved or auto-executed.
+# An order is sent only after the user approves the card by hand on the dashboard; the order
+# itself is placed by src/portfolio/review_orders.py, never by the options executor below.
 REVIEW_ONLY_ACTIONS = {
     "sell_stock_review",          # annual review: sell entire position
     "reduce_position_review",     # annual review: reduce overweight position
     "sell_covered_call_review",   # annual review: sell covered call on profitable position
 }
+
+# The note the dashboard's Approve button writes on a review card. It is the ONLY thing that lets
+# src/portfolio/review_orders.py send an order for one: a review card approved any other way
+# (auto-approve switch, a promotion job, a bare status change) carries no marker and sells nothing.
+REVIEW_MANUAL_APPROVAL_NOTE = "Approved by hand on the dashboard"
+
+
+def is_manual_review_approval(note: str | None) -> bool:
+    return bool(note) and note.startswith(REVIEW_MANUAL_APPROVAL_NOTE)
 
 
 def validate_suggestion(
@@ -230,6 +239,10 @@ def create_suggestion(
         expires_at = close_et.astimezone(pytz.utc).replace(tzinfo=None)
     except Exception:
         expires_at = datetime.utcnow() + timedelta(hours=expires_hours)
+    # Review cards wait for a human decision, so they keep the lifetime their creator asked for
+    # (30 days) instead of vanishing at the next session close.
+    if action in REVIEW_ONLY_ACTIONS:
+        expires_at = datetime.utcnow() + timedelta(hours=expires_hours)
 
     # Dedup check: block if identical pending/queued suggestion already exists
     with get_db() as db:
@@ -308,8 +321,8 @@ def create_suggestion(
     except Exception:
         pass
 
-    # Auto-approve if enabled for this source
-    if _is_auto_approve_enabled(source):
+    # Auto-approve if enabled for this source — never for review cards, whatever the switch says.
+    if action not in REVIEW_ONLY_ACTIONS and _is_auto_approve_enabled(source):
         global _margin_rejected_this_cycle
         global _buying_power_remaining
 
@@ -404,16 +417,24 @@ def approve_suggestion(suggestion_id: int, note: str = "") -> bool:
         if not s or s.status != "pending":
             return False
 
+        # A review card can only be approved by hand: anything but the dashboard button's own
+        # note (auto-approve toggles pass "auto-approved…") is refused and the card stays pending.
+        if s.action in REVIEW_ONLY_ACTIONS and not is_manual_review_approval(note):
+            log.warning("review_card_non_manual_approval_refused", id=suggestion_id,
+                        symbol=s.symbol, action=s.action, note=note)
+            return False
+
         s.status = "approved"
         s.reviewed_at = datetime.utcnow()
         s.review_note = note
         log.info("suggestion_approved", id=suggestion_id, symbol=s.symbol)
 
         # ── Execute the order via IBKR ──────────────────────────
-        # Skip execution for review-only actions (annual review sells etc.)
-        from src.core.suggestions import REVIEW_ONLY_ACTIONS
+        # Review cards stop here: the PORTFOLIO review executor (src/portfolio/review_orders.py)
+        # picks up the hand-approved card and sends its order on the portfolio account.
         if s.action in REVIEW_ONLY_ACTIONS:
-            log.info("review_only_skipping_execution", id=suggestion_id, action=s.action)
+            s.funding_attempts = 0
+            log.info("review_card_approved_by_hand", id=suggestion_id, action=s.action)
             return True
 
         # Check if IBKR is connected and not in read-only mode

@@ -133,6 +133,14 @@ def toggle_auto_approve(request: Request, source: str = Form("options")):
 # ── Approve / Reject (shared) ────────────────────────────
 @router.post("/approve/{suggestion_id}")
 def approve(suggestion_id: int, request: Request, note: str = Form(""), source: str = Form("portfolio")):
+    # A review card (sell / reduce / covered call from the monthly review) is approved here and
+    # nowhere else: this button writes the marker without which the portfolio review executor
+    # sends nothing (see src/portfolio/review_orders.py).
+    from src.core.suggestions import REVIEW_ONLY_ACTIONS, REVIEW_MANUAL_APPROVAL_NOTE
+    with get_db() as db:
+        _s = db.query(TradeSuggestion).filter(TradeSuggestion.id == suggestion_id).first()
+        if _s is not None and _s.action in REVIEW_ONLY_ACTIONS:
+            note = REVIEW_MANUAL_APPROVAL_NOTE
     approve_suggestion(suggestion_id, note)
     if source == "options":
         return RedirectResponse(url="/suggestions/options", status_code=303)
@@ -159,7 +167,8 @@ def _cancel_live_order_for_suggestion(s: TradeSuggestion) -> int:
     _DONE = {"Filled", "Cancelled", "ApiCancelled", "PendingCancel"}
     cancelled = 0
     try:
-        if s.source == "portfolio":
+        # Review cards (source "rescreen") are portfolio-account orders too.
+        if s.source in ("portfolio", "rescreen"):
             from src.portfolio.connection import (get_portfolio_ib, get_portfolio_lock,
                                                   is_portfolio_connected)
             if not is_portfolio_connected():
@@ -193,8 +202,10 @@ def _cancel_live_order_for_suggestion(s: TradeSuggestion) -> int:
                 if s.strike and abs(float(getattr(c, "strike", 0) or 0) - float(s.strike)) > 1e-6:
                     continue
             else:
+                # A review sale's order is a SELL; every other stock card is a BUY.
+                _want_side = "SELL" if "review" in act else "BUY"
                 if getattr(c, "secType", "") != "STK" \
-                        or str(getattr(o, "action", "")).upper() != "BUY":
+                        or str(getattr(o, "action", "")).upper() != _want_side:
                     continue
             try:
                 with lock:

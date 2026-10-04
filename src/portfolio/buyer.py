@@ -1523,6 +1523,15 @@ class PortfolioBuyer:
         # head of the order is a stable "next buy" the dashboard can show at any hour; `queue` is then
         # the market-open slice of it. Filtering AFTER the sort preserves the relative order, so the
         # deploy loop sees exactly the queue it saw before this split.
+        # A name being sold — or sold in the last 90 days — on a hand-approved review card is not
+        # bought: the sale opens the biggest gap in the queue, and the buyer would otherwise put
+        # straight back what was just taken out. Unreadable ⇒ empty set, i.e. yesterday's behaviour.
+        try:
+            from src.portfolio.review_orders import review_sale_blocked_symbols
+            review_sold = review_sale_blocked_symbols()
+        except Exception as _e:
+            log.warning("compounder_review_sale_block_unavailable", error=str(_e))
+            review_sold = set()
         candidates = []
         for r in ranked:
             tgt = targets.get(r.symbol, 0.0)
@@ -1531,6 +1540,9 @@ class PortfolioBuyer:
             cur = held.get(r.symbol, 0.0) + open_buy.get(r.symbol, 0.0)
             if cur >= tgt * 0.98:
                 continue                          # already at/working toward target — hold
+            if r.symbol in review_sold:
+                log.info("compounder_skip_sold_on_review", symbol=r.symbol)
+                continue                          # sold on an approved review card — no re-buy
             if r.symbol in held_back:
                 continue                          # laggard re-fill gate: filled once, not −15% vs avg cost
             if r.symbol in open_put_syms:
@@ -1576,7 +1588,8 @@ class PortfolioBuyer:
         for _r in ranked:
             _tgt = targets.get(_r.symbol, 0.0)
             if (_tgt <= 0 or _r.symbol in open_put_syms or _is_permission_blocked(_r.symbol)
-                    or _r.symbol in held_back):       # a held-back green must not block yellows
+                    or _r.symbol in held_back         # a held-back green must not block yellows
+                    or _r.symbol in review_sold):     # nor one sold on review
                 continue
             _cur = held.get(_r.symbol, 0.0) + open_buy.get(_r.symbol, 0.0)
             if cmp.green_blocks_yellow(cmp.fair_price_attractiveness(_r.price, _r.sma200, _r.high_52w),

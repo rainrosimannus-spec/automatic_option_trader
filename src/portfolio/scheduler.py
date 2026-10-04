@@ -1373,6 +1373,8 @@ def _review_existing_holdings_monthly(
             ).all()
         }
 
+    held_facts: dict[str, dict] = {}      # per reviewed holding, for the loss-call pass after the loop
+
     for holding in holdings:
         symbol = holding.symbol
         # The cash-yield PARK ETF (XEON) is a parked cash reserve, not a compounder position — never
@@ -1428,6 +1430,11 @@ def _review_existing_holdings_monthly(
         # ── 1. Breakthrough: never touch based on metrics ──
         if tier == "breakthrough":
             continue
+
+        held_facts[symbol] = {
+            "shares": shares, "avg_cost": avg_cost, "price": current_price, "tier": tier,
+            "currency": holding.currency or "USD", "sma_200": sma_200,
+        }
 
         # Every fundamentals-based suggestion below reads FMP by ticker; make sure FMP is
         # talking about THIS company before believing any of it.
@@ -1776,27 +1783,10 @@ def _review_existing_holdings_monthly(
         if cc_trigger:
             # Calculate strike: 5% OTM from current price
             strike = round(current_price * 1.05, 0)
-            # Target ~30 DTE: find nearest monthly expiry
+            # Third Friday of next month (of the month after, once past mid-month).
             from datetime import date
-            import calendar
-            today = date.today()
-            # Third Friday of next month as target expiry
-            next_month = today.replace(day=1)
-            if today.day > 15:
-                # If past mid-month, target month after next
-                if next_month.month == 12:
-                    next_month = next_month.replace(year=next_month.year + 1, month=1)
-                else:
-                    next_month = next_month.replace(month=next_month.month + 1)
-            if next_month.month == 12:
-                month_after = next_month.replace(year=next_month.year + 1, month=1)
-            else:
-                month_after = next_month.replace(month=next_month.month + 1)
-            # Find third Friday of target month
-            target_month = month_after
-            first_day = target_month.replace(day=1)
-            first_friday = first_day + timedelta(days=(4 - first_day.weekday()) % 7)
-            third_friday = first_friday + timedelta(weeks=2)
+            from src.portfolio.review_orders import review_call_expiry
+            third_friday = review_call_expiry(date.today())
             expiry_str = third_friday.strftime("%Y%m%d")
 
             rationale = (
@@ -1863,7 +1853,75 @@ def _review_existing_holdings_monthly(
                 "reason": f"Off watchlist but profitable ({pnl_pct:+.1f}%)",
             })
 
+    suggestions.extend(_loss_call_cards(suggestions, held_facts, open_cc_symbols))
     return suggestions
+
+
+def _loss_call_cards(suggestions: list[dict], held_facts: dict[str, dict],
+                     open_cc_symbols: set[str]) -> list[dict]:
+    """Covered-call card for every holding the review flagged for exit that trades BELOW cost.
+
+    The sell card stays as it is; this is the alternative next to it. Selling now books the loss.
+    A call struck at the break-even — or 5% above the price, whichever is higher — pays a premium
+    for waiting and, if called, takes the stock out at no loss. Only where a call can be written:
+    a US listing, at least 100 shares, no call card already open, and a break-even close enough
+    to the price that the call has a bid (review_orders.LOSS_CALL_MAX_OTM_PCT).
+    Like every review card it does nothing until approved by hand."""
+    import math
+    from datetime import date
+    from src.core.suggestions import create_suggestion
+    from src.portfolio import review_orders as ro
+
+    out: list[dict] = []
+    flagged = [s_["symbol"] for s_ in suggestions if s_.get("action") in ("SELL", "CONSIDER SELL")]
+    for symbol in dict.fromkeys(flagged):
+        f = held_facts.get(symbol)
+        if not f or symbol in open_cc_symbols:
+            continue
+        shares, avg_cost, price = f["shares"], f["avg_cost"], f["price"]
+        if not avg_cost or price >= avg_cost or shares < 100 or f["currency"] != "USD":
+            continue
+        if not ro.loss_call_worth_a_card(avg_cost, price):
+            log.info("review_loss_call_skipped_too_far", symbol=symbol,
+                     avg_cost=round(avg_cost, 2), price=round(price, 2))
+            continue
+        strike = float(math.ceil(ro.loss_call_strike(avg_cost, price)))
+        third_friday = ro.review_call_expiry(date.today())
+        loss_pct = (price / avg_cost - 1) * 100
+        basis = ("your break-even" if avg_cost >= price * (1 + ro.CALL_OTM_PCT)
+                 else "5% above the price, which is above your break-even")
+        rationale = (
+            f"MONTHLY REVIEW: {symbol} ({f['tier']}) is flagged for exit and trades below cost: "
+            f"{shares} shares @ ${avg_cost:.2f}, now ${price:.2f} ({loss_pct:+.1f}%). "
+            f"Alternative to selling at a loss: sell {shares // 100} covered call(s), strike "
+            f"${strike:.0f} ({basis}), expiry {third_friday.strftime('%b %d %Y')}. "
+            f"You collect the premium while waiting and leave at no loss if called. "
+            f"The strike sent is never below your average cost at the broker."
+        )
+        create_suggestion(
+            symbol=symbol,
+            action="sell_covered_call_review",
+            quantity=shares // 100,
+            source="rescreen",
+            tier=f["tier"],
+            signal="monthly_loss_call",
+            rationale=rationale,
+            current_price=price,
+            sma_200=f["sma_200"],
+            strike=strike,
+            expiry=third_friday.strftime("%Y%m%d"),
+            right="C",
+            rank=0,
+            funding_source="n/a",
+            expires_hours=720,
+        )
+        open_cc_symbols.add(symbol)
+        out.append({
+            "symbol": symbol, "action": "SELL CC",
+            "reason": f"At a loss ({loss_pct:+.1f}%): call at ${strike:.0f} exp "
+                      f"{third_friday.strftime('%b %d')} instead of selling below cost",
+        })
+    return out
 
 
 def _send_monthly_screen_alert(
@@ -2378,3 +2436,17 @@ def job_portfolio_trailing_stop_monitor(cfg):
                                 symbol=s.symbol, error=str(e))
     except Exception as e:
         log.error("trailing_stop_monitor_error", error=str(e))
+
+
+def job_portfolio_review_orders(cfg):
+    """Send the order for each review card the user approved BY HAND, and settle the cards whose
+    order has ended. A card that was not approved on the dashboard is never touched;
+    see src/portfolio/review_orders.py for the rules (manual only, position read first)."""
+    from src.portfolio import review_orders
+    from src.portfolio.connection import is_portfolio_connected
+    try:
+        if not is_portfolio_connected():
+            return
+        review_orders.run_review_orders()
+    except Exception as e:
+        log.error("portfolio_review_orders_error", error=str(e))
