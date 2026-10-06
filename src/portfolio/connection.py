@@ -22,20 +22,21 @@ from src.core.logger import get_logger
 log = get_logger(__name__)
 
 _portfolio_ib: Optional[IB] = None
-# SHARED IBKR lock (pure threading — NOT asyncio). The portfolio and options
-# connections both capture the main thread's default event loop at startup, so
-# they run on the SAME asyncio loop; ib_insync drives it with run_until_complete
-# on every sync call, and only ONE such call can be in flight at a time. The
-# 2026-06-09 account split gave portfolio its OWN lock on the (wrong) assumption
-# of a separate loop — which let an options job and a portfolio job call
-# run_until_complete concurrently on the shared loop and raise "This event loop
-# is already running" (portfolio pricing 0%; the scheduler aligns many jobs on
-# the same :11/:41 ticks so the overlap was ~constant). Reusing the OPTIONS
-# RLock makes ALL IBKR calls across BOTH connections serialize on one lock.
-# RLock → same-thread re-entry stays safe; one lock → no lock-ordering deadlock.
-from src.broker.connection import get_ib_lock as _get_ib_lock
-_portfolio_lock = _get_ib_lock()
-_portfolio_main_loop = None
+_portfolio_main_loop = None   # the loop the PORTFOLIO connection lives on (its own — never shared)
+# The PORTFOLIO connection's OWN lock (pure threading, re-entrant). Since 2026-10-06 it is NOT
+# the options lock: a portfolio job — the monthly screener holds this for 30-75 min — makes only
+# portfolio work wait, never the options gateway/account/jobs.
+#
+# History, so nobody "simplifies" this back: the 2026-06-09 account split first gave portfolio
+# its own lock while both connections still sat on ONE event loop (both adopted the main
+# thread's default loop at startup). Two locks on one loop let an options job and a portfolio
+# job drive that loop at once -> "This event loop is already running", portfolio pricing 0%.
+# The fix then was to share the options lock. The real fix is the other half: each _connect()
+# now creates its connection on its own fresh loop, and the connection object itself
+# (conn_guard.BoundIB) guarantees its requests run on its loop under its lock. With that, two
+# locks are safe. See src/broker/conn_guard.py.
+from src.broker.conn_guard import BoundIB, ConnLock
+_portfolio_lock = ConnLock("portfolio", lambda: _portfolio_main_loop)
 
 _INFO_CODES = {2103, 2104, 2105, 2106, 2107, 2108, 2119, 2158}
 
@@ -82,14 +83,11 @@ def get_portfolio_ib() -> IB:
 
 
 def get_portfolio_lock():
-    """Return the lock guarding Winston's IBKR calls.
+    """Return the lock guarding Winston's (portfolio) IBKR calls.
 
-    NOTE: this is the SAME RLock as the options side's get_ib_lock(). Although
-    Winston (portfolio) and Maggy (options) use separate gateways/accounts since
-    the 2026-06-09 split, both connections share ONE asyncio event loop, so a
-    single lock must serialize every IBKR call across both — otherwise concurrent
-    run_until_complete raises "This event loop is already running". See the
-    _portfolio_lock binding above. Always usable as: `with get_portfolio_lock(): ...`"""
+    This is the PORTFOLIO connection's own lock — NOT the options side's get_ib_lock().
+    Holding it makes only portfolio work wait. See the _portfolio_lock note above and
+    src/broker/conn_guard.py. Always usable as: `with get_portfolio_lock(): ...`"""
     return _portfolio_lock
 
 
@@ -170,14 +168,19 @@ def initial_connect_portfolio() -> IB:
 def _connect(max_retries: int = 3) -> IB:
     from src.core.config import get_settings
     cfg = get_settings().portfolio
-    _ensure_event_loop()
 
     if not _is_port_open(cfg.ibkr_host, cfg.ibkr_port):
         raise ConnectionError(
             f"Portfolio TWS not reachable on {cfg.ibkr_host}:{cfg.ibkr_port}"
         )
 
-    ib = IB()
+    # This connection gets its OWN fresh loop, on every connect and every reconnect — never the
+    # thread's default (which at startup is the loop the options connection was just made on).
+    # Separate loops are what make the separate portfolio lock safe. See conn_guard.py.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    ib = BoundIB(_portfolio_lock, loop)
     ib.errorEvent += _on_error
 
     log.info("portfolio_connecting_ibkr",
@@ -199,7 +202,7 @@ def _connect(max_retries: int = 3) -> IB:
             ib.sleep(2)
 
             global _portfolio_main_loop
-            _portfolio_main_loop = asyncio.get_event_loop()
+            _portfolio_main_loop = loop
 
             log.info("portfolio_connection_established",
                      accounts=ib.managedAccounts(),
@@ -561,9 +564,7 @@ def _fetch_benchmark_history(ib: IB, symbol: str, exchange: str, currency: str) 
     """1-year daily closes for one benchmark, keyed by ISO date. {} on failure."""
     from ib_insync import Stock as _Stock
     contract = _Stock(symbol, exchange, currency)
-    # get_portfolio_lock() (not bare _portfolio_lock) so this serializes
-    # against the screener on the shared asyncio loop in merged mode,
-    # in the canonical ib_lock -> _portfolio_lock order.
+    # Serializes against other portfolio jobs (e.g. the screener) on the portfolio lock.
     with get_portfolio_lock():
         bars = ib.reqHistoricalData(
             contract, endDateTime="",
@@ -639,8 +640,7 @@ def refresh_portfolio_open_orders_cache() -> None:
         if not is_portfolio_connected():
             return  # preserve existing cache — don't wipe on transient disconnect
         ib = get_portfolio_ib()
-        # get_portfolio_lock() serializes against the screener on the shared
-        # asyncio loop in merged mode (ib_lock -> _portfolio_lock order).
+        # Serializes against other portfolio jobs (e.g. the screener) on the portfolio lock.
         with get_portfolio_lock():
             positions = ib.positions()
         new_cache = []

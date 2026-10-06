@@ -2775,9 +2775,14 @@ class PortfolioBuyer:
                 return False
 
             # Live bid only — no BS. Snapshot quote for the option we are about to sell.
-            from src.broker.market_data import _ensure_market_data_type
-            _ensure_market_data_type()
+            # Market-data type is set on THIS (portfolio) connection. It used to call the options
+            # side's _ensure_market_data_type(), which set it on the OPTIONS gateway — the wrong
+            # connection for a quote requested here.
             with get_portfolio_lock():
+                try:
+                    self.ib.reqMarketDataType(4)   # 4 = delayed frozen (most permissive)
+                except Exception:
+                    pass
                 ticker = self.ib.reqMktData(opt, "", True, False)
                 self.ib.sleep(2)
                 self.ib.cancelMktData(opt)

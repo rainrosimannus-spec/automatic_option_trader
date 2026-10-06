@@ -7,6 +7,10 @@ Architecture:
 - All access serialized through a threading lock to prevent conflicts.
 - Health check job monitors and reconnects if needed.
 - No separate scan/order/sync connections — eliminates pacing issues.
+
+This is the OPTIONS connection. Since 2026-10-06 its lock is its own: the PORTFOLIO connection
+(src/portfolio/connection.py) has a separate lock, so neither side's jobs can make the other
+side wait. What makes two locks safe is in src/broker/conn_guard.py — read that first.
 """
 from __future__ import annotations
 
@@ -17,14 +21,16 @@ from typing import Optional
 
 from ib_insync import IB
 
+from src.broker.conn_guard import BoundIB, ConnLock
 from src.core.config import get_settings
 from src.core.logger import get_logger
 
 log = get_logger(__name__)
 
 _ib: Optional[IB] = None
-_ib_lock = threading.RLock()  # RLock allows nested locking from same thread
-_main_loop = None  # Store the event loop used by the main IB connection
+_main_loop = None  # The event loop the OPTIONS connection lives on (its own — never shared)
+# The OPTIONS connection's lock (re-entrant). NOT shared with the portfolio connection.
+_ib_lock = ConnLock("options", lambda: _main_loop)
 
 # IBKR info codes that are NOT errors (farm status notifications)
 _INFO_CODES = {
@@ -50,8 +56,9 @@ def get_ib() -> IB:
     raise ConnectionError("IBKR not connected — waiting for health check to reconnect")
 
 
-def get_ib_lock() -> threading.RLock:
-    """Return the IB connection lock for serializing requests."""
+def get_ib_lock() -> ConnLock:
+    """Return the OPTIONS connection's lock for serializing requests (re-entrant; supports
+    `with`, acquire(timeout=..), acquire(blocking=False), release())."""
     return _ib_lock
 
 
@@ -94,11 +101,6 @@ def initial_connect() -> IB:
 def _connect(max_retries: int = 3) -> IB:
     """Establish connection to IBKR TWS / Gateway."""
     cfg = get_settings().ibkr
-    # Bind a usable event loop BEFORE ib.connect() — mirrors the portfolio
-    # _connect(). On a reconnect running on the health-check worker thread,
-    # _main_loop is None and this creates a FRESH loop so run_until_complete
-    # doesn't collide with the wedged shared loop ("event loop already running").
-    ensure_main_event_loop()
 
     if not is_port_open(cfg.host, cfg.port):
         raise ConnectionError(
@@ -106,7 +108,15 @@ def _connect(max_retries: int = 3) -> IB:
             f"Is TWS for account {cfg.account} running with API enabled on port {cfg.port}?"
         )
 
-    ib = IB()
+    # This connection gets its OWN fresh loop, on every connect and every reconnect — never the
+    # thread's default. At startup both connections are made on the main thread; adopting its
+    # default loop here is what put the options and portfolio connections on ONE loop, and that
+    # shared loop is the only reason they ever needed one shared lock. See conn_guard.py.
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    ib = BoundIB(_ib_lock, loop)
     ib.errorEvent += _on_error
 
     log.info("connecting_to_ibkr",
@@ -115,11 +125,8 @@ def _connect(max_retries: int = 3) -> IB:
 
     for attempt in range(1, max_retries + 1):
         try:
-            # Hold _ib_lock during connect to avoid asyncio reentry collisions
-            # with in-flight Winston calls (which acquire _ib_lock via the
-            # merge-period supervisor in src/portfolio/connection.py).
-            # _ib_lock is an RLock so this is safe even if already held by
-            # the calling thread.
+            # Hold the options lock for the post-connect setup calls so no options job
+            # interleaves with them. Re-entrant, so safe if the calling thread holds it.
             with _ib_lock:
                 ib.connect(
                     host=cfg.host, port=cfg.port,
@@ -132,10 +139,10 @@ def _connect(max_retries: int = 3) -> IB:
                 ib.reqMarketDataType(4)
                 ib.sleep(2)
 
-            # Store the event loop so other threads can use it
+            # Publish the loop this connection lives on (the lock and ensure_main_event_loop
+            # point threads at it).
             global _main_loop
-            import asyncio
-            _main_loop = asyncio.get_event_loop()
+            _main_loop = loop
 
             log.info("ibkr_connected",
                      account=ib.managedAccounts(),

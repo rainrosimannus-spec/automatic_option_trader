@@ -72,6 +72,14 @@ def job_portfolio_health_check(cfg: PortfolioConfig):
     except Exception as e:
         log.warning("portfolio_health_orders_refresh_failed", error=str(e))
 
+    # Refresh pending orders cache for portfolio dashboard. This used to be done by the OPTIONS
+    # health check; each side now refreshes its own caches on its own gateway (2026-10-06).
+    try:
+        from src.portfolio.connection import refresh_portfolio_pending_orders_cache
+        refresh_portfolio_pending_orders_cache()
+    except Exception as e:
+        log.warning("portfolio_health_pending_refresh_failed", error=str(e))
+
     # Prompt detection of orders that never reach the exchange (e.g. RACE/BVME stuck PendingSubmit,
     # missing venue rights): venue-block the name so the next scan skips it and the budget routes to the
     # next buy — instead of waiting up to 4h for the scan's _cancel_stale. DETECTION reads ONLY the

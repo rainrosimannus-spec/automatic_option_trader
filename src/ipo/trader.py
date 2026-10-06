@@ -67,11 +67,11 @@ def flip_decision(d_open: float, d_high: float, d_low: float, d_close: float) ->
 class IpoTrader:
     """Manages IPO scanning, day-one flips, and lockup re-entries.
 
-    IB SERIALIZATION CONTRACT: every public method here drives the shared ib_insync
-    event loop directly (qualifyContracts / reqMktData / placeOrder / ib.sleep). The
-    caller MUST hold the single shared IB RLock (get_ib_lock(), == get_portfolio_lock())
-    for the whole call — otherwise it races concurrent scans/CC/put fetches and raises
-    "This event loop is already running". See scheduler.jobs._job_ipo_* for the pattern.
+    IB SERIALIZATION CONTRACT: every public method here talks to IBKR through the connection
+    it was handed (qualifyContracts / reqMktData / placeOrder / ib.sleep). The caller MUST hold
+    THAT connection's lock for the whole call — get_ib_lock() for the options connection
+    (Phase 1), get_portfolio_lock() for the portfolio connection (Phase 2). They are two
+    different locks since 2026-10-06. See scheduler.jobs._job_ipo_* for the pattern.
     """
 
     def __init__(self, ib: IB):

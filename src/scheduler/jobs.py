@@ -677,19 +677,11 @@ def job_health_check():
         except Exception:
             pass
 
-    # Refresh Winston open orders cache for dashboard (non-blocking)
-    try:
-        from src.portfolio.connection import refresh_portfolio_open_orders_cache
-        refresh_portfolio_open_orders_cache()
-    except Exception:
-        pass
-
-    # Refresh Winston pending orders cache for dashboard (non-blocking)
-    try:
-        from src.portfolio.connection import refresh_portfolio_pending_orders_cache
-        refresh_portfolio_pending_orders_cache()
-    except Exception:
-        pass
+    # NOTE: the portfolio (Winston) open/pending-order caches are NOT refreshed here any more.
+    # They take the PORTFOLIO lock, so this OPTIONS health check sat behind any long portfolio
+    # job — 2026-10-06 it was stuck for over an hour behind the monthly screener, which also
+    # meant no options reconnect could have happened in that time. Each side refreshes its own
+    # caches: see job_portfolio_health_check (src/portfolio/scheduler.py).
 
     # Reconcile submitted OPTIONS-ACCOUNT suggestions against live IBKR orders on the OPTIONS account.
     # Any submitted option suggestion with no matching live order is a ghost — expire it.
@@ -1353,8 +1345,19 @@ def create_scheduler() -> BackgroundScheduler:
     global _scheduler
     cfg = get_settings().schedule
 
-    # Use UTC internally — each job specifies its own timezone
-    scheduler = BackgroundScheduler(timezone=pytz.UTC)
+    # Use UTC internally — each job specifies its own timezone.
+    #
+    # Worker pool: 32, not APScheduler's default 10. The options and portfolio sides have
+    # separate IBKR locks (src/broker/conn_guard.py) so that a long portfolio job — the monthly
+    # screener holds the portfolio lock 30-75 min — cannot make option jobs wait. But every
+    # portfolio job that fires meanwhile parks a worker thread on that lock (~17 such jobs), and
+    # with only 10 workers those parked threads alone would use up the pool and starve the
+    # option jobs anyway. A parked thread costs nothing; max_instances=1 per job bounds the total.
+    from apscheduler.executors.pool import ThreadPoolExecutor as _SchedThreadPool
+    scheduler = BackgroundScheduler(
+        timezone=pytz.UTC,
+        executors={"default": _SchedThreadPool(max_workers=32)},
+    )
 
     universe = UniverseManager()
 
@@ -1827,9 +1830,10 @@ def create_scheduler() -> BackgroundScheduler:
         # Screens global universe, updates watchlist, CC suggestions, reclassifications.
         #
         # WHY THIS SLOT: the run takes 30-75 min (Aug 2026: 22:30 -> 23:46 UTC) and holds
-        # get_portfolio_lock() the whole time — and that lock IS the options side's get_ib_lock()
-        # (see src/portfolio/connection.py), so it stalls EVERY IBKR call in the process, both
-        # accounts, for the duration. It also needs the portfolio gateway UP throughout (contract
+        # get_portfolio_lock() the whole time, so it stalls every PORTFOLIO-account IBKR call for
+        # the duration. (Until 2026-10-06 that lock was shared with the options side and it
+        # stalled both accounts; the options side now has its own lock and is unaffected — see
+        # src/broker/conn_guard.py.) It also needs the portfolio gateway UP throughout (contract
         # qualification, substitute_us_twins). The trading clock has one nightly dead window:
         #   17:00 ET  — US after-market fallback fill ends (aftermarket_deploy_minutes=60 past the
         #               16:00 close; job_portfolio_aftermarket_fill). After this nothing trades in
@@ -2228,7 +2232,7 @@ def create_scheduler() -> BackgroundScheduler:
             from src.broker.connection import get_ib, get_ib_lock
             ib = get_ib()
             trader = IpoTrader(ib)
-            # Serialize IB access through the single shared RLock — IpoTrader drives the
+            # Serialize IB access through the OPTIONS connection's lock — IpoTrader drives the
             # event loop directly and MUST NOT race a concurrent scan/CC/put fetch
             # ("This event loop is already running").
             with get_ib_lock():
@@ -2250,12 +2254,14 @@ def create_scheduler() -> BackgroundScheduler:
 
     def _job_ipo_check_lockups():
         """Phase 2 lockup re-entries on portfolio account (port 7496)."""
-        _ensure_event_loop()
         try:
-            from src.portfolio.connection import get_portfolio_ib, get_portfolio_lock
+            from src.portfolio.connection import (
+                get_portfolio_ib, get_portfolio_lock, _ensure_event_loop as _ensure_portfolio_loop,
+            )
+            _ensure_portfolio_loop()          # this job works on the PORTFOLIO gateway only
             ib = get_portfolio_ib()
             trader = IpoTrader(ib)
-            # get_portfolio_lock() is the SAME shared RLock as get_ib_lock().
+            # The PORTFOLIO connection's own lock (not the options lock).
             with get_portfolio_lock():
                 trader.check_lockup_entries()
         except Exception as e:

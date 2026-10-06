@@ -23,7 +23,7 @@ router = APIRouter()
 # names with no data subscription — the compounder now scores the FULL global
 # universe, commit 669f541). The dashboard's account-summary and cash-parking cards
 # read live IB state under that SAME lock, so a page load used to queue behind a scan
-# and "almost not load". Fix: a NON-BLOCKING acquire of the shared RLock — got it →
+# and "almost not load". Fix: a NON-BLOCKING acquire of the options connection's lock — got it →
 # read fresh (accountValues()/portfolio() are cheap local in-memory reads) and refresh
 # a last-good cache; a scan holds it → serve the cached snapshot instantly. The live
 # read still happens only while we HOLD the lock, so we never read wrapper state the
@@ -38,7 +38,7 @@ _PARK_CACHE: dict = {"parking": None, "ts": 0.0}
 def _cached_account_summary(max_age: float = 2.0):
     """AccountSummary for the dashboard without ever blocking on a scan. Returns the
     last good summary (or None if none fetched yet — callers already handle that as
-    zeros). Re-reads live only when the shared IB RLock is free; a scan holding it
+    zeros). Re-reads live only when the options connection's lock is free; a scan holding it
     yields the cached value instantly. See the module note above."""
     if _ACCT_CACHE["summary"] is not None and (_time.time() - _ACCT_CACHE["ts"]) < max_age:
         return _ACCT_CACHE["summary"]
