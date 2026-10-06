@@ -3587,10 +3587,58 @@ def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0, *,
     return True, ""
 
 
+class BrokerNotAnswering(RuntimeError):
+    """The IBKR connection accepts requests but answers none of them.
+
+    Seen 2026-10-05: the scheduled screen ran for 2h45m and scored nothing — every one of 579
+    names raised a bare TimeoutError after exactly RequestTimeout (15 s). The cause was not the
+    gateway but the calling thread: it was bound to the event loop of a connection that had been
+    replaced by Sunday's gateway restart, so replies went to a loop nobody was running. A screen
+    against a connection like that is worthless and holds the portfolio lock for hours; it must
+    stop within a minute and say so, so the job can rebind, reconnect and try again."""
+
+
+# Consecutive per-name timeouts that prove the connection is not answering. One or two are an
+# ordinary slow name (31 of ~400 historical-data requests timed out in the 20:00 scan the same
+# evening while everything else worked); eight in a row never happened on a live connection.
+_BROKER_TIMEOUT_STREAK_ABORT = 8
+
+
+def _is_timeout(e: BaseException) -> bool:
+    return isinstance(e, (TimeoutError, asyncio.TimeoutError))
+
+
 class UniverseScreener:
     def __init__(self, ib: IB):
         self.ib = ib
         self._reject_counts: dict[str, int] = {}
+        self._timeout_streak = 0
+
+    def _probe_broker(self) -> None:
+        """Prove the connection answers before spending hours on it. One contract lookup that
+        every working connection resolves instantly; a timeout here means NO name will score."""
+        try:
+            ok = self.ib.qualifyContracts(Stock("AAPL", "SMART", "USD"))
+        except Exception as e:
+            raise BrokerNotAnswering(
+                f"portfolio IBKR connection not answering ({type(e).__name__}: {e or 'timeout'}) — "
+                f"nothing scored") from e
+        if not ok:
+            raise BrokerNotAnswering("portfolio IBKR connection returned no contract for AAPL — nothing scored")
+
+    def _note_score_error(self, symbol: str, e: BaseException, tier: str) -> None:
+        """Record a per-name scoring failure WITH its type (a bare TimeoutError prints as an empty
+        message) and abort the screen once timeouts come in an unbroken run."""
+        print(f"  ❌ {symbol:8s} | Error: {type(e).__name__}: {e}")
+        self._reject(symbol, "error", detail=f"{type(e).__name__}: {e}", tier=tier)
+        if _is_timeout(e):
+            self._timeout_streak += 1
+            if self._timeout_streak >= _BROKER_TIMEOUT_STREAK_ABORT:
+                raise BrokerNotAnswering(
+                    f"portfolio IBKR connection not answering: {self._timeout_streak} names in a row "
+                    f"timed out (last {symbol}) — screen stopped") from e
+        else:
+            self._timeout_streak = 0
 
     def _reject(self, symbol: str, category: str, detail: str = "", **fields):
         """Emit one structured screener_reject event + tally for the run summary.
@@ -3624,6 +3672,8 @@ class UniverseScreener:
         all_scores: list[StockScore] = []
         self._reject_counts = {}  # reset per-run rejection tally
         self._rejects = []        # per-symbol reject records (for the run-log breakthrough_scan block)
+        self._timeout_streak = 0
+        self._probe_broker()      # BrokerNotAnswering here costs 15 s, not 2h45m (2026-10-05)
 
         print(f"\n{'='*60}")
         print(f"PHASE 1: Screening regular universe ({len(regions)} regions)")
@@ -3641,6 +3691,7 @@ class UniverseScreener:
                         exchange=pool["exchange"],
                         currency=pool["currency"],
                     )
+                    self._timeout_streak = 0
                     if score and score.market_cap >= min_market_cap:
                         all_scores.append(score)
                         status = "✅" if score.options_available else "⛔"
@@ -3652,8 +3703,10 @@ class UniverseScreener:
                         self._reject(str(symbol), "below_min_market_cap", tier="growth",
                                      market_cap=score.market_cap, threshold=min_market_cap)
                         print(f"  ⛔ {symbol:8s} | MCap ${score.market_cap/1e9:.2f}B < ${min_market_cap/1e9:.1f}B floor")
+                except BrokerNotAnswering:
+                    raise
                 except Exception as e:
-                    print(f"  ❌ {symbol:8s} | Error: {e}")
+                    self._note_score_error(str(symbol), e, "growth")
                 time.sleep(0.3)
 
         print(f"\n{'='*60}")
@@ -3673,6 +3726,7 @@ class UniverseScreener:
                         exchange=pool["exchange"],
                         currency=pool["currency"],
                     )
+                    self._timeout_streak = 0
                     if score and score.market_cap >= min_market_cap:
                         all_scores.append(score)
                         status = "\u2705 " if score.options_available else "\u26d4 "
@@ -3684,8 +3738,10 @@ class UniverseScreener:
                         self._reject(str(symbol), "below_min_market_cap", tier="dividend",
                                      market_cap=score.market_cap, threshold=min_market_cap)
                         print(f"  \u26d4  {symbol:8s} | MCap ${score.market_cap/1e9:.2f}B < ${min_market_cap/1e9:.1f}B floor")
+                except BrokerNotAnswering:
+                    raise
                 except Exception as e:
-                    print(f"  \u274c  {symbol:8s} | Error: {e}")
+                    self._note_score_error(str(symbol), e, "dividend")
                 time.sleep(0.3)
 
         print(f"PHASE 2: Breakthrough scan via AI")

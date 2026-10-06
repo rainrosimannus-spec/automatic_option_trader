@@ -19,6 +19,7 @@ from src.portfolio.symbols import broker_stock as _broker_stock
 from src.portfolio.buyer import PortfolioBuyer
 from src.portfolio.symbols import canonical_symbol
 from src.portfolio.connection import (
+    _ensure_event_loop,
     get_portfolio_ib,
     get_portfolio_lock,
     is_portfolio_connected,
@@ -549,14 +550,39 @@ def job_portfolio_monthly_screen(cfg: PortfolioConfig):
     from src.portfolio.screener_flag import set_running_flag, clear_running_flag
     set_running_flag()
     try:
-        _job_portfolio_monthly_screen(cfg)
+        try:
+            _job_portfolio_monthly_screen(cfg)
+        except _RetryAfterReconnect as r:
+            # The connection answered nothing (2026-10-05: a thread bound to the loop of a
+            # connection the Sunday gateway restart had replaced). Rebind, reconnect, try once
+            # more — outside the lock, which the first attempt has released.
+            log.warning("portfolio_monthly_screen_broker_not_answering", error=str(r),
+                        action="reconnecting portfolio IBKR and retrying the screen once")
+            try:
+                reconnect_portfolio()
+            except Exception as e:
+                log.error("portfolio_monthly_screen_reconnect_failed", error=str(e))
+            _job_portfolio_monthly_screen(cfg, attempt=2)
     finally:
         clear_running_flag()
 
 
-def _job_portfolio_monthly_screen(cfg: PortfolioConfig):
+class _RetryAfterReconnect(Exception):
+    """First screen attempt found the broker connection not answering; the wrapper reconnects
+    and runs the screen once more. Never raised on the second attempt."""
+
+
+def _broker_not_answering(e: BaseException) -> bool:
+    return type(e).__name__ == "BrokerNotAnswering"
+
+
+def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
+    # Bind this thread to the connection's CURRENT event loop before the first broker call.
+    # A pool thread keeps whatever loop it was last bound to; after a reconnect that loop is dead
+    # and every request from it times out (the whole 2026-10-05 screen, 579 names, 2h45m).
+    _ensure_event_loop()
     with get_portfolio_lock():
-        log.info("portfolio_monthly_screen_started",
+        log.info("portfolio_monthly_screen_started", attempt=attempt,
                  date=datetime.utcnow().strftime("%Y-%m-%d"))
 
         try:
@@ -597,7 +623,7 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig):
                 log.error("portfolio_monthly_screen_empty_results",
                           msg="Screener returned 0 stocks — aborting to preserve existing universe")
                 raise RuntimeError(
-                    "Screener returned 0 stocks globally — likely FMP API failure. "
+                    "Screener returned 0 stocks globally — see the per-name errors in the console log. "
                     "Existing universe preserved."
                 )
 
@@ -909,6 +935,8 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig):
                      suggestions=0)
 
         except Exception as e:
+            if _broker_not_answering(e) and attempt == 1:
+                raise _RetryAfterReconnect(str(e)) from e      # wrapper reconnects and retries
             import traceback
             log.error("portfolio_monthly_screen_error", error=str(e), traceback=traceback.format_exc())
             import json as _json
@@ -954,6 +982,7 @@ def job_portfolio_monthly_review(cfg: PortfolioConfig):
     if not cfg.enabled:
         return
 
+    _ensure_event_loop()        # see _job_portfolio_monthly_screen — a stale loop times out every call
     with get_portfolio_lock():
         log.info("portfolio_monthly_review_started",
                  date=datetime.utcnow().strftime("%Y-%m-%d"))
@@ -2447,6 +2476,7 @@ def job_portfolio_review_orders(cfg):
     try:
         if not is_portfolio_connected():
             return
+        _ensure_event_loop()
         review_orders.run_review_orders()
     except Exception as e:
         log.error("portfolio_review_orders_error", error=str(e))

@@ -79,6 +79,7 @@ def dry_run(monkeypatch, tmp_path):
     monkeypatch.setattr(su, "_fmp_get", fake_fmp)
     monkeypatch.setattr(su, "_ceiling_memo", {})
     monkeypatch.setattr(su.time, "sleep", lambda s: None)
+    monkeypatch.setattr(su.UniverseScreener, "_probe_broker", lambda self: None)   # no broker here
     monkeypatch.setattr(su.UniverseScreener, "_score_stock",
                         lambda self, symbol, exchange, currency: _fake_score(symbol, exchange, currency))
     monkeypatch.setattr(su, "enforce_stock_venue_policy", lambda stocks, ib, **kw: stocks)
