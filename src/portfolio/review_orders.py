@@ -44,10 +44,16 @@ CALL_ACTION = "sell_covered_call_review"
 # A sale goes out as a limit a hair under the last trade: marketable in a normal book, never a
 # market order.
 SELL_LIMIT_DISCOUNT = 0.002
-# Loss-call rule: strike at the break-even or 5% above the price, whichever is higher.
-CALL_OTM_PCT = 0.05
-# Past this distance a 30-day call has no bid, so a break-even call is not worth a card.
-LOSS_CALL_MAX_OTM_PCT = 0.25
+# Exit-call rule (Rain, 2026-10-07): a call card beside EVERY sell/reduce card. A long-term holder
+# who has decided to leave a name does better selling a call above today's price than selling
+# today: called away, the stock went for more plus the premium; not called, the shares and the
+# premium stay. Three tiers by where the price stands against cost:
+CALL_OTM_PCT = 0.05            # below cost: strike at break-even, or 5% up if that is higher
+EXIT_CALL_OTM_PROFIT = 0.08    # above cost: strike 8% up — paid to wait for a bit more
+EXIT_CALL_OTM_DEEP = 0.12      # deep below cost: strike 12% up — a smaller loss than selling now
+BREAKEVEN_REACH_PCT = 0.20     # break-even further than this has no bid: use the deep tier
+LOSS_CALL_MAX_OTM_PCT = BREAKEVEN_REACH_PCT
+EXIT_CALL_DEEP_SIGNAL = "monthly_exit_call_deep"   # the one tier whose strike sits BELOW cost
 MIN_CALL_BID = 0.20        # same floor the option side uses for a covered call (min_premium)
 MIN_CALL_DTE = 14
 # A name sold on an approved review card is not bought back by the compounder for this long.
@@ -75,6 +81,31 @@ def loss_call_worth_a_card(avg_cost: float, price: float) -> bool:
     if not price or price <= 0 or not avg_cost or avg_cost <= 0:
         return False
     return loss_call_strike(avg_cost, price) <= price * (1 + LOSS_CALL_MAX_OTM_PCT)
+
+
+def exit_call_plan(avg_cost: float, price: float, today: date) -> dict | None:
+    """Strike, expiry and tier of the covered call offered beside an exit card.
+
+    profit    — price at or above cost: strike 8% above the price, ~45-60 days out.
+    breakeven — below cost but the break-even is within 20%: strike at break-even (or 5% up),
+                ~45-60 days; called away means out at no loss.
+    deep      — break-even further than 20% away (a call there has no bid): strike 12% above the
+                price, a month further out so it still earns something. Called away realises a
+                smaller loss than selling today; the card says the number.
+    None when there is no usable price or cost."""
+    if not price or price <= 0 or not avg_cost or avg_cost <= 0:
+        return None
+    if price >= avg_cost:
+        tier, strike, expiry = "profit", price * (1 + EXIT_CALL_OTM_PROFIT), review_call_expiry(today)
+    elif avg_cost <= price * (1 + BREAKEVEN_REACH_PCT):
+        tier, strike, expiry = "breakeven", loss_call_strike(avg_cost, price), review_call_expiry(today)
+    else:
+        tier, strike, expiry = "deep", price * (1 + EXIT_CALL_OTM_DEEP), review_call_expiry(today + timedelta(days=30))
+    strike = float(math.ceil(strike))
+    return {"tier": tier, "strike": strike, "expiry": expiry,
+            "signal": EXIT_CALL_DEEP_SIGNAL if tier == "deep" else f"monthly_exit_call_{tier}",
+            "pnl_pct": (price / avg_cost - 1) * 100,
+            "called_pnl_pct": (strike / avg_cost - 1) * 100}
 
 
 def review_call_expiry(today: date) -> date:
@@ -273,7 +304,7 @@ def _load(suggestion_id: int, actions) -> dict | None:
         row = (db.query(PortfolioHolding).filter(PortfolioHolding.symbol == s.symbol).first()
                or db.query(PortfolioWatchlist).filter(PortfolioWatchlist.symbol == s.symbol).first())
         return {"symbol": s.symbol, "action": s.action, "quantity": int(s.quantity or 0),
-                "strike": s.strike, "expiry": s.expiry,
+                "strike": s.strike, "expiry": s.expiry, "signal": s.signal or "",
                 "exchange": (row.exchange if row and row.exchange else "SMART"),
                 "currency": (row.currency if row and row.currency else "USD")}
 
@@ -443,9 +474,11 @@ def execute_review_covered_call(suggestion_id: int) -> str:
         if not spot:
             return _retry_or_release(suggestion_id, "no stock price from IBKR")
 
-        # Never below the card's strike, never closer than 5% to today's price, never below the
-        # broker's average cost — whichever of the three is highest.
-        floor = max(float(card["strike"] or 0), spot * (1 + CALL_OTM_PCT), book.avg_cost)
+        # Never below the card's strike, never closer than 5% to today's price, and — except for
+        # the deep tier, whose whole point is a strike below cost that still beats selling now —
+        # never below the broker's average cost. Whichever is highest.
+        cost_floor = 0.0 if card.get("signal") == EXIT_CALL_DEEP_SIGNAL else book.avg_cost
+        floor = max(float(card["strike"] or 0), spot * (1 + CALL_OTM_PCT), cost_floor)
 
         with get_portfolio_lock():
             chains = ib.reqSecDefOptParams(stock.symbol, "", "STK", stock.conId)

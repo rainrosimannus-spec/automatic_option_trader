@@ -1797,7 +1797,7 @@ def _review_existing_holdings_monthly(
                     expires_hours=720,
                 )
                 suggestions.append({
-                    "symbol": symbol, "action": "REDUCE",
+                    "symbol": symbol, "action": "REDUCE", "shares": reduce_shares,
                     "reason": f"Position {position_pct:.0%} > 12% limit",
                 })
                 continue
@@ -1890,74 +1890,87 @@ def _review_existing_holdings_monthly(
                 "reason": f"Off watchlist but profitable ({pnl_pct:+.1f}%)",
             })
 
-    suggestions.extend(_loss_call_cards(suggestions, held_facts, open_cc_symbols))
+    suggestions.extend(_exit_call_cards(suggestions, held_facts, open_cc_symbols))
     return suggestions
 
 
-def _loss_call_cards(suggestions: list[dict], held_facts: dict[str, dict],
+def _exit_call_cards(suggestions: list[dict], held_facts: dict[str, dict],
                      open_cc_symbols: set[str]) -> list[dict]:
-    """Covered-call card for every holding the review flagged for exit that trades BELOW cost.
+    """A covered-call card beside every sell or reduce card the review wrote (growth and dividend
+    holdings; breakthrough is never reviewed).
 
-    The sell card stays as it is; this is the alternative next to it. Selling now books the loss.
-    A call struck at the break-even — or 5% above the price, whichever is higher — pays a premium
-    for waiting and, if called, takes the stock out at no loss. Only where a call can be written:
-    a US listing, at least 100 shares, no call card already open, and a break-even close enough
-    to the price that the call has a bid (review_orders.LOSS_CALL_MAX_OTM_PCT).
+    The sell card stays; this is the alternative next to it. For a long-term holder who has
+    decided to leave a name, a call above today's price beats selling today: called away, the
+    stock went for more plus the premium; not called, the shares and the premium stay. The strike
+    depends on where the price stands against cost (review_orders.exit_call_plan): 8% up when in
+    profit, at break-even when that is within reach, 12% up when it is not — then the card states
+    the smaller loss a call-away would realise. US listings only for now (the executor writes US
+    options; Hong Kong, Japan and Europe follow), at least 100 shares, no call card already open.
     Like every review card it does nothing until approved by hand."""
-    import math
     from datetime import date
     from src.core.suggestions import create_suggestion
     from src.portfolio import review_orders as ro
 
     out: list[dict] = []
-    flagged = [s_["symbol"] for s_ in suggestions if s_.get("action") in ("SELL", "CONSIDER SELL")]
-    for symbol in dict.fromkeys(flagged):
+    flagged: dict[str, dict] = {}
+    for s_ in suggestions:
+        if s_.get("action") in ("SELL", "CONSIDER SELL", "REDUCE"):
+            flagged.setdefault(s_["symbol"], s_)
+    for symbol, card in flagged.items():
         f = held_facts.get(symbol)
         if not f or symbol in open_cc_symbols:
             continue
         shares, avg_cost, price = f["shares"], f["avg_cost"], f["price"]
-        if not avg_cost or price >= avg_cost or shares < 100 or f["currency"] != "USD":
+        covered = min(shares, int(card.get("shares") or shares))      # a REDUCE card covers its trim
+        if covered < 100 or f["currency"] != "USD":
             continue
-        if not ro.loss_call_worth_a_card(avg_cost, price):
-            log.info("review_loss_call_skipped_too_far", symbol=symbol,
-                     avg_cost=round(avg_cost, 2), price=round(price, 2))
+        plan = ro.exit_call_plan(avg_cost, price, date.today())
+        if plan is None:
             continue
-        strike = float(math.ceil(ro.loss_call_strike(avg_cost, price)))
-        third_friday = ro.review_call_expiry(date.today())
-        loss_pct = (price / avg_cost - 1) * 100
-        basis = ("your break-even" if avg_cost >= price * (1 + ro.CALL_OTM_PCT)
-                 else "5% above the price, which is above your break-even")
-        rationale = (
-            f"MONTHLY REVIEW: {symbol} ({f['tier']}) is flagged for exit and trades below cost: "
-            f"{shares} shares @ ${avg_cost:.2f}, now ${price:.2f} ({loss_pct:+.1f}%). "
-            f"Alternative to selling at a loss: sell {shares // 100} covered call(s), strike "
-            f"${strike:.0f} ({basis}), expiry {third_friday.strftime('%b %d %Y')}. "
-            f"You collect the premium while waiting and leave at no loss if called. "
-            f"The strike sent is never below your average cost at the broker."
-        )
+        strike, expiry, tier = plan["strike"], plan["expiry"], plan["tier"]
+        contracts = covered // 100
+        head = (f"MONTHLY REVIEW: {symbol} ({f['tier']}) is flagged "
+                f"{'to reduce' if card.get('action') == 'REDUCE' else 'for exit'}: "
+                f"{shares} shares @ ${avg_cost:.2f}, now ${price:.2f} ({plan['pnl_pct']:+.1f}%). ")
+        if tier == "profit":
+            body = (f"Alternative to selling now: sell {contracts} covered call(s), strike ${strike:.0f} "
+                    f"(8% above the price), expiry {expiry.strftime('%b %d %Y')}. Paid to wait; if "
+                    f"called you sell {plan['called_pnl_pct']:+.1f}% above cost instead of "
+                    f"{plan['pnl_pct']:+.1f}% today.")
+            reason = f"In profit: call at ${strike:.0f} exp {expiry.strftime('%b %d')} instead of selling now"
+        elif tier == "breakeven":
+            body = (f"Alternative to selling at a loss: sell {contracts} covered call(s), strike "
+                    f"${strike:.0f} (your break-even, or 5% above the price if higher), expiry "
+                    f"{expiry.strftime('%b %d %Y')}. Premium while waiting; out at no loss if called. "
+                    f"The strike sent is never below your average cost at the broker.")
+            reason = f"At a loss ({plan['pnl_pct']:+.1f}%): call at break-even ${strike:.0f} exp {expiry.strftime('%b %d')}"
+        else:
+            body = (f"Break-even is out of reach for a call. Alternative to selling at {plan['pnl_pct']:+.1f}% "
+                    f"today: sell {contracts} covered call(s), strike ${strike:.0f} (12% above the price), "
+                    f"expiry {expiry.strftime('%b %d %Y')}. If called you take {plan['called_pnl_pct']:+.1f}% "
+                    f"instead of {plan['pnl_pct']:+.1f}% now, plus the premium; if not, you keep the shares "
+                    f"and the premium.")
+            reason = (f"Deep loss ({plan['pnl_pct']:+.1f}%): call at ${strike:.0f} exp {expiry.strftime('%b %d')} "
+                      f"— called = {plan['called_pnl_pct']:+.1f}% instead of {plan['pnl_pct']:+.1f}%")
         create_suggestion(
             symbol=symbol,
             action="sell_covered_call_review",
-            quantity=shares // 100,
+            quantity=contracts,
             source="rescreen",
             tier=f["tier"],
-            signal="monthly_loss_call",
-            rationale=rationale,
+            signal=plan["signal"],
+            rationale=head + body,
             current_price=price,
             sma_200=f["sma_200"],
             strike=strike,
-            expiry=third_friday.strftime("%Y%m%d"),
+            expiry=expiry.strftime("%Y%m%d"),
             right="C",
             rank=0,
             funding_source="n/a",
             expires_hours=720,
         )
         open_cc_symbols.add(symbol)
-        out.append({
-            "symbol": symbol, "action": "SELL CC",
-            "reason": f"At a loss ({loss_pct:+.1f}%): call at ${strike:.0f} exp "
-                      f"{third_friday.strftime('%b %d')} instead of selling below cost",
-        })
+        out.append({"symbol": symbol, "action": "SELL CC", "reason": reason})
     return out
 
 

@@ -367,30 +367,71 @@ def test_sold_names_are_not_bought_back(temp_db):
 
 # ── The card the monthly review writes ─────────────────────────────────────────────────────
 
-def test_review_writes_a_break_even_call_beside_a_sell_card_at_a_loss(monkeypatch):
+def _facts(**over):
+    base = {"shares": 300, "avg_cost": 100.0, "price": 92.0, "tier": "growth", "currency": "USD", "sma_200": 95.0}
+    base.update(over)
+    return base
+
+
+def test_exit_call_plan_has_three_tiers():
+    today = date(2026, 10, 7)
+    gain = ro.exit_call_plan(100.0, 120.0, today)
+    assert gain["tier"] == "profit" and gain["strike"] == 130                 # ceil(120 x 1.08)
+    near = ro.exit_call_plan(100.0, 99.0, today)
+    assert near["tier"] == "breakeven" and near["strike"] == 104              # 5% up beats break-even
+    loss = ro.exit_call_plan(100.0, 92.0, today)
+    assert loss["tier"] == "breakeven" and loss["strike"] == 100              # break-even within 20%
+    deep = ro.exit_call_plan(100.0, 60.0, today)
+    assert deep["tier"] == "deep" and deep["strike"] == 68                    # ceil(60 x 1.12), below cost
+    assert deep["called_pnl_pct"] == pytest.approx(-32.0) and deep["pnl_pct"] == pytest.approx(-40.0)
+    assert deep["expiry"] > loss["expiry"]                                    # a month further out
+    assert ro.exit_call_plan(0, 50.0, today) is None
+
+
+def test_review_writes_a_call_card_beside_every_sell_or_reduce_card(monkeypatch):
     import src.core.suggestions as sugg
-    from src.portfolio.scheduler import _loss_call_cards
+    from src.portfolio.scheduler import _exit_call_cards
     made = []
     monkeypatch.setattr(sugg, "create_suggestion", lambda **kw: made.append(kw))
     facts = {
-        "LOSS": {"shares": 250, "avg_cost": 100.0, "price": 92.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
-        "NEAR": {"shares": 100, "avg_cost": 100.0, "price": 99.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
-        "GAIN": {"shares": 300, "avg_cost": 100.0, "price": 120.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
-        "DEEP": {"shares": 300, "avg_cost": 100.0, "price": 60.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
-        "ODD":  {"shares": 60, "avg_cost": 100.0, "price": 92.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
-        "XRO":  {"shares": 500, "avg_cost": 100.0, "price": 92.0, "tier": "growth", "currency": "AUD", "sma_200": 95.0},
-        "HASCC": {"shares": 500, "avg_cost": 100.0, "price": 92.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
-        "UNFLAGGED": {"shares": 500, "avg_cost": 100.0, "price": 92.0, "tier": "growth", "currency": "USD", "sma_200": 95.0},
+        "LOSS": _facts(shares=250),                       # break-even within reach
+        "NEAR": _facts(shares=100, price=99.0),
+        "GAIN": _facts(price=120.0),
+        "DEEP": _facts(price=60.0),                       # break-even out of reach -> deep tier
+        "TRIM": _facts(shares=1000, price=130.0),         # REDUCE card trimming 400 shares
+        "ODD":  _facts(shares=60),                        # under one contract
+        "XRO":  _facts(shares=500, currency="AUD"),       # no US option market for now
+        "HASCC": _facts(shares=500),                      # call card already open
+        "UNFLAGGED": _facts(shares=500),
     }
-    flagged = [{"symbol": s, "action": "CONSIDER SELL"} for s in facts if s != "UNFLAGGED"]
-    out = _loss_call_cards(flagged, facts, open_cc_symbols={"HASCC"})
+    flagged = [{"symbol": s, "action": "CONSIDER SELL"} for s in facts if s not in ("UNFLAGGED", "TRIM")]
+    flagged.append({"symbol": "TRIM", "action": "REDUCE", "shares": 400})
+    out = _exit_call_cards(flagged, facts, open_cc_symbols={"HASCC"})
 
     by = {kw["symbol"]: kw for kw in made}
-    assert set(by) == {"LOSS", "NEAR"}
-    assert by["LOSS"]["strike"] == 100 and by["LOSS"]["quantity"] == 2      # break-even
-    assert by["NEAR"]["strike"] == 104                                       # 5% above 99, rounded up
+    assert set(by) == {"LOSS", "NEAR", "GAIN", "DEEP", "TRIM"}
+    assert by["LOSS"]["strike"] == 100 and by["LOSS"]["quantity"] == 2 and by["LOSS"]["signal"] == "monthly_exit_call_breakeven"
+    assert by["NEAR"]["strike"] == 104
+    assert by["GAIN"]["strike"] == 130 and by["GAIN"]["signal"] == "monthly_exit_call_profit"
+    assert by["DEEP"]["strike"] == 68 and by["DEEP"]["signal"] == ro.EXIT_CALL_DEEP_SIGNAL
+    assert "-32.0% instead of -40.0%" in by["DEEP"]["rationale"]             # the card says the number
+    assert by["TRIM"]["quantity"] == 4                                        # covers the trim, not the lot
     assert all(kw["action"] == "sell_covered_call_review" and kw["source"] == "rescreen" for kw in made)
-    assert {o["symbol"] for o in out} == {"LOSS", "NEAR"}
+    assert {o["symbol"] for o in out} == set(by)
+
+
+def test_deep_tier_card_is_not_raised_to_the_average_cost(wired):
+    # Cost 100, price 60: the card offers 68 on purpose. The executor must not lift it to 100
+    # (no bid there) — only to the card's strike or 5% above today's price, whichever is higher.
+    ib = wired["ib"] = FakeIB([_stk(qty=300, avg=100.0)], close=60.0, strikes=(60, 65, 70, 75, 100, 105))
+    sid = _card(action="sell_covered_call_review", qty=3, strike=68.0, right="C", signal=ro.EXIT_CALL_DEEP_SIGNAL)
+    assert ro.execute_review_covered_call(sid) == "submitted"
+    assert ib.placed[0][0].strike == 70                                       # first listed strike >= 68
+    # The same position on a break-even card IS lifted to cost.
+    ib = wired["ib"] = FakeIB([_stk(qty=300, avg=100.0)], close=60.0, strikes=(60, 65, 70, 75, 100, 105))
+    sid = _card(action="sell_covered_call_review", qty=3, strike=68.0, right="C", signal="monthly_exit_call_breakeven")
+    assert ro.execute_review_covered_call(sid) == "submitted"
+    assert ib.placed[0][0].strike == 100
 
 
 def test_one_pass_sends_one_order_per_name_and_skips_cards_that_must_wait(wired, monkeypatch):
