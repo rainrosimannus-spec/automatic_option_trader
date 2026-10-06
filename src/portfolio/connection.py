@@ -143,7 +143,13 @@ def get_portfolio_stock_price(
                     )
                     if bars:
                         _record_symbol_success(symbol)
-                        return float(bars[-1].close)
+                        # MAJOR units, like the analyzer and the holdings: LSE answers in pence and
+                        # TASE in agorot. The monthly review compares this with a 200-day average
+                        # and an average cost that are already in pounds/shekels — raw, AstraZeneca
+                        # read "+9,800% above its average" and the dropped-and-below-average sell
+                        # rule could never fire for a London or Tel Aviv holding.
+                        from src.core import quote_units as _qu
+                        return float(_qu.quote_to_major(float(bars[-1].close), currency))
                 except Exception as e:
                     log.debug("portfolio_price_request_failed",
                               symbol=symbol, what=what, error=str(e) or repr(e))
@@ -381,6 +387,7 @@ def refresh_accrued_interest_from_flex():
 # for when the monthly screener rotates in Swiss/Scandinavian names (already in the market-hours map).
 _FX_BACKFILL_CURRENCIES = (
     "USD", "GBP", "CAD", "CHF", "NOK", "SEK", "DKK", "JPY", "AUD", "HKD", "SGD", "ZAR",
+    "ILS", "KRW",     # Tel Aviv and Korea entered the watchlist 2026-10-06 (EUR.ILS, KRW.EUR)
 )
 
 

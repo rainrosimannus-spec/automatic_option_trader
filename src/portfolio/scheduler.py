@@ -2139,8 +2139,10 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                     # gate, Recent Transactions) are in pounds, consistent with the holding sync
                     # (item.averageCost is already pounds) and the analyzer. Without this an AZN
                     # buy records as 14222 × 33 ≈ 469k and swamps the daily budget → stuck at 0.
-                    if str(getattr(contract, "currency", "") or "").upper() == "GBP":
-                        price = price / 100.0
+                    # Same rule for every minor-unit venue (LSE pence, TASE agorot) — one list,
+                    # src.core.quote_units, instead of a GBP check here that Tel Aviv would miss.
+                    from src.core import quote_units as _qu
+                    price = _qu.quote_to_major(price, str(getattr(contract, "currency", "") or ""))
                     if side == "BOT":
                         action = "buy"
                         shares = qty

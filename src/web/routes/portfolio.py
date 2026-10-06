@@ -640,8 +640,8 @@ async def portfolio_page(request: Request):
                     _px = float(_o.get("limit_price") or 0)
                     _occy = str(_o.get("currency") or "").upper()
                     # GBP/LSE limit prices are in PENCE — to pounds first, then FX-normalise local→base.
-                    if _occy == "GBP":
-                        _px = _px / 100.0
+                    from src.core import quote_units as _qu
+                    _px = _qu.quote_to_major(_px, _occy)     # any minor-unit venue (LSE, TASE)
                     _open_buy_notional += _to_base(float(_o.get("remaining") or 0) * _px,
                                                    _occy, fx_rates, _base_ccy)
             # Replicate the scan's daily_deploy_budget non-crash branch: start-of-day gap drives the

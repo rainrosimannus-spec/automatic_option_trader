@@ -20,6 +20,11 @@ agorot) is a one-line change rather than another four-site hunt.
 _MINOR_UNIT_FACTOR: dict[str, float] = {
     "GBP": 100.0,  # LSE quotes pence (GBX)
     "ZAR": 100.0,  # JSE quotes cents (ZAc)
+    # TASE quotes agorot (ILA). Verified 2026-10-06 on Elbit (ESLT): the quote is 210,200 while a
+    # no-transmit preview of BUY 1 share showed EUR 176.81 initial margin — a ~EUR 610 share, i.e.
+    # ILS 2,102, not ILS 210,200. Without this the watchlist held Elbit at 100x its price, so a
+    # EUR 45k brick sized to 0.73 shares (never bought), and a fill would have booked 100x its cost.
+    "ILS": 100.0,
 }
 
 

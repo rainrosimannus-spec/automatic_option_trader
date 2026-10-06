@@ -2368,8 +2368,7 @@ class PortfolioBuyer:
                 # order's major LOCAL unit, then FX-normalise local→base so it matches holdings/targets
                 # (all base-ccy). Without the pence step an AZN order counts ~100× its value (14222 × 33
                 # ≈ 469k) and swamps the daily budget; without the FX step a foreign order is mis-scaled.
-                if ccy == "GBP":
-                    px = px / 100.0
+                px = qu.quote_to_major(px, ccy)       # every minor-unit venue, not GBP alone
                 out[o["symbol"]] = out.get(o["symbol"], 0.0) + pfx.to_base(rem * px, ccy, rates)
             except Exception:
                 continue
@@ -4054,8 +4053,7 @@ class PortfolioBuyer:
                         # analyzer (analyzer.py:156) and the seven other GBP-handling sites. This was
                         # the ONE price path missing it, so it intermittently stored pence and the
                         # holding showed ~100× its value + a bogus gain (the AZN +9907% case).
-                        if (h.currency or "").upper() == "GBP":
-                            price = price / 100.0
+                        price = qu.quote_to_major(price, h.currency)   # pence, agorot, ... -> major
                         h.current_price = price
                         h.market_value = price * h.shares
                         h.unrealized_pnl = h.market_value - h.total_invested
@@ -4660,6 +4658,13 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                         s.status = "expired"
                         s.review_note = (f"Could not fund {ccy} leg after {s.funding_attempts} "
                                          f"attempts (FX conversion failed) — needs review")
+                        # Stand the name down for a day. Without this the next scan re-creates
+                        # the same doomed card, and because an unheld name has the biggest gap
+                        # it sits at the head of the queue — every pass of that session goes to
+                        # it and the names behind it get nothing. Seen coming 2026-10-06: IBKR
+                        # refuses any conversion into KRW ("Not allowed to open position in KRW"),
+                        # which would have starved Hong Kong and Tokyo through the Asian session.
+                        _mark_permission_blocked(symbol, hours=24.0)
                         try:
                             from src.core.alerts import get_alert_manager
                             get_alert_manager().critical(

@@ -58,6 +58,33 @@ def _fake_score(symbol, exchange, currency):
     return s
 
 
+MEMBERS = ("VRT", "GEV", "ALAB")
+
+
+def _seed_members(pool_path):
+    """Make VRT, GEV and ALAB current breakthrough members in the TEMP copy of the pool.
+
+    The scenarios below need three existing members with known roles. They used to be read from
+    the live pool file, so the tests broke the day a real screen moved GEV out on the size
+    ceiling and VRT up to the growth tier (2026-10-06). The roles are now set here."""
+    pool = yaml.safe_load(pool_path.read_text())
+    bt = pool.setdefault("breakthrough", []) or []
+    stamp = max((str(e["last_run_at"]) for e in bt if e.get("last_run_at")), default="2026-01-01T00:00:00")
+    have = {e.get("symbol"): e for e in bt}
+    for sym in MEMBERS:
+        e = have.get(sym)
+        if e is None:
+            e = {"symbol": sym, "exchange": "SMART", "currency": "USD", "name": sym,
+                 "megatrend": "2 Compute infrastructure", "thesis_latest": "seeded for the dry run",
+                 "first_seen": "2026-07", "last_seen": "2026-10", "appearance_count": 3}
+            bt.append(e)
+        e["last_run_at"] = stamp
+    pool["breakthrough"] = bt
+    for section in ("growth", "dividend"):
+        pool[section] = [e for e in (pool.get(section) or []) if e.get("symbol") not in ("VRT", "GEV")]
+    pool_path.write_text(yaml.safe_dump(pool, sort_keys=False, default_flow_style=False))
+
+
 @pytest.fixture
 def dry_run(monkeypatch, tmp_path):
     tools = tmp_path / "tools"
@@ -65,6 +92,7 @@ def dry_run(monkeypatch, tmp_path):
     for f in ("discovered_pool.yaml", "evicted_names.yaml"):
         shutil.copy(ROOT / "tools" / f, tools / f)
     monkeypatch.setattr(su, "__file__", str(tools / "screen_universe.py"))
+    _seed_members(tools / "discovered_pool.yaml")
 
     eng = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(eng)
@@ -120,8 +148,8 @@ def _anchor_symbols():
     return {e["symbol"] for e in su._load_breakthrough_anchor()}
 
 
-def test_real_anchor_still_contains_the_names_this_test_relies_on():
-    assert {"VRT", "GEV", "ALAB"} <= _anchor_symbols()
+def test_the_members_these_scenarios_rely_on_are_in_the_anchor(dry_run):
+    assert set(MEMBERS) <= _anchor_symbols()
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
