@@ -3533,9 +3533,10 @@ def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0, *,
     - Reject if any reverse stock split in the last 18 months
     - Reject if above `ceiling_usd` (v2 rules; the caller passes the entry ceiling for a new
       name and the retention ceiling for an existing member). Enforced for USD names only, on
-      FMP's market cap: the scorer's own figure is not safe for this — it is IBKR's value in
-      the listing currency, or a price x 100M-shares guess when IBKR has none, so a Korean or
-      Japanese name would read as trillions. Non-USD names rely on the prompt's ceiling.
+      FMP's market cap. The scorer's own figure is the broker's, converted to dollars (see
+      UniverseScreener._estimate_market_cap), but it can still be a price x 100M-shares guess
+      when the broker has none, so the ceiling stays on FMP. Non-USD names rely on the prompt's
+      ceiling.
     """
     from datetime import datetime, timedelta
     fmp_cap_usd = 0.0
@@ -3585,6 +3586,68 @@ def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0, *,
                 continue
 
     return True, ""
+
+
+def _snapshot_market_cap(snapshot_xml: str | None) -> tuple[float | None, str | None]:
+    """(market cap in MILLIONS, its currency) from the broker's ReportSnapshot, or (None, None).
+
+    The figure is the MKTCAP ratio, stated in the listing's price currency (Ratios@PriceCurrency):
+    Apple 4,869,932 USD, Lasertec 4,349,432 JPY, Lloyds 59,899 GBP. It sits in the
+    'Income Statement' ratio group. The lookup used to search only 'Price and Volume', never
+    found it, and every market cap since March 2026 was the fallback guess instead — price x 100M
+    shares (Apple "$33B") — which rejected every stock priced under $10 at the $1B floor
+    (Itau, Bradesco, Ambev, Lloyds, Barclays, Vodafone, Singtel ... 19 of 476 pool names)."""
+    if not snapshot_xml:
+        return None, None
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(snapshot_xml)
+        ratios = root.find(".//Ratios")
+        ccy = (ratios.get("PriceCurrency") if ratios is not None else None) or None
+        for r in root.iter("Ratio"):
+            if r.get("FieldName") == "MKTCAP" and r.text:
+                v = float(r.text)
+                return (v, ccy) if v > 0 else (None, None)
+    except Exception:
+        pass
+    return None, None
+
+
+# Rough dollar value of one unit, used ONLY when the broker quotes no rate for a listing currency
+# (it reports rates for currencies the account holds and can price most others from an FX pair,
+# but not all). Good enough for what market cap is used for here — a $1B / $500M floor and an
+# ordering — and never used to size money.
+_APPROX_USD_PER_UNIT = {"KRW": 0.00072, "INR": 0.0119, "TWD": 0.031, "BRL": 0.19, "MXN": 0.054,
+                        "ILS": 0.27, "IDR": 0.000061, "CNY": 0.14, "CNH": 0.14, "NZD": 0.60,
+                        "PLN": 0.26, "THB": 0.029, "MYR": 0.23}
+_usd_per_unit_memo: dict[str, float | None] = {}
+
+
+def _usd_per_unit(ib, currency: str | None) -> float | None:
+    """Dollars per one unit of `currency`: the broker's own rates first, the rough table last."""
+    ccy = (currency or "USD").upper()
+    if ccy == "USD":
+        return 1.0
+    if ccy in _usd_per_unit_memo:
+        return _usd_per_unit_memo[ccy]
+    rate = None
+    try:
+        from src.portfolio import fx as _pfx
+        from src.portfolio.buyer import resolve_fx_rate
+        rates = _pfx.load_fx_rates()
+        base = _pfx.base_ccy(rates)
+        usd_to_base = 1.0 if base == "USD" else resolve_fx_rate(ib, "USD", base)
+        ccy_to_base = resolve_fx_rate(ib, ccy, base)
+        if usd_to_base and ccy_to_base:
+            rate = float(ccy_to_base) / float(usd_to_base)
+    except Exception as e:
+        log.debug("screener_fx_rate_failed", currency=ccy, error=str(e))
+    if not rate:
+        rate = _APPROX_USD_PER_UNIT.get(ccy)
+        if rate:
+            log.info("screener_fx_rate_approximate", currency=ccy, usd_per_unit=rate)
+    _usd_per_unit_memo[ccy] = rate
+    return rate
 
 
 class BrokerNotAnswering(RuntimeError):
@@ -4390,16 +4453,22 @@ class UniverseScreener:
         return score
 
     def _estimate_market_cap(self, contract: Stock, price: float) -> float:
+        """Market cap in US DOLLARS: the broker's figure converted from the listing currency.
+        Only when the broker has no figure, or no rate exists for the currency, does this fall
+        back to the old guess (price x 100M shares) — and says so in the log."""
+        why = "no figure in the broker report"
         try:
-            fundamentals = self.ib.reqFundamentalData(contract, "ReportSnapshot")
-            if fundamentals:
-                import xml.etree.ElementTree as ET
-                root = ET.fromstring(fundamentals)
-                mcap_elem = root.find(".//Ratios/Group[@ID='Price and Volume']/Ratio[@FieldName='MKTCAP']")
-                if mcap_elem is not None and mcap_elem.text:
-                    return float(mcap_elem.text) * 1e6
-        except Exception:
-            pass
+            cap_m, ccy = _snapshot_market_cap(self.ib.reqFundamentalData(contract, "ReportSnapshot"))
+            if cap_m:
+                ccy = ccy or getattr(contract, "currency", None)
+                usd = _usd_per_unit(self.ib, ccy)
+                if usd:
+                    return cap_m * 1e6 * usd
+                why = f"no dollar rate for {ccy}"
+        except Exception as e:
+            why = f"{type(e).__name__}: {e}"
+        log.info("screener_market_cap_guessed", symbol=getattr(contract, "symbol", "?"),
+                 currency=getattr(contract, "currency", None), reason=why)
         return price * 1e8
 
     def _score_options(self, score: StockScore, contract: Stock) -> None:
