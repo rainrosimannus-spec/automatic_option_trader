@@ -1022,14 +1022,16 @@ def _get_current_screened_tiers() -> dict:
 
 
 def _get_chronos_trend(symbol):
+    """Chronos 10-day trend ("up"/"down"/"flat") for exit-card suppression, or None.
+    None (= no suppression) unless portfolio.chronos_guard_enabled is on — the forecast
+    is stored nightly regardless, this only decides whether the review ACTS on it."""
     try:
-        from src.portfolio.models import PortfolioForecast
-        from src.core.database import get_db
-        import datetime as _dt
-        t = _dt.date.today().strftime("%Y-%m-%d")
-        with get_db() as db:
-            fc = db.query(PortfolioForecast).filter(PortfolioForecast.symbol==symbol,PortfolioForecast.forecast_date==t).first()
-            if fc: return fc.trend
+        from src.core.config import get_settings
+        if not getattr(get_settings().portfolio, "chronos_guard_enabled", False):
+            return None
+        from src.portfolio.forecaster import latest_forecast
+        fc = latest_forecast(symbol)
+        if fc: return fc.trend
     except Exception: pass
     return None
 

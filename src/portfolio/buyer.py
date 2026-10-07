@@ -954,24 +954,19 @@ class PortfolioBuyer:
             except Exception as _e:
                 log.debug("portfolio_sentiment_check_failed", symbol=stock.symbol, error=str(_e))
 
-            # Chronos forecast guard — skip if model predicts down trend with confidence
-            try:
-                from src.portfolio.models import PortfolioForecast
-                from src.core.database import get_db as _get_db
-                import datetime as _dt
-                today_str = _dt.date.today().strftime("%Y-%m-%d")
-                with _get_db() as _db:
-                    _fc = _db.query(PortfolioForecast).filter(
-                        PortfolioForecast.symbol == stock.symbol,
-                        PortfolioForecast.forecast_date == today_str,
-                    ).first()
+            # Chronos forecast guard — skip if model predicts down trend with confidence.
+            # Gated by cfg.chronos_guard_enabled (ships OFF: forecasts are observed, not acted on).
+            if getattr(self.cfg, "chronos_guard_enabled", False):
+                try:
+                    from src.portfolio.forecaster import latest_forecast
+                    _fc = latest_forecast(stock.symbol)
                     if _fc and _fc.trend == "down" and _fc.confidence < 0.05:
                         log.info("portfolio_forecast_skip", symbol=stock.symbol,
                                  trend=_fc.trend, day10=_fc.forecast_day10,
-                                 confidence=_fc.confidence)
+                                 confidence=_fc.confidence, forecast_date=_fc.forecast_date)
                         continue
-            except Exception as _e:
-                log.debug("portfolio_forecast_check_failed", symbol=stock.symbol, error=str(_e))
+                except Exception as _e:
+                    log.debug("portfolio_forecast_check_failed", symbol=stock.symbol, error=str(_e))
 
             if entry_method == "direct_buy":
                 success = self._execute_buy(stock, analysis, buy_amount,

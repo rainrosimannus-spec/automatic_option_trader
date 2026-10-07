@@ -897,6 +897,10 @@ function syncInjections() {
                     <span class="text-emerald-400 font-medium block mb-0.5">Buy order: green first, then timing</span>
                     Green (at/below fair) names are bought by rank/underweight, but only in the last 120 min of each name's own session — they drift down intraday, so a late entry runs ≈1% cheaper than an at-open fill (measured over the real buys + a 5-regime backtest). Yellow (extended) names are bought ONLY once the entire green list has reached target, and then early in the day — a yellow never takes budget a still-underweight green has a claim on. A crash tranche bypasses both gates.
                 </div>
+                <div class="bg-gray-800/60 rounded-lg p-3">
+                    <span class="{% if chronos_guard_enabled %}text-emerald-400{% else %}text-gray-500{% endif %} font-medium block mb-0.5">Chronos 10-day forecast guard · {% if chronos_guard_enabled %}ON{% else %}OFF — observing{% endif %}</span>
+                    Nightly (17:30 ET) Chronos forecast on every tradable watchlist name is always stored. When ON, a name whose 10-day median is &gt;1% below spot with a tight band (q10–q90 spread &lt; 5% of price) is skipped by the buyer, and sell/reduce review cards are suppressed for names forecast up. Toggle: portfolio.chronos_guard_enabled.
+                </div>
             </div>
         </div>
 

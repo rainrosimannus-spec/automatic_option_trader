@@ -777,6 +777,8 @@ async def portfolio_page(request: Request):
         "portfolio_pending_orders": portfolio_pending_orders,
         "position_cap": position_cap,
         "total_exposure_cap": total_exposure_cap,
+        # Chronos guard chip (parity with the live flag in PortfolioConfig)
+        "chronos_guard_enabled": bool(getattr(get_settings().portfolio, "chronos_guard_enabled", False)),
         "daily_deployment_cap": daily_deployment_cap,
         # Execution mode card — reflect the real runtime auto-execute toggle
         "portfolio_auto_approve": _is_auto_approve_on("portfolio"),

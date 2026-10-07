@@ -258,6 +258,13 @@ class PortfolioConfig(BaseModel):
     # Stock-formation strategy: "compounder" (10x accumulation) or "classic" (legacy dip-buyer)
     strategy: str = "compounder"
     compounder: CompounderConfig = CompounderConfig()
+    # Chronos nightly forecast (17:30 ET, every watchlist name) is ALWAYS computed and stored.
+    # This flag decides whether anything ACTS on it: the buyer skips a name whose 10-day
+    # forecast is "down" with a tight band (confidence < 0.05), and the monthly review
+    # suppresses sell/reduce cards for names forecast "up". OFF = observe only. The guard
+    # had never been live (the job crashed nightly 2026-04-05 → 2026-10-07), so it ships
+    # OFF rather than silently switching on an untested buy gate.
+    chronos_guard_enabled: bool = False
 
     # Safety mode: suggest trades instead of placing orders
     # When true, all trades go to Approve/Reject queue on dashboard

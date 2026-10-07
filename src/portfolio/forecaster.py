@@ -105,6 +105,36 @@ def _run_forecast(pipeline, prices: np.ndarray) -> dict:
     }
 
 
+def forecast_universe(rows, park_symbol: str | None = None) -> list:
+    """Watchlist rows worth forecasting: every screened name on a venue this account can
+    trade, minus the parked cash-yield ETF. Rows flagged pending_removal STAY IN — they are
+    held names, and the review path reads their trend for exit suppression.
+
+    (Until 2026-10-07 this filtered on `PortfolioWatchlist.active`, a column that never
+    existed — the job crashed every night since 2026-04-05 and never wrote a forecast.)"""
+    from src.portfolio.venues import partition_tradable
+    tradable, _blocked = partition_tradable(rows)
+    return [r for r in tradable if not (park_symbol and r.symbol == park_symbol)]
+
+
+def latest_forecast(symbol: str, max_age_days: int = 3):
+    """Most recent PortfolioForecast for `symbol` no older than `max_age_days`, else None.
+
+    The job writes forecast_date = the evening it ran (17:30 ET). Consumers used to look up
+    forecast_date == today, which only matched scans later that same UTC day — the next
+    day's Tokyo/Europe/US scans and the monthly review (which runs BEFORE the job on the
+    same evening) never saw a row. A 3-day window spans a weekend."""
+    from datetime import timedelta
+    cutoff = (date.today() - timedelta(days=max_age_days)).strftime("%Y-%m-%d")
+    with get_db() as db:
+        return (
+            db.query(PortfolioForecast)
+            .filter(PortfolioForecast.symbol == symbol, PortfolioForecast.forecast_date >= cutoff)
+            .order_by(PortfolioForecast.forecast_date.desc())
+            .first()
+        )
+
+
 def job_portfolio_chronos_forecast(cfg):
     """
     Nightly Chronos forecast job — runs at 17:30 ET.
@@ -128,11 +158,10 @@ def job_portfolio_chronos_forecast(cfg):
         log.error("chronos_forecast_no_connection", error=str(e))
         return
 
+    park_symbol = getattr(cfg, "cash_yield_symbol", None) if cfg is not None else None
     with get_db() as db:
-        watchlist = db.query(PortfolioWatchlist).filter(
-            PortfolioWatchlist.active == True
-        ).all()
-        symbols = [(w.symbol, w.exchange, w.currency) for w in watchlist]
+        rows = db.query(PortfolioWatchlist).all()
+        symbols = [(w.symbol, w.exchange, w.currency) for w in forecast_universe(rows, park_symbol)]
 
     log.info("chronos_forecast_universe", count=len(symbols))
 
