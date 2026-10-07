@@ -226,6 +226,32 @@ def _get_options_start_date() -> str:
         return today
 
 
+def _get_total_invested() -> dict:
+    """Net capital deposited into the OPTIONS account (deposits − withdrawals), from the
+    Flex-sourced injection ledger — the same ledger the /portfolio "Total Invested" card
+    reads, scoped to the options account_id. Returns both views:
+      usd  — each deposit converted at the FX rate of its deposit date (amount_usd),
+             the figure to set against the USD NLV shown on this page
+      base — the raw deposited amount in the funding currency (EUR, amount_original)
+    Both 0.0 (card shows "—") until the options Flex sync has run."""
+    try:
+        from src.core.config import get_settings
+        from src.portfolio.capital_injections import (
+            get_total_invested_base, get_total_invested_usd,
+        )
+        options_account = get_settings().ibkr.account or None
+        if not options_account:
+            return {"usd": 0.0, "base": 0.0}
+        return {
+            "usd": float(get_total_invested_usd(account_id=options_account) or 0.0),
+            "base": float(get_total_invested_base(account_id=options_account) or 0.0),
+        }
+    except Exception as e:
+        from src.core.logger import get_logger
+        get_logger(__name__).warning("options_total_invested_failed", error=str(e))
+        return {"usd": 0.0, "base": 0.0}
+
+
 def _get_performance_data() -> dict:
     """
     Build performance chart as % return using daily account snapshots.
@@ -618,6 +644,7 @@ def dashboard(request: Request):
     # Account data (separate to avoid DB session issues)
     account = _get_account_data()
     parking = _get_parking_data()
+    total_invested = _get_total_invested()
     try:
         performance = _get_performance_data()
     except Exception as e:
@@ -699,6 +726,10 @@ def dashboard(request: Request):
         "margin_used_pct": account["margin_used_pct"],
         "maintenance_margin": account["maintenance_margin"],
         "debt_card": debt_card,
+        # Net deposits into the options account — same ledger as the /portfolio
+        # "Total Invested" card. {"usd": FX-at-deposit USD, "base": EUR deposited}.
+        "total_invested_usd": total_invested["usd"],
+        "total_invested_base": total_invested["base"],
         # Cash parking (FX treasury: EUR→XEON / USD→XFFE, USD debit auto-close)
         "parking": parking,
         # Performance chart

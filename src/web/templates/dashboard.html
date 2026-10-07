@@ -34,27 +34,24 @@
 </div>
 
 <!-- ═══ Account Overview ═══ -->
-<div class="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-6">
+<div class="grid grid-cols-2 lg:grid-cols-7 gap-3 mb-6">
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="text-xs text-gray-500 mb-1">Net Liquidation</div>
         <div class="text-xl font-bold font-mono text-gray-100">
             ${{ "{:,.0f}".format(net_liquidation) }}
         </div>
     </div>
-    {% if debt_card %}
-    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4" title="IBKR NLV minus loan obligations (principal + accrued interest), converted to USD. 'all debt' = every active loan incl. shareholder; 'outside only' = non-shareholder lenders. Indicative — FX is approximate.">
-        <div class="text-xs text-gray-500 mb-1">NLV net of debt</div>
-        <div class="flex justify-between items-baseline">
-            <span class="text-xs text-gray-500">all debt</span>
-            <span class="text-base font-bold font-mono {{ 'text-gray-100' if debt_card.net_all >= 0 else 'text-red-400' }}">${{ "{:,.0f}".format(debt_card.net_all) }}</span>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4" title="Net cash deposited into this options account (deposits − withdrawals), from the IBKR Flex deposit ledger — the same figure the Portfolio page shows for the compounder account. USD = each deposit at the FX rate of its deposit date, to compare with the USD NLV; the euro line is the amount actually wired. Synced daily at 16:00 ET.">
+        <div class="text-xs text-gray-500 mb-1">Total Invested</div>
+        <div class="text-xl font-bold font-mono text-gray-100">
+            {% if total_invested_usd and total_invested_usd > 0 %}${{ "{:,.0f}".format(total_invested_usd) }}{% else %}—{% endif %}
         </div>
-        <div class="flex justify-between items-baseline mt-0.5">
-            <span class="text-xs text-gray-500">outside only</span>
-            <span class="text-base font-bold font-mono {{ 'text-gray-100' if debt_card.net_outside >= 0 else 'text-red-400' }}">${{ "{:,.0f}".format(debt_card.net_outside) }}</span>
-        </div>
-        <div class="text-xs text-gray-600 mt-0.5">debt − ${{ "{:,.0f}".format(debt_card.total_debt) }} all · ${{ "{:,.0f}".format(debt_card.external_debt) }} outside</div>
+        {% if total_invested_usd and total_invested_usd > 0 %}
+        <div class="text-xs text-gray-500 mt-0.5">€{{ "{:,.0f}".format(total_invested_base) }} deposited{% if perf_actual and perf_actual|length > 0 and perf_actual[-1] is not none %}{% set inv_ret = perf_actual[-1] %} · <span class="{{ 'text-emerald-400' if inv_ret >= 0 else 'text-red-400' }}" title="Deposit-adjusted return since inception — the last point of the performance chart below">{{ "+" if inv_ret >= 0 else "" }}{{ "%.1f"|format(inv_ret) }}%</span>{% endif %}</div>
+        {% else %}
+        <div class="text-xs text-gray-600 mt-0.5">awaiting Flex sync</div>
+        {% endif %}
     </div>
-    {% endif %}
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="text-xs text-gray-500 mb-1">Cash Balance</div>
         <div class="text-xl font-bold font-mono text-emerald-400">
