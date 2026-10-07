@@ -85,17 +85,17 @@ function syncInjections() {
             </div>
             <div>
                 <div class="text-xs text-gray-500 uppercase tracking-wider">Deployed</div>
-                <div class="text-xl font-bold text-emerald-400 mt-1">${{"{:,.0f}".format(compounder.deployed)}}</div>
+                <div class="text-xl font-bold text-emerald-400 mt-1">€{{"{:,.0f}".format(compounder.deployed)}}</div>
                 <div class="text-xs text-gray-500">{{"{:.0f}".format(dep_pct)}}% of live target</div>
             </div>
             <div>
                 <div class="text-xs text-gray-500 uppercase tracking-wider">Dry Powder</div>
-                <div class="text-xl font-bold text-sky-400 mt-1">${{"{:,.0f}".format(dry if dry > 0 else 0)}}</div>
+                <div class="text-xl font-bold text-sky-400 mt-1">€{{"{:,.0f}".format(dry if dry > 0 else 0)}}</div>
                 <div class="text-xs text-gray-500">~10% cash reserve + up to 15% NLV crash margin</div>
             </div>
             <div>
                 <div class="text-xs text-gray-500 uppercase tracking-wider">Today's Budget</div>
-                <div class="text-xl font-bold text-white mt-1">${{"{:,.0f}".format(compounder.daily_budget)}}</div>
+                <div class="text-xl font-bold text-white mt-1">€{{"{:,.0f}".format(compounder.daily_budget)}}</div>
                 <div class="text-xs text-gray-500">DCA pace</div>
             </div>
             <div>
@@ -128,7 +128,7 @@ function syncInjections() {
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Unrealized P&L</div>
             <div class="text-2xl font-bold mt-1 {% if total_pnl >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">
-                ${{"{:,.0f}".format(total_pnl)}} ({{"{:.1f}".format(total_pnl_pct)}}%)
+                €{{"{:,.0f}".format(total_pnl)}} ({{"{:.1f}".format(total_pnl_pct)}}%)
             </div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
@@ -136,11 +136,11 @@ function syncInjections() {
             <div class="flex flex-col gap-1.5">
                 <div class="flex justify-between items-baseline">
                     <div class="text-xs text-gray-500">pending</div>
-                    <div class="text-sm font-bold text-blue-400">${{"{:,.0f}".format(dividends_accrued)}}</div>
+                    <div class="text-sm font-bold text-blue-400">€{{"{:,.0f}".format(dividends_accrued)}}</div>
                 </div>
                 <div class="flex justify-between items-baseline">
                     <div class="text-xs text-gray-500">accrued YTD</div>
-                    <div class="text-sm font-bold text-white">${{"{:,.0f}".format(total_dividends)}}</div>
+                    <div class="text-sm font-bold text-white">€{{"{:,.0f}".format(total_dividends)}}</div>
                 </div>
                 <div class="flex justify-between items-baseline">
                     <div class="text-xs text-gray-500">DT yield YTD</div>
@@ -237,20 +237,20 @@ function syncInjections() {
             <div class="mt-3 space-y-2 text-xs">
                 <div class="flex items-center justify-between">
                     <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-blue-400"></span> Dividend</span>
-                    <span class="text-gray-300">${{"{:,.0f}".format(tier_dividend)}} · {{"{:.0f}".format(tier_dividend / tier_total * 100)}}%</span>
+                    <span class="text-gray-300">€{{"{:,.0f}".format(tier_dividend)}} · {{"{:.0f}".format(tier_dividend / tier_total * 100)}}%</span>
                 </div>
                 <div class="flex items-center justify-between">
                     <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span> Growth</span>
-                    <span class="text-gray-300">${{"{:,.0f}".format(tier_growth)}} · {{"{:.0f}".format(tier_growth / tier_total * 100)}}%</span>
+                    <span class="text-gray-300">€{{"{:,.0f}".format(tier_growth)}} · {{"{:.0f}".format(tier_growth / tier_total * 100)}}%</span>
                 </div>
                 <div class="flex items-center justify-between">
                     <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-purple-400"></span> Breakthrough</span>
-                    <span class="text-gray-300">${{"{:,.0f}".format(tier_breakthrough)}} · {{"{:.0f}".format(tier_breakthrough / tier_total * 100)}}%</span>
+                    <span class="text-gray-300">€{{"{:,.0f}".format(tier_breakthrough)}} · {{"{:.0f}".format(tier_breakthrough / tier_total * 100)}}%</span>
                 </div>
                 {% if tier_cash > 0 %}
                 <div class="flex items-center justify-between">
                     <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span> Cash (parked)</span>
-                    <span class="text-gray-300">${{"{:,.0f}".format(tier_cash)}} · {{"{:.0f}".format(tier_cash / tier_total * 100)}}%</span>
+                    <span class="text-gray-300">€{{"{:,.0f}".format(tier_cash)}} · {{"{:.0f}".format(tier_cash / tier_total * 100)}}%</span>
                 </div>
                 {% endif %}
             </div>
@@ -395,7 +395,7 @@ function syncInjections() {
                             {% elif p.tier == 'breakthrough' %}bg-purple-900/50 text-purple-300
                             {% else %}bg-emerald-900/50 text-emerald-300{% endif %}">{{p.tier}}</span>
                     </div>
-                    <span class="font-mono {% if p.pnl_pct >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">{{ "+" if p.pnl_pct >= 0 else "" }}{{"{:.1f}".format(p.pnl_pct)}}% · ${{"{:,.0f}".format(p.pnl_abs)}}</span>
+                    <span class="font-mono {% if p.pnl_pct >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">{{ "+" if p.pnl_pct >= 0 else "" }}{{"{:.1f}".format(p.pnl_pct)}}% · {{ p.ccy_symbol }}{{"{:,.0f}".format(p.pnl_abs)}}</span>
                 </div>
                 {% endfor %}
             </div>
@@ -414,7 +414,7 @@ function syncInjections() {
                             {% elif p.tier == 'breakthrough' %}bg-purple-900/50 text-purple-300
                             {% else %}bg-emerald-900/50 text-emerald-300{% endif %}">{{p.tier}}</span>
                     </div>
-                    <span class="font-mono text-red-400">{{"{:.1f}".format(p.pnl_pct)}}% · ${{"{:,.0f}".format(p.pnl_abs)}}</span>
+                    <span class="font-mono text-red-400">{{"{:.1f}".format(p.pnl_pct)}}% · {{ p.ccy_symbol }}{{"{:,.0f}".format(p.pnl_abs)}}</span>
                 </div>
                 {% endfor %}
             </div>
@@ -850,13 +850,13 @@ function syncInjections() {
                 <div class="font-medium text-sm {% if portfolio_margin_pct > 70 %}text-red-400{% elif portfolio_margin_pct > 50 %}text-amber-400{% else %}text-emerald-400{% endif %}">
                     {{"{:.1f}".format(portfolio_margin_pct)}}%
                 </div>
-                <div class="text-xs text-gray-400 mt-0.5">${{"{:,.0f}".format(portfolio_maintenance_margin)}} maintenance</div>
+                <div class="text-xs text-gray-400 mt-0.5">€{{"{:,.0f}".format(portfolio_maintenance_margin)}} maintenance</div>
             </div>
 
             <!-- Buying Power -->
             <div class="bg-gray-800/60 rounded-lg p-3">
                 <div class="text-xs text-gray-500 mb-1">Buying Power</div>
-                <div class="font-medium text-sm text-cyan-400">${{"{:,.0f}".format(portfolio_buying_power)}}</div>
+                <div class="font-medium text-sm text-cyan-400">€{{"{:,.0f}".format(portfolio_buying_power)}}</div>
                 <div class="text-xs text-gray-400 mt-0.5">Available to deploy</div>
             </div>
 

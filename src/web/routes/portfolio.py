@@ -239,17 +239,6 @@ def _get_fx_rates(currencies: list) -> dict:
     except Exception:
         return _fx_cache
 
-def _to_usd(amount: float, currency: str, fx_rates: dict = None) -> float:
-    """Convert an amount in the given currency to USD."""
-    if not amount or currency in ("USD", None):
-        return amount or 0.0
-    rates = fx_rates if fx_rates is not None else _fx_cache
-    rate = rates.get(currency)
-    if rate:
-        return amount * rate
-    return amount
-
-
 def _portfolio_base_ccy(fx_rates: dict = None) -> str:
     """Account BASE currency = the one IBKR reports with ExchangeRate == 1.0 (EUR for U26413485).
     Falls back to USD if the cache has no rates yet."""
@@ -265,8 +254,8 @@ def _portfolio_base_ccy(fx_rates: dict = None) -> str:
 
 def _to_base(amount: float, currency: str, fx_rates: dict = None, base_ccy: str = None) -> float:
     """Convert an amount in `currency` to the account BASE currency using IBKR's per-currency
-    ExchangeRate (which is quoted currency→base). Unlike _to_usd, this does NOT pass USD through —
-    so for a euro-base account a USD holding is converted to EUR."""
+    ExchangeRate (which is quoted currency→base). USD is NOT passed through — for a euro-base
+    account a USD holding is converted to EUR like any other foreign currency."""
     if not amount:
         return 0.0
     rates = fx_rates if fx_rates is not None else _fx_cache
@@ -282,13 +271,17 @@ def _build_tier_breakdown(holdings, fx_rates=None) -> dict:
     must not inflate the Growth slice."""
     from src.core.config import get_settings
     _park = getattr(get_settings().portfolio, "cash_yield_symbol", None)
+    # Everything in the account BASE currency (EUR). The old helper here was named _to_usd but fed
+    # with IBKR's local→BASE rates, so non-USD names became euros while USD names passed through at
+    # face value — a €/$ mix that summed ~€520k above Market Value (2026-10-07) and skewed the slices.
+    _base = _portfolio_base_ccy(fx_rates)
     tiers = {"dividend": 0, "growth": 0, "breakthrough": 0, "cash": 0}
     for h in holdings:
         if _park and h.symbol == _park:
-            tiers["cash"] += _to_usd(h.market_value or 0, h.currency, fx_rates)
+            tiers["cash"] += _to_base(h.market_value or 0, h.currency, fx_rates, _base)
             continue
         tier = h.tier or "growth"
-        tiers[tier] = tiers.get(tier, 0) + _to_usd(h.market_value or 0, h.currency, fx_rates)
+        tiers[tier] = tiers.get(tier, 0) + _to_base(h.market_value or 0, h.currency, fx_rates, _base)
     return tiers
 
 
@@ -367,7 +360,8 @@ def _build_top_performers(holdings) -> list[dict]:
                 "symbol": h.symbol,
                 "name": h.name or "",
                 "pnl_pct": pnl_pct,
-                "pnl_abs": (h.market_value or 0) - h.total_invested,
+                "pnl_abs": (h.market_value or 0) - h.total_invested,   # NATIVE currency
+                "ccy_symbol": _ccy_symbol(h.currency),
                 "tier": h.tier or "growth",
             })
     performers.sort(key=lambda x: x["pnl_pct"], reverse=True)
