@@ -1470,7 +1470,7 @@ def _review_existing_holdings_monthly(
 
         held_facts[symbol] = {
             "shares": shares, "avg_cost": avg_cost, "price": current_price, "tier": tier,
-            "currency": holding.currency or "USD", "sma_200": sma_200,
+            "currency": holding.currency or "USD", "exchange": holding.exchange or "SMART", "sma_200": sma_200,
         }
 
         # Every fundamentals-based suggestion below reads FMP by ticker; make sure FMP is
@@ -1890,12 +1890,12 @@ def _review_existing_holdings_monthly(
                 "reason": f"Off watchlist but profitable ({pnl_pct:+.1f}%)",
             })
 
-    suggestions.extend(_exit_call_cards(suggestions, held_facts, open_cc_symbols))
+    suggestions.extend(_exit_call_cards(suggestions, held_facts, open_cc_symbols, ib=ib))
     return suggestions
 
 
 def _exit_call_cards(suggestions: list[dict], held_facts: dict[str, dict],
-                     open_cc_symbols: set[str]) -> list[dict]:
+                     open_cc_symbols: set[str], ib=None) -> list[dict]:
     """A covered-call card beside every sell or reduce card the review wrote (growth and dividend
     holdings; breakthrough is never reviewed).
 
@@ -1904,8 +1904,9 @@ def _exit_call_cards(suggestions: list[dict], held_facts: dict[str, dict],
     stock went for more plus the premium; not called, the shares and the premium stay. The strike
     depends on where the price stands against cost (review_orders.exit_call_plan): 8% up when in
     profit, at break-even when that is within reach, 12% up when it is not — then the card states
-    the smaller loss a call-away would realise. US listings only for now (the executor writes US
-    options; Hong Kong, Japan and Europe follow), at least 100 shares, no call card already open.
+    the smaller loss a call-away would realise. Every market the executor can write on
+    (review_orders.CALL_CURRENCIES), at least one contract's worth of shares — the contract size
+    comes from the broker (500 for Meituan) — and no call card already open.
     Like every review card it does nothing until approved by hand."""
     from datetime import date
     from src.core.suggestions import create_suggestion
@@ -1922,35 +1923,40 @@ def _exit_call_cards(suggestions: list[dict], held_facts: dict[str, dict],
             continue
         shares, avg_cost, price = f["shares"], f["avg_cost"], f["price"]
         covered = min(shares, int(card.get("shares") or shares))      # a REDUCE card covers its trim
-        if covered < 100 or f["currency"] != "USD":
+        if f["currency"] not in ro.CALL_CURRENCIES:
+            continue
+        lot = ro.option_lot(ib, symbol, f.get("exchange") or "SMART", f["currency"], covered) if ib is not None else 100
+        if not lot or covered < lot:
+            if lot:
+                log.info("review_exit_call_skipped_under_one_lot", symbol=symbol, shares=covered, lot=lot)
             continue
         plan = ro.exit_call_plan(avg_cost, price, date.today())
         if plan is None:
             continue
         strike, expiry, tier = plan["strike"], plan["expiry"], plan["tier"]
-        contracts = covered // 100
+        contracts = covered // lot
         head = (f"MONTHLY REVIEW: {symbol} ({f['tier']}) is flagged "
                 f"{'to reduce' if card.get('action') == 'REDUCE' else 'for exit'}: "
-                f"{shares} shares @ ${avg_cost:.2f}, now ${price:.2f} ({plan['pnl_pct']:+.1f}%). ")
+                f"{shares} shares @ {avg_cost:.2f}, now {price:.2f} {f['currency']} ({plan['pnl_pct']:+.1f}%). ")
         if tier == "profit":
-            body = (f"Alternative to selling now: sell {contracts} covered call(s), strike ${strike:.0f} "
+            body = (f"Alternative to selling now: sell {contracts} covered call(s), strike {strike:.0f} "
                     f"(8% above the price), expiry {expiry.strftime('%b %d %Y')}. Paid to wait; if "
                     f"called you sell {plan['called_pnl_pct']:+.1f}% above cost instead of "
                     f"{plan['pnl_pct']:+.1f}% today.")
-            reason = f"In profit: call at ${strike:.0f} exp {expiry.strftime('%b %d')} instead of selling now"
+            reason = f"In profit: call at {strike:.0f} exp {expiry.strftime('%b %d')} instead of selling now"
         elif tier == "breakeven":
             body = (f"Alternative to selling at a loss: sell {contracts} covered call(s), strike "
-                    f"${strike:.0f} (your break-even, or 5% above the price if higher), expiry "
+                    f"{strike:.0f} (your break-even, or 5% above the price if higher), expiry "
                     f"{expiry.strftime('%b %d %Y')}. Premium while waiting; out at no loss if called. "
                     f"The strike sent is never below your average cost at the broker.")
-            reason = f"At a loss ({plan['pnl_pct']:+.1f}%): call at break-even ${strike:.0f} exp {expiry.strftime('%b %d')}"
+            reason = f"At a loss ({plan['pnl_pct']:+.1f}%): call at break-even {strike:.0f} exp {expiry.strftime('%b %d')}"
         else:
             body = (f"Break-even is out of reach for a call. Alternative to selling at {plan['pnl_pct']:+.1f}% "
-                    f"today: sell {contracts} covered call(s), strike ${strike:.0f} (12% above the price), "
+                    f"today: sell {contracts} covered call(s), strike {strike:.0f} (12% above the price), "
                     f"expiry {expiry.strftime('%b %d %Y')}. If called you take {plan['called_pnl_pct']:+.1f}% "
                     f"instead of {plan['pnl_pct']:+.1f}% now, plus the premium; if not, you keep the shares "
                     f"and the premium.")
-            reason = (f"Deep loss ({plan['pnl_pct']:+.1f}%): call at ${strike:.0f} exp {expiry.strftime('%b %d')} "
+            reason = (f"Deep loss ({plan['pnl_pct']:+.1f}%): call at {strike:.0f} exp {expiry.strftime('%b %d')} "
                       f"— called = {plan['called_pnl_pct']:+.1f}% instead of {plan['pnl_pct']:+.1f}%")
         create_suggestion(
             symbol=symbol,
@@ -2128,7 +2134,13 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                     commission = fill.commissionReport.commission or 0.0
 
                 sec_type = contract.secType
-                wl_contract_size = _contract_sizes.get(symbol) or getattr(wl, 'contract_size', None) or 100
+                # The contract's own size first (500 for a Meituan option, 10 for a mini class) —
+                # the yaml/watchlist figure is a default, not what was traded.
+                try:
+                    _own_mult = int(float(getattr(contract, "multiplier", 0) or 0))
+                except (TypeError, ValueError):
+                    _own_mult = 0
+                wl_contract_size = _own_mult or _contract_sizes.get(symbol) or getattr(wl, 'contract_size', None) or 100
                 wl_currency = getattr(wl, 'currency', 'USD') or 'USD'
 
                 def _opt_price(p):

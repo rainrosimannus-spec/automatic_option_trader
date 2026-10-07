@@ -56,10 +56,13 @@ def _working(sec="STK", action="SELL", qty=100, symbol="ACME", right=""):
 
 class FakeIB:
     def __init__(self, positions, open_trades=(), close=100.0, bid=1.00, ask=1.20,
-                 strikes=(90, 95, 100, 105, 110, 115, 120), order_status="Submitted"):
+                 strikes=(90, 95, 100, 105, 110, 115, 120), order_status="Submitted",
+                 chains=None, listed_strikes=None):
         self._positions, self._open = list(positions), list(open_trades)
         self.close, self.bid, self.ask, self.strikes = close, bid, ask, strikes
         self.order_status = order_status
+        self.chains = chains                  # None -> one SMART chain, 100 shares a contract
+        self.listed_strikes = listed_strikes  # strikes the broker really lists (default: the chain's)
         self.placed = []
 
     def positions(self):
@@ -73,7 +76,20 @@ class FakeIB:
         return [c]
 
     def reqContractDetails(self, c):
+        if getattr(c, "secType", "") == "OPT":
+            # the broker's concrete contracts for this expiry/right, like reqContractDetails returns
+            exch, tc = c.exchange, c.tradingClass
+            return [SimpleNamespace(contract=SimpleNamespace(
+                        strike=float(k), conId=5000 + int(k * 10), multiplier=self._mult(exch),
+                        tradingClass=tc or "X", lastTradeDateOrContractMonth=c.lastTradeDateOrContractMonth))
+                    for k in (self.listed_strikes or self.strikes)]
         return [SimpleNamespace(validExchanges="SMART", minTick=0.01, marketRuleIds="")]
+
+    def _mult(self, exch):
+        for ch in self.reqSecDefOptParams():
+            if ch.exchange == exch:
+                return ch.multiplier
+        return "100"
 
     def reqHistoricalData(self, *a, **k):
         return [SimpleNamespace(close=self.close)]
@@ -81,7 +97,11 @@ class FakeIB:
     def reqSecDefOptParams(self, *a):
         exp = (date.today() + timedelta(days=40)).strftime("%Y%m%d")
         soon = (date.today() + timedelta(days=5)).strftime("%Y%m%d")
-        return [SimpleNamespace(exchange="SMART", expirations=[soon, exp], strikes=list(self.strikes))]
+        if self.chains is not None:
+            return [SimpleNamespace(exchange=ex, tradingClass=tc, multiplier=str(m), expirations=[soon, exp],
+                                    strikes=list(self.strikes)) for ex, tc, m in self.chains]
+        return [SimpleNamespace(exchange="SMART", tradingClass="X", multiplier="100",
+                                expirations=[soon, exp], strikes=list(self.strikes))]
 
     def reqMktData(self, *a):
         return SimpleNamespace(bid=self.bid, ask=self.ask)
@@ -111,6 +131,7 @@ def wired(temp_db, monkeypatch):
     monkeypatch.setattr(conn, "refresh_portfolio_pending_orders_cache", lambda: None)
     monkeypatch.setattr(buyer, "_market_open", lambda ccy: True)
     monkeypatch.setattr(ro, "_us_options_open", lambda now=None: True)
+    monkeypatch.setattr(ro, "premium_ok", lambda bid, lot, ccy: bool(bid and bid == bid and bid >= 0.20))
     monkeypatch.setattr(get_settings().portfolio, "readonly", False)
     monkeypatch.setattr(get_settings().portfolio, "ibkr_account", "")
     buyer._MIN_TICK_CACHE.clear()
@@ -293,17 +314,57 @@ def test_call_without_a_bid_is_not_sent(wired):
     ib = wired["ib"] = FakeIB([_stk(qty=100)], bid=0.15, ask=0.30)      # under the $0.20 floor
     sid = _card(action="sell_covered_call_review", qty=1, strike=110.0, right="C")
     assert ro.execute_review_covered_call(sid) == "approved"
-    assert ib.placed == [] and "no bid" in _get(sid).note
+    assert ib.placed == [] and "no worthwhile bid" in _get(sid).note
 
 
-def test_foreign_listing_gets_no_call(wired):
+def test_listing_without_an_option_market_gets_no_call(wired):
     from src.portfolio.models import PortfolioHolding
     with db_mod.get_db() as db:
-        db.add(PortfolioHolding(symbol="XRO", exchange="ASX", currency="AUD", shares=500))
-    ib = wired["ib"] = FakeIB([_stk(symbol="XRO", qty=500)])
-    sid = _card(action="sell_covered_call_review", qty=5, strike=110.0, right="C", symbol="XRO")
+        db.add(PortfolioHolding(symbol="035420", exchange="KRX", currency="KRW", shares=500))
+    ib = wired["ib"] = FakeIB([_stk(symbol="035420", qty=500)])
+    sid = _card(action="sell_covered_call_review", qty=5, strike=110.0, right="C", symbol="035420")
     assert ro.execute_review_covered_call(sid) == "rejected"
     assert ib.placed == []
+
+
+def test_hong_kong_call_uses_the_brokers_500_share_contract(wired):
+    from src.portfolio.models import PortfolioHolding
+    with db_mod.get_db() as db:
+        db.add(PortfolioHolding(symbol="3690", exchange="SEHK", currency="HKD", shares=1200))
+    ib = wired["ib"] = FakeIB([_stk(symbol="3690", qty=1200, avg=74.9)], close=70.85,
+                              chains=[("SEHK", "MET", 500)], strikes=(70, 72.5, 75, 77, 80, 85))
+    sid = _card(action="sell_covered_call_review", qty=12, strike=77.0, right="C", symbol="3690")
+    assert ro.execute_review_covered_call(sid) == "submitted"
+    (opt, order), = ib.placed
+    assert order.totalQuantity == 2                       # 1200 shares cover two 500-share contracts, not 12
+    assert opt.exchange == "SEHK" and opt.tradingClass == "MET" and opt.multiplier == "500"
+    assert opt.strike == 77.0 and opt.conId > 0           # the broker's own contract, not a guess
+    assert "500 sh/contract" in _get(sid).note
+
+
+def test_chain_choice_skips_a_class_the_position_cannot_cover():
+    azn = [SimpleNamespace(exchange="ICEEU", tradingClass="AZA", multiplier="1000", expirations=list(range(60))),
+           SimpleNamespace(exchange="ICEEU", tradingClass="8ZA", multiplier="100", expirations=list(range(6)))]
+    assert ro.pick_chain(azn, 815, "GBP").tradingClass == "8ZA"        # 1,000-share class useless for 815
+    asml = [SimpleNamespace(exchange="EUREX", tradingClass="ASM", multiplier="100", expirations=list(range(17))),
+            SimpleNamespace(exchange="FTA", tradingClass="AS9C", multiplier="100", expirations=list(range(7))),
+            SimpleNamespace(exchange="EUREX", tradingClass="ASM2", multiplier="10", expirations=list(range(17)))]
+    assert ro.pick_chain(asml, 100, "EUR").tradingClass == "ASM"        # deepest full-size class
+    us = [SimpleNamespace(exchange="CBOE", multiplier="100", expirations=[]),
+          SimpleNamespace(exchange="SMART", multiplier="100", expirations=[])]
+    assert ro.pick_chain(us, 100, "USD").exchange == "SMART"
+    assert ro.pick_chain(azn, 50, "GBP") is None
+
+
+def test_premium_floor_is_judged_in_base_currency(monkeypatch):
+    import src.portfolio.fx as fx
+    monkeypatch.setattr(fx, "load_fx_rates", lambda: {"EUR": 1.0, "USD": 0.89, "GBP": 1.18, "HKD": 0.114})
+    assert ro.premium_ok(0.20, 100, "USD")                 # $20 a contract ~ EUR 17.8
+    assert not ro.premium_ok(0.10, 100, "USD")
+    assert ro.premium_ok(0.30, 500, "HKD")                 # HK$150 ~ EUR 17
+    assert not ro.premium_ok(0.10, 500, "HKD")
+    assert ro.premium_ok(15.0, 100, "GBP")                 # 15 PENCE x 100 = GBP 15 ~ EUR 17.7
+    assert not ro.premium_ok(0.0, 100, "USD") and not ro.premium_ok(float("nan"), 100, "USD")
 
 
 # ── After the order ────────────────────────────────────────────────────────────────────────
@@ -400,16 +461,21 @@ def test_review_writes_a_call_card_beside_every_sell_or_reduce_card(monkeypatch)
         "DEEP": _facts(price=60.0),                       # break-even out of reach -> deep tier
         "TRIM": _facts(shares=1000, price=130.0),         # REDUCE card trimming 400 shares
         "ODD":  _facts(shares=60),                        # under one contract
-        "XRO":  _facts(shares=500, currency="AUD"),       # no US option market for now
+        "XRO":  _facts(shares=500, currency="AUD", exchange="ASX"),   # Australian options exist
         "HASCC": _facts(shares=500),                      # call card already open
         "UNFLAGGED": _facts(shares=500),
     }
+    facts["MEIT"] = _facts(shares=1200, price=70.0, avg_cost=75.0, currency="HKD", exchange="SEHK")   # 500-share lots
+    facts["NAVER"] = _facts(shares=500, currency="KRW", exchange="KRX")                             # no option market
+    monkeypatch.setattr(ro, "option_lot", lambda ib, sym, ex, ccy, shares: 500 if ccy == "HKD" else 100)
     flagged = [{"symbol": s, "action": "CONSIDER SELL"} for s in facts if s not in ("UNFLAGGED", "TRIM")]
     flagged.append({"symbol": "TRIM", "action": "REDUCE", "shares": 400})
-    out = _exit_call_cards(flagged, facts, open_cc_symbols={"HASCC"})
+    out = _exit_call_cards(flagged, facts, open_cc_symbols={"HASCC"}, ib=object())
 
     by = {kw["symbol"]: kw for kw in made}
-    assert set(by) == {"LOSS", "NEAR", "GAIN", "DEEP", "TRIM"}
+    assert set(by) == {"LOSS", "NEAR", "GAIN", "DEEP", "TRIM", "XRO", "MEIT"}       # Australia and Hong Kong now included
+    assert by["MEIT"]["quantity"] == 2                                              # 1200 shares / 500 a contract
+    assert by["XRO"]["quantity"] == 5
     assert by["LOSS"]["strike"] == 100 and by["LOSS"]["quantity"] == 2 and by["LOSS"]["signal"] == "monthly_exit_call_breakeven"
     assert by["NEAR"]["strike"] == 104
     assert by["GAIN"]["strike"] == 130 and by["GAIN"]["signal"] == "monthly_exit_call_profit"

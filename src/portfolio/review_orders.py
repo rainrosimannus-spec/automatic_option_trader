@@ -231,6 +231,94 @@ def _last_price(ib, contract) -> float | None:
     return None
 
 
+# Listings whose covered calls the executor can write, each checked 2026-10-07 with a no-transmit
+# preview on a real option of a held name: US (SMART), Hong Kong (SEHK, 500-share lots on Meituan),
+# Japan (OSE.JPN), the Netherlands (EUREX/FTA), London (ICEEU; chain strikes come in pence) and
+# Australia (ASX). Korea and Israel list no stock options.
+CALL_CURRENCIES = frozenset({"USD", "HKD", "JPY", "EUR", "GBP", "AUD"})
+MIN_CALL_PREMIUM_BASE = 15.0     # per contract, in the account's base currency (~ the US $0.20 x 100)
+
+
+def pick_chain(chains, shares: int, currency: str):
+    """The option chain to write on. US: the SMART chain. Elsewhere the broker lists several
+    (ASML has twelve: Eurex and Euronext, 100- and 10-share classes; AstraZeneca a 1,000-share
+    class next to a 100-share one): take the deepest one (most expiries) whose contract the
+    position can cover at least once — a 1,000-share class is useless for 815 shares."""
+    chains = list(chains or [])
+    if not chains:
+        return None
+    if (currency or "USD").upper() == "USD":
+        smart = [c for c in chains if c.exchange == "SMART"]
+        return smart[0] if smart else chains[0]
+    fits = [c for c in chains if 0 < int(float(c.multiplier or 100)) <= max(int(shares), 0)]
+    if not fits:
+        return None
+    return max(fits, key=lambda c: (len(c.expirations), int(float(c.multiplier or 100))))
+
+
+def option_lot(ib, symbol: str, exchange: str, currency: str, shares: int) -> int | None:
+    """Shares per option contract for this listing (100 in the US, 500 for Meituan ...), from the
+    broker's chains. None when the broker lists no option the position can cover."""
+    from src.portfolio.connection import get_portfolio_lock
+    try:
+        stock = broker_stock(symbol, exchange if currency != "USD" else "SMART", currency)
+        with get_portfolio_lock():
+            if not ib.qualifyContracts(stock) or not stock.conId:
+                return None
+            chain = pick_chain(ib.reqSecDefOptParams(stock.symbol, "", "STK", stock.conId), shares, currency)
+        return int(float(chain.multiplier or 100)) if chain else None
+    except Exception as e:
+        log.warning("review_option_lot_failed", symbol=symbol, error=str(e))
+        return None
+
+
+def premium_ok(bid: float | None, multiplier: int, currency: str) -> bool:
+    """A bid worth sending: at least MIN_CALL_PREMIUM_BASE per contract in base currency. The bid
+    is in the unit the venue quotes (pence in London), so it is normalised first."""
+    if not bid or bid != bid or bid <= 0:
+        return False
+    from src.portfolio import fx as _pfx
+    per_contract = float(qu.quote_to_major(float(bid), currency)) * int(multiplier)
+    rates = _pfx.load_fx_rates()
+    if not _pfx.has_rate(currency, rates):
+        return per_contract > 0
+    return _pfx.to_base(per_contract, currency, rates) >= MIN_CALL_PREMIUM_BASE
+
+
+def _options_open(currency: str) -> bool:
+    """US options have their own window; elsewhere the stock's session stands in for the option's."""
+    if (currency or "USD").upper() == "USD":
+        return _us_options_open()
+    from src.portfolio import buyer as b
+    return b._market_open(currency)
+
+
+def resolve_call(ib, stock, chain, expiry: str, floor: float):
+    """The concrete listed call: the lowest strike at or above `floor` that the broker has for this
+    expiry, as a fully identified contract. Strikes come from the broker's own contract list, not
+    the chain's union — the chain's list is in pence for London and not every strike exists for
+    every expiry (and a Hong Kong option cannot be resolved from fields at all). Never below floor."""
+    from ib_insync import Contract
+    from src.portfolio.connection import get_portfolio_lock
+    probe = Contract(secType="OPT", symbol=stock.symbol, exchange=chain.exchange, currency=stock.currency,
+                     lastTradeDateOrContractMonth=expiry, right="C", tradingClass=chain.tradingClass)
+    with get_portfolio_lock():
+        details = ib.reqContractDetails(probe) or []
+        if not details:
+            probe.lastTradeDateOrContractMonth = expiry[:6]
+            details = ib.reqContractDetails(probe) or []
+    listed = sorted((d.contract for d in details if float(d.contract.strike or 0) >= floor - 1e-9),
+                    key=lambda c: float(c.strike))
+    if not listed:
+        return None
+    c = listed[0]
+    opt = Option(stock.symbol, c.lastTradeDateOrContractMonth, float(c.strike), "C", chain.exchange,
+                 currency=stock.currency, multiplier=str(c.multiplier or chain.multiplier),
+                 tradingClass=c.tradingClass or chain.tradingClass)
+    opt.conId = c.conId
+    return opt
+
+
 def _us_options_open(now: datetime | None = None) -> bool:
     import pytz
     et = (now or datetime.now(pytz.utc)).astimezone(pytz.timezone("US/Eastern"))
@@ -439,12 +527,13 @@ def execute_review_covered_call(suggestion_id: int) -> str:
     blocked = _preflight(suggestion_id)
     if blocked:
         return blocked
-    symbol, ccy = card["symbol"], card["currency"]
-    if ccy != "USD":
-        return _set(suggestion_id, "rejected", "Nothing sent: calls are written on US listings only.",
+    symbol, ccy, exch = card["symbol"], card["currency"], card["exchange"]
+    if ccy not in CALL_CURRENCIES:
+        return _set(suggestion_id, "rejected",
+                    f"Nothing sent: no option market the executor can write on for a {ccy} listing.",
                     reviewed_at=datetime.utcnow())
-    if not _us_options_open():
-        return _set(suggestion_id, "approved", _waiting("order goes out when US options are trading"))
+    if not _options_open(ccy):
+        return _set(suggestion_id, "approved", _waiting("order goes out when that market is trading"))
     if not _claim(suggestion_id):
         return "skip"
 
@@ -454,25 +543,35 @@ def execute_review_covered_call(suggestion_id: int) -> str:
         book = read_book(ib, symbol, get_settings().portfolio.ibkr_account)
         if book is None:
             return _retry_or_release(suggestion_id, "IBKR positions could not be read")
-        contracts = call_size(card["quantity"], book)
-        if contracts <= 0:
-            log.warning("review_call_nothing_uncovered", id=suggestion_id, symbol=symbol,
-                        long=book.long_shares, short_call_shares=book.short_call_shares,
-                        working_sells=book.working_stock_sells + book.working_call_sells)
-            return _set(suggestion_id, "rejected",
-                        f"Nothing sent: no free 100-share lot. IBKR shows {book.long_shares} shares, "
-                        f"{book.short_call_shares} pledged to short calls, "
-                        f"{book.working_stock_sells + book.working_call_sells} already in sell orders.",
-                        reviewed_at=datetime.utcnow())
 
-        stock = broker_stock(symbol, "SMART", ccy)
+        stock = broker_stock(symbol, "SMART" if ccy == "USD" else exch, ccy)
         with get_portfolio_lock():
             qualified = ib.qualifyContracts(stock)
         if not qualified or not stock.conId:
             return _retry_or_release(suggestion_id, "stock contract not resolved")
-        spot = _last_price(ib, stock)
-        if not spot:
+        with get_portfolio_lock():
+            chains = ib.reqSecDefOptParams(stock.symbol, "", "STK", stock.conId)
+        chain = pick_chain(chains, book.free_shares, ccy)
+        if chain is None:
+            return _set(suggestion_id, "rejected",
+                        f"Nothing sent: the broker lists no {symbol} option this position can cover "
+                        f"({book.free_shares} free shares).", reviewed_at=datetime.utcnow())
+        lot = int(float(chain.multiplier or 100))
+        contracts = max(0, min(card["quantity"], book.free_shares // lot))
+        if contracts <= 0:
+            log.warning("review_call_nothing_uncovered", id=suggestion_id, symbol=symbol, lot=lot,
+                        long=book.long_shares, short_call_shares=book.short_call_shares,
+                        working_sells=book.working_stock_sells + book.working_call_sells)
+            return _set(suggestion_id, "rejected",
+                        f"Nothing sent: no free {lot}-share lot. IBKR shows {book.long_shares} shares, "
+                        f"{book.short_call_shares} pledged to short calls, "
+                        f"{book.working_stock_sells + book.working_call_sells} already in sell orders.",
+                        reviewed_at=datetime.utcnow())
+
+        spot_quote = _last_price(ib, stock)
+        if not spot_quote:
             return _retry_or_release(suggestion_id, "no stock price from IBKR")
+        spot = float(qu.quote_to_major(spot_quote, ccy))     # strikes, cost and the card are in major units
 
         # Never below the card's strike, never closer than 5% to today's price, and — except for
         # the deep tier, whose whole point is a strike below cost that still beats selling now —
@@ -480,42 +579,27 @@ def execute_review_covered_call(suggestion_id: int) -> str:
         cost_floor = 0.0 if card.get("signal") == EXIT_CALL_DEEP_SIGNAL else book.avg_cost
         floor = max(float(card["strike"] or 0), spot * (1 + CALL_OTM_PCT), cost_floor)
 
-        with get_portfolio_lock():
-            chains = ib.reqSecDefOptParams(stock.symbol, "", "STK", stock.conId)
-        chains = [c for c in (chains or []) if c.exchange == "SMART"] or list(chains or [])
-        if not chains:
-            return _retry_or_release(suggestion_id, "no option chain from IBKR")
-        chain = chains[0]
         expiry = pick_expiry(chain.expirations, card["expiry"], date.today())
         if not expiry:
             return _set(suggestion_id, "pending", "Nothing sent: no listed expiry far enough out.")
-
-        # The chain's strike list is the union over all expiries, so the first candidate may not
-        # exist for this one: walk up, never down.
-        opt = None
-        for strike in sorted(s for s in chain.strikes if s >= floor - 1e-9)[:4]:
-            cand = Option(stock.symbol, expiry, strike, "C", "SMART", currency=ccy)
-            with get_portfolio_lock():
-                ok = ib.qualifyContracts(cand)
-            if ok and cand.conId:
-                opt = cand
-                break
+        opt = resolve_call(ib, stock, chain, expiry, floor)
         if opt is None:
             return _set(suggestion_id, "pending",
-                        f"Nothing sent: no listed call at or above ${floor:.2f} for {expiry}.")
+                        f"Nothing sent: no listed call at or above {floor:.2f} {ccy} for {expiry}.")
+        expiry = opt.lastTradeDateOrContractMonth
 
         with get_portfolio_lock():
             ticker = ib.reqMktData(opt, "", True, False)
             ib.sleep(2)
             ib.cancelMktData(opt)
         bid, ask = ticker.bid, ticker.ask
-        if not bid or bid != bid or bid < MIN_CALL_BID:
+        if not premium_ok(bid, lot, ccy):
             return _retry_or_release(
-                suggestion_id, f"no bid of ${MIN_CALL_BID:.2f} or more for the {opt.strike:g} call {expiry}")
+                suggestion_id, f"no worthwhile bid for the {opt.strike:g} call {expiry} on {chain.exchange}")
         # Limit AT THE BID, as the option side's covered-call writer does (wheel._write_call ->
         # orders.sell_covered_call): the bid is already on the option's price grid and the order
         # fills now instead of resting for a day and coming back for another approval.
-        order_price = round(float(bid), 2)
+        order_price = round(float(bid), 4)
 
         order = LimitOrder("SELL", contracts, order_price)
         order.tif = "DAY"
@@ -533,10 +617,11 @@ def execute_review_covered_call(suggestion_id: int) -> str:
         ack = b._order_ack_fields(trade)
         log.info("review_call_order_placed", id=suggestion_id, symbol=symbol, contracts=contracts,
                  strike=opt.strike, expiry=expiry, price=order_price, bid=bid, ask=ask, spot=spot,
+                 exchange=chain.exchange, trading_class=opt.tradingClass, lot=lot, currency=ccy,
                  floor=round(floor, 2), avg_cost=round(book.avg_cost, 2), order_status=status,
                  perm_id=ack.get("perm_id"), order_id=ack.get("order_id"))
         now = datetime.utcnow()
-        what = f"{contracts}× {symbol} {expiry} {opt.strike:g}C @ {order_price}"
+        what = f"{contracts}× {symbol} {expiry} {opt.strike:g}C @ {order_price} {ccy} on {chain.exchange} ({lot} sh/contract)"
         fields = dict(quantity=contracts, strike=float(opt.strike), expiry=expiry,
                       limit_price=order_price, reviewed_at=now)
         if status == "Filled":
