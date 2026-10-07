@@ -35,13 +35,15 @@
 
 <!-- ═══ Account Overview — all figures in the account's BASE currency (EUR). IBKR reports
      NetLiquidation for U25878705 in EUR only (ExchangeRate EUR = 1.00); get_account_summary
-     reads the BASE row. Verified against the gateway 2026-10-07. ═══ -->
+     reads the BASE row. Verified against the gateway 2026-10-07. The "$" sub-lines convert at the
+     hourly IBKR ExchangeRate cache (eurusd); they vanish when no rate is cached. ═══ -->
 <div class="grid grid-cols-2 lg:grid-cols-7 gap-3 mb-6">
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="text-xs text-gray-500 mb-1">Net Liquidation</div>
         <div class="text-xl font-bold font-mono text-gray-100">
             €{{ "{:,.0f}".format(net_liquidation) }}
         </div>
+        {% if eurusd %}<div class="text-xs text-gray-500 mt-0.5 font-mono">${{ "{:,.0f}".format(net_liquidation * eurusd) }}</div>{% endif %}
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4" title="Net cash deposited into this options account (deposits − withdrawals), from the IBKR Flex deposit ledger — the same figure the Portfolio page shows for the compounder account. Euros = the amount actually wired (the account is EUR-base, like the NLV beside it); the $ line is each deposit at the FX rate of its deposit date. Synced daily at 16:00 ET.">
         <div class="text-xs text-gray-500 mb-1">Total Invested</div>
@@ -59,12 +61,14 @@
         <div class="text-xl font-bold font-mono text-emerald-400">
             €{{ "{:,.0f}".format(cash_balance) }}
         </div>
+        {% if eurusd %}<div class="text-xs text-gray-500 mt-0.5 font-mono">${{ "{:,.0f}".format(cash_balance * eurusd) }}</div>{% endif %}
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="text-xs text-gray-500 mb-1">Buying Power</div>
         <div class="text-xl font-bold font-mono text-blue-400">
             €{{ "{:,.0f}".format(buying_power) }}
         </div>
+        {% if eurusd %}<div class="text-xs text-gray-500 mt-0.5 font-mono">${{ "{:,.0f}".format(buying_power * eurusd) }}</div>{% endif %}
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4" title="IBKR ExcessLiquidity — the true solvency buffer the cash-reserve gate uses (must stay ≥ 15% of NLV to keep selling puts). Unlike cash, it doesn't go negative when an assignment converts cash into marginable stock.">
         <div class="text-xs text-gray-500 mb-1">Excess Liquidity</div>
@@ -72,12 +76,14 @@
             {% if net_liquidation > 0 and excess_liquidity < 0.15 * net_liquidation %}text-red-400{% else %}text-blue-400{% endif %}">
             €{{ "{:,.0f}".format(excess_liquidity) }}
         </div>
+        {% if eurusd %}<div class="text-xs text-gray-500 mt-0.5 font-mono">${{ "{:,.0f}".format(excess_liquidity * eurusd) }}</div>{% endif %}
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="text-xs text-gray-500 mb-1">Unrealized P&L</div>
         <div class="text-xl font-bold font-mono {{ 'text-emerald-400' if unrealized_pnl >= 0 else 'text-red-400' }}">
             {{ "+" if unrealized_pnl >= 0 else "" }}€{{ "{:,.0f}".format(unrealized_pnl) }}
         </div>
+        {% if eurusd %}<div class="text-xs mt-0.5 font-mono {{ 'text-emerald-400/70' if unrealized_pnl >= 0 else 'text-red-400/70' }}">{{ "+" if unrealized_pnl >= 0 else "" }}${{ "{:,.0f}".format(unrealized_pnl * eurusd) }}</div>{% endif %}
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="text-xs text-gray-500 mb-1">Margin Used</div>
@@ -85,7 +91,7 @@
             {% if margin_used_pct > 60 %}text-red-400{% elif margin_used_pct > 40 %}text-amber-400{% else %}text-gray-300{% endif %}">
             {{ "%.1f"|format(margin_used_pct) }}%
         </div>
-        <div class="text-xs text-gray-600 mt-0.5">€{{ "{:,.0f}".format(maintenance_margin) }}</div>
+        <div class="text-xs text-gray-600 mt-0.5">€{{ "{:,.0f}".format(maintenance_margin) }}{% if eurusd %} · ${{ "{:,.0f}".format(maintenance_margin * eurusd) }}{% endif %}</div>
     </div>
 </div>
 

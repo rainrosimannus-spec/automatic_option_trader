@@ -252,6 +252,18 @@ def _get_total_invested() -> dict:
         return {"usd": 0.0, "base": 0.0}
 
 
+def _eur_usd_rate() -> float | None:
+    """USD per 1 EUR for the Account Overview "$" sub-lines. Source: the hourly IBKR
+    ExchangeRate cache (data/portfolio_account_cache.json["fx_rates"], LOCAL→BASE with
+    EUR = 1.0), so EUR→USD = 1 / rate["USD"]. None when unavailable → sub-lines hidden."""
+    try:
+        from src.portfolio.fx import load_fx_rates
+        usd_to_eur = float(load_fx_rates().get("USD") or 0.0)
+        return (1.0 / usd_to_eur) if usd_to_eur > 0 else None
+    except Exception:
+        return None
+
+
 def _get_performance_data() -> dict:
     """
     Build performance chart as % return using daily account snapshots.
@@ -645,6 +657,7 @@ def dashboard(request: Request):
     account = _get_account_data()
     parking = _get_parking_data()
     total_invested = _get_total_invested()
+    eurusd = _eur_usd_rate()
     try:
         performance = _get_performance_data()
     except Exception as e:
@@ -730,6 +743,8 @@ def dashboard(request: Request):
         # "Total Invested" card. {"usd": FX-at-deposit USD, "base": EUR deposited}.
         "total_invested_usd": total_invested["usd"],
         "total_invested_base": total_invested["base"],
+        # EUR→USD for the "$ …" sub-lines under the EUR account cards; None hides them.
+        "eurusd": eurusd,
         # Cash parking (FX treasury: EUR→XEON / USD→XFFE, USD debit auto-close)
         "parking": parking,
         # Performance chart
