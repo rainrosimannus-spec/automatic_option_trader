@@ -33,21 +33,23 @@
     </div>
 </div>
 
-<!-- ═══ Account Overview ═══ -->
+<!-- ═══ Account Overview — all figures in the account's BASE currency (EUR). IBKR reports
+     NetLiquidation for U25878705 in EUR only (ExchangeRate EUR = 1.00); get_account_summary
+     reads the BASE row. Verified against the gateway 2026-10-07. ═══ -->
 <div class="grid grid-cols-2 lg:grid-cols-7 gap-3 mb-6">
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="text-xs text-gray-500 mb-1">Net Liquidation</div>
         <div class="text-xl font-bold font-mono text-gray-100">
-            ${{ "{:,.0f}".format(net_liquidation) }}
+            €{{ "{:,.0f}".format(net_liquidation) }}
         </div>
     </div>
-    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4" title="Net cash deposited into this options account (deposits − withdrawals), from the IBKR Flex deposit ledger — the same figure the Portfolio page shows for the compounder account. USD = each deposit at the FX rate of its deposit date, to compare with the USD NLV; the euro line is the amount actually wired. Synced daily at 16:00 ET.">
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4" title="Net cash deposited into this options account (deposits − withdrawals), from the IBKR Flex deposit ledger — the same figure the Portfolio page shows for the compounder account. Euros = the amount actually wired (the account is EUR-base, like the NLV beside it); the $ line is each deposit at the FX rate of its deposit date. Synced daily at 16:00 ET.">
         <div class="text-xs text-gray-500 mb-1">Total Invested</div>
         <div class="text-xl font-bold font-mono text-gray-100">
-            {% if total_invested_usd and total_invested_usd > 0 %}${{ "{:,.0f}".format(total_invested_usd) }}{% else %}—{% endif %}
+            {% if total_invested_base and total_invested_base > 0 %}€{{ "{:,.0f}".format(total_invested_base) }}{% else %}—{% endif %}
         </div>
-        {% if total_invested_usd and total_invested_usd > 0 %}
-        <div class="text-xs text-gray-500 mt-0.5">€{{ "{:,.0f}".format(total_invested_base) }} deposited{% if perf_actual and perf_actual|length > 0 and perf_actual[-1] is not none %}{% set inv_ret = perf_actual[-1] %} · <span class="{{ 'text-emerald-400' if inv_ret >= 0 else 'text-red-400' }}" title="Deposit-adjusted return since inception — the last point of the performance chart below">{{ "+" if inv_ret >= 0 else "" }}{{ "%.1f"|format(inv_ret) }}%</span>{% endif %}</div>
+        {% if total_invested_base and total_invested_base > 0 %}
+        <div class="text-xs text-gray-500 mt-0.5">${{ "{:,.0f}".format(total_invested_usd) }} at deposit FX{% if perf_actual and perf_actual|length > 0 and perf_actual[-1] is not none %}{% set inv_ret = perf_actual[-1] %} · <span class="{{ 'text-emerald-400' if inv_ret >= 0 else 'text-red-400' }}" title="Deposit-adjusted return since inception — the last point of the performance chart below">{{ "+" if inv_ret >= 0 else "" }}{{ "%.1f"|format(inv_ret) }}%</span>{% endif %}</div>
         {% else %}
         <div class="text-xs text-gray-600 mt-0.5">awaiting Flex sync</div>
         {% endif %}
@@ -55,26 +57,26 @@
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="text-xs text-gray-500 mb-1">Cash Balance</div>
         <div class="text-xl font-bold font-mono text-emerald-400">
-            ${{ "{:,.0f}".format(cash_balance) }}
+            €{{ "{:,.0f}".format(cash_balance) }}
         </div>
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="text-xs text-gray-500 mb-1">Buying Power</div>
         <div class="text-xl font-bold font-mono text-blue-400">
-            ${{ "{:,.0f}".format(buying_power) }}
+            €{{ "{:,.0f}".format(buying_power) }}
         </div>
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4" title="IBKR ExcessLiquidity — the true solvency buffer the cash-reserve gate uses (must stay ≥ 15% of NLV to keep selling puts). Unlike cash, it doesn't go negative when an assignment converts cash into marginable stock.">
         <div class="text-xs text-gray-500 mb-1">Excess Liquidity</div>
         <div class="text-xl font-bold font-mono
             {% if net_liquidation > 0 and excess_liquidity < 0.15 * net_liquidation %}text-red-400{% else %}text-blue-400{% endif %}">
-            ${{ "{:,.0f}".format(excess_liquidity) }}
+            €{{ "{:,.0f}".format(excess_liquidity) }}
         </div>
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <div class="text-xs text-gray-500 mb-1">Unrealized P&L</div>
         <div class="text-xl font-bold font-mono {{ 'text-emerald-400' if unrealized_pnl >= 0 else 'text-red-400' }}">
-            {{ "+" if unrealized_pnl >= 0 else "" }}${{ "{:,.0f}".format(unrealized_pnl) }}
+            {{ "+" if unrealized_pnl >= 0 else "" }}€{{ "{:,.0f}".format(unrealized_pnl) }}
         </div>
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
@@ -83,7 +85,7 @@
             {% if margin_used_pct > 60 %}text-red-400{% elif margin_used_pct > 40 %}text-amber-400{% else %}text-gray-300{% endif %}">
             {{ "%.1f"|format(margin_used_pct) }}%
         </div>
-        <div class="text-xs text-gray-600 mt-0.5">${{ "{:,.0f}".format(maintenance_margin) }}</div>
+        <div class="text-xs text-gray-600 mt-0.5">€{{ "{:,.0f}".format(maintenance_margin) }}</div>
     </div>
 </div>
 
