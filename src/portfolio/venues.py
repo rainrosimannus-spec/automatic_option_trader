@@ -45,7 +45,11 @@ from __future__ import annotations
 
 # ZAR — Johannesburg (JSE).  INR — India (NSE); the rupee segment is only available on IBKR's
 # Indian entity, so this account can never hold it, whatever else changes.
-UNTRADABLE_STOCK_CURRENCIES = frozenset({"ZAR", "INR"})
+# KRW — Korea (KRX). Orders are accepted, but IBKR refuses every conversion into won ("Not allowed
+# to open position in KRW") and does not convert at the trade either: the 2026-10-07 test buy
+# (10 Hanwha Ocean) left a KRW -778,000 loan that no FX pair can close. A name whose settlement
+# currency cannot be funded or repaid is untradable here, whatever the order preview says.
+UNTRADABLE_STOCK_CURRENCIES = frozenset({"ZAR", "INR", "KRW"})
 
 
 def is_untradable_currency(currency: str | None) -> bool:

@@ -193,7 +193,7 @@ def test_the_blocked_set_is_the_only_thing_that_selects_a_name():
     ib = _IB(_TABLE)
     rows = [_stock("SOL", "SASOL LTD", "ZAR", "JSE")]
     assert T.enforce_stock_venue_policy(rows, ib, blocked=set()) == rows
-    assert {"ZAR", "INR"} <= T.UNTRADABLE_STOCK_CURRENCIES
+    assert {"ZAR", "INR", "KRW"} <= T.UNTRADABLE_STOCK_CURRENCIES
 
 
 def test_the_caller_must_rebind_because_dropping_returns_a_new_list():
@@ -225,7 +225,7 @@ def test_the_screener_and_the_buyer_read_the_same_list():
 
 
 @pytest.mark.parametrize("ccy,blocked", [
-    ("ZAR", True), ("INR", True), ("zar", True), (" inr ", True),
+    ("ZAR", True), ("INR", True), ("KRW", True), ("zar", True), (" inr ", True),
     ("USD", False), ("EUR", False), ("JPY", False), ("HKD", False), ("AUD", False),
 ])
 def test_only_the_two_unpermissioned_venues_are_blocked(ccy, blocked):

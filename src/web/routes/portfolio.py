@@ -21,6 +21,17 @@ log = get_logger(__name__)
 router = APIRouter()
 
 
+# Native currency symbols for figures shown in a holding's or a fill's own currency. A currency
+# missing here is printed with its code ("KRW 774,000"), never with a dollar sign.
+_CCY_SYM = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CHF": "Fr ", "CAD": "C$",
+            "AUD": "A$", "HKD": "HK$", "INR": "₹", "ZAR": "R ", "SGD": "S$",
+            "KRW": "₩", "ILS": "₪", "DKK": "DKK ", "NOK": "NOK ", "SEK": "SEK "}
+
+
+def _ccy_symbol(currency: str | None) -> str:
+    return _CCY_SYM.get((currency or "USD").upper(), ((currency or "") + " "))
+
+
 def _get_state(key: str) -> str:
     try:
         with get_db() as db:
@@ -407,8 +418,11 @@ async def portfolio_page(request: Request):
     # treated ¥/£/etc. as dollars — a single Tokyo lot (¥-millions) then sorted to the top and dwarfed
     # every USD/EUR row. Attach the base-converted value (for ranking + a comparable column) and the
     # native currency symbol (so the native figure is labelled correctly), then re-sort in Python.
-    _ccy_sym = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CHF": "Fr ", "CAD": "C$",
-                "AUD": "A$", "HKD": "HK$", "INR": "₹", "ZAR": "R ", "SGD": "S$"}
+    _ccy_sym = _CCY_SYM
+    for _h in holdings:
+        _h.ccy_symbol = _ccy_symbol(_h.currency)
+    for _t in transactions:
+        _t.ccy_symbol = _ccy_symbol(_t.currency)     # Recent Transactions in each fill's own currency
     for _h in holdings:
         _h.market_value_base = _to_base(_h.market_value or 0, _h.currency, fx_rates, _base_ccy)
         _h.ccy_symbol = _ccy_sym.get((_h.currency or "USD").upper(), ((_h.currency or "") + " "))
@@ -809,6 +823,10 @@ async def portfolio_trades_page(request: Request):
         transactions = db.query(PortfolioTransaction).order_by(
             PortfolioTransaction.created_at.desc()
         ).all()
+        # Recent Transactions printed every amount with "$": a won fill of 774,000 KRW (~EUR 514)
+        # read as $774,000. Label each row in its own currency.
+        for _t in transactions:
+            _t.ccy_symbol = _ccy_symbol(_t.currency)
 
         # Summary stats
         buys = [t for t in transactions if t.action == "buy"]

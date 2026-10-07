@@ -154,7 +154,7 @@
                     </td>
                     <td class="px-3 py-2 text-right text-gray-300">{{ t.shares if t.shares else '—' }}</td>
                     <td class="px-3 py-2 text-right text-gray-300">{{ "%.2f" | format(t.price) if t.price else '—' }}</td>
-                    <td class="px-3 py-2 text-right text-white">${{ "{:,.0f}".format(t.amount) }}</td>
+                    <td class="px-3 py-2 text-right text-white">{{ t.ccy_symbol }}{{ "{:,.0f}".format(t.amount) }}</td>
                     <td class="px-3 py-2 text-xs text-gray-400">{{ t.signal or '—' }}</td>
                     <td class="px-3 py-2 text-right text-gray-500 text-xs">{{ "%.0f" | format(t.sma_200) if t.sma_200 else '—' }}</td>
                     <td class="px-3 py-2 text-right text-xs {% if (t.discount_pct or 0) > 5 %}text-emerald-400{% else %}text-gray-500{% endif %}">
