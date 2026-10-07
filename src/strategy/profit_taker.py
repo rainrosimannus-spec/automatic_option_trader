@@ -21,23 +21,47 @@ from ib_insync import Option as IBOption
 log = get_logger(__name__)
 
 
+# Buy-to-close limit for the deep-ITM early close: the ask plus a fixed 5c, NOT the 2% pad the
+# profit-take close uses. Deep-ITM calls trade at parity; 2% of a $25 ask is $49 a contract and
+# would push a parity ask straight back out of the window below. An unfilled close costs nothing
+# — the call simply expires and the shares are called away at the strike, as before.
+EARLY_CLOSE_ASK_PAD = 0.05
+
+
+def early_close_limit(call_ask: float) -> float:
+    return round(call_ask + EARLY_CLOSE_ASK_PAD, 2)
+
+
 def deep_itm_early_close_triggered(spot: float | None, strike: float, call_ask: float,
-                                   dte: int, *, over_pct: float, max_extrinsic_pct: float,
-                                   min_dte: int) -> bool:
+                                   dte: int, *, over_pct: float, min_dte: int,
+                                   fees_per_share: float = 0.0,
+                                   buy_limit: float | None = None) -> bool:
     """Rule A gate: should a deep-ITM covered call be bought-to-close early?
 
-    True only when all hold: the stock is genuinely deep ITM (spot ≥ strike*(1+over)),
-    the call's remaining time value has decayed to ~0 (ask − intrinsic ≤ max_ext*strike
-    — the only value we forfeit by closing now), and it's not about to self-resolve
-    (dte ≥ min_dte). Pure/side-effect-free so it can be unit-tested and mirrors the
-    MarsWalk engine's early-close pass exactly. Fails closed on a missing/zero spot.
+    The ONLY question (Rain, 2026-10-07): does closing now beat waiting for assignment?
+    Assignment pays the strike. Closing now pays `buy_limit` for the call and sells the shares
+    at `spot`. So fire only when
+
+        spot - buy_limit - fees_per_share >= strike
+
+    i.e. the call's remaining time value, after the price pad and commissions, is zero or
+    negative — the window deep-ITM calls near expiry sometimes trade in (ask at or below
+    parity). Never gives up profit against assignment. The 2026-10-07 ISRG close (spot
+    412.61, strike 390, ask 24.50 → limit 24.99) fails this by 2.5/share: the old gate's
+    "time value ≤ 0.5% of strike" tolerance ($1.95) let it through and cost $254.
+
+    `buy_limit` defaults to early_close_limit(call_ask). Pre-filters kept: genuinely deep ITM
+    (spot ≥ strike*(1+over)), not about to self-resolve (dte ≥ min_dte). Pure/side-effect-free;
+    mirrored by the MarsWalk engine's early-close pass. Fails closed on a missing/zero spot.
     """
     if not spot or spot <= 0 or strike <= 0 or dte < min_dte:
         return False
     if spot < strike * (1.0 + over_pct):
         return False
-    extrinsic = call_ask - max(0.0, spot - strike)
-    return extrinsic <= max_extrinsic_pct * strike
+    if call_ask is None or call_ask <= 0:
+        return False
+    limit = early_close_limit(call_ask) if buy_limit is None else buy_limit
+    return (spot - limit - fees_per_share) >= strike
 
 
 # Market hours per currency: (timezone, open_hour, close_hour)
@@ -625,19 +649,22 @@ class ProfitTaker:
                     rc = get_settings().risk
                     if getattr(rc, "cc_early_close_enabled", False):
                         spot = get_stock_live_price(pos.symbol, exchange, currency)
+                        ec_limit = early_close_limit(live_ask)
+                        ec_fees = getattr(rc, "cc_early_close_fees_per_share", 0.0)
                         if deep_itm_early_close_triggered(
                                 spot, pos.strike, live_ask, dte,
                                 over_pct=rc.cc_early_close_stock_over_strike_pct,
-                                max_extrinsic_pct=rc.cc_early_close_max_extrinsic_pct,
-                                min_dte=rc.cc_early_close_min_dte):
+                                min_dte=rc.cc_early_close_min_dte,
+                                fees_per_share=ec_fees, buy_limit=ec_limit):
                             log.info("cc_deep_itm_early_close",
                                      symbol=pos.symbol, dte=dte, strike=pos.strike,
                                      spot=round(spot, 2), call_ask=round(live_ask, 2),
-                                     extrinsic=round(live_ask - max(0.0, spot - pos.strike), 2),
+                                     buy_limit=ec_limit,
+                                     net_vs_assignment=round(spot - ec_limit - ec_fees - pos.strike, 2),
                                      over_strike_pct=f"{(spot / pos.strike - 1):.1%}")
                             success = self._close_covered_call(
                                 db, pos, live_ask, opt_exchange, currency,
-                                reason="deep_itm_early_close")
+                                reason="deep_itm_early_close", limit_price=ec_limit)
                             if success:
                                 acted.append(pos.symbol)
                             continue  # acted/churn-blocked — skip the 80%-profit branch
@@ -677,17 +704,23 @@ class ProfitTaker:
         return acted
 
     def _close_covered_call(self, db, pos: Position, ask_price: float,
-                          opt_exchange: str, currency: str, reason: str = "profit_take") -> bool:
+                          opt_exchange: str, currency: str, reason: str = "profit_take",
+                          limit_price: float | None = None) -> bool:
         """Buy to close a covered call. Records trade, position stays open until trade_sync confirms fill.
 
-        Order pricing: ask * 1.02 (floor ask + 0.05) to absorb stale-feed error.
+        Order pricing: ask * 1.02 (floor ask + 0.05) to absorb stale-feed error — unless the
+        caller passes `limit_price` (the deep-ITM early close does: the exact limit its gate
+        was evaluated with, ask + 5c, so the order can never pay more than the gate allowed).
         Churn prevention: skip if existing SUBMITTED order is within 10% of new target price.
         """
         from src.broker.orders import buy_to_close_call
         from src.core.models import Trade, TradeType, OrderStatus
 
         # Pad the price: buy slightly above ask to improve fill probability
-        target_price = round(max(ask_price * 1.02, ask_price + 0.05), 2)
+        if limit_price is not None:
+            target_price = round(limit_price, 2)
+        else:
+            target_price = round(max(ask_price * 1.02, ask_price + 0.05), 2)
 
         existing = db.query(Trade).filter(
             Trade.position_id == pos.id,

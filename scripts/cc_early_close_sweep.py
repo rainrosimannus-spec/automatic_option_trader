@@ -57,16 +57,18 @@ TARGETS = BENIGN + CRASH
 _CRISIS = {"high_vol_grind_enabled": True, "strangle_when_grind": True,
            "crash_when_active_enabled": True, "crash_strangle_when_active": True}
 
-_EC = lambda over, ext: {"cc_early_close_enabled": True,
-                         "cc_early_close_stock_over_strike_pct": over,
-                         "cc_early_close_max_extrinsic_pct": ext}
+# 2026-10-07: the extrinsic tolerance knob is gone (the rule now fires only when closing beats
+# assignment outright); the second arm value is the per-share commission estimate.
+_EC = lambda over, fees: {"cc_early_close_enabled": True,
+                          "cc_early_close_stock_over_strike_pct": over,
+                          "cc_early_close_fees_per_share": fees}
 ARMS = {
     "baseline":  {},
-    "ec_tight":  _EC(0.05, 0.005),
-    "ec_mid":    _EC(0.08, 0.010),
-    "ec_wide":   _EC(0.12, 0.020),
+    "ec_tight":  _EC(0.05, 0.03),
+    "ec_mid":    _EC(0.08, 0.03),
+    "ec_wide":   _EC(0.12, 0.03),
     "nocap_mom": {"cc_skip_on_momentum": True},
-    "combo":     {**_EC(0.08, 0.010), "cc_skip_on_momentum": True},
+    "combo":     {**_EC(0.08, 0.03), "cc_skip_on_momentum": True},
 }
 # Margin-interest is set on but comes out $0: the sim's cash never goes negative on
 # the replay (start capital + premium covers all NLV-capped deployment), so MarsWalk

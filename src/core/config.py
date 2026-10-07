@@ -354,7 +354,12 @@ class RiskConfig(BaseModel):
     # naked-short window). Mirrored into MarsWalk Params for the A/B ([[live-marswalk-parity-rule]]).
     cc_early_close_enabled: bool = True   # LIVE on Rain's account 2026-08-05 (son to copy); NOT live till options restart
     cc_early_close_stock_over_strike_pct: float = 0.05   # deep-ITM pre-filter: spot ≥ strike*(1+X)
-    cc_early_close_max_extrinsic_pct: float = 0.005      # fire only when time value ≤ X*strike (TIGHT — sweep-best)
+    # 2026-10-07 (Rain): fire ONLY when closing beats assignment outright —
+    #   spot − (ask + 5c) − fees ≥ strike  (time value ≤ 0 after pad + commissions).
+    # The previous "time value ≤ 0.5% of strike" tolerance ($1.95 on ISRG 390) let a 2-DTE close
+    # through at 24.99 against 22.6 intrinsic: −$254 vs simply being called away. There is no
+    # tolerance knob any more; the only parameter is the commission estimate below.
+    cc_early_close_fees_per_share: float = 0.03           # ≈ $1 call commission + $2 stock sale per 100 shares
     cc_early_close_min_dte: int = 2                       # skip near-expiry self-resolvers
     # Sweep (cc_early_close_sweep.py, 2026-08-05): this TIGHT config (over=5%, ext≤0.5%)
     # is return-NEUTRAL on the 6y replay (−0.09pp, +1.2pp DD) and HELPS the bear_2022

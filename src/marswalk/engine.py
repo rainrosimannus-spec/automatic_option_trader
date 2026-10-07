@@ -177,13 +177,15 @@ class Params:
     # (on margin) until expiry. When the call's remaining EXTRINSIC (time value) has
     # decayed to ~0, buying-to-close it + selling the stock realizes the same P&L a
     # few days early, kills the margin carry, and frees the cash+slot to sell puts
-    # NOW. Gates: spot >= strike*(1+over_strike_pct) AND (ask - intrinsic) <=
-    # max_extrinsic_pct*strike AND DTE >= min_dte. Default OFF (byte-identical to
-    # prior runs). NOTE: the real edge is carry+velocity — carry only scores when
-    # margin_interest_annual > 0 (see below); with it 0 this understates the rule.
+    # NOW. Gates (2026-10-07, mirrors live): spot >= strike*(1+over_strike_pct) AND
+    # DTE >= min_dte AND closing beats assignment outright:
+    #   spot - (ask + 0.05) - fees_per_share >= strike   (time value <= 0 after pad + fees).
+    # No tolerance knob any more — the live rule gave up $254 on ISRG with one. Default OFF
+    # (byte-identical to prior runs). NOTE: the real edge is carry+velocity — carry only
+    # scores when margin_interest_annual > 0 (see below); with it 0 this understates the rule.
     cc_early_close_enabled: bool = False
     cc_early_close_stock_over_strike_pct: float = 0.05   # deep-ITM pre-filter: spot >= strike*(1+X)
-    cc_early_close_max_extrinsic_pct: float = 0.005      # forfeit only when time value <= X*strike (TIGHT — sweep-best)
+    cc_early_close_fees_per_share: float = 0.03           # commissions, per share of the lot (mirrors live)
     cc_early_close_min_dte: int = 2                       # skip near-expiry self-resolvers
     # ── Rule B (2026-08-05, tested-only): don't-cap momentum lots ──
     # Rain's floated alternative: on a lot whose stock is in a strong uptrend, skip
@@ -913,7 +915,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         # A covered lot whose stock ran far above the call strike is CAPPED but not
         # yet called: it yields strike+premium regardless, yet the capital stays
         # locked (on margin) until expiry. When the call's remaining EXTRINSIC
-        # (ask − intrinsic) has decayed below max_extrinsic_pct*strike, buy-to-close
+        # closing beats assignment outright (spot − (ask+5c) − fees ≥ strike), buy-to-close
         # it + sell the stock NOW — same P&L minus the spread, but the freed cash +
         # slot reach TODAY's put pass (Sections 3-4) and the margin carry stops.
         # Gated deep-ITM with a DTE floor so calls about to self-resolve are left be.
@@ -933,15 +935,16 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     continue
                 ask = pricing.value_call_ask(spot, strike, c["expiry"].strftime("%Y%m%d"),
                                              d, iv, params.short_dte_uplift_k)
-                extrinsic = ask - max(0.0, spot - strike)
-                if extrinsic > params.cc_early_close_max_extrinsic_pct * strike:
-                    keep.append(c)
+                buy_limit = round(ask + 0.05, 2)   # live early_close_limit(): ask + 5c, no 2% pad
+                if (spot - buy_limit - params.cc_early_close_fees_per_share) < strike:
+                    keep.append(c)                 # closing would give up profit vs assignment
                     continue
-                # Fire: buy-to-close the short call (pay ask), then sell the freed
+                # Fire: buy-to-close the short call (pay the limit), then sell the freed
                 # shares at spot. Order mirrors the live safety rule (close the call
                 # before the stock leaves, so no naked-short window ever opens).
                 qty = c["qty"]
-                cash -= ask * 100 * qty            # buy-to-close short call
+                cash -= buy_limit * 100 * qty      # buy-to-close short call
+                cash -= params.cc_early_close_fees_per_share * 100 * qty
                 cash += spot * 100 * qty           # sell the now-uncovered shares
                 st["realized_cc"] = st.get("realized_cc", 0.0) + c["premium"]
                 st["shares"] -= 100 * qty

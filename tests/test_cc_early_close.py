@@ -1,63 +1,76 @@
-"""Deep-ITM covered-call early-close gate (Rule A, 2026-08-05).
+"""Deep-ITM covered-call early-close gate (Rule A, 2026-08-05; rewritten 2026-10-07).
 
-Rule A automates Rain's manual move: when an assigned lot's stock has run far above
-the CC strike and the call's remaining TIME VALUE has decayed to ~0, buy-to-close
-the call + sell the stock early — same P&L, but the margin carry stops and capital
-frees for new puts. The gate fires only when the give-up (remaining extrinsic) is
-tiny AND the lot is genuinely deep ITM AND it's not about to self-resolve. This
-predicate is shared logic mirrored by the MarsWalk engine's early-close pass.
+Rain's rule: the close fires ONLY when it beats assignment outright — selling the shares at
+spot after buying the call back at the order's limit (ask + 5c) and paying commissions must
+net at least the strike. That is the window where a deep-ITM call's time value is zero or
+negative. The previous gate tolerated time value up to 0.5% of strike and, on 2026-10-07,
+bought the ISRG 390 call back at 24.99 with the stock at 412.61: 2.5/share worse than being
+called away two days later ($254). This predicate is mirrored by the MarsWalk engine.
 """
-from src.strategy.profit_taker import deep_itm_early_close_triggered
+from src.strategy.profit_taker import deep_itm_early_close_triggered, early_close_limit
 
-# Live defaults: over=8%, max_extrinsic=1% of strike, min_dte=2.
-KW = dict(over_pct=0.08, max_extrinsic_pct=0.01, min_dte=2)
-
-
-def test_fires_deep_itm_with_near_zero_time_value():
-    # Stock 20% over a 100 strike; call ask 20.30 → extrinsic 0.30 ≤ 1.0 (1% of 100).
-    assert deep_itm_early_close_triggered(120.0, 100.0, 20.30, dte=10, **KW) is True
+# Live defaults: over=5%, min_dte=2, fees 3c/share.
+KW = dict(over_pct=0.05, min_dte=2, fees_per_share=0.03)
 
 
-def test_no_fire_when_extrinsic_still_meaningful():
-    # Same deep-ITM stock but the call still carries 2.00 of time value (> 1% of
-    # strike) — the pullback-and-keep optionality isn't worthless yet, so we wait.
-    assert deep_itm_early_close_triggered(120.0, 100.0, 22.00, dte=10, **KW) is False
+def test_the_isrg_close_that_cost_254_dollars_does_not_fire_any_more():
+    # spot 412.61, strike 390, ask 24.50 → limit 24.55; 412.61 − 24.55 − 0.03 = 388.03 < 390
+    assert deep_itm_early_close_triggered(412.61, 390.0, 24.50, dte=2, **KW) is False
+    # even with the gate's own limit computed from the old 2% pad it would not fire
+    assert deep_itm_early_close_triggered(412.61, 390.0, 24.50, dte=2, buy_limit=24.99, **KW) is False
 
 
-def test_no_fire_when_not_deep_enough():
-    # Only 3% over strike (< 8% pre-filter) even with zero time value → skip.
-    assert deep_itm_early_close_triggered(103.0, 100.0, 3.00, dte=10, **KW) is False
+def test_fires_only_when_the_ask_is_at_or_below_parity_after_pad_and_fees():
+    # intrinsic 22.61; ask 22.50 → limit 22.55; 412.61 − 22.55 − 0.03 = 390.03 ≥ 390 → fire
+    assert deep_itm_early_close_triggered(412.61, 390.0, 22.50, dte=2, **KW) is True
+    # ask 22.60 → limit 22.65 → 389.93 < 390 → no
+    assert deep_itm_early_close_triggered(412.61, 390.0, 22.60, dte=2, **KW) is False
+
+
+def test_time_value_exactly_zero_does_not_fire_because_of_pad_and_fees():
+    # ask == intrinsic (20.00 on spot 120 / strike 100): limit 20.05 → 120 − 20.05 − 0.03 < 100
+    assert deep_itm_early_close_triggered(120.0, 100.0, 20.00, dte=10, **KW) is False
+    # it fires once the ask is below parity by at least pad + fees (8c)
+    assert deep_itm_early_close_triggered(120.0, 100.0, 19.92, dte=10, **KW) is True
+    assert deep_itm_early_close_triggered(120.0, 100.0, 19.93, dte=10, **KW) is False
+
+
+def test_explicit_buy_limit_is_what_the_gate_judges():
+    # the live branch passes the exact limit it will send, so the order can't pay more than judged
+    assert deep_itm_early_close_triggered(120.0, 100.0, 19.00, dte=10, buy_limit=19.97, **KW) is True
+    assert deep_itm_early_close_triggered(120.0, 100.0, 19.00, dte=10, buy_limit=19.98, **KW) is False
+
+
+def test_early_close_limit_is_ask_plus_five_cents_not_two_percent():
+    assert early_close_limit(24.50) == 24.55          # old formula gave 24.99
+    assert early_close_limit(0.10) == 0.15
+
+
+def test_no_fire_when_not_deep_enough_even_if_cheap():
+    assert deep_itm_early_close_triggered(104.0, 100.0, 3.50, dte=10, **KW) is False
 
 
 def test_dte_floor_blocks_near_expiry_self_resolvers():
-    # Deep ITM + zero extrinsic, but dte=1 (< min_dte=2): it self-resolves for free
-    # at expiry, no reason to pay the spread.
-    assert deep_itm_early_close_triggered(120.0, 100.0, 20.10, dte=1, **KW) is False
-    assert deep_itm_early_close_triggered(120.0, 100.0, 20.10, dte=2, **KW) is True
+    assert deep_itm_early_close_triggered(120.0, 100.0, 19.50, dte=1, **KW) is False
+    assert deep_itm_early_close_triggered(120.0, 100.0, 19.50, dte=2, **KW) is True
 
 
-def test_fails_closed_on_missing_spot():
-    # No live spot (None/0) → never act (fail closed — mirrors the naked-short rule
-    # of never operating on unknown state).
-    assert deep_itm_early_close_triggered(None, 100.0, 20.10, dte=10, **KW) is False
-    assert deep_itm_early_close_triggered(0.0, 100.0, 20.10, dte=10, **KW) is False
+def test_fails_closed_on_missing_spot_or_ask():
+    assert deep_itm_early_close_triggered(None, 100.0, 19.50, dte=10, **KW) is False
+    assert deep_itm_early_close_triggered(0.0, 100.0, 19.50, dte=10, **KW) is False
+    assert deep_itm_early_close_triggered(120.0, 100.0, 0.0, dte=10, **KW) is False
 
 
-def test_boundary_extrinsic_is_inclusive():
-    # extrinsic exactly == max_extrinsic_pct*strike (1.00 on a 100 strike) → fires.
-    assert deep_itm_early_close_triggered(120.0, 100.0, 21.00, dte=10, **KW) is True
-    # a hair more (1.01) → does not.
-    assert deep_itm_early_close_triggered(120.0, 100.0, 21.01, dte=10, **KW) is False
+def test_fees_default_to_zero_when_not_given():
+    # 120 − 19.95(limit for ask 19.90) = 100.05 ≥ 100 with no fees; 99.97 < 100 with 8c fees
+    assert deep_itm_early_close_triggered(120.0, 100.0, 19.90, dte=10, over_pct=0.05, min_dte=2) is True
+    assert deep_itm_early_close_triggered(120.0, 100.0, 19.90, dte=10, over_pct=0.05, min_dte=2, fees_per_share=0.08) is False
 
 
-def test_boundary_moneyness_is_inclusive():
-    # spot exactly == strike*(1+over) (108 on 100 strike, over 8%) with ~0 extrinsic.
-    assert deep_itm_early_close_triggered(108.0, 100.0, 8.00, dte=10, **KW) is True
-    assert deep_itm_early_close_triggered(107.99, 100.0, 8.00, dte=10, **KW) is False
-
-
-def test_disabled_gate_semantics_are_caller_side():
-    # The predicate itself has no enabled flag — the live caller guards on
-    # cc_early_close_enabled before calling. A valid deep-ITM setup still returns
-    # True here; the OFF-by-default safety lives at the call site.
-    assert deep_itm_early_close_triggered(130.0, 100.0, 30.20, dte=5, **KW) is True
+def test_marswalk_mirror_uses_the_same_rule():
+    import inspect
+    from src.marswalk import engine
+    src = inspect.getsource(engine)
+    assert "cc_early_close_max_extrinsic_pct" not in src
+    assert "spot - buy_limit - params.cc_early_close_fees_per_share) < strike" in src
+    assert engine.Params().cc_early_close_fees_per_share == 0.03
