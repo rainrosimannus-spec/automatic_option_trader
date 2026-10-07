@@ -72,6 +72,16 @@ class FakeIB:
         return list(self._open)
 
     def qualifyContracts(self, c):
+        if getattr(c, "secType", "") == "OPT" and c.conId and not c.strike:
+            # by conId alone, like the broker: fill in the real fields (strike in MAJOR units)
+            for ch in self.reqSecDefOptParams():
+                for k in (self.listed_strikes or self.strikes):
+                    if 5000 + int(k * 10) == c.conId:
+                        c.strike = k; c.symbol = "X"; c.right = "C"          # as reported (London: pence)
+                        c.multiplier = ch.multiplier; c.tradingClass = ch.tradingClass
+                        c.lastTradeDateOrContractMonth = ch.expirations[-1]
+                        return [c]
+            return []
         c.conId = c.conId or (222 if getattr(c, "secType", "") == "OPT" else 111)
         return [c]
 
@@ -550,3 +560,28 @@ def test_block_reasons_say_until_when(temp_db):
                                source="rescreen", quantity=1, review_note="Filled", reviewed_at=when))
     blocks = ro.review_sale_blocks(days=36500)
     assert "2026-10-06" in blocks["SOLD"]
+
+
+def test_london_call_strikes_reported_in_pence_are_compared_in_pounds(wired):
+    """The broker lists AstraZeneca's strikes as 10500, 13600 ... (pence) while the contracts are
+    GBP 105, 136. Compared raw against a GBP 136 floor, 10500 "clears" it and the deep
+    in-the-money 105 call is picked — nearly sold live on 2026-10-07 (the broker refused the order)."""
+    from src.portfolio.models import PortfolioHolding
+    with db_mod.get_db() as db:
+        db.add(PortfolioHolding(symbol="AZN", exchange="LSE", currency="GBP", shares=815))
+    ib = wired["ib"] = FakeIB([_stk(symbol="AZN", qty=815, avg=135.75)], close=11984.0,   # pence quote
+                              chains=[("ICEEU", "8ZA", 100)], strikes=(10500, 12000, 13000, 13600, 14000), bid=70.0, ask=80.0)
+    sid = _card(action="sell_covered_call_review", qty=8, strike=136.0, right="C", symbol="AZN")
+    assert ro.execute_review_covered_call(sid) == "submitted"
+    (opt, order), = ib.placed
+    assert opt.conId == 5000 + 136000 and opt.strike == 136.0                               # the GBP 136 call, strike sent in pounds
+    assert order.totalQuantity == 8 and order.lmtPrice == 70.0
+    assert _get(sid).strike == 136.0                                                       # the card records pounds
+
+
+def test_strike_unit_is_told_by_magnitude():
+    assert ro.strike_in_major(13750, 119.8) == 137.5          # ICE London: pence
+    assert ro.strike_in_major(137.5, 119.8) == 137.5          # a class that reports pounds
+    assert ro.strike_in_major(280.0, 253.0) == 280.0          # US
+    assert ro.strike_in_major(75.0, 70.85) == 75.0            # Hong Kong
+    assert ro.strike_in_major(50000.0, 46100.0) == 50000.0    # Japan: big numbers, but not 20x the price

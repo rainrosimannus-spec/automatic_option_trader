@@ -293,11 +293,24 @@ def _options_open(currency: str) -> bool:
     return b._market_open(currency)
 
 
-def resolve_call(ib, stock, chain, expiry: str, floor: float):
+def strike_in_major(strike: float, spot_major: float) -> float:
+    """A listed strike in the stock's major unit. London's ICE classes report strikes in pence
+    (13750 for the GBP 137.5 call) and other classes in pounds; nothing in the contract says
+    which. A strike more than 20x the share price can only be a minor-unit figure."""
+    k = float(strike or 0)
+    if spot_major and spot_major > 0 and k > 20 * spot_major:
+        return k / 100.0
+    return k
+
+
+def resolve_call(ib, stock, chain, expiry: str, floor: float, spot_major: float | None = None):
     """The concrete listed call: the lowest strike at or above `floor` that the broker has for this
     expiry, as a fully identified contract. Strikes come from the broker's own contract list, not
-    the chain's union — the chain's list is in pence for London and not every strike exists for
-    every expiry (and a Hong Kong option cannot be resolved from fields at all). Never below floor."""
+    the chain's union — not every strike exists for every expiry, and a Hong Kong option cannot be
+    resolved from fields at all. Strikes are compared in major units (see strike_in_major: London
+    reports pence) — compared raw, the deep in-the-money 105 call "cleared" a GBP 136 floor on
+    2026-10-07. The contract is then taken by its id alone and the broker fills in the fields;
+    building it from reported fields fails with Error 478 when the units differ. Never below floor."""
     from ib_insync import Contract
     from src.portfolio.connection import get_portfolio_lock
     probe = Contract(secType="OPT", symbol=stock.symbol, exchange=chain.exchange, currency=stock.currency,
@@ -307,15 +320,18 @@ def resolve_call(ib, stock, chain, expiry: str, floor: float):
         if not details:
             probe.lastTradeDateOrContractMonth = expiry[:6]
             details = ib.reqContractDetails(probe) or []
-    listed = sorted((d.contract for d in details if float(d.contract.strike or 0) >= floor - 1e-9),
-                    key=lambda c: float(c.strike))
+    spot = float(spot_major or 0)
+    major = lambda k: strike_in_major(k, spot)
+    listed = sorted((d.contract for d in details if major(d.contract.strike) >= floor - 1e-9),
+                    key=lambda c: major(c.strike))
     if not listed:
         return None
-    c = listed[0]
-    opt = Option(stock.symbol, c.lastTradeDateOrContractMonth, float(c.strike), "C", chain.exchange,
-                 currency=stock.currency, multiplier=str(c.multiplier or chain.multiplier),
-                 tradingClass=c.tradingClass or chain.tradingClass)
-    opt.conId = c.conId
+    opt = Option(conId=listed[0].conId, exchange=chain.exchange)
+    with get_portfolio_lock():
+        if not ib.qualifyContracts(opt) or not opt.conId:
+            return None
+    if major(opt.strike) < floor - 1e-9:                  # the broker's own figure must clear the floor too
+        return None
     return opt
 
 
@@ -582,11 +598,18 @@ def execute_review_covered_call(suggestion_id: int) -> str:
         expiry = pick_expiry(chain.expirations, card["expiry"], date.today())
         if not expiry:
             return _set(suggestion_id, "pending", "Nothing sent: no listed expiry far enough out.")
-        opt = resolve_call(ib, stock, chain, expiry, floor)
+        # The nearest expiry may list no strike above the floor (AstraZeneca's November class
+        # stopped at 135 against a 136 floor); walk to the next expiries before giving up.
+        opt = None
+        for exp_try in [expiry] + [e for e in sorted(chain.expirations) if e > expiry][:2]:
+            opt = resolve_call(ib, stock, chain, exp_try, floor, spot)
+            if opt is not None:
+                break
         if opt is None:
             return _set(suggestion_id, "pending",
-                        f"Nothing sent: no listed call at or above {floor:.2f} {ccy} for {expiry}.")
-        expiry = opt.lastTradeDateOrContractMonth
+                        f"Nothing sent: no listed call at or above {floor:.2f} {ccy} for {expiry} or the two expiries after it.")
+        expiry = opt.lastTradeDateOrContractMonth[:8]
+        strike_major = strike_in_major(opt.strike, spot)
 
         with get_portfolio_lock():
             ticker = ib.reqMktData(opt, "", True, False)
@@ -595,12 +618,16 @@ def execute_review_covered_call(suggestion_id: int) -> str:
         bid, ask = ticker.bid, ticker.ask
         if not premium_ok(bid, lot, ccy):
             return _retry_or_release(
-                suggestion_id, f"no worthwhile bid for the {opt.strike:g} call {expiry} on {chain.exchange}")
+                suggestion_id, f"no worthwhile bid for the {strike_major:g} call {expiry} on {chain.exchange}")
         # Limit AT THE BID, as the option side's covered-call writer does (wheel._write_call ->
         # orders.sell_covered_call): the bid is already on the option's price grid and the order
         # fills now instead of resting for a day and coming back for another approval.
         order_price = round(float(bid), 4)
 
+        # The broker LISTS a London strike in pence (13750) but VALIDATES an order in pounds: sent
+        # as listed, the order dies with Error 478 "requested strike 13750, in contract 137.5"
+        # (AstraZeneca, 2026-10-07). Elsewhere the two are the same figure.
+        opt.strike = strike_major
         order = LimitOrder("SELL", contracts, order_price)
         order.tif = "DAY"
         order.outsideRth = False
@@ -616,13 +643,13 @@ def execute_review_covered_call(suggestion_id: int) -> str:
 
         ack = b._order_ack_fields(trade)
         log.info("review_call_order_placed", id=suggestion_id, symbol=symbol, contracts=contracts,
-                 strike=opt.strike, expiry=expiry, price=order_price, bid=bid, ask=ask, spot=spot,
+                 strike=strike_major, expiry=expiry, price=order_price, bid=bid, ask=ask, spot=spot,
                  exchange=chain.exchange, trading_class=opt.tradingClass, lot=lot, currency=ccy,
                  floor=round(floor, 2), avg_cost=round(book.avg_cost, 2), order_status=status,
                  perm_id=ack.get("perm_id"), order_id=ack.get("order_id"))
         now = datetime.utcnow()
-        what = f"{contracts}× {symbol} {expiry} {opt.strike:g}C @ {order_price} {ccy} on {chain.exchange} ({lot} sh/contract)"
-        fields = dict(quantity=contracts, strike=float(opt.strike), expiry=expiry,
+        what = f"{contracts}× {symbol} {expiry} {strike_major:g}C @ {order_price} {ccy} on {chain.exchange} ({lot} sh/contract)"
+        fields = dict(quantity=contracts, strike=float(strike_major), expiry=expiry,
                       limit_price=order_price, reviewed_at=now)
         if status == "Filled":
             return _set(suggestion_id, "executed", f"Filled: sold {what}", **fields)
