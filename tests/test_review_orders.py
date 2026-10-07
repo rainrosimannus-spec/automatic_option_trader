@@ -447,6 +447,7 @@ def test_exit_call_plan_has_three_tiers():
     assert deep["called_pnl_pct"] == pytest.approx(-32.0) and deep["pnl_pct"] == pytest.approx(-40.0)
     assert deep["expiry"] > loss["expiry"]                                    # a month further out
     assert ro.exit_call_plan(0, 50.0, today) is None
+    assert ro.exit_call_plan(100.0, float("nan"), today) is None              # a shut market quotes NaN
 
 
 def test_review_writes_a_call_card_beside_every_sell_or_reduce_card(monkeypatch):

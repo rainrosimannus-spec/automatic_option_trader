@@ -93,8 +93,8 @@ def exit_call_plan(avg_cost: float, price: float, today: date) -> dict | None:
                 price, a month further out so it still earns something. Called away realises a
                 smaller loss than selling today; the card says the number.
     None when there is no usable price or cost."""
-    if not price or price <= 0 or not avg_cost or avg_cost <= 0:
-        return None
+    if not price or price != price or price <= 0 or not avg_cost or avg_cost != avg_cost or avg_cost <= 0:
+        return None                               # x != x rejects NaN (a closed market's quote)
     if price >= avg_cost:
         tier, strike, expiry = "profit", price * (1 + EXIT_CALL_OTM_PROFIT), review_call_expiry(today)
     elif avg_cost <= price * (1 + BREAKEVEN_REACH_PCT):
