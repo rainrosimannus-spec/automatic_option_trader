@@ -232,15 +232,34 @@ def get_52week_high(symbol: str, exchange: str = "SMART", currency: str = "USD")
         return None
 
 
-def get_vix() -> Optional[float]:
-    """Get the current VIX level. Tries IBKR first, falls back to FMP."""
+# ── VIX cache + IBKR backoff ─────────────────────────────────
+# get_vix() is called once per scan for the regime AND once per SYMBOL for the sizing factor
+# (risk.py dynamic_margin_ceiling / notional cap). With no cache, a scan over 60 names made
+# ~230 IBKR history requests for the same number; on 2026-10-08, with the HMDS farm broken,
+# each burned its 8 s timeout before the FMP fallback — ~30 min of a 94-min scan spent on VIX
+# alone. VIX moves slowly enough that one read per couple of minutes is plenty, and after an
+# IBKR failure there is no point retrying the gateway on the very next symbol.
+_VIX_CACHE_TTL_SEC = 120          # one value per scan, effectively
+_VIX_IBKR_BACKOFF_SEC = 600       # after an IBKR miss, go straight to FMP for this long
+_vix_cache: tuple[float, datetime] | None = None
+_vix_ibkr_backoff_until: datetime | None = None
+
+
+def _reset_vix_cache() -> None:
+    """Tests only."""
+    global _vix_cache, _vix_ibkr_backoff_until
+    _vix_cache = None
+    _vix_ibkr_backoff_until = None
+
+
+def _get_vix_from_ibkr() -> Optional[float]:
+    """One IBKR history request for VIX (2 daily bars). None on no data or error."""
     try:
         with get_ib_lock():
             _ensure_market_data_type()
             ib = get_ib()
             contract = Index("VIX", "CBOE", "USD")
             ib.qualifyContracts(contract)
-
             bars = ib.reqHistoricalData(
                 contract,
                 endDateTime="",
@@ -255,13 +274,38 @@ def get_vix() -> Optional[float]:
                 vix = float(bars[-1].close)
                 log.info("vix_fetched", vix=vix)
                 return vix
-
         log.warning("no_vix_data_ibkr_trying_fmp")
     except Exception as e:
         log.warning("vix_ibkr_error", error=str(e))
+    return None
 
-    # Fallback to FMP
-    return _get_vix_from_fmp()
+
+def get_vix(force_refresh: bool = False) -> Optional[float]:
+    """Current VIX level. Cached for _VIX_CACHE_TTL_SEC; IBKR first unless a recent IBKR miss
+    put it in backoff, then FMP. The source that answers is cached, so repeated per-symbol
+    calls inside one scan cost nothing."""
+    global _vix_cache, _vix_ibkr_backoff_until
+    now = datetime.now()
+    if not force_refresh and _vix_cache and (now - _vix_cache[1]).total_seconds() < _VIX_CACHE_TTL_SEC:
+        return _vix_cache[0]
+
+    vix = None
+    if _vix_ibkr_backoff_until and now < _vix_ibkr_backoff_until:
+        log.debug("vix_ibkr_in_backoff", until=_vix_ibkr_backoff_until.strftime("%H:%M:%S"))
+    else:
+        vix = _get_vix_from_ibkr()
+        if vix is None:
+            _vix_ibkr_backoff_until = now + timedelta(seconds=_VIX_IBKR_BACKOFF_SEC)
+            log.warning("vix_ibkr_backoff_started", seconds=_VIX_IBKR_BACKOFF_SEC)
+        else:
+            _vix_ibkr_backoff_until = None
+
+    if vix is None:
+        vix = _get_vix_from_fmp()
+
+    if vix is not None:
+        _vix_cache = (vix, now)
+    return vix
 
 
 # ── Option chains ───────────────────────────────────────────
