@@ -796,6 +796,9 @@ async def portfolio_page(request: Request):
             "tranches_fired": int(float(_get_state("compounder_tranches_fired") or 0)),
             "unlocked_pct": float(_get_state("compounder_reserve_unlocked_pct") or 0),
             "reserve_peak": float(_get_state("compounder_reserve_peak") or 0),
+            # Last successful SPY read; stale = the scan has been carrying the last known drawdown
+            "gauge_at": _get_state("compounder_gauge_at") or "",
+            "gauge_stale": __import__("src.portfolio.compounder", fromlist=["gauge_is_stale"]).gauge_is_stale(_get_state("compounder_gauge_at") or ""),
         },
         "compounder_signals_list": _compounder_signals,
         "wl_map": {w.symbol: w for w in watchlist},

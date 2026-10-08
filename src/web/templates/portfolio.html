@@ -99,9 +99,9 @@ function syncInjections() {
                 <div class="text-xs text-gray-500">DCA pace</div>
             </div>
             <div>
-                <div class="text-xs text-gray-500 uppercase tracking-wider">Mkt Drawdown</div>
-                <div class="text-xl font-bold mt-1 {% if compounder.drawdown_pct >= 10 %}text-red-400{% else %}text-white{% endif %}">{{"{:.1f}".format(compounder.drawdown_pct)}}%</div>
-                <div class="text-xs text-gray-500">from peak ${{"{:,.0f}".format(compounder.reserve_peak)}}</div>
+                <div class="text-xs text-gray-500 uppercase tracking-wider">Mkt Drawdown{% if compounder.gauge_stale %} <span class="text-amber-400" title="SPY could not be priced on recent scans — showing the last known drawdown{% if compounder.gauge_at %} (last read {{ compounder.gauge_at[:16].replace('T', ' ') }} UTC){% endif %}">⚠ stale</span>{% endif %}</div>
+                <div class="text-xl font-bold mt-1 {% if compounder.drawdown_pct >= 10 %}text-red-400{% elif compounder.gauge_stale %}text-gray-400{% else %}text-white{% endif %}">{{"{:.1f}".format(compounder.drawdown_pct)}}%</div>
+                <div class="text-xs text-gray-500" title="Trailing high of the SPY price seen by the buyer's scans (an index-ETF price, hence $) — the crash-reserve tranches fire at 10/20/30% below it">SPY peak ${{"{:,.0f}".format(compounder.reserve_peak)}}</div>
             </div>
             <div>
                 <div class="text-xs text-gray-500 uppercase tracking-wider">Crash Reserve</div>

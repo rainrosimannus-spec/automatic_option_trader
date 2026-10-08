@@ -1024,10 +1024,18 @@ class PortfolioBuyer:
         # Market drawdown gauge (SPY) -> crash-reserve tranche state
         spy = self._get_market_price("SPY")
         rstate = self._load_reserve_state()
-        dd = 0.0
         if spy and spy > 0:
             rstate, dd = cmp.reserve_update(rstate, spy, tuple(cc.drawdown_tranches))
             self._save_reserve_state(rstate)
+            self._store_state("compounder_gauge_at", datetime.utcnow().isoformat(timespec="seconds"))
+        else:
+            # Gauge unavailable (2026-10-08: SPY history timed out on every scan for 16h while the
+            # HMDS farm was broken). Used to fall through as dd = 0.0 → the dashboard showed 0.0%
+            # and crash_active was forced off for the whole outage. Keep the LAST KNOWN drawdown
+            # instead; the dashboard flags the gauge as stale via compounder_gauge_at.
+            dd = cmp.gauge_drawdown_fallback(self._get_state_value("compounder_drawdown_pct"))
+            log.warning("compounder_market_gauge_stale", last_known_dd_pct=round(dd * 100, 1),
+                        gauge_at=self._get_state_value("compounder_gauge_at"))
         unlocked_dd = cmp.reserve_unlocked_fraction(rstate.tranches_fired, len(cc.drawdown_tranches))
         # Crash dump (deploy the parked cash reserve fast) on ANY real drawdown tranche.
         crash_active = unlocked_dd > 0 and dd >= (cc.drawdown_tranches[0] if cc.drawdown_tranches else 1.0)
@@ -4042,8 +4050,16 @@ class PortfolioBuyer:
                         except Exception:
                             pass
                         self.ib.sleep(0.5)
+                    if not price:
+                        # HMDS history farm down (2026-10-08) → live snapshot instead of leaving the
+                        # holding's price/market value frozen for the duration of the outage.
+                        from src.portfolio.connection import get_portfolio_snapshot_price
+                        with get_portfolio_lock():
+                            _live = get_portfolio_snapshot_price(self.ib, contract, None)  # raw units; normalised below
+                        if _live and _live > 0:
+                            price = _live
+                            log.info("portfolio_holding_price_live_fallback", symbol=h.symbol, price=price)
                     if price and price > 0:
-                        price = float(bars[-1].close)
                         # IBKR returns LSE/GBP prices in PENCE — normalise to pounds, identical to the
                         # analyzer (analyzer.py:156) and the seven other GBP-handling sites. This was
                         # the ONE price path missing it, so it intermittently stored pence and the

@@ -155,6 +155,15 @@ def get_portfolio_stock_price(
                               symbol=symbol, what=what, error=str(e) or repr(e))
                 ib.sleep(0.5)  # brief pause before retry
 
+            # History farm dead (2026-10-08: "HMDS data farm connection is broken: ushmds" on BOTH
+            # gateways for 16h while live quotes kept flowing) → fall back to a live snapshot so a
+            # history outage never blanks prices or zeroes the crash gauge.
+            live = get_portfolio_snapshot_price(ib, contract, currency)
+            if live:
+                _record_symbol_success(symbol)
+                log.info("portfolio_price_live_fallback", symbol=symbol, price=live)
+                return live
+
         log.warning("portfolio_no_price_data", symbol=symbol, exchange=exchange)
         _record_symbol_failure(symbol)
         return None
@@ -162,6 +171,54 @@ def get_portfolio_stock_price(
         log.warning("portfolio_price_fetch_error", symbol=symbol, error=str(e))
         _record_symbol_failure(symbol)
         return None
+
+
+def get_portfolio_snapshot_price(ib: IB, contract, currency: str | None, wait_s: float = 4.0) -> Optional[float]:
+    """Live/delayed snapshot price (major units) for an already-qualified contract, or None.
+
+    CALLER HOLDS get_portfolio_lock(). Uses reqMktData(snapshot=True) — the market-data farms
+    (usfarm/eufarm) are independent of the HMDS history farms, so this works when
+    reqHistoricalData times out. The connection runs market data type 4 (delayed-frozen) so a
+    venue without a live subscription still answers. Preference: last → close → bid/ask mid."""
+    try:
+        t = ib.reqMktData(contract, "", True, False)
+        deadline = wait_s
+        step = 0.25
+        while deadline > 0:
+            ib.sleep(step)
+            deadline -= step
+            px = _snapshot_pick(t)
+            if px:
+                break
+        px = _snapshot_pick(t)
+        try:
+            ib.cancelMktData(contract)
+        except Exception:
+            pass
+        if not px or px <= 0:
+            return None
+        from src.core import quote_units as _qu
+        return float(_qu.quote_to_major(float(px), currency))
+    except Exception as e:
+        log.debug("portfolio_snapshot_price_failed", symbol=getattr(contract, "symbol", "?"), error=str(e))
+        return None
+
+
+def _snapshot_pick(t) -> Optional[float]:
+    """First usable price on a ticker: last, else close, else bid/ask midpoint. NaN-safe."""
+    import math
+    def ok(v):
+        try:
+            return v is not None and not math.isnan(v) and v > 0
+        except TypeError:
+            return False
+    for v in (getattr(t, "last", None), getattr(t, "close", None)):
+        if ok(v):
+            return float(v)
+    b, a = getattr(t, "bid", None), getattr(t, "ask", None)
+    if ok(b) and ok(a):
+        return (float(b) + float(a)) / 2.0
+    return None
 
 
 def initial_connect_portfolio() -> IB:

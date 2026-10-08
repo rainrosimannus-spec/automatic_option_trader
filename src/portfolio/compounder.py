@@ -216,6 +216,30 @@ def reserve_update(state: ReserveState, market_price: float,
     return ReserveState(peak, fired), dd
 
 
+def gauge_drawdown_fallback(stored_pct) -> float:
+    """Drawdown FRACTION to use when the market gauge (SPY) can't be priced this scan: the last
+    persisted compounder_drawdown_pct (a PERCENT string), else 0.0. Never raises."""
+    try:
+        v = float(stored_pct or 0.0) / 100.0
+        return v if v > 0 else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def gauge_is_stale(gauge_at_iso, now=None, max_age_hours: float = 3.0) -> bool:
+    """True when the last successful SPY gauge read is older than max_age_hours (or unknown).
+    Scans run every ~2h, so 3h = at least one missed read."""
+    from datetime import datetime as _dt, timedelta as _td
+    if not gauge_at_iso:
+        return True
+    try:
+        at = _dt.fromisoformat(str(gauge_at_iso))
+    except ValueError:
+        return True
+    now = now or _dt.utcnow()
+    return (now - at) > _td(hours=max_age_hours)
+
+
 def reserve_unlocked_fraction(fired: int, n_tranches: int = 3) -> float:
     return min(1.0, fired / n_tranches) if n_tranches > 0 else 0.0
 
