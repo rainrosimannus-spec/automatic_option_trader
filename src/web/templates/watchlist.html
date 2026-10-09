@@ -25,16 +25,16 @@
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Investable</div>
-            <div class="text-2xl font-bold text-white mt-1">${{"{:,.0f}".format(reserve.investable)}}</div>
+            <div class="text-2xl font-bold text-white mt-1">{{base_sym}}{{"{:,.0f}".format(reserve.investable)}}</div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Deployed</div>
-            <div class="text-2xl font-bold text-emerald-400 mt-1">${{"{:,.0f}".format(reserve.deployed)}}</div>
-            <div class="text-xs text-gray-500 mt-1">of ${{"{:,.0f}".format(reserve.live_target)}} live target</div>
+            <div class="text-2xl font-bold text-emerald-400 mt-1">{{base_sym}}{{"{:,.0f}".format(reserve.deployed)}}</div>
+            <div class="text-xs text-gray-500 mt-1">of {{base_sym}}{{"{:,.0f}".format(reserve.live_target)}} live target</div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Today's Budget</div>
-            <div class="text-2xl font-bold text-sky-400 mt-1">${{"{:,.0f}".format(reserve.daily_budget)}}</div>
+            <div class="text-2xl font-bold text-sky-400 mt-1">{{base_sym}}{{"{:,.0f}".format(reserve.daily_budget)}}</div>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wider">Mkt Drawdown</div>
@@ -57,7 +57,7 @@
                 {% if tier=='growth' %}text-sky-400{% elif tier=='breakthrough' %}text-fuchsia-400{% else %}text-emerald-400{% endif %}">{{tier}}</div>
             {% if ts %}
             <div class="text-lg font-bold text-white mt-1">{{ts.count}} names</div>
-            <div class="text-xs text-gray-500 mt-1">target ${{"{:,.0f}".format(ts.target)}} · holding ${{"{:,.0f}".format(ts.deployed)}}</div>
+            <div class="text-xs text-gray-500 mt-1">target {{base_sym}}{{"{:,.0f}".format(ts.target)}} · holding {{base_sym}}{{"{:,.0f}".format(ts.deployed)}}</div>
             {% else %}<div class="text-sm text-gray-600 mt-1">—</div>{% endif %}
         </div>
         {% endfor %}

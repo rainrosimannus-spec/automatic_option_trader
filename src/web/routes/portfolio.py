@@ -265,10 +265,17 @@ def _to_base(amount: float, currency: str, fx_rates: dict = None, base_ccy: str 
     rate = (rates or {}).get(currency)
     return amount * rate if rate else amount
 
-def _build_tier_breakdown(holdings, fx_rates=None) -> dict:
+def _build_tier_breakdown(holdings, fx_rates=None, tier_of: dict | None = None) -> dict:
     """Build tier allocation data for pie/bar chart. The cash-yield ETF (the parked cash reserve, e.g.
     XEON, which carries tier='growth') is bucketed as 'cash' — it's not a compounder tier holding, so it
-    must not inflate the Growth slice."""
+    must not inflate the Growth slice.
+
+    `tier_of` = {symbol: tier} from the WATCHLIST. A holding row gets its tier once, on the first buy,
+    and nothing rewrites it; the monthly screen moves names between tiers on the watchlist row only.
+    On 2026-10-06 it graduated VRT/NU/6920/6146 (EUR 784k) breakthrough→growth, so this page said
+    Breakthrough 20% while /watchlist (and the buyer, which allocates off the watchlist) said 13%.
+    The watchlist tier is the one the capital is actually managed under, so it wins here; the
+    holding tier is only the fallback for a name that has left the watchlist."""
     from src.core.config import get_settings
     _park = getattr(get_settings().portfolio, "cash_yield_symbol", None)
     # Everything in the account BASE currency (EUR). The old helper here was named _to_usd but fed
@@ -280,7 +287,7 @@ def _build_tier_breakdown(holdings, fx_rates=None) -> dict:
         if _park and h.symbol == _park:
             tiers["cash"] += _to_base(h.market_value or 0, h.currency, fx_rates, _base)
             continue
-        tier = h.tier or "growth"
+        tier = (tier_of or {}).get(h.symbol) or h.tier or "growth"
         tiers[tier] = tiers.get(tier, 0) + _to_base(h.market_value or 0, h.currency, fx_rates, _base)
     return tiers
 
@@ -478,7 +485,8 @@ async def portfolio_page(request: Request):
 
     # Performance data
     perf = _build_portfolio_performance()
-    tiers = _build_tier_breakdown(holdings, fx_rates)
+    tiers = _build_tier_breakdown(holdings, fx_rates,
+                                  tier_of={w.symbol: w.tier for w in watchlist if w.tier})
     performers = _build_top_performers(holdings)
 
     # Composition doughnuts — where the invested book actually sits, by sector and by the
