@@ -4117,19 +4117,8 @@ def _fx_rate_ccy_per_base(ib, pair, base: str, ccy: str) -> float:
     The quoted price is symbol-per-currency, so invert when the pair's symbol is the stock ccy.
     Returns 0.0 on any failure (caller treats that as 'unpriced' and proceeds via auto-FX)."""
     try:
-        with get_portfolio_lock():
-            t = ib.reqMktData(pair, "", True, False)
-            ib.sleep(2)
-        px = None
-        for cand in (t.midpoint(), t.marketPrice(), t.last, t.close):
-            if cand and cand == cand and cand > 0:   # truthy, not-NaN, positive
-                px = float(cand)
-                break
-        try:
-            with get_portfolio_lock():
-                ib.cancelMktData(pair)
-        except Exception:
-            pass
+        from src.portfolio.connection import fx_pair_price
+        px = fx_pair_price(ib, pair, get_portfolio_lock())      # live mid, else Friday's daily close
         if not px:
             return 0.0
         # Pair price is HKD-per-EUR when symbol==base (EUR.HKD); invert when symbol==ccy.

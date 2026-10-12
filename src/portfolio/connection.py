@@ -448,6 +448,48 @@ _FX_BACKFILL_CURRENCIES = (
 )
 
 
+def fx_pair_price(ib: IB, pair, lock=None) -> float | None:
+    """Price of an IDEALPRO pair: a live snapshot mid, else the last daily MIDPOINT close.
+
+    The snapshot is empty whenever the FX market is shut — all weekend, from Friday 22:00 UTC to
+    Sunday 22:00 UTC — and a currency the account does not hold has no rate from IBKR's account
+    values either. Tel Aviv trades on Sunday, so every Sunday the shekel had no rate at all and
+    Elbit's one unfunded buying window of the week was refused ("no IBKR rate (cache or pair)",
+    2026-10-11). The daily bar is the same mid as of Friday's close: good enough to size a buy,
+    and the order itself is a limit in the stock's own currency."""
+    lock = lock or _portfolio_lock
+    try:
+        with lock:
+            t = ib.reqMktData(pair, "", True, False)
+            ib.sleep(2)
+        px = None
+        for cand in (t.midpoint(), t.marketPrice(), t.last, t.close):
+            if cand and cand == cand and cand > 0:   # cand == cand rejects NaN
+                px = float(cand)
+                break
+        try:
+            with lock:
+                ib.cancelMktData(pair)
+        except Exception:
+            pass
+        if px:
+            return px
+    except Exception as e:
+        log.debug("fx_pair_snapshot_failed", pair=getattr(pair, "symbol", "?"), error=str(e))
+    try:
+        with lock:
+            bars = ib.reqHistoricalData(pair, endDateTime="", durationStr="5 D", barSizeSetting="1 day",
+                                        whatToShow="MIDPOINT", useRTH=False, formatDate=1, timeout=10)
+        for b in reversed(bars or []):
+            if b.close and b.close == b.close and b.close > 0:
+                log.info("fx_pair_price_from_history", pair=getattr(pair, "symbol", "?") + "." + getattr(pair, "currency", ""),
+                         close=float(b.close), date=str(b.date))
+                return float(b.close)
+    except Exception as e:
+        log.debug("fx_pair_history_failed", pair=getattr(pair, "symbol", "?"), error=str(e))
+    return None
+
+
 def _backfill_missing_fx_rates(ib: IB, fx_rates: dict, base: str = "EUR") -> None:
     """Add a LOCAL→BASE rate (base units per 1 local) for every supported currency IBKR didn't report.
 
@@ -474,19 +516,7 @@ def _backfill_missing_fx_rates(ib: IB, fx_rates: dict, base: str = "EUR") -> Non
         if pair is None:
             continue
         try:
-            with _portfolio_lock:
-                t = ib.reqMktData(pair, "", True, False)
-                ib.sleep(2)
-            px = None
-            for cand in (t.midpoint(), t.marketPrice(), t.last, t.close):
-                if cand and cand == cand and cand > 0:   # cand == cand rejects NaN
-                    px = float(cand)
-                    break
-            try:
-                with _portfolio_lock:
-                    ib.cancelMktData(pair)
-            except Exception:
-                pass
+            px = fx_pair_price(ib, pair)
             if not px:
                 continue
             # pair.symbol == base  → pair is base.ccy → px = ccy per 1 base → LOCAL→BASE = 1/px
