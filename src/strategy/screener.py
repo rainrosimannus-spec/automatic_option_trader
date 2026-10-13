@@ -14,7 +14,7 @@ from typing import Optional
 
 from ib_insync import Option as IBOption
 
-from src.broker.market_data import get_put_contracts, get_call_contracts, get_stock_price
+from src.broker.market_data import get_put_contracts, get_call_contracts, get_stock_price, note_option_feed
 from src.broker.greeks import compute_put_greeks, compute_call_greeks, get_current_iv
 from src.strategy.option_scoring import score_put_candidates, score_call_candidates
 from src.broker.connection import get_ib, get_ib_lock
@@ -167,6 +167,7 @@ def screen_puts(
                 ticker = ib.reqMktData(candidate.contract, "", True, False)
                 ib.sleep(2)
                 ib.cancelMktData(candidate.contract)
+            note_option_feed(ticker)
 
             real_bid = ticker.bid
             real_ask = ticker.ask
@@ -309,6 +310,7 @@ def screen_calls(
                 ticker = ib.reqMktData(candidate.contract, "", True, False)
                 ib.sleep(2)
                 ib.cancelMktData(candidate.contract)
+            note_option_feed(ticker)
 
             real_bid = ticker.bid
             real_ask = ticker.ask

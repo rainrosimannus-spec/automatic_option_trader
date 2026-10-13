@@ -80,6 +80,36 @@ def _record_symbol_success(symbol: str):
     _price_fail_until.pop(symbol, None)
 
 
+# ── Option quote feed (live vs delayed) ─────────────────────
+# IBKR reports the data type it actually served on every reqMktData stream
+# (1 live, 2 frozen, 3 delayed, 4 delayed-frozen). The screener notes it after
+# each option quote so trade_sync can stamp the fill-vs-quote log with the feed
+# the quote came from — the OPRA subscription A/B (2026-10-13) is read off this.
+_FEED_NAMES = {1: "live", 2: "frozen", 3: "delayed", 4: "delayed_frozen"}
+_OPTION_FEED: dict = {"name": None, "at": None}
+
+
+def feed_name(market_data_type) -> str:
+    """Map an IBKR marketDataType id to a short label ('unknown' for anything else)."""
+    try:
+        return _FEED_NAMES.get(int(market_data_type), "unknown")
+    except (TypeError, ValueError):
+        return "unknown"
+
+
+def note_option_feed(ticker) -> str:
+    """Record the feed type IBKR reported on an option ticker; returns its label."""
+    name = feed_name(getattr(ticker, "marketDataType", None))
+    _OPTION_FEED["name"] = name
+    _OPTION_FEED["at"] = datetime.utcnow()
+    return name
+
+
+def option_feed() -> str:
+    """Feed label of the most recent option quote this session ('unknown' before the first)."""
+    return _OPTION_FEED["name"] or "unknown"
+
+
 # ── Helpers ─────────────────────────────────────────────────
 def _ensure_market_data_type():
     """Set market data type.

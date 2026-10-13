@@ -40,6 +40,68 @@ def _entry_quote(db, symbol, strike, expiry):
     return None, None, None
 
 
+_SELL_TYPES = frozenset({"SELL_PUT", "SELL_CALL"})
+_BUY_TYPES = frozenset({"BUY_PUT", "BUY_CALL"})
+
+
+def fill_vs_quote(trade_type, fill, bid, ask, mid) -> dict | None:
+    """Execution quality of one option fill against the decision-time quote.
+
+    Returns None when there is no usable two-sided quote or no fill. Otherwise:
+      spread          ask − bid
+      fill_minus_mid  fill − mid (positive = better than mid for a sell, worse for a buy)
+      fill_minus_bid  fill − bid
+      capture_pct     share of the spread captured, 0 = filled at the near touch
+                      (bid for a sell, ask for a buy), 100 = filled at the far touch;
+                      None when the spread is zero.
+    Prices must already be in the same unit (quote_to_major applied upstream).
+    """
+    name = getattr(trade_type, "value", trade_type)
+    name = str(name).upper() if name is not None else ""
+    try:
+        fill = float(fill); bid = float(bid); ask = float(ask)
+        mid = float(mid) if mid is not None else (bid + ask) / 2.0
+    except (TypeError, ValueError):
+        return None
+    if fill <= 0 or bid <= 0 or ask <= 0 or ask < bid:
+        return None
+    spread = ask - bid
+    if name in _SELL_TYPES:
+        captured = fill - bid
+    elif name in _BUY_TYPES:
+        captured = ask - fill
+    else:
+        return None
+    return {
+        "spread": round(spread, 4),
+        "fill_minus_mid": round(fill - mid, 4),
+        "fill_minus_bid": round(fill - bid, 4),
+        "capture_pct": round(100.0 * captured / spread, 1) if spread > 0 else None,
+    }
+
+
+def _log_fill_vs_quote(db, trade, trade_type, contract, strike, expiry, fill_price) -> None:
+    """Stamp the decision-time quote on the synced option Trade (when the row lacks it) and
+    log `fill_vs_quote` — one line per option fill with fill, bid/ask/mid, spread, capture and
+    the feed the quote came from. Never raises: measurement must not break the sync."""
+    try:
+        bid, ask, mid = trade.bid_at_entry, trade.ask_at_entry, trade.mid_at_entry
+        if mid is None:
+            bid, ask, mid = _entry_quote(db, contract.symbol, strike, expiry)
+            if mid is not None:
+                trade.bid_at_entry, trade.ask_at_entry, trade.mid_at_entry = bid, ask, mid
+        from src.broker.market_data import option_feed
+        metrics = fill_vs_quote(trade_type, fill_price, bid, ask, mid)
+        log.info("fill_vs_quote",
+                 symbol=contract.symbol, type=getattr(trade_type, "value", str(trade_type)),
+                 strike=strike, expiry=expiry, fill=round(float(fill_price), 4),
+                 bid=bid, ask=ask, mid=mid, quote_feed=option_feed(),
+                 **(metrics or {"spread": None, "fill_minus_mid": None,
+                                "fill_minus_bid": None, "capture_pct": None}))
+    except Exception as e:
+        log.debug("fill_vs_quote_failed", symbol=getattr(contract, "symbol", "?"), error=str(e))
+
+
 def _classify_trade(fill) -> TradeType | None:
     """
     Classify an IBKR fill into a TradeType.
@@ -223,6 +285,7 @@ def sync_ibkr_trades() -> int:
                 existing_trade.created_at = exec_time
                 log.info("trade_updated_from_fill", symbol=contract.symbol,
                          trade_type=str(trade_type), strike=strike)
+                synced_trade = existing_trade
             else:
                 trade = Trade(
                     symbol=contract.symbol,
@@ -241,8 +304,12 @@ def sync_ibkr_trades() -> int:
                     created_at=exec_time,
                 )
                 db.add(trade)
+                synced_trade = trade
             existing_ids.add(exec_id)
             imported += 1
+
+            if is_option:
+                _log_fill_vs_quote(db, synced_trade, trade_type, contract, strike, expiry, fill_price)
 
             log.info("trade_synced",
                      symbol=contract.symbol,
