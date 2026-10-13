@@ -108,6 +108,109 @@ def exit_call_plan(avg_cost: float, price: float, today: date) -> dict | None:
             "called_pnl_pct": (strike / avg_cost - 1) * 100}
 
 
+# The "Sell call" button on a holdings row (Rain, 2026-10-13): a covered call on a name he
+# picks, with a quantity he types, on the principles of the hand-placed examples — strike at or
+# above the purchase price, no hurry (good till cancelled), never more contracts than the shares
+# cover. The click is the approval; the order goes through the same executor as a review card.
+HOLDINGS_CALL_SIGNAL = "holdings_button_call"
+HOLDINGS_CALL_EXPIRES_HOURS = 24 * 100       # a resting GTC call may work for weeks
+
+
+def button_call_plan(avg_cost: float, price: float, today: date) -> dict | None:
+    """Strike and expiry for the holdings-row button: the first strike at or above the purchase
+    price (at least 5% above today's price), ~45-60 days out — a month further when the purchase
+    price is more than 20% above today's price, where a short-dated call there earns nothing."""
+    if not price or price != price or price <= 0 or not avg_cost or avg_cost != avg_cost or avg_cost <= 0:
+        return None
+    floor = max(float(avg_cost), float(price) * (1 + CALL_OTM_PCT))
+    far = floor > price * (1 + BREAKEVEN_REACH_PCT)
+    expiry = review_call_expiry(today + timedelta(days=30)) if far else review_call_expiry(today)
+    strike = float(math.ceil(floor))
+    return {"strike": strike, "expiry": expiry, "far": far,
+            "pnl_pct": (price / avg_cost - 1) * 100, "called_pnl_pct": (strike / avg_cost - 1) * 100}
+
+
+def request_holding_call(symbol: str, contracts: int) -> tuple[bool, str]:
+    """Create and approve the covered-call card for the holdings-row button. (ok, message).
+
+    Refuses — sending nothing — when the broker is not connected (the live position is the
+    only size that counts), when the quantity is more than the free shares cover, when a call
+    card for the name is already open, or when the listing has no option market."""
+    from src.core.config import get_settings
+    from src.core.suggestions import (REVIEW_MANUAL_APPROVAL_NOTE, TradeSuggestion, approve_suggestion,
+                                      create_suggestion)
+    from src.portfolio.connection import _ensure_event_loop, get_portfolio_ib, is_portfolio_connected
+    from src.portfolio.models import PortfolioHolding
+    try:
+        contracts = int(contracts)
+    except (TypeError, ValueError):
+        return False, "Enter the number of contracts first."
+    if contracts < 1:
+        return False, "Enter the number of contracts first."
+    with get_db() as db:
+        h = db.query(PortfolioHolding).filter(PortfolioHolding.symbol == symbol).first()
+        if h is None or not h.shares:
+            return False, f"{symbol}: no holding."
+        shares, avg_cost, price = int(h.shares), float(h.avg_cost or 0), float(h.current_price or 0)
+        ccy, exch, tier = (h.currency or "USD").upper(), h.exchange or "SMART", h.tier or "growth"
+        open_card = db.query(TradeSuggestion).filter(
+            TradeSuggestion.symbol == symbol, TradeSuggestion.action == CALL_ACTION,
+            TradeSuggestion.status.in_(("pending", "approved", "executing", "submitted"))).first()
+        if open_card is not None:
+            return False, f"{symbol}: a call card is already open (#{open_card.id}, {open_card.status}) — see Suggestions."
+    if ccy not in CALL_CURRENCIES:
+        return False, f"{symbol}: no option market the executor can write on for a {ccy} listing."
+    if not is_portfolio_connected():
+        return False, "Portfolio broker connection is down — nothing sent. Try again in a minute."
+    _ensure_event_loop()
+    ib = get_portfolio_ib()
+    book = read_book(ib, symbol, get_settings().portfolio.ibkr_account)
+    if book is None:
+        return False, "Could not read the live position from the broker — nothing sent."
+    lot = option_lot(ib, symbol, exch, ccy, book.free_shares)
+    if not lot:
+        return False, f"{symbol}: the broker lists no option this position can cover ({book.free_shares} free shares)."
+    cap = book.free_shares // lot
+    if cap < 1:
+        return False, (f"{symbol}: no free {lot}-share lot — {book.long_shares} shares held, "
+                       f"{book.short_call_shares} already under calls, "
+                       f"{book.working_stock_sells + book.working_call_sells} in working sell orders.")
+    if contracts > cap:
+        return False, (f"{symbol}: {contracts} contracts would need {contracts * lot} shares; only {book.free_shares} "
+                       f"are free ({lot} a contract) — at most {cap}.")
+    plan = button_call_plan(book.avg_cost or avg_cost, price, date.today())
+    if plan is None:
+        return False, f"{symbol}: no usable price or cost on record."
+    strike, expiry = plan["strike"], plan["expiry"]
+    rationale = (
+        f"SELL CALL (holdings page): {symbol} ({tier}), {shares} shares @ {avg_cost:.2f}, now {price:.2f} {ccy} "
+        f"({plan['pnl_pct']:+.1f}%). {contracts} covered call(s), strike {strike:.0f} (at or above the purchase price), "
+        f"expiry {expiry.strftime('%b %d %Y')}, good till cancelled, at the bid. If called: {plan['called_pnl_pct']:+.1f}% "
+        f"vs cost, plus the premium. The strike sent is never below your average cost at the broker."
+    )
+    s = create_suggestion(
+        symbol=symbol, action=CALL_ACTION, quantity=contracts, source="rescreen", tier=tier,
+        signal=HOLDINGS_CALL_SIGNAL, rationale=rationale, current_price=price, strike=strike,
+        expiry=expiry.strftime("%Y%m%d"), right="C", rank=0, funding_source="n/a",
+        expires_hours=HOLDINGS_CALL_EXPIRES_HOURS,
+    )
+    if s is None:
+        return False, f"{symbol}: the card could not be created (a duplicate may exist) — see Suggestions."
+    with get_db() as db:                        # the returned object is detached; re-read the id
+        row = db.query(TradeSuggestion).filter(
+            TradeSuggestion.symbol == symbol, TradeSuggestion.action == CALL_ACTION,
+            TradeSuggestion.signal == HOLDINGS_CALL_SIGNAL, TradeSuggestion.status == "pending",
+        ).order_by(TradeSuggestion.id.desc()).first()
+        card_id = row.id if row else None
+    if card_id is None:
+        return False, f"{symbol}: the card was not found after creation — see Suggestions."
+    approve_suggestion(card_id, note=REVIEW_MANUAL_APPROVAL_NOTE)     # the click IS the approval
+    log.info("holdings_call_requested", symbol=symbol, contracts=contracts, strike=strike,
+             expiry=expiry.strftime("%Y%m%d"), lot=lot, free_shares=book.free_shares, card=card_id)
+    return True, (f"{symbol}: {contracts} call(s) at {strike:.0f}, {expiry.strftime('%b %d')}, good till cancelled — "
+                  f"goes to the broker within a minute of the market being open (card #{card_id}).")
+
+
 def review_call_expiry(today: date) -> date:
     """Expiry the monthly review proposes for a covered call: the third Friday of next month,
     or of the month after once today is past the 15th."""
@@ -629,7 +732,10 @@ def execute_review_covered_call(suggestion_id: int) -> str:
         # (AstraZeneca, 2026-10-07). Elsewhere the two are the same figure.
         opt.strike = strike_major
         order = LimitOrder("SELL", contracts, order_price)
-        order.tif = "DAY"
+        # Review cards are day orders (one approval, one day); the holdings-page button is the
+        # user's "no hurry" order and rests until it fills.
+        no_hurry = card.get("signal") == HOLDINGS_CALL_SIGNAL
+        order.tif = "GTC" if no_hurry else "DAY"
         order.outsideRth = False
         with get_portfolio_lock():
             trade = ib.placeOrder(opt, order)
@@ -659,8 +765,8 @@ def execute_review_covered_call(suggestion_id: int) -> str:
                         f"IBKR did not take the order ({status}{': ' + why if why else ''}) — nothing "
                         f"sold. Approve again to re-send.", reviewed_at=now)
         return _set(suggestion_id, "submitted",
-                    f"Sent to IBKR: SELL {what}, good for today (order {ack.get('order_id')}; "
-                    f"short call shares before {book.short_call_shares})", **fields)
+                    f"Sent to IBKR: SELL {what}, {'good till cancelled' if no_hurry else 'good for today'} "
+                    f"(order {ack.get('order_id')}; short call shares before {book.short_call_shares})", **fields)
     except Exception as e:
         err = str(e) or type(e).__name__
         log.error("review_call_execution_failed", id=suggestion_id, symbol=symbol, error=err)

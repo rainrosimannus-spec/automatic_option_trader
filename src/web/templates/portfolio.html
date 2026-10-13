@@ -556,6 +556,9 @@ function syncInjections() {
     <!-- ═══ Holdings Table ═══ -->
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
         <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Holdings</h2>
+        {% if flash_msg %}
+        <div class="mb-3 px-3 py-2 rounded border text-sm {% if flash_msg.startswith('✓') %}bg-emerald-900/30 border-emerald-700 text-emerald-200{% else %}bg-red-900/30 border-red-700 text-red-200{% endif %}">{{ flash_msg }}</div>
+        {% endif %}
         {% if holdings %}
         <div class="overflow-x-auto">
             <table class="w-full text-left text-sm">
@@ -570,6 +573,7 @@ function syncInjections() {
                         <th class="px-3 py-2 text-right">P&L</th>
                         <th class="px-3 py-2 text-right">P&L %</th>
                         <th class="px-3 py-2">First Bought</th>
+                        <th class="px-3 py-2" title="Sell covered calls on this holding: type the number of contracts, then press. Strike at or above your purchase price, good till cancelled, at the bid. Never more contracts than your free shares cover.">Sell call</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-gray-800/50">
@@ -594,6 +598,17 @@ function syncInjections() {
                             {{"{:.1f}".format(h.unrealized_pnl_pct or 0)}}%
                         </td>
                         <td class="px-3 py-2 text-gray-500 text-xs">{{h.first_bought.strftime('%Y-%m-%d') if h.first_bought else ''}}</td>
+                        <td class="px-3 py-2">
+                            {% if (h.currency or 'USD')|upper in call_currencies %}
+                            <form method="post" action="/portfolio/holdings/{{h.symbol}}/sell-call" class="flex items-center gap-1"
+                                  onsubmit="return this.contracts.value > 0 && confirm('Sell ' + this.contracts.value + ' covered call(s) on {{h.symbol}} at or above your purchase price, good till cancelled?');">
+                                <input type="number" name="contracts" min="1" step="1" placeholder="#" required
+                                       class="w-12 px-1 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs text-right"
+                                       title="Contracts (100 shares each in the US; the broker's lot elsewhere). You hold {{h.shares}} shares.">
+                                <button type="submit" class="px-2 py-0.5 rounded bg-indigo-800 hover:bg-indigo-700 text-indigo-100 text-xs">Sell call</button>
+                            </form>
+                            {% else %}<span class="text-xs text-gray-700" title="No option market for this listing">—</span>{% endif %}
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>

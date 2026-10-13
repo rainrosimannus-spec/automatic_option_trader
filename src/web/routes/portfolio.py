@@ -5,8 +5,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from urllib.parse import quote
+
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src.web.template_engine import templates
 from src.core.database import get_db
@@ -733,7 +735,10 @@ async def portfolio_page(request: Request):
         log.warning("tier_targets_failed", error=str(_e))
         tier_targets = {"dividend": 0.05, "growth": 0.65, "breakthrough": 0.30}
 
+    from src.portfolio.review_orders import CALL_CURRENCIES as _call_ccys
     return templates.TemplateResponse("portfolio.html", {
+        "flash_msg": request.query_params.get("msg", ""),
+        "call_currencies": sorted(_call_ccys),
         "tier_targets": tier_targets,
         "flex_stale": flex_stale,
         "flex_stale_msg": flex_stale_msg,
@@ -820,6 +825,22 @@ async def portfolio_page(request: Request):
         "parked_annual_pct": _park_annual_pct,
         "parked_base_sym": parked_base_sym,
     })
+
+
+@router.post("/portfolio/holdings/{symbol}/sell-call")
+async def holdings_sell_call(symbol: str, request: Request, contracts: str = Form("")):
+    """The "Sell call" button on a holdings row: a covered call on this name, quantity typed by
+    the user, strike at or above the purchase price, good till cancelled. The click is the
+    approval; the portfolio review executor sends the order. Never more contracts than the live
+    free shares cover (checked here and again at sending)."""
+    from src.portfolio.review_orders import request_holding_call
+    try:
+        ok, msg = request_holding_call(symbol.upper().strip(), contracts)
+    except Exception as e:
+        log.error("holdings_sell_call_failed", symbol=symbol, error=str(e))
+        ok, msg = False, f"{symbol}: failed — {e}"
+    log.info("holdings_sell_call", symbol=symbol, contracts=contracts, ok=ok, msg=msg)
+    return RedirectResponse(url="/portfolio?msg=" + quote(("✓ " if ok else "✗ ") + msg), status_code=303)
 
 
 @router.get("/portfolio/trades", response_class=HTMLResponse)

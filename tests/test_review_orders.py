@@ -585,3 +585,71 @@ def test_strike_unit_is_told_by_magnitude():
     assert ro.strike_in_major(280.0, 253.0) == 280.0          # US
     assert ro.strike_in_major(75.0, 70.85) == 75.0            # Hong Kong
     assert ro.strike_in_major(50000.0, 46100.0) == 50000.0    # Japan: big numbers, but not 20x the price
+
+
+# ── The "Sell call" button on a holdings row ───────────────────────────────────────────────
+
+def _holding(symbol="ACME", shares=500, avg=100.0, price=92.0, ccy="USD", exch="SMART"):
+    from src.portfolio.models import PortfolioHolding
+    with db_mod.get_db() as db:
+        db.add(PortfolioHolding(symbol=symbol, exchange=exch, currency=ccy, shares=shares,
+                                avg_cost=avg, current_price=price, tier="growth"))
+
+
+def test_button_plan_is_at_or_above_the_purchase_price():
+    today = date(2026, 10, 13)
+    assert ro.button_call_plan(100.0, 92.0, today)["strike"] == 100                 # break-even
+    assert ro.button_call_plan(100.0, 120.0, today)["strike"] == 126                # 5% above price when in profit
+    deep = ro.button_call_plan(100.0, 60.0, today)
+    assert deep["strike"] == 100 and deep["far"] and deep["expiry"] > ro.button_call_plan(100.0, 92.0, today)["expiry"]
+    assert ro.button_call_plan(100.0, float("nan"), today) is None
+
+
+def test_button_never_sells_more_calls_than_the_free_shares_cover(wired):
+    _holding(shares=500)
+    wired["ib"] = FakeIB([_stk(qty=500, avg=100.0), _short_call(contracts=2)])    # 200 already under calls
+    ok, msg = ro.request_holding_call("ACME", 4)
+    assert not ok and "at most 3" in msg
+    assert ro.approved_review_cards() == []                                          # nothing created
+
+
+def test_button_creates_an_approved_card_and_the_order_rests_gtc(wired):
+    _holding(shares=500, avg=100.0, price=92.0)
+    ib = wired["ib"] = FakeIB([_stk(qty=500, avg=100.0)], close=92.0)
+    ok, msg = ro.request_holding_call("ACME", 3)
+    assert ok and "3 call(s) at 100" in msg
+    cards = ro.approved_review_cards()
+    assert len(cards) == 1 and cards[0][1] == "ACME"
+    ro.run_review_orders()
+    (opt, order), = ib.placed
+    assert (order.action, order.totalQuantity, order.tif) == ("SELL", 3, "GTC")      # no hurry
+    assert opt.strike == 100.0
+    with db_mod.get_db() as db:
+        s = db.query(TradeSuggestion).filter(TradeSuggestion.id == cards[0][0]).first()
+        assert s.status == "submitted" and "good till cancelled" in s.review_note and s.signal == ro.HOLDINGS_CALL_SIGNAL
+
+
+def test_button_refuses_without_a_quantity_or_a_broker(wired, monkeypatch):
+    _holding(shares=500)
+    wired["ib"] = FakeIB([_stk(qty=500)])
+    assert not ro.request_holding_call("ACME", "")[0]
+    assert not ro.request_holding_call("ACME", 0)[0]
+    import src.portfolio.connection as conn
+    monkeypatch.setattr(conn, "is_portfolio_connected", lambda: False)
+    ok, msg = ro.request_holding_call("ACME", 1)
+    assert not ok and "connection is down" in msg
+
+
+def test_button_refuses_a_second_card_while_one_is_open(wired):
+    _holding(shares=500)
+    wired["ib"] = FakeIB([_stk(qty=500)])
+    assert ro.request_holding_call("ACME", 1)[0]
+    ok, msg = ro.request_holding_call("ACME", 1)
+    assert not ok and "already open" in msg
+
+
+def test_review_cards_stay_day_orders(wired):
+    ib = wired["ib"] = FakeIB([_stk(qty=300, avg=100.0)], close=92.0)
+    sid = _card(action="sell_covered_call_review", qty=3, strike=100.0, right="C", signal="monthly_exit_call_breakeven")
+    assert ro.execute_review_covered_call(sid) == "submitted"
+    assert ib.placed[0][1].tif == "DAY"
