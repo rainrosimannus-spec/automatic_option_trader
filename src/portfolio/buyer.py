@@ -132,10 +132,21 @@ _MARKET_HOURS = {
     "SGD": ("Asia/Singapore", 9, 17, _MON_FRI),
     "ZAR": ("Africa/Johannesburg", 9, 17, _MON_FRI),
     "INR": ("Asia/Kolkata", 9, 15, _MON_FRI),            # NSE: 09:15–15:30 IST (hours truncate, as for JPY/GBP)
-    "ILS": ("Asia/Jerusalem", 10, 17, (6, 0, 1, 2, 3)),   # TASE: Sun–Thu
+    "ILS": ("Asia/Jerusalem", 10, 17, _MON_FRI),          # TASE: Mon–Fri since 2026 (Fri closes 13:50 — see _EARLY_CLOSE)
     "KRW": ("Asia/Seoul", 9, 15, _MON_FRI),               # KRX: 09:00–15:30 KST (hours truncate)
     "MXN": ("America/Mexico_City", 8, 15, _MON_FRI),      # BMV: 08:30–15:00 (hours truncate)
 }
+# Venues with a SHORT day: currency -> {weekday: close_hour}. TASE moved to a Monday–Friday week in
+# 2026 and Friday is a half day (IBKR liquidHours 2026-10-16: 09:59–13:50; 17th/18th CLOSED). The
+# table above kept "Sun–Thu" until 2026-10-14, so Sundays scanned a shut venue and Fridays were skipped.
+_EARLY_CLOSE: dict[str, dict[int, int]] = {
+    "ILS": {4: 13},
+}
+
+
+def _close_hour(currency: str | None, close_h: int, weekday: int) -> int:
+    """The venue's close hour for this weekday — the table's close_h unless _EARLY_CLOSE shortens it."""
+    return _EARLY_CLOSE.get((currency or "").upper(), {}).get(weekday, close_h)
 
 
 def _market_open(currency: str | None) -> bool:
@@ -149,7 +160,7 @@ def _market_open(currency: str | None) -> bool:
         return True
     tz_name, open_h, close_h, days = hours
     now = datetime.now(pytz.timezone(tz_name))
-    return now.weekday() in days and open_h <= now.hour < close_h
+    return now.weekday() in days and open_h <= now.hour < _close_hour(currency, close_h, now.weekday())
 
 
 def _late_session(currency: str | None, minutes: int, min_runway: int = 0) -> bool:
@@ -178,7 +189,7 @@ def _late_session(currency: str | None, minutes: int, min_runway: int = 0) -> bo
     now = datetime.now(pytz.timezone(tz_name))
     if now.weekday() not in days:
         return False
-    close_dt = now.replace(hour=close_h, minute=0, second=0, microsecond=0)
+    close_dt = now.replace(hour=_close_hour(currency, close_h, now.weekday()), minute=0, second=0, microsecond=0)
     return (close_dt - timedelta(minutes=minutes)) <= now < (close_dt - timedelta(minutes=max(0, min_runway)))
 
 
@@ -205,7 +216,7 @@ def _aftermarket(currency: str | None, minutes: int) -> bool:
     now = datetime.now(pytz.timezone(tz_name))
     if now.weekday() not in days:
         return False
-    close_dt = now.replace(hour=close_h, minute=0, second=0, microsecond=0)
+    close_dt = now.replace(hour=_close_hour(currency, close_h, now.weekday()), minute=0, second=0, microsecond=0)
     return close_dt <= now < close_dt + timedelta(minutes=minutes)
 
 
@@ -363,6 +374,21 @@ def _min_tick_for(ib, contract, details=None) -> float | None:
         log.warning("portfolio_min_tick_lookup_failed",
                     symbol=getattr(contract, "symbol", "?"), error=str(e))
     return None
+
+
+def _price_magnifier(details=None) -> float:
+    """ContractDetails.priceMagnifier (1 when absent). IBKR QUOTES some venues in a minor unit but
+    prices ORDERS in the major one, and says so through this field: Tel Aviv quotes ESLT at 216,900
+    agorot with priceMagnifier=100, and the order must be sent at 2,169 shekels. Proven 2026-10-14:
+    the compounder's first ILS order went out at 219,954 and sat PendingSubmit, never acknowledged;
+    a what-if at that price was refused ("does not conform to the minimum price variation"), at
+    2,200 it was accepted. London (pence, magnifier 1) is unaffected: there orders ARE in pence."""
+    try:
+        d = details[0] if isinstance(details, list) else details
+        m = float(getattr(d, "priceMagnifier", 1) or 1)
+        return m if m > 0 else 1.0
+    except Exception:
+        return 1.0
 
 
 _MARKET_RULE_CACHE: dict[int, list] = {}        # ruleId -> [PriceIncrement, ...]
@@ -4622,20 +4648,27 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         # Snap onto the venue's tick grid. `round(..., 2)` is only legal where minTick == 0.01; on a
         # coarser grid IBKR parks the order in PendingSubmit forever (see _round_to_tick). `details` is
         # already in hand on the foreign path — reuse it rather than re-querying.
-        _raw_price = qu.major_to_quote(limit_price, ccy)
+        # ...then into the broker's ORDER unit: where the contract carries a priceMagnifier (Tel Aviv:
+        # quoted in agorot, ordered in shekels) the quote is divided by it. The tick grid (market rule)
+        # is expressed in the order unit, so it is applied AFTER the division. See _price_magnifier.
+        _quote_price = qu.major_to_quote(limit_price, ccy)
+        _magnifier = _price_magnifier(details)
+        _raw_price = _quote_price / _magnifier
         _tick = _effective_tick(ib, contract, _raw_price, details=details, currency=ccy,
                                 exchange=getattr(contract, "exchange", None))
         order_price = _round_to_tick(_raw_price, _tick, "BUY")
-        if _tick:
+        if _tick or _magnifier != 1.0:
             log.info("portfolio_order_price_ticked", id=suggestion_id, symbol=symbol,
                      min_tick=_tick,
                      ibkr_tick=_min_tick_for(ib, contract, details=details),
                      rule_tick=_market_rule_tick(ib, details,
                                                  getattr(contract, "exchange", None), _raw_price),
+                     magnifier=_magnifier, quote=round(_quote_price, 4),
                      raw=round(_raw_price, 4), ticked=order_price)
-        # Fund the foreign-currency leg up front (settlement is in MAJOR units — order_price is back in
-        # the quoted minor unit) so the buy doesn't silently open a margin loan in the foreign ccy.
-        notional_settle = shares * qu.quote_to_major(order_price, ccy)
+        # Fund the foreign-currency leg up front (settlement is in MAJOR units — order_price is in the
+        # broker's order unit, so go back through the magnifier to the quote unit first) so the buy
+        # doesn't silently open a margin loan in the foreign ccy.
+        notional_settle = shares * qu.quote_to_major(order_price * _magnifier, ccy)
         # Un-park the park-ETF (XEON) reserve, then convert the FX leg, then GATE on the authoritative funding
         # path for this currency. If it could not be funded, leave the suggestion 'approved' (retry next
         # cycle) rather than place an order that silently opens a margin loan (fail-closed).

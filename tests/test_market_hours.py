@@ -3,7 +3,7 @@
 A currency missing from the table falls through to "always open". That fallback is how NICE (ILS)
 was ordered into a shut Tel Aviv exchange at 00:09 UTC on a Friday: the order cannot reach the venue,
 rests in PendingSubmit, and the stuck-order detector cancels it and venue-blocks the symbol for 6h.
-Every currency the watchlist can hold must be mapped, with its real trading days — TASE runs Sun–Thu.
+Every currency the watchlist can hold must be mapped, with its real trading days — TASE runs Mon–Fri (half-day Friday).
 """
 import datetime as dt
 
@@ -48,16 +48,22 @@ def test_unknown_currency_stays_permissive(at):
     assert _market_open("XXX") is True
 
 
-# ── TASE trades Sunday–Thursday, not Monday–Friday ───────────────────────────────────────
+# ── TASE trades Monday–Friday since 2026 (Friday is a half day), NOT Sunday–Thursday ──────
+# IBKR liquidHours read 2026-10-14: Wed/Thu 09:59–17:25, Fri 09:59–13:50, Sat/Sun CLOSED.
 
-def test_tase_closed_on_friday(at):
-    at("2026-07-10T06:17:00")            # Fri 09:17 Israel — the second doomed NICE order
+def test_tase_open_on_friday_morning(at):
+    at("2026-10-16T08:00:00")            # Fri 11:00 Israel — half day, still open
+    assert _market_open("ILS") is True
+
+
+def test_tase_closed_on_friday_afternoon(at):
+    at("2026-10-16T11:30:00")            # Fri 14:30 Israel — the 13:50 half-day close has passed
     assert _market_open("ILS") is False
 
 
-def test_tase_open_on_sunday(at):
-    at("2026-07-12T08:00:00")            # Sun 11:00 Israel
-    assert _market_open("ILS") is True
+def test_tase_closed_on_sunday(at):
+    at("2026-10-18T08:00:00")            # Sun 11:00 Israel
+    assert _market_open("ILS") is False
 
 
 def test_tase_open_midweek(at):
@@ -66,8 +72,15 @@ def test_tase_open_midweek(at):
 
 
 def test_tase_closed_on_saturday(at):
-    at("2026-07-11T08:00:00")
+    at("2026-10-17T08:00:00")
     assert _market_open("ILS") is False
+
+
+def test_tase_friday_late_session_follows_the_short_close(at):
+    at("2026-10-16T09:30:00")            # Fri 12:30 Israel — inside the last 120 min before the 13:00 close
+    assert _late_session("ILS", 120) is True
+    at("2026-10-16T07:30:00")            # Fri 10:30 Israel — would be "late" only against the 17:00 close
+    assert _late_session("ILS", 120) is False
 
 
 # ── the Asia/Europe funding overlap that makes JIT un-parking impossible ──────────────────

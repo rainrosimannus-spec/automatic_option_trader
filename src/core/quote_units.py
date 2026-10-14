@@ -71,3 +71,30 @@ CCY_SYMBOLS: dict[str, str] = {
 def ccy_symbol(currency: str | None) -> str:
     """Symbol for `currency`; USD when unknown/blank, the code itself when no symbol is listed."""
     return CCY_SYMBOLS.get((currency or "USD").upper(), ((currency or "") + " "))
+
+
+def fill_price_to_major(price: float | None, currency: str | None,
+                        reference_major: float | None = None) -> float | None:
+    """An execution price in MAJOR units, whatever unit IBKR reported it in.
+
+    Most minor-unit venues report fills in the quote unit (LSE pence), so the plain division applies.
+    Tel Aviv is different: IBKR quotes TASE in agorot but carries priceMagnifier=100 on the contract,
+    so ORDERS are priced in shekels (2026-10-14: a what-if at 219,954 was refused "does not conform
+    to the minimum price variation", at 2,200 it was accepted) — and the fill may well come back in
+    shekels too. We cannot know before the first fill, so when a reference price in major units is
+    at hand (watchlist price, holding cost) the interpretation closer to it wins; without a
+    reference the plain quote→major division stands. Logged by the caller when the raw price is kept.
+    """
+    if price is None:
+        return None
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return price
+    divided = quote_to_major(p, currency)
+    if divided == p or not reference_major or reference_major <= 0 or p <= 0:
+        return divided
+    import math
+    d_div = abs(math.log(divided / reference_major))
+    d_raw = abs(math.log(p / reference_major))
+    return p if d_raw < d_div else divided

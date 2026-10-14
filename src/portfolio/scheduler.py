@@ -2168,8 +2168,16 @@ def job_portfolio_sync_trades(cfg: PortfolioConfig):
                     # buy records as 14222 × 33 ≈ 469k and swamps the daily budget → stuck at 0.
                     # Same rule for every minor-unit venue (LSE pence, TASE agorot) — one list,
                     # src.core.quote_units, instead of a GBP check here that Tel Aviv would miss.
+                    # Tel Aviv may report the fill in SHEKELS (orders are priced in shekels there,
+                    # priceMagnifier=100) while quotes are agorot — the watchlist price (major units)
+                    # decides which reading is right; see quote_units.fill_price_to_major.
                     from src.core import quote_units as _qu
-                    price = _qu.quote_to_major(price, str(getattr(contract, "currency", "") or ""))
+                    _fill_ccy = str(getattr(contract, "currency", "") or "")
+                    _ref_major = float(getattr(wl, "current_price", 0) or 0) or None
+                    price = _qu.fill_price_to_major(price, _fill_ccy, _ref_major)
+                    if price == execution.price and _qu.is_minor_unit_quoted(_fill_ccy):
+                        log.info("trade_sync_fill_price_kept_major", symbol=symbol, currency=_fill_ccy,
+                                 price=price, reference=_ref_major)
                     if side == "BOT":
                         action = "buy"
                         shares = qty
