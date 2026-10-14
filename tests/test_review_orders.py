@@ -653,3 +653,13 @@ def test_review_cards_stay_day_orders(wired):
     sid = _card(action="sell_covered_call_review", qty=3, strike=100.0, right="C", signal="monthly_exit_call_breakeven")
     assert ro.execute_review_covered_call(sid) == "submitted"
     assert ib.placed[0][1].tif == "DAY"
+
+
+def test_holdings_sell_call_route_is_synchronous():
+    """The button talks to the broker; a coroutine route runs on uvicorn's loop where a sync
+    ib_insync request cannot run ("Cannot run the event loop while another loop is running" —
+    IREN 2026-10-14, surfaced as "no option this position can cover"). Sync routes run in a
+    worker thread, like the Cancel route."""
+    import inspect
+    from src.web.routes import portfolio as routes
+    assert not inspect.iscoroutinefunction(routes.holdings_sell_call)

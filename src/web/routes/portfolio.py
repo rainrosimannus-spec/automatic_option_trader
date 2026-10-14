@@ -826,11 +826,17 @@ async def portfolio_page(request: Request):
 
 
 @router.post("/portfolio/holdings/{symbol}/sell-call")
-async def holdings_sell_call(symbol: str, request: Request, contracts: str = Form("")):
+def holdings_sell_call(symbol: str, request: Request, contracts: str = Form("")):
     """The "Sell call" button on a holdings row: a covered call on this name, quantity typed by
     the user, strike at or above the purchase price, good till cancelled. The click is the
     approval; the portfolio review executor sends the order. Never more contracts than the live
-    free shares cover (checked here and again at sending)."""
+    free shares cover (checked here and again at sending).
+
+    A plain (sync) route on purpose: it talks to the broker (position, option chain), and a
+    synchronous ib_insync request drives the portfolio connection's loop — impossible from a
+    coroutine on the web server's running loop ("Cannot run the event loop while another loop
+    is running", IREN 2026-10-14, reported as "no option this position can cover"). FastAPI
+    runs a sync route in a worker thread, like the Cancel route on /suggestions."""
     from src.portfolio.review_orders import request_holding_call
     try:
         ok, msg = request_holding_call(symbol.upper().strip(), contracts)
