@@ -15,6 +15,7 @@ from src.core.suggestions import (
     TradeSuggestion,
 )
 from src.core.database import get_db
+from src.core.quote_units import ccy_symbol
 from src.core.models import SystemState
 from src.core.logger import get_logger
 
@@ -70,10 +71,34 @@ def _get_suggestions_by_source(source: str):
     return pending, recent
 
 
+def _stamp_card_currency(cards) -> None:
+    """Portfolio cards print price / strike / est. cost in the STOCK's own currency (a Tokyo buy is
+    ¥5,780 × 2,139 = ¥12,363,420, not "$12,363,420"). The suggestion row has no currency column, so
+    the symbol comes from the watchlist (holdings keep the currency of their last screen). Options
+    cards are untouched — that page is all-USD and never calls this."""
+    symbols = {c.symbol for c in cards if getattr(c, "symbol", None)}
+    if not symbols:
+        return
+    ccy_by_symbol: dict[str, str] = {}
+    try:
+        from src.portfolio.models import PortfolioWatchlist
+        with get_db() as db:
+            for sym, ccy in db.query(PortfolioWatchlist.symbol, PortfolioWatchlist.currency).filter(
+                PortfolioWatchlist.symbol.in_(symbols)
+            ).all():
+                if ccy:
+                    ccy_by_symbol[sym] = ccy
+    except Exception as e:                    # a label must never take the page down
+        log.warning("suggestion_card_currency_lookup_failed", error=str(e))
+    for c in cards:
+        c.ccy_symbol = ccy_symbol(ccy_by_symbol.get(c.symbol, "USD"))
+
+
 # ── Portfolio Suggestions (/suggestions) ──────────────────
 @router.get("/", response_class=HTMLResponse)
 def suggestions_page(request: Request):
     pending, recent = _get_suggestions_by_source("portfolio")
+    _stamp_card_currency(pending + recent)
     auto_approve = _get_auto_approve_state("portfolio")
     return templates.TemplateResponse("suggestions.html", {
         "request": request,

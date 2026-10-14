@@ -83,13 +83,13 @@
                 {% if s.limit_price %}
                 <div>
                     <span class="text-gray-500">Price:</span>
-                    <span class="text-gray-200 ml-1">${{ "%.2f" | format(s.limit_price) }}</span>
+                    <span class="text-gray-200 ml-1">{{ s.ccy_symbol|default('$') }}{{ "%.2f" | format(s.limit_price) }}</span>
                 </div>
                 {% endif %}
                 {% if s.strike %}
                 <div>
                     <span class="text-gray-500">Strike:</span>
-                    <span class="text-gray-200 ml-1">${{ "%.2f" | format(s.strike) }}</span>
+                    <span class="text-gray-200 ml-1">{{ s.ccy_symbol|default('$') }}{{ "%.2f" | format(s.strike) }}</span>
                 </div>
                 {% endif %}
                 {% if s.expiry %}
@@ -101,7 +101,7 @@
                 {% if s.current_price %}
                 <div>
                     <span class="text-gray-500">Current:</span>
-                    <span class="text-gray-200 ml-1">${{ "%.2f" | format(s.current_price) }}</span>
+                    <span class="text-gray-200 ml-1">{{ s.ccy_symbol|default('$') }}{{ "%.2f" | format(s.current_price) }}</span>
                 </div>
                 {% endif %}
                 {% if s.rsi_14 %}
@@ -113,7 +113,7 @@
                 {% if s.est_cost %}
                 <div>
                     <span class="text-gray-500">Est. Cost:</span>
-                    <span class="text-gray-200 ml-1">${{ "{:,.0f}".format(s.est_cost) }}</span>
+                    <span class="text-gray-200 ml-1">{{ s.ccy_symbol|default('$') }}{{ "{:,.0f}".format(s.est_cost) }}</span>
                 </div>
                 {% endif %}
                 {% if s.margin_util_after %}
@@ -228,9 +228,9 @@
             <tr class="border-b border-gray-800/40 hover:bg-gray-800/20">
                 <td class="px-3 py-2 text-gray-500 font-mono">{{ '#' ~ s.rank if s.rank and s.rank > 0 else '—' }}</td>
                 <td class="px-3 py-2 font-medium text-gray-200">{{ s.symbol }}</td>
-                <td class="px-3 py-2 text-gray-400 font-mono">{{ '$%.0f'|format(s.strike) if s.strike else '—' }}</td>
+                <td class="px-3 py-2 text-gray-400 font-mono">{{ (s.ccy_symbol|default('$')) ~ '%.0f'|format(s.strike) if s.strike else '—' }}</td>
                 <td class="px-3 py-2 text-gray-400 font-mono">{{ s.expiry[4:6] ~ '/' ~ s.expiry[6:8] if s.expiry and s.expiry|length >= 8 else '—' }}</td>
-                <td class="px-3 py-2 text-gray-400 font-mono">{{ '$%.2f'|format(s.limit_price) if s.limit_price else '—' }}</td>
+                <td class="px-3 py-2 text-gray-400 font-mono">{{ (s.ccy_symbol|default('$')) ~ '%.2f'|format(s.limit_price) if s.limit_price else '—' }}</td>
                 <td class="px-3 py-2">
                     {% if s.status == 'executed' %}
                     <span class="px-2 py-0.5 rounded text-xs bg-emerald-900/60 text-emerald-400">✓ filled</span>

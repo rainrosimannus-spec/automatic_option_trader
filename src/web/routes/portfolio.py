@@ -11,6 +11,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src.web.template_engine import templates
+from src.core.quote_units import CCY_SYMBOLS, ccy_symbol
 from src.core.database import get_db
 from src.portfolio.models import (
     PortfolioHolding, PortfolioTransaction, PortfolioWatchlist, PortfolioState,
@@ -23,15 +24,12 @@ log = get_logger(__name__)
 router = APIRouter()
 
 
-# Native currency symbols for figures shown in a holding's or a fill's own currency. A currency
-# missing here is printed with its code ("KRW 774,000"), never with a dollar sign.
-_CCY_SYM = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CHF": "Fr ", "CAD": "C$",
-            "AUD": "A$", "HKD": "HK$", "INR": "₹", "ZAR": "R ", "SGD": "S$",
-            "KRW": "₩", "ILS": "₪", "DKK": "DKK ", "NOK": "NOK ", "SEK": "SEK "}
+# Native currency symbols for figures shown in a holding's or a fill's own currency (shared map).
+_CCY_SYM = CCY_SYMBOLS
 
 
 def _ccy_symbol(currency: str | None) -> str:
-    return _CCY_SYM.get((currency or "USD").upper(), ((currency or "") + " "))
+    return ccy_symbol(currency)
 
 
 def _get_state(key: str) -> str:

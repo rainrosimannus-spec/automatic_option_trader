@@ -1689,10 +1689,12 @@ class PortfolioBuyer:
             # position actually fills (Rain is stagnation-averse); extended (yellow) names that aren't
             # urgent bid deeper for a better entry — they're filled only after the greens (queue order).
             urgency = max(uw if green else 0.0, 1.0 if is_leader else 0.0, 1.0 if crash_active else 0.0)
+            bsym = qu.ccy_symbol(getattr(self.cfg, "base_currency", "EUR") or "EUR")   # brick/target are base-ccy
+            psym = qu.ccy_symbol(getattr(stock, "currency", None))                          # price is the stock's own
             rat = (
                 f"Compounder #{idx} {stock.tier} (10x {r.s10x:.0f}, mom p{r.momentum_pct * 100:.0f}, "
-                f"rank {r.rank_score:.0f}). Direct buy ${brick:,.0f} toward target ${tgt:,.0f} "
-                f"(now ${cur:,.0f}, {uw * 100:.0f}% underweight). Price ${r.price:.2f} "
+                f"rank {r.rank_score:.0f}). Direct buy {bsym}{brick:,.0f} toward target {bsym}{tgt:,.0f} "
+                f"(now {bsym}{cur:,.0f}, {uw * 100:.0f}% underweight). Price {psym}{r.price:.2f} "
                 f"{'cheap/fair' if green else 'extended — filled after greens'} vs trend"
                 f"{'; LEADER — always direct + dip rungs' if is_leader else ''}"
                 f"{'; CRASH tranche active' if crash_active else ''}."

@@ -56,3 +56,18 @@ def major_to_quote(price: float | None, currency: str | None) -> float | None:
     if not price:
         return price
     return price * minor_unit_factor(currency)
+
+
+# Display symbols for figures shown in a currency's own units. A currency missing here is printed
+# with its code ("KRW 774,000"), never with a dollar sign — a "$" in front of a yen or won figure
+# once made a ¥12.4M Tokyo order read like a $12.4M one.
+CCY_SYMBOLS: dict[str, str] = {
+    "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CHF": "Fr ", "CAD": "C$",
+    "AUD": "A$", "HKD": "HK$", "INR": "₹", "ZAR": "R ", "SGD": "S$",
+    "KRW": "₩", "ILS": "₪", "DKK": "DKK ", "NOK": "NOK ", "SEK": "SEK ",
+}
+
+
+def ccy_symbol(currency: str | None) -> str:
+    """Symbol for `currency`; USD when unknown/blank, the code itself when no symbol is listed."""
+    return CCY_SYMBOLS.get((currency or "USD").upper(), ((currency or "") + " "))
