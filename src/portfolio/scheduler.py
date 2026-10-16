@@ -302,14 +302,13 @@ def job_portfolio_late_session_fill(cfg: PortfolioConfig):
         # directly here would give the latch a SECOND source of truth, and the two can disagree across
         # a venue-local midnight — serving one window twice or skipping one entirely.
         from src.portfolio import buyer as _buyer
-        from src.portfolio.buyer import _late_session, _MARKET_HOURS
+        from src.portfolio.buyer import _late_session, _MARKET_HOURS, _runway_floor
         _dt = _buyer.datetime
         cc = CompounderConfig()
         if not getattr(cc, "late_session_fill_pass", False):
-            return                      # OFF by default — see the evidence in config.py
+            return                      # switched off — see config.py
         if not cc.late_session_only_green or cc.late_session_minutes <= 0:
             return                      # gate disabled ⇒ the 2h grid already buys whenever it likes
-        runway = int(getattr(cc, "late_session_min_runway_minutes", 0) or 0)
         # Key the latch on the VENUE-LOCAL date, not UTC: an Asian window opens on a UTC day that its
         # own calendar may already have rolled past, so a UTC key would serve two windows as one.
         held = _watchlist_currencies()          # None ⇒ couldn't read it ⇒ don't filter
@@ -317,7 +316,7 @@ def job_portfolio_late_session_fill(cfg: PortfolioConfig):
         for ccy, (tz_name, _o, _c, _d) in _MARKET_HOURS.items():
             if held is not None and ccy not in held:
                 continue                        # no name settles in this currency — nothing to buy
-            if _late_session(ccy, cc.late_session_minutes, runway):
+            if _late_session(ccy, cc.late_session_minutes, _runway_floor(ccy, cc)):
                 open_now[ccy] = _dt.now(pytz.timezone(tz_name)).strftime("%Y-%m-%d")
         unserved = [c for c, d in open_now.items() if _late_session_served.get(c) != d]
         if not unserved:

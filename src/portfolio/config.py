@@ -142,7 +142,15 @@ class CompounderConfig(BaseModel):
     # The mechanism stays (tested, and _late_session takes min_runway) because a value MIGHT earn its
     # keep on a venue with no closing auction. Do not raise it above 0 without fill data that separates
     # the two populations — this comment exists because the obvious story was the wrong one.
-    late_session_min_runway_minutes: int = 0
+    #
+    # 2026-10-16 (Rain: "agreed, build all three"): raised to 10 for venues WITHOUT an after-hours
+    # rescue only — buyer._runway_floor returns 0 wherever _outside_rth_ok (US/CA/EU/UK), so the
+    # September evidence above (US closing-auction fills) is untouched. The new data is Asian: the
+    # 2h grid slipped 14 min behind a slow hourly price update and Tencent/Pop Mart reached Hong Kong
+    # with 3-4 minutes left, bid 1.4% under (low urgency) — unreachable, and with no after-market
+    # there the day's slot was simply burnt. Over 30 days every Asian fill came from a scan with
+    # ≥20 min to run; every miss from a late or mispriced one.
+    late_session_min_runway_minutes: int = 10
     # Extra late-session scan pass — also OFF, and dependent on the floor above. The 2h scan grid is an
     # IntervalTrigger anchored to process start, so against a 120-min window it admits exactly ONE pass
     # at a phase the last restart chose; job_portfolio_late_session_fill samples the window's opening
@@ -150,7 +158,12 @@ class CompounderConfig(BaseModel):
     # fills land right across the window (32 in the 60-120 min band, 15 in 15-60, 3 in 5-15, 5 under 5).
     # Turning it on also buys one extra cancel/re-price sweep per venue per day, since every scan
     # re-prices every resting order. Enable only alongside a floor that has been shown to pay.
-    late_session_fill_pass: bool = False
+    # 2026-10-16: ON, with the 10-min floor above. The grid's phase DID prove harmful once the price
+    # update started taking 16 min (history-farm outage mornings): the scan waited on the lock and
+    # Hong Kong's only in-window pass landed 4 minutes before the close. The window-open pass makes
+    # the phase irrelevant; the 2h grid (now a fixed UTC cron, see scheduler/jobs.py) stays as the
+    # re-price backstop.
+    late_session_fill_pass: bool = True
     # After-hours fallback: if a green buy's budget did NOT fill by the close, keep the name buyable for
     # this many minutes AFTER the close (the US after-market). Only outside-RTH-capable venues (US/CA/
     # EU/UK) — orders already carry outsideRth, and Asia/AU/ZA reject out-of-hours. So a limit the market

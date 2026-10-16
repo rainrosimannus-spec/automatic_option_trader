@@ -141,18 +141,16 @@ def test_every_mapped_currency_can_reach_its_window(at):
 def _fire(monkeypatch, utc_iso, enabled=True):
     """Run job_portfolio_late_session_fill at a frozen instant; return whether it scanned.
 
-    The pass ships OFF (late_session_fill_pass=False), so these tests enable it explicitly to exercise
-    the mechanism. test_pass_is_off_by_default covers the shipped state."""
+    The pass ships ON since 2026-10-16; enabled=False exercises the switch."""
     import src.portfolio.scheduler as sch
     from src.portfolio.config import PortfolioConfig, CompounderConfig
     cfg = PortfolioConfig(); cfg.enabled = True
-    if enabled:
-        # Pydantic fields aren't plain class attributes, so override via a subclass and swap the
-        # symbol the job resolves at call time (it imports CompounderConfig inside the function).
-        class _Enabled(CompounderConfig):
-            late_session_fill_pass: bool = True
-            late_session_min_runway_minutes: int = 5
-        monkeypatch.setattr("src.portfolio.config.CompounderConfig", _Enabled)
+    # Pydantic fields aren't plain class attributes, so override via a subclass and swap the
+    # symbol the job resolves at call time (it imports CompounderConfig inside the function).
+    class _Cfg(CompounderConfig):
+        late_session_fill_pass: bool = enabled
+        late_session_min_runway_minutes: int = 5
+    monkeypatch.setattr("src.portfolio.config.CompounderConfig", _Cfg)
     calls = []
     monkeypatch.setattr(sch, "job_portfolio_scan", lambda c: calls.append(1))
     with _freeze(utc_iso):
@@ -285,29 +283,43 @@ def test_every_venue_reads_its_own_clock(at):
     assert inside == {"USD", "CAD", "MXN"}, inside     # Mexico City (added 2026-10-04) is 13:00, its last two hours
 
 
-# ── the shipped state: both halves OFF, and WHY ───────────────────────────────
+# ── the shipped state (2026-10-16): floor 10 min on no-after-hours venues, pass ON ─────────
 
-def test_floor_and_pass_both_ship_off():
-    """Measured 2026-09-22 and deliberately not enabled. In the sub-5-minute zone the record is 5
-    FILLS against 4 deaths, and the runways interleave — XRO filled at 0.5 min and died at 0.5 min,
-    MA filled at 0.6, BKNG at 1.0, POWL at 1.9, 6920 at 2.5. Time-to-close carries no signal, almost
-    certainly because that minute is the closing auction. A 5-min floor would have refused ~EUR 310k
-    of real fills in three months. If someone flips these on, they need new data, not a hunch."""
+def test_floor_and_pass_ship_on_for_venues_without_after_hours():
+    """Measured 2026-09-22 and kept OFF then: in the sub-5-minute zone the US record was 5 FILLS vs 4
+    deaths (closing auction). The 2026-10-16 evidence is ASIAN: Tencent/Pop Mart reached Hong Kong
+    with 3-4 min left, 1.4% under the market, after the scan slipped behind a 16-min price update;
+    every Asian fill in 30 days came from a scan with ≥20 min to run. So the floor applies where
+    there is no after-market to catch a late order, and stays 0 where there is."""
+    from src.portfolio.buyer import _runway_floor
     cc = CompounderConfig()
-    assert cc.late_session_min_runway_minutes == 0
-    assert cc.late_session_fill_pass is False
+    assert cc.late_session_min_runway_minutes == 10
+    assert cc.late_session_fill_pass is True
+    for ccy in ("JPY", "AUD", "HKD", "SGD", "ILS", "KRW", "ZAR", "INR"):
+        assert _runway_floor(ccy, cc) == 10, ccy
+    for ccy in ("USD", "CAD", "EUR", "GBP"):
+        assert _runway_floor(ccy, cc) == 0, ccy
 
 
-def test_default_config_reproduces_the_old_window(at):
-    """With the shipped defaults every one of the four 'dead' placements is still ADMITTED — because
-    the identically-timed MA/BKNG/XRO placements filled."""
+def test_default_config_keeps_the_us_window_and_refuses_the_asian_tail(at):
+    """The four 'dead' placements of September: the US ones are still ADMITTED (MA/BKNG filled at
+    the same runway), the Tokyo/Sydney ones are now refused — there, a 40-second order is a lost day."""
+    from src.portfolio.buyer import _runway_floor
     cc = CompounderConfig()
-    for ccy, t in [("AUD", "2026-09-22T05:59:22"), ("JPY", "2026-09-22T05:59:05"),
-                   ("USD", "2026-09-22T19:59:22"), ("USD", "2026-09-21T19:59:01")]:
+    for ccy, t, admitted in [("AUD", "2026-09-22T05:59:22", False), ("JPY", "2026-09-22T05:59:05", False),
+                             ("USD", "2026-09-22T19:59:22", True), ("USD", "2026-09-21T19:59:01", True)]:
         with at(t):
-            assert _late_session(ccy, cc.late_session_minutes,
-                                 cc.late_session_min_runway_minutes) is True
+            assert _late_session(ccy, cc.late_session_minutes, _runway_floor(ccy, cc)) is admitted, (ccy, t)
 
 
-def test_pass_is_off_by_default(monkeypatch):
+def test_asian_order_with_a_quarter_hour_left_is_still_placed(at):
+    from src.portfolio.buyer import _runway_floor
+    cc = CompounderConfig()
+    with at("2026-10-16T07:44:00"):                        # 15:44 HKT, 16 min to the 16:00 close
+        assert _late_session("HKD", cc.late_session_minutes, _runway_floor("HKD", cc)) is True
+    with at("2026-10-16T07:56:00"):                        # 15:56 HKT — today's Tencent/Pop Mart placement
+        assert _late_session("HKD", cc.late_session_minutes, _runway_floor("HKD", cc)) is False
+
+
+def test_pass_can_be_switched_off(monkeypatch):
     assert _fire(monkeypatch, "2026-09-22T04:00:00", enabled=False) is False

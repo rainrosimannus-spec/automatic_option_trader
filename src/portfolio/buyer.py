@@ -12,7 +12,7 @@ Tier-aware: different buy criteria for dividend, breakthrough, growth stocks.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from ib_insync import IB, Stock, Option, LimitOrder, MarketOrder, Forex
@@ -29,7 +29,7 @@ from src.portfolio.models import (
 from src.portfolio.analyzer import PortfolioAnalyzer, StockAnalysis
 from src.portfolio.config import PortfolioConfig
 from src.portfolio.venues import partition_tradable
-from src.portfolio.connection import _ensure_event_loop, get_portfolio_lock
+from src.portfolio.connection import _NON_SMART_EXCHANGES, _ensure_event_loop, get_portfolio_lock
 from src.portfolio.ranker import (
     MarketRegime, CashPolicy, RankedSignal,
     rank_signals, detect_market_regime,
@@ -191,6 +191,17 @@ def _late_session(currency: str | None, minutes: int, min_runway: int = 0) -> bo
         return False
     close_dt = now.replace(hour=_close_hour(currency, close_h, now.weekday()), minute=0, second=0, microsecond=0)
     return (close_dt - timedelta(minutes=minutes)) <= now < (close_dt - timedelta(minutes=max(0, min_runway)))
+
+
+def _runway_floor(currency: str | None, cc) -> int:
+    """Minutes of session an order must have left before it is placed — 0 where the venue takes
+    outside-RTH orders (US/CA/EU/UK: a limit placed at the bell still has the after-market hour, and
+    the September record shows the closing auction FILLS), the configured floor everywhere else
+    (Asia/AU/ZA/IL reject out-of-hours orders, so a 3-minute order there is a burnt day — 2026-10-16
+    Tencent/Pop Mart)."""
+    if _outside_rth_ok(currency):
+        return 0
+    return max(0, int(getattr(cc, "late_session_min_runway_minutes", 0) or 0))
 
 
 def _aftermarket(currency: str | None, minutes: int) -> bool:
@@ -373,6 +384,48 @@ def _min_tick_for(ib, contract, details=None) -> float | None:
     except Exception as e:
         log.warning("portfolio_min_tick_lookup_failed",
                     symbol=getattr(contract, "symbol", "?"), error=str(e))
+    return None
+
+
+_FRESH_PRICE_MAX_AGE_S = 600      # a bar older than this is not "live" — keep the analyzer price
+
+
+def _fresh_bar_price(ib, contract, currency: str | None, max_age_s: int = _FRESH_PRICE_MAX_AGE_S):
+    """The last one-minute bar's close, in MAJOR units, if it is younger than `max_age_s`; else None.
+
+    The analyzer prices a name from its DAILY bar fetched outside regular hours on the SMART
+    aggregate. 2026-10-16 that read Ibiden at ¥9,607 while Tokyo traded at ¥9,780, so a 0.7%
+    discount became a 2.5% one and the order never came close. One-minute regular-hours bars are
+    real-time without a quote subscription (Asia is delayed 15-20 min on this login) and cost one
+    history request per ORDER, not per name scanned. Freshness is checked on the bar's own
+    timestamp: a stale answer (shut venue, history farm lagging) returns None and the caller keeps
+    the price it had. Never raises."""
+    from src.portfolio.connection import get_portfolio_lock
+    for use_rth in (True, False):
+        try:
+            with get_portfolio_lock():
+                bars = ib.reqHistoricalData(contract, endDateTime="", durationStr="1800 S",
+                                            barSizeSetting="1 min", whatToShow="TRADES",
+                                            useRTH=use_rth, formatDate=2, timeout=6)
+        except Exception as e:
+            log.debug("compounder_fresh_price_failed", symbol=getattr(contract, "symbol", "?"),
+                      use_rth=use_rth, error=str(e) or repr(e))
+            continue
+        if not bars:
+            continue
+        last = bars[-1]
+        try:
+            ts = last.date
+            if getattr(ts, "tzinfo", None) is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - ts).total_seconds()
+        except Exception:
+            continue
+        close = float(last.close or 0)
+        if close > 0 and 0 <= age <= max_age_s:
+            return float(qu.quote_to_major(close, currency)), age
+        log.debug("compounder_fresh_price_stale", symbol=getattr(contract, "symbol", "?"),
+                  use_rth=use_rth, age_s=round(age), close=close)
     return None
 
 
@@ -1695,7 +1748,7 @@ class PortfolioBuyer:
                     # If that pass didn't fill (fast market / cancel), the _aftermarket fallback keeps it
                     # buyable for the first cc.aftermarket_deploy_minutes after close (outsideRth) — but
                     # only on outside-RTH venues, so for Asia/AU the runway floor is the ONLY protection.
-                    _runway = int(getattr(cc, "late_session_min_runway_minutes", 0) or 0)
+                    _runway = _runway_floor(stock.currency, cc)     # 0 on after-hours venues
                     if not (_late_session(stock.currency, cc.late_session_minutes, _runway)
                             or _aftermarket(stock.currency, cc.aftermarket_deploy_minutes)):
                         # Distinguish "too early" from "too late to fill": the second means a scan landed
@@ -3380,6 +3433,29 @@ class PortfolioBuyer:
         px = analysis.current_price
         if not px or px <= 0 or core_amount <= 0:
             return (0.0, 0.0)
+        # Price the limit off a LIVE bar when the venue is open (see _fresh_bar_price); the daily
+        # bar the analyzer carries can be an hour or more old — and on an outside-RTH aggregate,
+        # a thin off-exchange print. The card then also shows the price the limit was built on.
+        if _market_open(stock.currency):
+            try:
+                from src.portfolio.symbols import broker_stock
+                _c = broker_stock(stock.symbol, stock.exchange or "SMART", stock.currency or "USD")
+                with get_portfolio_lock():
+                    _q = self.ib.qualifyContracts(_c)
+                if _q:
+                    if (stock.exchange or "SMART") not in _NON_SMART_EXCHANGES:
+                        _c.exchange = "SMART"
+                    fresh = _fresh_bar_price(self.ib, _c, stock.currency)
+                    if fresh:
+                        live, age = fresh
+                        if live > 0 and abs(live / px - 1.0) >= 0.001:
+                            log.info("compounder_price_refreshed", symbol=stock.symbol,
+                                     bar_price=round(px, 4), live_price=round(live, 4),
+                                     drift_pct=round((live / px - 1.0) * 100, 2), age_s=round(age))
+                            px = live
+                            analysis.current_price = live
+            except Exception as e:
+                log.warning("compounder_price_refresh_failed", symbol=stock.symbol, error=str(e))
 
         from src.portfolio import compounder as cmp
         from src.portfolio import fx as pfx

@@ -1721,9 +1721,15 @@ def create_scheduler() -> BackgroundScheduler:
         metrics_first_run = dt.now(pytz.UTC) + timedelta(seconds=120)
         scan_first_run = dt.now(pytz.UTC) + timedelta(seconds=180)
 
+        # Fixed UTC grid, not an interval anchored to process start. 2026-10-16: the hourly price
+        # update (then at xx:38) and the 2h scan (xx:40) sat on the same broker lock; on a morning the
+        # history farm was slow the update took 16 min, the scan started at xx:54 and reached Hong
+        # Kong 4 minutes before its close. Now the update runs at :30 and the scan at :10 of every
+        # check_interval_hours-th hour, so a restart cannot re-roll them into collision.
+        _scan_hours = max(1, int(portfolio_cfg.check_interval_hours or 2))
         scheduler.add_job(
             partial(job_portfolio_scan, portfolio_cfg),
-            IntervalTrigger(hours=portfolio_cfg.check_interval_hours),
+            CronTrigger(hour=f"*/{_scan_hours}", minute=10, timezone=pytz.UTC),
             id="portfolio_scan",
             name="Portfolio Buy Scan (24/7)",
             max_instances=1,
@@ -1771,10 +1777,10 @@ def create_scheduler() -> BackgroundScheduler:
                 next_run_time=scan_first_run + timedelta(seconds=150),
             )
 
-        # Price updates — every hour, 24/7
+        # Price updates — every hour at :30, 24/7 (fixed so it never lands on the :10 buy scan)
         scheduler.add_job(
             partial(job_portfolio_update_prices, portfolio_cfg),
-            IntervalTrigger(hours=1),
+            CronTrigger(minute=30, timezone=pytz.UTC),
             id="portfolio_prices",
             name="Portfolio Price Update",
             max_instances=1,
@@ -2031,7 +2037,7 @@ def create_scheduler() -> BackgroundScheduler:
 
         log.info("portfolio_scheduler_enabled",
                  account=portfolio_cfg.ibkr_account,
-                 scan_interval=f"{portfolio_cfg.check_interval_hours}h",
+                 scan_interval=f"{portfolio_cfg.check_interval_hours}h (UTC cron, :10)",
                  mode="24/7 extended hours")
 
     # ── Bridge job (annual harvest) ─────────────────────────
