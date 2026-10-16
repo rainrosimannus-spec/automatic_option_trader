@@ -77,13 +77,12 @@ def fill_price_to_major(price: float | None, currency: str | None,
                         reference_major: float | None = None) -> float | None:
     """An execution price in MAJOR units, whatever unit IBKR reported it in.
 
-    Most minor-unit venues report fills in the quote unit (LSE pence), so the plain division applies.
-    Tel Aviv is different: IBKR quotes TASE in agorot but carries priceMagnifier=100 on the contract,
-    so ORDERS are priced in shekels (2026-10-14: a what-if at 219,954 was refused "does not conform
-    to the minimum price variation", at 2,200 it was accepted) — and the fill may well come back in
-    shekels too. We cannot know before the first fill, so when a reference price in major units is
-    at hand (watchlist price, holding cost) the interpretation closer to it wins; without a
-    reference the plain quote→major division stands. Logged by the caller when the raw price is kept.
+    Minor-unit venues report fills in the quote unit (LSE pence; Tel Aviv orders are in agorot too,
+    proven 2026-10-16 — priceMagnifier=100 is only the display scale), so the plain division is the
+    expected path. Kept as a belt-and-braces: until the first TASE fill is on the books we have not
+    SEEN an execution report from there, so when a reference price in major units is at hand
+    (watchlist price, holding cost) the interpretation closer to it wins; without a reference the
+    plain quote→major division stands. Logged by the caller when the raw price is kept.
     """
     if price is None:
         return None

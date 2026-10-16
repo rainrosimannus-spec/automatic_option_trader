@@ -586,11 +586,10 @@ def execute_review_stock_sale(suggestion_id: int) -> str:
         ref = _last_price(ib, contract)
         if not ref:
             return _retry_or_release(suggestion_id, "no price from IBKR")
-        # Bars and quotes come in the venue's QUOTE unit; the order goes in the broker's ORDER unit —
-        # the same where priceMagnifier is 1 (London pence), shekels where Tel Aviv quotes agorot
-        # with priceMagnifier=100 (see buyer._price_magnifier). Tick grid applies in the order unit.
+        # Bars, quotes AND orders are all in the venue's QUOTE unit (London pence, Tel Aviv agorot —
+        # priceMagnifier only rescales the tick table, see buyer._price_magnifier, proven 2026-10-16).
         magnifier = b._price_magnifier(details)
-        raw = ref * (1 - SELL_LIMIT_DISCOUNT) / magnifier
+        raw = ref * (1 - SELL_LIMIT_DISCOUNT)
         tick = b._effective_tick(ib, contract, raw, details=details, currency=ccy,
                                  exchange=getattr(contract, "exchange", None))
         order_price = b._round_to_tick(raw, tick, "SELL")
@@ -609,7 +608,7 @@ def execute_review_stock_sale(suggestion_id: int) -> str:
             pass
 
         ack = b._order_ack_fields(trade)
-        price_major = round(qu.quote_to_major(order_price * magnifier, ccy), 4)
+        price_major = round(qu.quote_to_major(order_price, ccy), 4)
         log.info("review_sale_order_placed", id=suggestion_id, symbol=symbol, shares=qty,
                  price=order_price, ref=ref, magnifier=magnifier, currency=ccy,
                  route=getattr(contract, "exchange", ""),

@@ -326,6 +326,14 @@ _TSE_TICK_BANDS: list[tuple[float, float]] = [
 _TSE_TICK_ABOVE = 100_000.0
 
 
+# Tel Aviv, in AGOROT (the quote AND order unit). IBKR's market rule 1266 is the same table in
+# shekels — (0→0.001, 10→0.01, 100→0.1, 1000→1) — i.e. in the DISPLAY unit, quote / priceMagnifier.
+# Mapped 2026-10-16 with what-if orders on ESLT: 999.5 ok; 9,999 ok; 50,010 ok / 50,001 refused;
+# 100,010 refused; 231,900 ok / 231,850 / 231,810 / 231,801 refused (Error 110). Lower edges inclusive.
+_TASE_TICK_BANDS = ((1_000, 0.1), (10_000, 1.0), (100_000, 10.0))
+_TASE_TICK_ABOVE = 100.0
+
+
 def _venue_band_tick(currency: str | None, price: float) -> float:
     """Conservative tick for venues whose grid widens with price and whose IBKR minTick lies.
 
@@ -340,6 +348,11 @@ def _venue_band_tick(currency: str | None, price: float) -> float:
             if price <= bound:
                 return float(tick)
         return _TSE_TICK_ABOVE
+    if (currency or "").upper() == "ILS":
+        for bound, tick in _TASE_TICK_BANDS:
+            if price < bound:
+                return float(tick)
+        return _TASE_TICK_ABOVE
     return 0.0
 
 
@@ -430,12 +443,20 @@ def _fresh_bar_price(ib, contract, currency: str | None, max_age_s: int = _FRESH
 
 
 def _price_magnifier(details=None) -> float:
-    """ContractDetails.priceMagnifier (1 when absent). IBKR QUOTES some venues in a minor unit but
-    prices ORDERS in the major one, and says so through this field: Tel Aviv quotes ESLT at 216,900
-    agorot with priceMagnifier=100, and the order must be sent at 2,169 shekels. Proven 2026-10-14:
-    the compounder's first ILS order went out at 219,954 and sat PendingSubmit, never acknowledged;
-    a what-if at that price was refused ("does not conform to the minimum price variation"), at
-    2,200 it was accepted. London (pence, magnifier 1) is unaffected: there orders ARE in pence."""
+    """ContractDetails.priceMagnifier (1 when absent) — the DISPLAY scale, nothing more.
+
+    Tel Aviv quotes ESLT at 231,864 agorot with priceMagnifier=100: TWS displays ₪2,318.64, but the
+    API order is still priced in AGOROT, like the quote. What IS in the display unit is the tick
+    table: market rule 1266 reads (0→0.001, 10→0.01, 100→0.1, 1000→1) in shekels, so the tick in
+    order units is the rule increment at (price / magnifier), times the magnifier.
+
+    Proven 2026-10-16 — the opposite of what 93e0829 assumed. That commit divided the order price by
+    the magnifier and sent 178 ESLT at 2,318 (= ₪23.18 against a ₪2,302 market): IBKR accepted it
+    ("Submitted"), it sat below the market for 55 minutes and expired unfilled at the Friday close.
+    A what-if at 231,800 for 178 shares carries commission ₪412.60 (0.1% of ₪412,604); at 2,318
+    the commission is the ₪15 minimum (notional ₪4,126). And the Oct-14 refusal of 219,954 was a
+    TICK error, not a unit error: at that level the grid is 100 agorot (231,900 ok, 231,850 refused).
+    London (pence, magnifier 1) is unaffected either way."""
     try:
         d = details[0] if isinstance(details, list) else details
         m = float(getattr(d, "priceMagnifier", 1) or 1)
@@ -456,6 +477,10 @@ def _market_rule_tick(ib, details, exchange: str | None, price: float) -> float:
     increment in that table, which is why Tokyo reported 0.1 for a name trading at Y52,471 whose
     actual grid is Y100.
 
+    The rule table is in the DISPLAY unit (quote / priceMagnifier): Tel Aviv's rule 1266 reads
+    1000→1 in shekels while orders are in agorot, so the band is looked up at price/magnifier and
+    the increment is returned times the magnifier (see _price_magnifier). Magnifier 1 elsewhere.
+
     Cached by rule id (the tables are static). Returns 0.0 if anything is unavailable, so the
     caller falls back to minTick / the hardcoded band table.
     """
@@ -463,6 +488,8 @@ def _market_rule_tick(ib, details, exchange: str | None, price: float) -> float:
         d = details[0] if isinstance(details, list) else details
         if d is None:
             return 0.0
+        magnifier = _price_magnifier(d)
+        price = float(price) / magnifier
         rule_ids = [r.strip() for r in (getattr(d, "marketRuleIds", "") or "").split(",") if r.strip()]
         exchanges = [e.strip().upper() for e in (getattr(d, "validExchanges", "") or "").split(",")]
         if not rule_ids:
@@ -488,7 +515,7 @@ def _market_rule_tick(ib, details, exchange: str | None, price: float) -> float:
                     best = float(inc.increment)
             except Exception:
                 continue
-        return best if best > 0 else 0.0
+        return best * magnifier if best > 0 else 0.0
     except Exception as e:
         log.warning("portfolio_market_rule_lookup_failed",
                     exchange=exchange, price=price, error=str(e))
@@ -506,7 +533,9 @@ def _effective_tick(ib, contract, price: float, details=None,
 
     None when nothing knows anything — _round_to_tick then falls back to the legacy 2dp.
     """
-    ibkr_tick = _min_tick_for(ib, contract, details=details) or 0.0
+    # minTick is in the display unit as well (ESLT: 0.001 shekel = 0.1 agorot) — scale it when the
+    # details are at hand; without them the ILS band table above is the safety net.
+    ibkr_tick = (_min_tick_for(ib, contract, details=details) or 0.0) * _price_magnifier(details)
     band_tick = _venue_band_tick(currency or getattr(contract, "currency", None), price)
     rule_tick = _market_rule_tick(
         ib, details, exchange or getattr(contract, "exchange", None), price)
@@ -4724,12 +4753,11 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         # Snap onto the venue's tick grid. `round(..., 2)` is only legal where minTick == 0.01; on a
         # coarser grid IBKR parks the order in PendingSubmit forever (see _round_to_tick). `details` is
         # already in hand on the foreign path — reuse it rather than re-querying.
-        # ...then into the broker's ORDER unit: where the contract carries a priceMagnifier (Tel Aviv:
-        # quoted in agorot, ordered in shekels) the quote is divided by it. The tick grid (market rule)
-        # is expressed in the order unit, so it is applied AFTER the division. See _price_magnifier.
+        # The order unit IS the quote unit, priceMagnifier or not (Tel Aviv: agorot; proven 2026-10-16,
+        # see _price_magnifier). The magnifier only rescales the tick table, inside _effective_tick.
         _quote_price = qu.major_to_quote(limit_price, ccy)
         _magnifier = _price_magnifier(details)
-        _raw_price = _quote_price / _magnifier
+        _raw_price = _quote_price
         _tick = _effective_tick(ib, contract, _raw_price, details=details, currency=ccy,
                                 exchange=getattr(contract, "exchange", None))
         order_price = _round_to_tick(_raw_price, _tick, "BUY")
@@ -4741,10 +4769,9 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                                                  getattr(contract, "exchange", None), _raw_price),
                      magnifier=_magnifier, quote=round(_quote_price, 4),
                      raw=round(_raw_price, 4), ticked=order_price)
-        # Fund the foreign-currency leg up front (settlement is in MAJOR units — order_price is in the
-        # broker's order unit, so go back through the magnifier to the quote unit first) so the buy
-        # doesn't silently open a margin loan in the foreign ccy.
-        notional_settle = shares * qu.quote_to_major(order_price * _magnifier, ccy)
+        # Fund the foreign-currency leg up front (settlement is in MAJOR units; order_price is in the
+        # quote unit) so the buy doesn't silently open a margin loan in the foreign ccy.
+        notional_settle = shares * qu.quote_to_major(order_price, ccy)
         # Un-park the park-ETF (XEON) reserve, then convert the FX leg, then GATE on the authoritative funding
         # path for this currency. If it could not be funded, leave the suggestion 'approved' (retry next
         # cycle) rather than place an order that silently opens a margin loan (fail-closed).
