@@ -151,7 +151,11 @@ class CompounderConfig(BaseModel):
     # with 3-4 minutes left, bid 1.4% under (low urgency) — unreachable, and with no after-market
     # there the day's slot was simply burnt. Over 30 days every Asian fill came from a scan with
     # ≥20 min to run; every miss from a late or mispriced one.
-    late_session_min_runway_minutes: int = 10
+    # 2026-10-16 later (Rain: "set it to 15"): the venue table became minute-exact and the close now
+    # means the END of the closing auction, so 10 min put an order INSIDE the auction on Hong Kong and
+    # Sydney. 15 leaves roughly five minutes of continuous trading everywhere (Singapore tightest); more
+    # would eat the window for nothing — the grid scans at :10 and the window-open pass at :15.
+    late_session_min_runway_minutes: int = 15
     # Extra late-session scan pass — also OFF, and dependent on the floor above. The 2h scan grid is an
     # IntervalTrigger anchored to process start, so against a 120-min window it admits exactly ONE pass
     # at a phase the last restart chose; job_portfolio_late_session_fill samples the window's opening

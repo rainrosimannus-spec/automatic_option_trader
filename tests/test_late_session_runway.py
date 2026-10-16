@@ -325,11 +325,11 @@ def test_floor_and_pass_ship_on_for_venues_without_after_hours():
     there is no after-market to catch a late order, and stays 0 where there is."""
     from src.portfolio.buyer import _runway_floor
     cc = CompounderConfig()
-    assert cc.late_session_min_runway_minutes == 10
+    assert cc.late_session_min_runway_minutes == 15
     assert cc.late_session_fill_pass is True
     for ccy in ("JPY", "AUD", "HKD", "SGD", "ILS", "KRW", "ZAR", "INR",
                 "CAD", "EUR", "GBP", "CHF", "NOK", "SEK", "DKK"):     # no extended session on any of these
-        assert _runway_floor(ccy, cc) == 10, ccy
+        assert _runway_floor(ccy, cc) == 15, ccy
     assert _runway_floor("USD", cc) == 0
 
 
@@ -349,8 +349,10 @@ def test_asian_order_with_a_quarter_hour_left_is_still_placed(at):
     cc = CompounderConfig()
     with at("2026-10-16T07:44:00"):                        # 15:44 HKT, 26 min to the 16:10 auction end
         assert _late_session("HKD", cc.late_session_minutes, _runway_floor("HKD", cc)) is True
-    with at("2026-10-16T07:56:00"):                        # 15:56 HKT — today's Tencent/Pop Mart placement: 14 min, ADMITTED
+    with at("2026-10-16T07:54:00"):                        # 15:54 HKT — today's Tencent placement: 16 min, admitted
         assert _late_session("HKD", cc.late_session_minutes, _runway_floor("HKD", cc)) is True
+    with at("2026-10-16T07:56:00"):                        # 15:56 HKT — Pop Mart: 14 min, now refused by the 15-min floor
+        assert _late_session("HKD", cc.late_session_minutes, _runway_floor("HKD", cc)) is False
     with at("2026-10-16T08:01:00"):                        # 16:01 HKT — 9 min, inside the closing auction
         assert _late_session("HKD", cc.late_session_minutes, _runway_floor("HKD", cc)) is False
 
