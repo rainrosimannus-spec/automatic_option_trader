@@ -144,7 +144,8 @@ class CompounderConfig(BaseModel):
     # the two populations — this comment exists because the obvious story was the wrong one.
     #
     # 2026-10-16 (Rain: "agreed, build all three"): raised to 10 for venues WITHOUT an after-hours
-    # rescue only — buyer._runway_floor returns 0 wherever _outside_rth_ok (US/CA/EU/UK), so the
+    # rescue only — buyer._runway_floor returns 0 wherever _outside_rth_ok (US only since later the
+    # same day: Europe/Canada have no extended session either, per IBKR contract hours), so the
     # September evidence above (US closing-auction fills) is untouched. The new data is Asian: the
     # 2h grid slipped 14 min behind a slow hourly price update and Tencent/Pop Mart reached Hong Kong
     # with 3-4 minutes left, bid 1.4% under (low urgency) — unreachable, and with no after-market

@@ -38,10 +38,14 @@ from src.portfolio.ranker import (
 log = get_logger(__name__)
 
 
-# outsideRth is only honoured by North-American and European venues. Asia/AU/ZA reject out-of-hours
-# orders and park them in PendingSubmit indefinitely (the HK 3690 case), so those markets are RTH-only
-# — their orders rest and transmit when the local market opens.
-_OUTSIDE_RTH_CCY = {"USD", "CAD", "EUR", "GBP", "CHF", "NOK", "SEK", "DKK"}
+# Venues with an after-hours session, i.e. where order.outsideRth buys anything. US only.
+# 2026-10-16: IBKR's own contract hours (tradingHours vs liquidHours) show an extended session for
+# NVDA@SMART alone; Copenhagen, Amsterdam, Xetra, Zurich, London, Oslo and Toronto all have
+# tradingHours == liquidHours. Carrying CAD/EUR/GBP/CHF/NOK/SEK/DKK here did two wrong things:
+# _runway_floor gave them 0 minutes (an order could go out at the bell with nothing to catch it —
+# the Ibiden failure mode), and the post-close "after-market" pass could only rest an unfillable
+# order there. Asia/AU/ZA/IL reject out-of-hours orders outright (the HK 3690 case) and were never in.
+_OUTSIDE_RTH_CCY = {"USD"}
 
 # Venues that advertise SMART in validExchanges but where SMART does NOT work at placement.
 #
@@ -194,11 +198,11 @@ def _late_session(currency: str | None, minutes: int, min_runway: int = 0) -> bo
 
 
 def _runway_floor(currency: str | None, cc) -> int:
-    """Minutes of session an order must have left before it is placed — 0 where the venue takes
-    outside-RTH orders (US/CA/EU/UK: a limit placed at the bell still has the after-market hour, and
-    the September record shows the closing auction FILLS), the configured floor everywhere else
-    (Asia/AU/ZA/IL reject out-of-hours orders, so a 3-minute order there is a burnt day — 2026-10-16
-    Tencent/Pop Mart)."""
+    """Minutes of session an order must have left before it is placed — 0 where the venue has an
+    after-hours session (US: a limit placed at the bell still has the after-market hour, and the
+    September record shows the closing auction FILLS), the configured floor everywhere else — Asia,
+    Australia, South Africa, Israel AND Europe/Canada (no extended session on any of them per IBKR's
+    contract hours, 2026-10-16), where a 3-minute order is a burnt day (Tencent/Pop Mart)."""
     if _outside_rth_ok(currency):
         return 0
     return max(0, int(getattr(cc, "late_session_min_runway_minutes", 0) or 0))
@@ -213,8 +217,8 @@ def _aftermarket(currency: str | None, minutes: int) -> bool:
     another chance to fill after close, instead of the day's budget rolling to tomorrow. The compounder
     order already carries order.outsideRth (_outside_rth_ok), so it can transact in extended hours.
 
-    Gated to outside-RTH-capable venues ONLY (US/CA/EU/UK — see _OUTSIDE_RTH_CCY): Asia/AU/ZA reject
-    out-of-hours orders, so an after-hours window there would just rest unfillable. Shares the
+    Gated to venues WITH an after-hours session (US only — see _OUTSIDE_RTH_CCY): everywhere else an
+    order placed after the close would just rest unfillable (or be refused outright). Shares the
     _MARKET_HOURS close_h with _late_session (the table must not fork). minutes<=0 disables it. Note
     the seamless handoff from _market_open (hour-granular, goes False at close_h:00) to this window."""
     if minutes <= 0 or not _outside_rth_ok(currency):

@@ -206,7 +206,8 @@ def job_portfolio_aftermarket_fill(cfg: PortfolioConfig):
     high and the scan no-ops (budget < min_buy); only leftover budget deploys after close.
 
     Cheap no-op outside the window: gated purely on _aftermarket (datetime math over the venue map,
-    outside-RTH venues only), so it touches no IBKR/FMP until a real after-market window is open."""
+    venues with an after-hours session only — the US), so it touches no IBKR/FMP until a real
+    after-market window is open."""
     if not cfg.enabled:
         return
     try:

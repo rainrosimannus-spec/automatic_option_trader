@@ -100,14 +100,15 @@ def test_replays_the_four_dead_cards(at, sym, ccy, placed, runway_s):
             f"{sym}: a 5-min floor would refuse a placement with {runway_s}s left"
 
 
-def test_asia_and_au_have_no_afterhours_rescue():
-    """Why refusing beats placing: for these venues there is no post-close fallback to catch the
-    deferred name. _aftermarket is gated to outside-RTH currencies, so a dead order is simply dead."""
-    for ccy in ("JPY", "AUD", "HKD", "INR", "ZAR", "ILS", "SGD"):
+def test_only_the_us_has_an_afterhours_rescue():
+    """Why refusing beats placing: for every other venue there is no post-close fallback to catch the
+    deferred name. 2026-10-16: IBKR contract hours show an extended session for the US alone —
+    Copenhagen/Amsterdam/Xetra/Zurich/London/Oslo/Toronto have tradingHours == liquidHours — so
+    Europe and Canada get the same floor as Asia, and the after-market pass is US only."""
+    for ccy in ("JPY", "AUD", "HKD", "INR", "ZAR", "ILS", "SGD", "CAD", "EUR", "GBP", "CHF", "NOK", "SEK", "DKK"):
         assert _outside_rth_ok(ccy) is False
         assert _aftermarket(ccy, 60) is False
-    for ccy in ("USD", "CAD", "EUR", "GBP"):
-        assert _outside_rth_ok(ccy) is True
+    assert _outside_rth_ok("USD") is True
 
 
 # ── the scan-cadence half ─────────────────────────────────────────────────────
@@ -295,10 +296,10 @@ def test_floor_and_pass_ship_on_for_venues_without_after_hours():
     cc = CompounderConfig()
     assert cc.late_session_min_runway_minutes == 10
     assert cc.late_session_fill_pass is True
-    for ccy in ("JPY", "AUD", "HKD", "SGD", "ILS", "KRW", "ZAR", "INR"):
+    for ccy in ("JPY", "AUD", "HKD", "SGD", "ILS", "KRW", "ZAR", "INR",
+                "CAD", "EUR", "GBP", "CHF", "NOK", "SEK", "DKK"):     # no extended session on any of these
         assert _runway_floor(ccy, cc) == 10, ccy
-    for ccy in ("USD", "CAD", "EUR", "GBP"):
-        assert _runway_floor(ccy, cc) == 0, ccy
+    assert _runway_floor("USD", cc) == 0
 
 
 def test_default_config_keeps_the_us_window_and_refuses_the_asian_tail(at):

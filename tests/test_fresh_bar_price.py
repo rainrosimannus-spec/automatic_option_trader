@@ -67,6 +67,6 @@ def test_runway_floor_only_where_no_after_hours():
     assert _runway_floor("HKD", cc) == 10
     assert _runway_floor("JPY", cc) == 10
     assert _runway_floor("USD", cc) == 0
-    assert _runway_floor("EUR", cc) == 0
-    assert _runway_floor("GBP", cc) == 0
+    assert _runway_floor("EUR", cc) == 10     # Europe: no extended session (2026-10-16)
+    assert _runway_floor("GBP", cc) == 10     # Europe: no extended session (2026-10-16)
     assert _runway_floor("XXX", SimpleNamespace(late_session_min_runway_minutes=-3)) == 0
