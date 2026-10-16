@@ -314,7 +314,8 @@ def job_portfolio_late_session_fill(cfg: PortfolioConfig):
         # own calendar may already have rolled past, so a UTC key would serve two windows as one.
         held = _watchlist_currencies()          # None ⇒ couldn't read it ⇒ don't filter
         open_now: dict[str, str] = {}
-        for ccy, (tz_name, _o, _c, _d) in _MARKET_HOURS.items():
+        for ccy, spec in _MARKET_HOURS.items():
+            tz_name = spec[0]
             if held is not None and ccy not in held:
                 continue                        # no name settles in this currency — nothing to buy
             if _late_session(ccy, cc.late_session_minutes, _runway_floor(ccy, cc)):

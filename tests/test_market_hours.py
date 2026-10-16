@@ -48,6 +48,38 @@ def test_unknown_currency_stays_permissive(at):
     assert _market_open("XXX") is True
 
 
+# ── lunch breaks are real: nothing fills in Tokyo 11:30–12:30 or Hong Kong 12:00–13:00 ──────
+
+@pytest.mark.parametrize("ccy,utc,expected", [
+    ("JPY", "2026-07-10T02:15:00", True),    # 11:15 Tokyo — morning session
+    ("JPY", "2026-07-10T02:45:00", False),   # 11:45 Tokyo — lunch
+    ("JPY", "2026-07-10T03:45:00", True),    # 12:45 Tokyo — afternoon session
+    ("JPY", "2026-07-10T06:15:00", True),    # 15:15 Tokyo — before the 15:30 close (the old table said shut at 15:00)
+    ("JPY", "2026-07-10T06:31:00", False),   # 15:31 Tokyo — shut
+    ("HKD", "2026-07-10T04:30:00", False),   # 12:30 Hong Kong — lunch
+    ("HKD", "2026-07-10T08:05:00", True),    # 16:05 Hong Kong — closing auction, still fillable
+    ("AUD", "2026-07-10T06:05:00", True),    # 16:05 Sydney (AEST) — before the 16:11 auction end
+    ("EUR", "2026-07-10T15:35:00", True),    # 17:35 Berlin — Euronext closing auction
+    ("EUR", "2026-07-10T15:41:00", False),   # 17:41 Berlin — shut
+    ("NOK", "2026-07-10T14:35:00", False),   # 16:35 Oslo — shut (the old table said open until 17:00)
+    ("GBP", "2026-07-10T15:45:00", True),    # 16:45 London — IBKR's liquid hours run to 16:50
+    ("USD", "2026-07-10T13:45:00", False),   # 09:45 ET? no — 13:45 UTC is 09:45 ET: open. See next line.
+])
+def test_minute_exact_sessions(at, ccy, utc, expected):
+    at(utc)
+    if ccy == "USD":
+        assert _market_open("USD") is True           # 09:45 ET is inside 09:30–16:00
+    else:
+        assert _market_open(ccy) is expected
+
+
+def test_us_opens_at_0930_not_0900(at):
+    at("2026-07-10T13:15:00")                        # 09:15 ET — pre-open (the old table said open from 09:00)
+    assert _market_open("USD") is False
+    at("2026-07-10T13:30:00")                        # 09:30 ET
+    assert _market_open("USD") is True
+
+
 # ── TASE trades Monday–Friday since 2026 (Friday is a half day), NOT Sunday–Thursday ──────
 # IBKR liquidHours read 2026-10-14: Wed/Thu 09:59–17:25, Fri 09:59–13:50, Sat/Sun CLOSED.
 
@@ -77,7 +109,7 @@ def test_tase_closed_on_saturday(at):
 
 
 def test_tase_friday_late_session_follows_the_short_close(at):
-    at("2026-10-16T09:30:00")            # Fri 12:30 Israel — inside the last 120 min before the 13:00 close
+    at("2026-10-16T09:30:00")            # Fri 12:30 Israel — inside the last 120 min before the 13:50 close
     assert _late_session("ILS", 120) is True
     at("2026-10-16T07:30:00")            # Fri 10:30 Israel — would be "late" only against the 17:00 close
     assert _late_session("ILS", 120) is False
@@ -126,14 +158,13 @@ def test_session_boundaries(at, ccy, utc, expected):
 # ── Late-session green deferral (compounder buys the intraday drift, not the open) ────────
 
 def test_inr_defers_green_buys_to_its_own_late_session(at):
-    """ITC (NSE) must defer like every other foreign name. NSE runs 09:15–15:30 IST; the table
-    truncates the close to 15:00 (same convention as JPY 15:30 / GBP 16:30), so the last-120min
-    window is 13:00–15:00 IST — NOT the US late session."""
+    """ITC (NSE) must defer like every other foreign name. NSE runs 09:15–15:30 IST, so the
+    last-120min window is 13:30–15:30 IST — NOT the US late session."""
     at("2026-07-10T06:00:00")             # 11:30 Mumbai — mid-session, too early
     assert _late_session("INR", 120) is False
-    at("2026-07-10T08:00:00")             # 13:30 Mumbai — inside the window
+    at("2026-07-10T08:30:00")             # 14:00 Mumbai — inside the window
     assert _late_session("INR", 120) is True
-    at("2026-07-10T09:35:00")             # 15:05 Mumbai — past the truncated close
+    at("2026-07-10T10:05:00")             # 15:35 Mumbai — past the close
     assert _late_session("INR", 120) is False
 
 

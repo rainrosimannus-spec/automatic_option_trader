@@ -115,59 +115,56 @@ def _outside_rth_ok(currency: str | None) -> bool:
     return (currency or "USD").upper() in _OUTSIDE_RTH_CCY
 
 
-# (timezone, open_hour, close_hour, trading_weekdays) — weekday() is Mon=0 … Sun=6.
-# A currency MISSING from this map used to mean "scan anyway" (always open), which is how NICE (ILS)
-# got ordered into a shut Tel Aviv exchange at 00:09 UTC on a Friday: the order can't reach the venue,
-# sits PendingSubmit, and our own stuck-detector cancels it + venue-blocks the symbol for 6h. Every
-# currency the watchlist can hold must be listed here. TASE trades Sun–Thu, not Mon–Fri.
-_MON_FRI = (0, 1, 2, 3, 4)
-_MARKET_HOURS = {
-    "USD": ("US/Eastern", 9, 16, _MON_FRI),
-    "CAD": ("US/Eastern", 9, 16, _MON_FRI),
-    "EUR": ("Europe/Berlin", 9, 17, _MON_FRI),
-    "CHF": ("Europe/Berlin", 9, 17, _MON_FRI),
-    "GBP": ("Europe/London", 8, 16, _MON_FRI),
-    "NOK": ("Europe/Berlin", 9, 17, _MON_FRI),
-    "SEK": ("Europe/Berlin", 9, 17, _MON_FRI),
-    "DKK": ("Europe/Berlin", 9, 17, _MON_FRI),
-    "JPY": ("Asia/Tokyo", 9, 15, _MON_FRI),
-    "AUD": ("Australia/Sydney", 10, 16, _MON_FRI),
-    "HKD": ("Asia/Hong_Kong", 9, 16, _MON_FRI),
-    "SGD": ("Asia/Singapore", 9, 17, _MON_FRI),
-    "ZAR": ("Africa/Johannesburg", 9, 17, _MON_FRI),
-    "INR": ("Asia/Kolkata", 9, 15, _MON_FRI),            # NSE: 09:15–15:30 IST (hours truncate, as for JPY/GBP)
-    "ILS": ("Asia/Jerusalem", 10, 17, _MON_FRI),          # TASE: Mon–Fri since 2026 (Fri closes 13:50 — see _EARLY_CLOSE)
-    "KRW": ("Asia/Seoul", 9, 15, _MON_FRI),               # KRX: 09:00–15:30 KST (hours truncate)
-    "MXN": ("America/Mexico_City", 8, 15, _MON_FRI),      # BMV: 08:30–15:00 (hours truncate)
-}
-# Venues with a SHORT day: currency -> {weekday: close_hour}. TASE moved to a Monday–Friday week in
-# 2026 and Friday is a half day (IBKR liquidHours 2026-10-16: 09:59–13:50; 17th/18th CLOSED). The
-# table above kept "Sun–Thu" until 2026-10-14, so Sundays scanned a shut venue and Fridays were skipped.
-_EARLY_CLOSE: dict[str, dict[int, int]] = {
-    "ILS": {4: 13},
-}
+# Venue sessions live in src.portfolio.venue_hours: a minute-exact table copied from IBKR's
+# liquidHours (closing auctions included, lunch breaks as segments) plus a live overlay of IBKR's
+# per-day calendar (holidays, half-days) refreshed every scan. A currency MISSING from the table means
+# "scan anyway" (always open), which is how NICE (ILS) got ordered into a shut Tel Aviv exchange at
+# 00:09 UTC on a Friday — every currency the watchlist can hold must be listed there.
+from src.portfolio import venue_hours as _vh
+_MON_FRI = _vh.MON_FRI
+_MARKET_HOURS = _vh.MARKET_HOURS
+_EARLY_CLOSE = _vh.EARLY_CLOSE
 
 
-def _close_hour(currency: str | None, close_h: int, weekday: int) -> int:
-    """The venue's close hour for this weekday — the table's close_h unless _EARLY_CLOSE shortens it."""
-    return _EARLY_CLOSE.get((currency or "").upper(), {}).get(weekday, close_h)
+def _venue_now(currency: str | None):
+    """`datetime.now` in the venue's zone — read through THIS module's datetime so tests freeze one clock."""
+    import pytz
+    spec = _MARKET_HOURS.get((currency or "").upper())
+    if not spec:
+        return None
+    return datetime.now(pytz.timezone(spec[0]))
 
 
-def _market_open(currency: str | None) -> bool:
-    """True when the venue that settles `currency` is in its regular session right now.
+def _sessions_now(currency: str | None, exchange: str | None = None):
+    """(now, sessions) for the venue-local day: sessions are aware (start, end) pairs, () when the
+    venue is shut all day (weekend, holiday), None when the currency is unmapped."""
+    now = _venue_now(currency)
+    if now is None:
+        return None, None
+    return now, _vh.sessions_for(currency, now, exchange)
+
+
+def _session_close(currency: str | None, exchange: str | None = None):
+    """(now, close) — the END of the day's final session (closing auction included), or (now, None)."""
+    now, sessions = _sessions_now(currency, exchange)
+    if now is None or not sessions:
+        return now, None
+    return now, sessions[-1][1]
+
+
+def _market_open(currency: str | None, exchange: str | None = None) -> bool:
+    """True when the venue that settles `currency` is in a trading session right now — minute-exact,
+    lunch breaks excluded, holidays/half-days honoured when IBKR's calendar overlay knows the day.
 
     Unknown currency → True (scan anyway), matching the long-standing behaviour for names whose
-    venue we haven't mapped. Prefer adding the currency above over relying on that fallback."""
-    import pytz
-    hours = _MARKET_HOURS.get((currency or "").upper())
-    if not hours:
+    venue we haven't mapped. Prefer adding the currency to venue_hours over relying on that fallback."""
+    now, sessions = _sessions_now(currency, exchange)
+    if now is None:
         return True
-    tz_name, open_h, close_h, days = hours
-    now = datetime.now(pytz.timezone(tz_name))
-    return now.weekday() in days and open_h <= now.hour < _close_hour(currency, close_h, now.weekday())
+    return any(start <= now < end for start, end in (sessions or ()))
 
 
-def _late_session(currency: str | None, minutes: int, min_runway: int = 0) -> bool:
+def _late_session(currency: str | None, minutes: int, min_runway: int = 0) -> bool:  # noqa: C901
     """True when the venue that settles `currency` is within its FINAL `minutes` of the regular session,
     but with at least `min_runway` minutes still to run.
 
@@ -185,15 +182,11 @@ def _late_session(currency: str | None, minutes: int, min_runway: int = 0) -> bo
     two hours of stale-cancel churn. min_runway=0 preserves the original behaviour exactly."""
     if minutes <= 0:
         return True
-    import pytz
-    hours = _MARKET_HOURS.get((currency or "").upper())
-    if not hours:
-        return True
-    tz_name, open_h, close_h, days = hours
-    now = datetime.now(pytz.timezone(tz_name))
-    if now.weekday() not in days:
-        return False
-    close_dt = now.replace(hour=_close_hour(currency, close_h, now.weekday()), minute=0, second=0, microsecond=0)
+    now, close_dt = _session_close(currency)
+    if now is None:
+        return True                     # unmapped currency: no gate
+    if close_dt is None:
+        return False                    # shut all day (weekend, holiday)
     return (close_dt - timedelta(minutes=minutes)) <= now < (close_dt - timedelta(minutes=max(0, min_runway)))
 
 
@@ -220,18 +213,12 @@ def _aftermarket(currency: str | None, minutes: int) -> bool:
     Gated to venues WITH an after-hours session (US only — see _OUTSIDE_RTH_CCY): everywhere else an
     order placed after the close would just rest unfillable (or be refused outright). Shares the
     _MARKET_HOURS close_h with _late_session (the table must not fork). minutes<=0 disables it. Note
-    the seamless handoff from _market_open (hour-granular, goes False at close_h:00) to this window."""
+    the seamless handoff from _market_open (goes False at the session close) to this window."""
     if minutes <= 0 or not _outside_rth_ok(currency):
         return False
-    import pytz
-    hours = _MARKET_HOURS.get((currency or "").upper())
-    if not hours:
+    now, close_dt = _session_close(currency)
+    if now is None or close_dt is None:
         return False
-    tz_name, open_h, close_h, days = hours
-    now = datetime.now(pytz.timezone(tz_name))
-    if now.weekday() not in days:
-        return False
-    close_dt = now.replace(hour=_close_hour(currency, close_h, now.weekday()), minute=0, second=0, microsecond=0)
     return close_dt <= now < close_dt + timedelta(minutes=minutes)
 
 
@@ -752,6 +739,7 @@ class PortfolioBuyer:
         """
         _ensure_event_loop()
         log.info("portfolio_scan_started")
+        self._refresh_venue_calendar()
 
         bought = []
 
@@ -870,7 +858,7 @@ class PortfolioBuyer:
                 failed += 1
                 continue
 
-            if not self._is_market_open(stock.currency):
+            if not self._is_market_open(stock.currency, getattr(stock, "exchange", None)):
                 continue
 
             try:
@@ -1277,7 +1265,7 @@ class PortfolioBuyer:
             # cc.aftermarket_deploy_minutes after close — so a green whose budget didn't fill during
             # regular hours gets re-priced and re-placed in the after-market (outsideRth order) instead
             # of the budget rolling to tomorrow. Outside-RTH venues only (baked into _aftermarket).
-            if self._is_market_open(s.currency) or _aftermarket(s.currency, cc.aftermarket_deploy_minutes):
+            if self._is_market_open(s.currency, getattr(s, "exchange", None)) or _aftermarket(s.currency, cc.aftermarket_deploy_minutes):
                 try:
                     a = self.analyzer.analyze_stock(s.symbol, s.exchange, s.currency, tier=s.tier)
                 except Exception as e:
@@ -4148,10 +4136,30 @@ class PortfolioBuyer:
             else:
                 db.add(PortfolioState(key=key, value=value))
 
-    def _is_market_open(self, currency: str) -> bool:
+    def _refresh_venue_calendar(self) -> None:
+        """Teach the venue-hours overlay IBKR's day-by-day calendar (holidays, half-days) for every
+        venue on the watchlist — one reqContractDetails per (currency, exchange), at most every 6 h.
+        Never fatal: on any failure the static table stands, exactly as before the overlay existed."""
+        try:
+            with get_db() as db:
+                rows = (db.query(PortfolioWatchlist.currency, PortfolioWatchlist.exchange,
+                                 PortfolioWatchlist.symbol)
+                        .filter(PortfolioWatchlist.currency.isnot(None)).all())
+            seen: dict[tuple[str, str], str] = {}
+            for ccy, exch, sym in rows:
+                key = ((ccy or "").upper(), (exch or "SMART").upper())
+                if key[0] and sym and key not in seen:
+                    seen[key] = sym
+            venues = [(c, e, sym) for (c, e), sym in seen.items()]
+            _vh.refresh_calendar(self.ib, venues, lock=get_portfolio_lock())
+        except Exception as e:
+            log.warning("venue_hours_refresh_skipped", error=str(e))
+
+    def _is_market_open(self, currency: str, exchange: str | None = None) -> bool:
         """Check if the market for a given currency is currently open (see module-level _market_open,
-        which the funding path shares — the table must not fork)."""
-        return _market_open(currency)
+        which the funding path shares — the table must not fork). The exchange lets the calendar
+        overlay answer venue-specifically (Vienna closed, Frankfurt open)."""
+        return _market_open(currency, exchange)
 
     def update_holdings_prices(self):
         """Update current prices and P&L for all holdings."""
@@ -4679,6 +4687,7 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
             with get_portfolio_lock():
                 qualified = ib.qualifyContracts(contract)
                 details = ib.reqContractDetails(broker_stock(symbol, exch, ccy))
+            _vh.note_venue_hours(ccy, exch, details)        # free: the calendar overlay learns this venue's days
             if not qualified or not details:
                 log.warning("portfolio_order_qualify_failed", id=suggestion_id, symbol=symbol,
                             exchange=exch, currency=ccy)

@@ -561,6 +561,8 @@ def execute_review_stock_sale(suggestion_id: int) -> str:
             with get_portfolio_lock():
                 qualified = ib.qualifyContracts(contract)
                 details = ib.reqContractDetails(broker_stock(symbol, exch, ccy))
+            from src.portfolio import venue_hours as _vh
+            _vh.note_venue_hours(ccy, exch, details)
             if not qualified or not details:
                 return _retry_or_release(suggestion_id, f"contract not resolved on {exch}")
             valid = [e.strip() for e in (details[0].validExchanges or "").split(",") if e.strip()]

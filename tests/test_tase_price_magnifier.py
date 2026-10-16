@@ -18,8 +18,9 @@ import pytest
 
 from src.core import quote_units as qu
 from src.portfolio import buyer as b
-from src.portfolio.buyer import (_price_magnifier, _close_hour, _MARKET_HOURS, _EARLY_CLOSE,
+from src.portfolio.buyer import (_price_magnifier, _MARKET_HOURS, _EARLY_CLOSE,
                                  _venue_band_tick, _market_rule_tick, _effective_tick, _round_to_tick)
+from src.portfolio import venue_hours as vh
 
 _RULE_1266 = [SimpleNamespace(lowEdge=0.0, increment=0.001), SimpleNamespace(lowEdge=10.0, increment=0.01),
               SimpleNamespace(lowEdge=100.0, increment=0.1), SimpleNamespace(lowEdge=1000.0, increment=1.0)]
@@ -134,16 +135,22 @@ def test_london_fill_in_pence_still_divided():
 
 # ── the short Friday ──────────────────────────────────────────────────────────────────────
 
-def test_tase_friday_close_hour():
-    _tz, _open, close_h, days = _MARKET_HOURS["ILS"]
+def test_tase_friday_close_is_1350():
+    import datetime as dt
+    _tz, segments, days = _MARKET_HOURS["ILS"]
     assert days == (0, 1, 2, 3, 4)
-    assert _close_hour("ILS", close_h, 4) == 13
-    assert _close_hour("ILS", close_h, 3) == close_h
+    assert _EARLY_CLOSE["ILS"] == {4: "13:50"}
+    fri = vh.static_sessions("ILS", dt.date(2026, 10, 16))
+    thu = vh.static_sessions("ILS", dt.date(2026, 10, 15))
+    assert [(a.strftime("%H:%M"), b.strftime("%H:%M")) for a, b in fri] == [("09:59", "13:50")]
+    assert [(a.strftime("%H:%M"), b.strftime("%H:%M")) for a, b in thu] == [("09:59", "17:25")]
 
 
 def test_early_close_only_where_listed():
-    for ccy, (_tz, _open, close_h, _days) in _MARKET_HOURS.items():
+    import datetime as dt
+    for ccy in _MARKET_HOURS:
         if ccy in _EARLY_CLOSE:
             continue
-        for wd in range(7):
-            assert _close_hour(ccy, close_h, wd) == close_h
+        closes = {vh.static_sessions(ccy, dt.date(2026, 10, 12) + dt.timedelta(days=i))[-1][1].strftime("%H:%M")
+                  for i in range(5)}
+        assert len(closes) == 1, (ccy, closes)
