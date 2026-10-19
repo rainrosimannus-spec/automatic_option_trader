@@ -1756,8 +1756,11 @@ def create_scheduler() -> BackgroundScheduler:
                 next_run_time=scan_first_run + timedelta(seconds=90),
             )
 
-        # Late-session pass — ticks every 15 min but SCANS ONCE per venue window, on the first tick after
-        # that window opens; a cheap no-op otherwise. The 2h grid is an IntervalTrigger anchored to
+        # Late-session pass — ticks every 5 min but SCANS ONCE per venue window, on the first tick after
+        # that window opens; a cheap no-op otherwise. 2026-10-19: the window is 40 min (config), so the
+        # first tick inside it is 25-40 min before the bell — the entry the drift measurement priced —
+        # and 5-min ticks guarantee ~3 chances inside the 25-min band above the runway floor even when
+        # the :30 price update holds the lock (Singapore's 08:36-09:01 band overlaps it). The 2h grid is an IntervalTrigger anchored to
         # process start, so against a 120-min window it admits exactly one scan at a phase the last
         # restart chose at random; on 2026-09-21/22 that put it 2 minutes before the Tokyo/Sydney close
         # and the orders died with <1 min of runway. Catching the window's OPEN makes the grid's phase
@@ -1768,7 +1771,7 @@ def create_scheduler() -> BackgroundScheduler:
                 and portfolio_cfg.compounder.late_session_minutes > 0):
             scheduler.add_job(
                 partial(job_portfolio_late_session_fill, portfolio_cfg),
-                IntervalTrigger(minutes=15),
+                IntervalTrigger(minutes=5),
                 id="portfolio_late_session_fill",
                 name="Portfolio Late-Session Fill (pre-close)",
                 max_instances=1,

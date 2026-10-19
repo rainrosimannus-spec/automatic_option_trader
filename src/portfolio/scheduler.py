@@ -263,7 +263,11 @@ def _watchlist_currencies() -> set[str] | None:
 
 def job_portfolio_late_session_fill(cfg: PortfolioConfig):
     """Late-session pass — the SAME buy scan as the 2h grid, fired ONCE per venue window, as early in
-    that window as the 15-min sub-grid allows.
+    that window as the 5-min sub-grid allows.
+
+    2026-10-19: the window is 40 minutes (late_session_minutes), so "as early in the window" now means
+    25-40 minutes before the bell — the pre-close entry the intraday-drift measurement actually priced.
+    With the old 120-minute window this pass bought ~110 minutes before the close and gave that drift up.
 
     ONCE, not every 15 minutes, and that is the whole design. Every scan calls
     _cancel_stale_compounder_buys, which cancels EVERY working compounder BUY order with no age guard
@@ -283,9 +287,9 @@ def job_portfolio_late_session_fill(cfg: PortfolioConfig):
     min_runway) now REFUSES those; without this job that refusal would just mean the Asian names never
     buy on a badly-phased grid, because their one scan lands in the excluded tail.
 
-    This decouples the two: a 15-min sub-grid WATCHES for the window opening, and the first tick inside
-    it runs the scan and latches the venue for that trading day. So the buy is attempted with ~105-120
-    minutes of runway instead of whatever the 2h phase happened to leave — and exactly once, so the
+    This decouples the two: a 5-min sub-grid WATCHES for the window opening, and the first tick inside
+    it runs the scan and latches the venue for that trading day. So the buy is attempted with a known
+    runway instead of whatever the 2h phase happened to leave — and exactly once, so the
     stale-buy re-pricer still sees one pass, as on the 2h grid. Shares the sub-grid and the self-gating
     shape with job_portfolio_aftermarket_fill; that job intentionally has no latch, because its window
     is a 60-minute fill-or-lose fallback rather than the primary entry.

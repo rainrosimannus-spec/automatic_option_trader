@@ -104,7 +104,8 @@ class CompounderConfig(BaseModel):
     #   GREEN (at/below fair) — bought by rank/underweight, but only in the last `late_session_minutes` of
     #     each name's OWN session. These pulling-back names drift DOWN intraday: measured ≈ −1.8% close-vs-open
     #     and ≈ −1.0% close-vs-actual-fill over the 29 real compounder buys, confirmed on a 5-regime OHLC
-    #     backtest. So a late entry is materially cheaper than firing on the first post-open scan.
+    #     backtest whose winning variant filled AT THE CLOSE. So a late entry is materially cheaper than
+    #     firing on the first post-open scan — and "late" means near the bell, not two hours before it.
     #   YELLOW (above fair, extended) — bought ONLY once the ENTIRE green list has reached target, and then
     #     with no late gate (fills early in the day). A yellow must never take budget that a still-underweight
     #     green has a claim on: yellow is the last resort, after every good-priced name is done.
@@ -120,7 +121,15 @@ class CompounderConfig(BaseModel):
     # yellows. Crash regime untouched: a live crash tranche keeps the plain green-first order and its
     # gate bypass. False restores "any underweight green blocks every yellow".
     yellow_after_greens_once_full: bool = True
-    late_session_minutes: int = 120
+    # 2026-10-19 (Rain): 120 → 40. The 120 was never a measured entry point — it was the 2h scan grid's
+    # period, chosen so the grid admitted exactly one scan per window, and WHERE in those two hours the
+    # buy landed was the grid's phase. Once the window-open pass (below) pinned it to the first tick,
+    # every marketable green bought ~110 min before the close (ESLT 2026-10-19 at 14:36 against a 16:25
+    # close) and gave up the drift the window exists to capture. 40 = the 15-min runway floor + a 25-min
+    # band the 5-min sub-grid cannot miss, even when the :30 price update holds the lock for a while
+    # (Singapore closes 09:16 UTC, so its band 08:36-09:01 is cut by one tick when that update runs long). Low-urgency bids still
+    # rest under the market for the band's duration; the after-market hour on the US is unchanged.
+    late_session_minutes: int = 40
     # RUNWAY FLOOR — built 2026-09-22, MEASURED, and shipped OFF. Keep it that way without new data.
     #
     # The theory was that a green buy placed seconds before the bell cannot fill: on 09-21 and 09-22 the
@@ -154,7 +163,7 @@ class CompounderConfig(BaseModel):
     # 2026-10-16 later (Rain: "set it to 15"): the venue table became minute-exact and the close now
     # means the END of the closing auction, so 10 min put an order INSIDE the auction on Hong Kong and
     # Sydney. 15 leaves roughly five minutes of continuous trading everywhere (Singapore tightest); more
-    # would eat the window for nothing — the grid scans at :10 and the window-open pass at :15.
+    # would eat the window for nothing — the grid scans at :10 and the late-session pass every 5 min.
     late_session_min_runway_minutes: int = 15
     # Extra late-session scan pass — also OFF, and dependent on the floor above. The 2h scan grid is an
     # IntervalTrigger anchored to process start, so against a 120-min window it admits exactly ONE pass
@@ -167,7 +176,8 @@ class CompounderConfig(BaseModel):
     # update started taking 16 min (history-farm outage mornings): the scan waited on the lock and
     # Hong Kong's only in-window pass landed 4 minutes before the close. The window-open pass makes
     # the phase irrelevant; the 2h grid (now a fixed UTC cron, see scheduler/jobs.py) stays as the
-    # re-price backstop.
+    # re-price backstop. 2026-10-19: the window itself is now 40 min (above) and the sub-grid 5 min,
+    # so "the window's opening" IS the pre-close band — the pass fires 25-40 min before the bell.
     late_session_fill_pass: bool = True
     # After-hours fallback: if a green buy's budget did NOT fill by the close, keep the name buyable for
     # this many minutes AFTER the close (the US after-market). Only outside-RTH-capable venues (US/CA/

@@ -132,19 +132,23 @@ def test_only_the_us_has_an_afterhours_rescue():
 
 # ── the scan-cadence half ─────────────────────────────────────────────────────
 
-def test_a_15_min_pass_always_finds_usable_runway(at):
+def test_a_5_min_pass_always_finds_usable_runway(at):
     """The floor alone would strand the Asian names whenever the 2h grid's phase puts its single
-    in-window scan into the excluded tail. job_portfolio_late_session_fill samples every 15 min, so
-    SOME pass always lands with runway — this asserts the property the job relies on."""
+    in-window scan into the excluded tail. job_portfolio_late_session_fill samples every 5 min, so
+    SEVERAL passes always land with runway — this asserts the property the job relies on. 2026-10-19:
+    the window is 40 min over a 15-min floor, a 25-min band; whatever the close's minute, a 5-min grid
+    puts at least 4 ticks in it, so one slow tick (the :30 price update holding the lock) cannot lose
+    the day."""
     cc = CompounderConfig()
-    close_utc = 6 * 60                                     # 06:00 UTC for both Tokyo and Sydney
-    window_start = close_utc - cc.late_session_minutes
-    usable = [m for m in range(0, 24 * 60, 15)
-              if window_start <= m < close_utc - 5]
-    assert usable, "a 15-min sub-grid must sample the window somewhere"
-    assert (close_utc - max(usable)) > 5
-    # and the earliest pass gets nearly the whole window, not the tail the 2h grid happened to hit
-    assert (close_utc - min(usable)) >= cc.late_session_minutes - 15
+    floor = cc.late_session_min_runway_minutes
+    for close_utc in range(6 * 60, 6 * 60 + 60):           # every possible minute of the hour
+        window_start = close_utc - cc.late_session_minutes
+        usable = [m for m in range(0, 24 * 60, 5)
+                  if window_start <= m < close_utc - floor]
+        assert len(usable) >= 4, f"close at :{close_utc % 60:02d} leaves only {len(usable)} ticks"
+        # and the earliest pass lands at the FRONT of the band — the pre-close entry, not the tail
+        assert close_utc - min(usable) <= cc.late_session_minutes
+        assert close_utc - min(usable) > cc.late_session_minutes - 5
 
 
 def test_every_mapped_currency_can_reach_its_window(at):
@@ -159,7 +163,7 @@ def test_every_mapped_currency_can_reach_its_window(at):
                 if _late_session(ccy, cc.late_session_minutes, 10):
                     hits.append(m)
         assert hits, f"{ccy}: no 15-min slot satisfies window + floor"
-        assert max(hits) - min(hits) >= cc.late_session_minutes - 10 - 30, f"{ccy}: window too short {hits}"   # 15-min grid trims up to 14 min at each end
+        assert max(hits) - min(hits) >= cc.late_session_minutes - 10 - 30, f"{ccy}: window too short {hits}"   # 15-min grid trims up to 14 min at each end; a 30-min band leaves ≥1 hit
 
 
 # ── the once-per-window latch ─────────────────────────────────────────────────
@@ -206,21 +210,21 @@ def _clear_latch():
 def test_fires_once_per_window_not_every_tick(monkeypatch):
     """Every scan cancels and re-prices ALL working buys, so polling the window would churn an order
     eight times and never let a below-market limit rest. Exactly one pass per venue window."""
-    assert _fire(monkeypatch, "2026-09-22T04:16:00") is True      # Sydney's window opened 04:11
-    assert _fire(monkeypatch, "2026-09-22T04:31:00") is True      # Tokyo/Seoul open theirs at 04:30 — a NEW venue, not a re-poll
-    assert _fire(monkeypatch, "2026-09-22T04:46:00") is False     # all three latched
-    assert _fire(monkeypatch, "2026-09-22T05:46:00") is False     # still the same windows
+    assert _fire(monkeypatch, "2026-09-22T05:35:00") is True      # Sydney's 40-min window opened 05:31 (06:11 close)
+    assert _fire(monkeypatch, "2026-09-22T05:50:00") is True      # Tokyo/Seoul open theirs at 05:50 (06:30 close) — a NEW venue, not a re-poll
+    assert _fire(monkeypatch, "2026-09-22T05:55:00") is False     # all three latched
+    assert _fire(monkeypatch, "2026-09-22T06:10:00") is False     # still the same windows
 
 
 def test_next_trading_day_re_arms(monkeypatch):
-    assert _fire(monkeypatch, "2026-09-22T04:16:00") is True
-    assert _fire(monkeypatch, "2026-09-23T04:16:00") is True      # new venue-local date
+    assert _fire(monkeypatch, "2026-09-22T05:35:00") is True
+    assert _fire(monkeypatch, "2026-09-23T05:35:00") is True      # new venue-local date
 
 
 def test_a_different_venue_window_still_fires(monkeypatch):
     """Latching Tokyo/Sydney must not suppress the later US window on the same UTC day."""
-    assert _fire(monkeypatch, "2026-09-22T04:16:00") is True      # AUD
-    assert _fire(monkeypatch, "2026-09-22T18:30:00") is True      # USD/CAD
+    assert _fire(monkeypatch, "2026-09-22T05:35:00") is True      # AUD
+    assert _fire(monkeypatch, "2026-09-22T19:30:00") is True      # USD/CAD (20:00 close, window from 19:20)
 
 
 def test_never_fires_in_the_refused_tail(monkeypatch):
@@ -230,21 +234,24 @@ def test_never_fires_in_the_refused_tail(monkeypatch):
     assert _fire(monkeypatch, "2026-09-22T06:27:00") is False     # Sydney shut 06:11, Tokyo 3 min from its 06:30 close
 
 
-def test_first_pass_carries_nearly_the_whole_window(monkeypatch):
-    """The point of the job: the pass lands near the window's OPEN, not against the bell."""
+def test_first_pass_lands_in_the_pre_close_band(monkeypatch):
+    """The point of the job since 2026-10-19: the pass lands at the window's OPEN, and the window is
+    the last 40 minutes — so the buy goes out 35-40 minutes before the bell, not two hours before it
+    (the measured intraday drift is to the CLOSE) and not against it (the runway floor)."""
     import src.portfolio.scheduler as sch
     from src.portfolio.config import CompounderConfig
     cc = CompounderConfig()
     fired_at = None
-    for minute in range(0, 24 * 60, 15):                           # walk the 15-min sub-grid
+    for minute in range(0, 24 * 60, 5):                            # walk the 5-min sub-grid
         stamp = f"2026-09-22T{minute // 60:02d}:{minute % 60:02d}:00"
         if _fire(monkeypatch, stamp):
             fired_at = minute
             break
     assert fired_at is not None
     runway = 6 * 60 + 11 - fired_at                                # 06:11 UTC — Sydney's 16:11 AEST close
-    assert runway >= cc.late_session_minutes - 15, \
-        f"first pass had only {runway} min of runway — the point was to land early in the window"
+    assert cc.late_session_minutes - 5 < runway <= cc.late_session_minutes, \
+        f"first pass had {runway} min of runway — it should land at the front of the {cc.late_session_minutes}-min window"
+    assert runway > cc.late_session_min_runway_minutes
 
 
 # ── currency filter: don't wake for venues we hold nothing in ─────────────────
@@ -257,29 +264,30 @@ def test_only_currencies_on_the_watchlist_wake_the_job(monkeypatch):
     monkeypatch.setattr(sch, "_watchlist_currencies", lambda: {"USD", "EUR", "JPY", "AUD", "HKD", "GBP", "CAD"})
     # Times chosen so ONLY an unheld currency is in window — 07:00 would not do, Hong Kong is
     # still open then and IS held, so the job would rightly fire and prove nothing.
-    assert _fire(monkeypatch, "2026-09-22T08:30:00") is False     # SGD + INR only — neither held
-    assert _fire(monkeypatch, "2026-09-22T09:00:00") is False     # INR only — not held
-    assert _fire(monkeypatch, "2026-09-22T12:30:00") is False     # ILS only — not held
-    assert _fire(monkeypatch, "2026-09-22T04:30:00") is True      # JPY/AUD — held
+    assert _fire(monkeypatch, "2026-09-22T08:40:00") is False     # SGD only (09:16 close) — not held
+    assert _fire(monkeypatch, "2026-09-22T09:30:00") is False     # INR only (10:00 close) — not held
+    assert _fire(monkeypatch, "2026-09-22T14:00:00") is False     # ILS only (14:25 close) — not held
+    assert _fire(monkeypatch, "2026-09-22T06:00:00") is True      # JPY/AUD — held
 
 
 def test_one_pass_per_venue_window(monkeypatch):
-    """Each venue gets exactly one pass, at the first 15-min tick after ITS window opens: Sydney
-    (04:11), Tokyo (04:30), Hong Kong (06:10), Europe (13:40), London (13:50), US/Canada (18:00).
-    Six passes a day for seven held currencies — before the minute-exact table the hour-rounded
-    closes made Tokyo/Sydney and Europe/London coincide and it looked like four."""
+    """Each venue gets exactly one pass, at the first 5-min tick after ITS 40-min window opens: Sydney
+    (05:31 for the 06:11 close), Tokyo (05:50 / 06:30), Hong Kong (07:30 / 08:10), Europe (15:00 /
+    15:40), London (15:10 / 15:50), US/Canada (19:20 / 20:00). Six passes a day for seven held
+    currencies — before the minute-exact table the hour-rounded closes made Tokyo/Sydney and
+    Europe/London coincide and it looked like four."""
     import src.portfolio.scheduler as sch
     monkeypatch.setattr(sch, "_watchlist_currencies", lambda: {"USD", "EUR", "JPY", "AUD", "HKD", "GBP", "CAD"})
-    fired = [m for m in range(0, 24 * 60, 15)
+    fired = [m for m in range(0, 24 * 60, 5)
              if _fire(monkeypatch, f"2026-09-22T{m // 60:02d}:{m % 60:02d}:00")]
-    assert [f"{m // 60:02d}:{m % 60:02d}" for m in fired] == ["04:15", "04:30", "06:15", "13:45", "14:00", "18:00"]
+    assert [f"{m // 60:02d}:{m % 60:02d}" for m in fired] == ["05:35", "05:50", "07:30", "15:00", "15:10", "19:20"]
 
 
 def test_filter_fails_open(monkeypatch):
     """An unreadable watchlist must not disable the runway fix — fall back to the full venue map."""
     import src.portfolio.scheduler as sch
     monkeypatch.setattr(sch, "_watchlist_currencies", lambda: None)
-    assert _fire(monkeypatch, "2026-09-22T08:30:00") is True       # SGD/INR wake it when unfiltered
+    assert _fire(monkeypatch, "2026-09-22T08:40:00") is True       # SGD (09:16 close) wakes it when unfiltered
 
 
 # ── the US path must be strictly better off, not worse ────────────────────────
@@ -302,17 +310,17 @@ def test_us_loses_five_minutes_and_keeps_its_after_hours_hour(at):
 
 
 def test_every_venue_reads_its_own_clock(at):
-    """No venue inherits another's hours: at 04:30 UTC only Tokyo/Sydney/Seoul are in window.
-    (Seoul added 2026-10-04 with the KRW hours: 04:30 UTC is 13:30 KST, inside its last two hours.)"""
+    """No venue inherits another's hours: at 06:00 UTC only Tokyo/Sydney/Seoul are in window.
+    (Seoul added 2026-10-04 with the KRW hours: 06:00 UTC is 15:00 KST, inside its last 40 minutes.)"""
     cc = CompounderConfig()
-    with at("2026-09-22T04:30:00"):
+    with at("2026-09-22T06:00:00"):
         inside = {c for c in _MARKET_HOURS
                   if _late_session(c, cc.late_session_minutes, 5)}
     assert inside == {"JPY", "AUD", "KRW"}, inside
-    with at("2026-09-22T19:00:00"):                    # 15:00 ET
+    with at("2026-09-22T19:40:00"):                    # 15:40 ET
         inside = {c for c in _MARKET_HOURS
                   if _late_session(c, cc.late_session_minutes, 5)}
-    assert inside == {"USD", "CAD", "MXN"}, inside     # Mexico City (added 2026-10-04) is 13:00, its last two hours
+    assert inside == {"USD", "CAD", "MXN"}, inside     # Mexico City (added 2026-10-04) closes with New York at 20:00 UTC
 
 
 # ── the shipped state (2026-10-16): floor 10 min on no-after-hours venues, pass ON ─────────
