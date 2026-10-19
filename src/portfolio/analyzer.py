@@ -162,6 +162,24 @@ class PortfolioAnalyzer:
                 lows = [l / _f for l in lows]
                 # volumes are share-counts, NOT prices — leave untouched
 
+            # Live override of the PARTIAL daily bar while the venue is open. IBKR's partial
+            # `1 day` bar for Tokyo FREEZES at the 11:30 morning-session close for the whole
+            # afternoon (2026-10-19: 6857 read ¥33,560 from 12:10 to 15:10 JST against a
+            # ¥34,240-34,600 market, so a YELLOW name — fair value ¥34,160 — scored green, led the
+            # queue as a direct buy, took the day's allowance from a real green (4062) and then
+            # could not fill). Re-pricing the ORDER alone cannot fix that: the green/yellow gate,
+            # the discount and the score are all decided HERE, on this close. One extra history
+            # request per open-venue name per scan; shut venues (and Tokyo lunch) return None and
+            # keep the daily close, which is then the right number anyway.
+            live = self._live_close(contract, currency)
+            if live:
+                live_px, age = live
+                if abs(live_px / closes[-1] - 1.0) >= 0.001:
+                    log.info("portfolio_price_live", symbol=symbol, daily_close=closes[-1],
+                             live_close=live_px, age_s=round(age),
+                             drift_pct=round((live_px / closes[-1] - 1.0) * 100, 2))
+                closes[-1] = live_px
+
             # Current price
             analysis.current_price = closes[-1]
 
@@ -308,6 +326,21 @@ class PortfolioAnalyzer:
         except Exception as e:
             log.warning("portfolio_analysis_error", symbol=symbol,
                         error=str(e), error_type=type(e).__name__)
+            return None
+
+    def _live_close(self, contract, currency: str):
+        """(close, age_s) of the last one-minute bar when the venue is open and the bar is
+        younger than the login's data delay allows — else None. Same helper the order path uses,
+        so the scan and the order see one price. Never raises (a scan must not die on a lagging
+        history farm)."""
+        try:
+            from src.portfolio import buyer as _buyer      # lazy: buyer imports this module
+            if not _buyer._market_open(currency):
+                return None
+            return _buyer._fresh_bar_price(self.ib, contract, currency)
+        except Exception as e:
+            log.info("portfolio_price_live_failed", symbol=getattr(contract, "symbol", "?"),
+                     error=str(e) or repr(e))
             return None
 
     def _fetch_bars(self, contract, max_period: int):

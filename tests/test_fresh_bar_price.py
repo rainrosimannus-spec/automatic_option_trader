@@ -82,3 +82,54 @@ def test_runway_floor_only_where_no_after_hours():
     assert _runway_floor("EUR", cc) == 10     # Europe: no extended session (2026-10-16)
     assert _runway_floor("GBP", cc) == 10     # Europe: no extended session (2026-10-16)
     assert _runway_floor("XXX", SimpleNamespace(late_session_min_runway_minutes=-3)) == 0
+
+
+# ── the scan itself prices off the live bar (2026-10-19) ─────────────────────────────────────────
+# Re-pricing the order was not enough: 6857 was classified GREEN on the frozen ¥33,560 morning
+# close (fair value ¥34,160) while it traded at ¥34,300 — a yellow name led the queue, took the
+# day's allowance from a genuinely green 4062 and then could not fill at a fair-capped limit.
+
+
+class _ScanIB:
+    """Daily history ends in a frozen partial bar; the one-minute tape says otherwise."""
+
+    def __init__(self, daily_close, live_close, live_age_s):
+        self.daily_close, self.live_close, self.live_age_s = daily_close, live_close, live_age_s
+
+    def qualifyContracts(self, c):
+        return [c]
+
+    def reqHistoricalData(self, contract, **kw):
+        if kw["barSizeSetting"] == "1 day":
+            base = datetime(2025, 10, 1)
+            return [SimpleNamespace(date=base + timedelta(days=i), open=30000.0, high=30500.0,
+                                    low=29500.0, close=30000.0, volume=1000) for i in range(299)] + \
+                   [SimpleNamespace(date=base + timedelta(days=299), open=self.daily_close,
+                                    high=self.daily_close, low=self.daily_close,
+                                    close=self.daily_close, volume=1000)]
+        return [_bar(self.live_age_s, self.live_close)]
+
+
+def _analyze(monkeypatch, ib):
+    from src.portfolio import buyer
+    from src.portfolio.analyzer import PortfolioAnalyzer
+    monkeypatch.setattr(buyer, "_market_open", lambda ccy, exchange=None: True)
+    return PortfolioAnalyzer(ib).analyze_stock("6857", "TSEJ", "JPY", tier="growth")
+
+
+def test_scan_prices_off_the_live_bar_when_the_daily_bar_is_frozen(monkeypatch):
+    a = _analyze(monkeypatch, _ScanIB(daily_close=33560.0, live_close=34300.0, live_age_s=15 * 60))
+    assert a is not None and a.current_price == 34300.0
+
+
+def test_scan_keeps_the_daily_close_when_the_tape_is_stale(monkeypatch):
+    a = _analyze(monkeypatch, _ScanIB(daily_close=33560.0, live_close=34300.0, live_age_s=40 * 60))
+    assert a is not None and a.current_price == 33560.0
+
+
+def test_scan_keeps_the_daily_close_when_the_venue_is_shut(monkeypatch):
+    from src.portfolio import buyer
+    from src.portfolio.analyzer import PortfolioAnalyzer
+    monkeypatch.setattr(buyer, "_market_open", lambda ccy, exchange=None: False)
+    a = PortfolioAnalyzer(_ScanIB(33560.0, 34300.0, 60)).analyze_stock("6857", "TSEJ", "JPY", tier="growth")
+    assert a is not None and a.current_price == 33560.0
