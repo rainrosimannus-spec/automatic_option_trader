@@ -173,7 +173,7 @@ def _late_session(currency: str | None, minutes: int, min_runway: int = 0) -> bo
     (the table must not fork). Unknown currency → True (no venue map ⇒ don't gate, matching _market_open's
     scan-anyway fallback). minutes<=0 also returns True (gate disabled) so callers can no-op it via config.
 
-    `min_runway` closes the other end of the window. Being inside the last 120 minutes says nothing about
+    `min_runway` closes the other end of the window. Being inside the window says nothing about
     how much of it is LEFT, and an order placed with under a minute to run cannot fill: on 2026-09-21/22
     the scan grid landed at 05:58 UTC against an 06:00 UTC Tokyo/Sydney close and, after the executor's
     30s-per-order cycle, XRO reached ASX with 38 seconds and 6146 never left PreSubmitted. Refusing is
