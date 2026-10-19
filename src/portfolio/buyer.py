@@ -391,7 +391,13 @@ def _min_tick_for(ib, contract, details=None) -> float | None:
     return None
 
 
-_FRESH_PRICE_MAX_AGE_S = 600      # a bar older than this is not "live" — keep the analyzer price
+# A bar older than this is not "live" — keep the analyzer price. 1,500 s, not 600: this login has
+# no real-time subscription outside the US, so the last one-minute bar is 10-16 minutes old on
+# every open Asian/European venue (measured 2026-10-19: Amsterdam 932 s, London 932 s, Singapore
+# 632 s). At 600 s the refresh NEVER fired (zero compounder_price_refreshed in its first four days)
+# and 6857 went out twice at the 11:30 JST morning close while Tokyo traded 2.5% higher. A
+# 15-minute-old print is still far closer than a four-hour-old session close.
+_FRESH_PRICE_MAX_AGE_S = 1500
 
 
 def _fresh_bar_price(ib, contract, currency: str | None, max_age_s: int = _FRESH_PRICE_MAX_AGE_S):
@@ -399,8 +405,10 @@ def _fresh_bar_price(ib, contract, currency: str | None, max_age_s: int = _FRESH
 
     The analyzer prices a name from its DAILY bar fetched outside regular hours on the SMART
     aggregate. 2026-10-16 that read Ibiden at ¥9,607 while Tokyo traded at ¥9,780, so a 0.7%
-    discount became a 2.5% one and the order never came close. One-minute regular-hours bars are
-    real-time without a quote subscription (Asia is delayed 15-20 min on this login) and cost one
+    discount became a 2.5% one and the order never came close. Worse, IBKR's partial daily bar for
+    Tokyo FREEZES at the 11:30 morning-session close for the whole afternoon (2026-10-19: 6857 read
+    ¥33,560 from 12:10 to 15:10 JST against a ¥34,240-34,600 market). One-minute bars follow the
+    market with the login's data delay (10-16 min outside the US, no subscription) and cost one
     history request per ORDER, not per name scanned. Freshness is checked on the bar's own
     timestamp: a stale answer (shut venue, history farm lagging) returns None and the caller keeps
     the price it had. Never raises."""
@@ -412,8 +420,8 @@ def _fresh_bar_price(ib, contract, currency: str | None, max_age_s: int = _FRESH
                                             barSizeSetting="1 min", whatToShow="TRADES",
                                             useRTH=use_rth, formatDate=2, timeout=6)
         except Exception as e:
-            log.debug("compounder_fresh_price_failed", symbol=getattr(contract, "symbol", "?"),
-                      use_rth=use_rth, error=str(e) or repr(e))
+            log.info("compounder_fresh_price_failed", symbol=getattr(contract, "symbol", "?"),
+                     use_rth=use_rth, error=str(e) or repr(e))
             continue
         if not bars:
             continue
@@ -428,8 +436,10 @@ def _fresh_bar_price(ib, contract, currency: str | None, max_age_s: int = _FRESH
         close = float(last.close or 0)
         if close > 0 and 0 <= age <= max_age_s:
             return float(qu.quote_to_major(close, currency)), age
-        log.debug("compounder_fresh_price_stale", symbol=getattr(contract, "symbol", "?"),
-                  use_rth=use_rth, age_s=round(age), close=close)
+        # INFO, not debug: when this path yields nothing the order goes out on the analyzer's daily
+        # bar, and that silence hid four days of a refresh that never once fired.
+        log.info("compounder_fresh_price_stale", symbol=getattr(contract, "symbol", "?"),
+                 use_rth=use_rth, age_s=round(age), close=close, max_age_s=max_age_s)
     return None
 
 

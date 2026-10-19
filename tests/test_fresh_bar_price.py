@@ -38,6 +38,18 @@ def test_stale_bar_is_ignored():
     assert ib.calls == [True, False]
 
 
+def test_delayed_feed_bar_is_still_live():
+    """2026-10-19: no real-time subscription outside the US, so an open venue's last bar is 10-16
+    minutes old (Amsterdam 932 s, Singapore 632 s). At the old 600 s cap the refresh never fired and
+    6857 went out at the morning-session close, 2.5% under the market. 16 minutes is accepted; 26 is
+    not (lunch break / shut venue / farm lag)."""
+    ib = _IB({True: [_bar(16 * 60, 34300.0)]})
+    price, age = _fresh_bar_price(ib, SimpleNamespace(symbol="6857"), "JPY")
+    assert price == 34300.0 and 940 <= age <= 980
+    ib = _IB({True: [_bar(26 * 60, 34300.0)], False: [_bar(26 * 60, 34300.0)]})
+    assert _fresh_bar_price(ib, SimpleNamespace(symbol="6857"), "JPY") is None
+
+
 def test_falls_back_to_all_hours_bars_when_rth_has_none():
     ib = _IB({True: [], False: [_bar(60, 417.4)]})
     price, _ = _fresh_bar_price(ib, SimpleNamespace(symbol="700"), "HKD")
