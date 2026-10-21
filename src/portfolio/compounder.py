@@ -735,7 +735,8 @@ def fair_value_price(sma200: float | None, high_52w: float | None) -> float | No
 
 
 def ladder_plan(core_price: float, urgency: float, is_leader: bool,
-                cc, sma200: float | None = None, high_52w: float | None = None) -> list[tuple[float, float]]:
+                cc, sma200: float | None = None, high_52w: float | None = None,
+                delayed_quote: bool = False) -> list[tuple[float, float]]:
     """Conviction-scaled DAY limit-ladder for one direct buy (pure).
 
     Returns a list of (limit_price, size_frac) rungs whose size_frac sum to the total
@@ -757,6 +758,11 @@ def ladder_plan(core_price: float, urgency: float, is_leader: bool,
 
     urgency is clamped to [0, 1]. If ladder is disabled, returns a single rung at the legacy base
     discount (preserving the old flat-under-bid behavior).
+
+    `delayed_quote`: `core_price` is a delayed print (10-21 min on non-US venues for this login). At
+    urgency 1.0 ONLY — the queue leader and crash buys, which must fill — the premium cap widens to
+    cc.entry_leader_premium_delayed_pct so a tape that ran in the stale window does not leave the
+    order resting below the real market. Every other urgency is priced exactly as before.
     """
     if core_price <= 0:
         return []
@@ -765,6 +771,8 @@ def ladder_plan(core_price: float, urgency: float, is_leader: bool,
         return [(round(core_price * (1 - cc.entry_base_discount_pct / 100.0), 2), 1.0)]
 
     prem = getattr(cc, "entry_marketable_premium_pct", 0.5)
+    if delayed_quote and u >= 1.0:
+        prem = max(prem, float(getattr(cc, "entry_leader_premium_delayed_pct", prem) or prem))
     maxd = cc.entry_max_discount_pct
     core_pct = prem * u - maxd * (1.0 - u)                     # +prem at u=1 → −maxd at u=0 (% of last)
     core_raw = core_price * (1.0 + core_pct / 100.0)

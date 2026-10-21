@@ -67,3 +67,38 @@ def test_no_fair_inputs_uses_premium_uncapped():
     last = 50.0
     core, _ = cmp.ladder_plan(last, urgency=1.0, is_leader=False, cc=cc)[0]   # no sma/high → no cap
     assert core == pytest.approx(round(last * (1 + cc.entry_marketable_premium_pct / 100.0), 2))
+
+
+# ── leader cap on delayed-quote venues (2026-10-21) ───────────────────────────
+
+def test_leader_on_delayed_venue_gets_the_wider_cap():
+    """Outside the US the price under the premium is 10-21 min old; a 20-min move beats +0.5% one time
+    in ten on the Tokyo names. The leader (urgency 1.0) must fill, so its cap widens — it is still a
+    marketable limit, so on a normal tape the fill is the ask, not the cap."""
+    cc = _cc()
+    last = 34000.0
+    core, _ = cmp.ladder_plan(last, urgency=1.0, is_leader=True, cc=cc,
+                              sma200=28000.0, high_52w=60000.0, delayed_quote=True)[0]   # fair far above
+    assert core == pytest.approx(round(last * (1 + cc.entry_leader_premium_delayed_pct / 100.0), 2))
+    assert cc.entry_leader_premium_delayed_pct > cc.entry_marketable_premium_pct
+
+
+def test_wider_cap_is_leader_only_and_delayed_only():
+    cc = _cc()
+    last = 34000.0
+    kw = dict(is_leader=False, cc=cc, sma200=28000.0, high_52w=60000.0)
+    narrow = round(last * (1 + cc.entry_marketable_premium_pct / 100.0), 2)
+    assert cmp.ladder_plan(last, 1.0, delayed_quote=False, **kw)[0][0] == pytest.approx(narrow)   # US: real-time
+    assert cmp.ladder_plan(last, 0.99, delayed_quote=True, **kw)[0][0] < narrow                    # not the leader
+    for u in (0.0, 0.22, 0.45, 0.75):                                                              # low urgency untouched
+        assert (cmp.ladder_plan(last, u, delayed_quote=True, **kw)[0][0]
+                == cmp.ladder_plan(last, u, delayed_quote=False, **kw)[0][0])
+
+
+def test_wider_cap_still_never_crosses_fair_value():
+    cc = _cc()
+    last = 100.0
+    fair = cmp.fair_value_price(100.0, 100.5)        # ≈ 100.25, under last*1.015
+    core, _ = cmp.ladder_plan(last, urgency=1.0, is_leader=True, cc=cc,
+                              sma200=100.0, high_52w=100.5, delayed_quote=True)[0]
+    assert core == pytest.approx(round(fair, 2))

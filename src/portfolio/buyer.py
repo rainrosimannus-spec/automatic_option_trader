@@ -46,6 +46,10 @@ log = get_logger(__name__)
 # the Ibiden failure mode), and the post-close "after-market" pass could only rest an unfillable
 # order there. Asia/AU/ZA/IL reject out-of-hours orders outright (the HK 3690 case) and were never in.
 _OUTSIDE_RTH_CCY = {"USD"}
+# Currencies whose quotes reach this login in real time. Everywhere else the last 1-min bar is
+# 10-21 minutes old (measured 2026-10-19), which is what cmp.ladder_plan's delayed_quote widens the
+# leader's marketable cap for. Kept separate from _OUTSIDE_RTH_CCY: same set today, different meaning.
+_REALTIME_QUOTE_CCY = {"USD"}
 
 # Venues that advertise SMART in validExchanges but where SMART does NOT work at placement.
 #
@@ -3515,7 +3519,8 @@ class PortfolioBuyer:
         # configured cap if not threaded through, so the method is safe to call standalone.
         core_floor = min_buy if min_buy is not None else cc.min_single_buy
         plan = cmp.ladder_plan(px, urgency, is_leader, cc,
-                               sma200=analysis.sma_200, high_52w=analysis.high_52w)
+                               sma200=analysis.sma_200, high_52w=analysis.high_52w,
+                               delayed_quote=ccy.upper() not in _REALTIME_QUOTE_CCY)
         if not plan:
             return (0.0, 0.0)
 

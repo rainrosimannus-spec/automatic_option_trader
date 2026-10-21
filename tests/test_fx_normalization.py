@@ -80,7 +80,8 @@ def test_gbp_brick_sizes_in_base_not_local(monkeypatch):
         rank=1, rank_score=70.0, rationale="t", min_buy=2000.0)
 
     # The ladder's core rung (price, frac), priced with the SAME fair-value inputs the executor uses.
-    core_price, frac0 = cmp.ladder_plan(px, 1.0, True, cc, sma200=sma, high_52w=hi)[0]
+    # London is a delayed-quote venue for this login, so the leader's cap is the wider one (2026-10-21).
+    core_price, frac0 = cmp.ladder_plan(px, 1.0, True, cc, sma200=sma, high_52w=hi, delayed_quote=True)[0]
     expected_shares = int((brick_base * frac0) / (core_price * 1.16))   # base brick / BASE per-share
 
     assert captured["quantity"] == expected_shares

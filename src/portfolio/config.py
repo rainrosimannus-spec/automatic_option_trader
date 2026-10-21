@@ -217,6 +217,14 @@ class CompounderConfig(BaseModel):
     entry_marketable_premium_pct: float = 0.5   # max % ABOVE last for an urgent fill (a marketable
                                                 # limit, capped — fills at the ask, won't chase higher)
     entry_max_discount_pct: float = 1.5     # core-rung bid for LOW-urgency names (deep, fine to miss)
+    # 2026-10-21 (Rain: "I want it to definitely fill with high urgency companies"): the cap above sits
+    # on a price that is 10-21 minutes old on every venue this login has no real-time feed for (all but
+    # the US), and a 20-minute move beats +0.5% about one time in ten on the Tokyo names (p90 +0.5-0.6%,
+    # p99 +1.4-1.9%; HK/SGX p99 ≈ +0.8%). A leader order placed below the real market rests and misses.
+    # This wider cap applies ONLY at urgency 1.0 (the queue leader and crash buys) and ONLY on delayed-
+    # quote venues; it is still a cap on a marketable limit, so the fill is the ask, not the cap, and
+    # the extra is paid only when the tape has run in the stale window. The fair-value cap still wins.
+    entry_leader_premium_delayed_pct: float = 1.5
     ladder_rungs: int = 2                   # extra dip-adder rungs below the core (0 = single order)
     ladder_step_pct: float = 1.0            # spacing between dip rungs, % of price
     ladder_rung_frac: float = 0.25          # each dip rung sized at frac x core brick
