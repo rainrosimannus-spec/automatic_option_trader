@@ -581,7 +581,7 @@ function syncInjections() {
                     {% for h in holdings %}
                     <tr class="hover:bg-gray-800/50">
                         <td class="px-3 py-2">
-                            <div class="font-medium text-white">{{h.symbol}}</div>
+                            <div class="font-medium text-white">{{h.symbol}}{% if h.symbol in flagged_removal %} <span class="text-amber-400 cursor-help" title="⚠️ Flagged — open position blocking removal. {{flagged_removal[h.symbol]}}">⚠️</span>{% endif %}</div>
                             <div class="text-xs text-gray-500">{{h.name[:25]}}</div>
                         </td>
                         <td class="px-3 py-2 text-gray-400">{{h.sector[:20]}}</td>

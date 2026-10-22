@@ -430,6 +430,15 @@ async def portfolio_page(request: Request):
     holdings.sort(key=lambda _h: _h.market_value_base or 0, reverse=True)
     base_ccy_symbol = _ccy_sym.get((_base_ccy or "USD").upper(), (_base_ccy or "") + " ")
 
+    # Red "!" beside a holding the LAST monthly screen dropped but could not remove because the position
+    # is open ("FLAGGED — OPEN POSITION BLOCKING REMOVAL" in the screener report). Source of truth is the
+    # watchlist row's `pending_removal` flag, set on drop and CLEARED on re-admit (scheduler.py), so the
+    # marker disappears by itself when a name re-qualifies. Reason text goes into the hover title.
+    flagged_removal = {
+        w.symbol: (w.pending_removal_reason or "Dropped by the last screen; open position blocks removal.")
+        for w in watchlist if getattr(w, "pending_removal", False)
+    }
+
     # Parked-cash card (top of page): idle cash swept into the money-market ETF (XEON) for ~€STR yield.
     # Amount is the ETF holding's market value in BASE ccy (0 when nothing is parked); the annual % is the
     # configured displayed rate. Reads the holdings already loaded — no IBKR call.
@@ -743,6 +752,7 @@ async def portfolio_page(request: Request):
         "request": request,
         "pending_portfolio": pending_portfolio,
         "holdings": holdings,
+        "flagged_removal": flagged_removal,
         "watchlist": watchlist,
         "transactions": transactions,
         "put_entries": put_entries,
