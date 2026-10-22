@@ -44,7 +44,7 @@
 
 <!-- ══ PENDING SUGGESTIONS ══════════════════════════════════ -->
 {% for s in pending %}
-<div class="bg-gray-900 border {{ 'border-blue-500/50' if s.status == 'submitted' else 'border-yellow-600/50' }} rounded-xl p-5 mb-4">
+<div class="bg-gray-900 border {{ 'border-blue-500/50' if s.status in ('submitted', 'executing') else 'border-yellow-600/50' }} rounded-xl p-5 mb-4">
     <div class="flex items-start justify-between">
         <div class="flex-1">
             <div class="flex items-center gap-3 mb-2">
@@ -149,6 +149,14 @@
                     🛑 Cancel Order
                 </button>
             </form>
+            {% elif s.status == 'executing' %}
+            {# Claimed by the executor — the order is being sent right now (a few seconds). No
+               button: approving again would double it, and cancelling the card while the order is
+               in flight would orphan it. The next refresh shows "Sent to IBKR" or the refusal. #}
+            <div class="w-24 px-3 py-2 rounded-lg text-center bg-blue-900/50 border border-blue-600/50"
+                 title="The order is being placed at IBKR right now. Refresh in a few seconds to see the result.">
+                <span class="text-blue-300 text-xs font-medium">📨 Sending<br>to IBKR…</span>
+            </div>
             {% elif s.status in ('approved', 'queued') and 'review' in s.action %}
             {# Approved by hand: the portfolio review executor sends the order within a minute, or
                as soon as the market is open. The note says what it is waiting for. #}

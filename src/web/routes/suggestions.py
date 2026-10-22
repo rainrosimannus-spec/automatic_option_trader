@@ -37,6 +37,10 @@ def _get_auto_approve_state(source: str) -> bool:
 # produced was invisible here — the /watchlist SELL badge and the alert email were the only
 # places they showed, with no way to accept or reject (found 2026-09-09). They are portfolio
 # cards; the page filtered them out only because it matched one literal string.
+# Statuses that mean "the order is already on its way, nothing left to approve": fetched and shown
+# separately from the cards awaiting a decision, and never offered an Approve button.
+_IN_FLIGHT = ("submitted", "executing")
+
 _PAGE_SOURCES = {
     "portfolio": ("portfolio", "rescreen"),
     "options": ("options",),
@@ -47,17 +51,21 @@ def _get_suggestions_by_source(source: str):
     """Get pending and recent suggestions filtered by source."""
     sources = _PAGE_SOURCES.get(source, (source,))
     all_pending = get_pending_suggestions()
-    # Exclude submitted — they are fetched separately and prepended below
-    pending = [s for s in all_pending if s.source in sources and s.status != "submitted"]
+    # Exclude in-flight — they are fetched separately and prepended below
+    pending = [s for s in all_pending if s.source in sources and s.status not in _IN_FLIGHT]
 
-    # Also include "submitted" orders (sent to IBKR but not yet filled)
+    # Also include orders already on their way: "submitted" (at IBKR, unfilled) and "executing"
+    # (claimed by the executor, order being sent). get_pending_suggestions() returns neither
+    # "executing" nor anything else for that status, so without this an executing card is on NO
+    # list and simply vanishes — Rain refreshed into that window on the MKTX sell 2026-10-22 and
+    # saw the card disappear while the order was in fact going out.
     with get_db() as db:
-        submitted = db.query(TradeSuggestion).filter(
-            TradeSuggestion.status == "submitted",
+        in_flight = db.query(TradeSuggestion).filter(
+            TradeSuggestion.status.in_(_IN_FLIGHT),
             TradeSuggestion.source.in_(sources),
         ).order_by(TradeSuggestion.created_at.desc()).all()
-        # Prepend submitted orders to pending list so they show at top
-        pending = submitted + pending
+        # Prepend them so an order on its way shows at the top
+        pending = in_flight + pending
 
         from sqlalchemy import or_
         recent = db.query(TradeSuggestion).filter(

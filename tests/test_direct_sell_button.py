@@ -250,3 +250,32 @@ def test_an_approved_direct_sell_blocks_the_compounder_from_buying_it_back(sell_
     ok, _ = ro.request_holding_sell("ACME", "100")
     assert ok is True
     assert "ACME" in ro.review_sale_blocks()
+
+
+# ── the in-flight window must never be invisible ──────────────────────────────
+
+def test_executing_cards_are_fetched_so_an_order_in_flight_is_never_invisible():
+    """2026-10-22: Rain refreshed /suggestions while the MKTX sell was being placed and the card
+    had vanished — "executing" is in no list get_pending_suggestions() returns, and the in-flight
+    query used to ask for "submitted" alone. Watching an order leave must never look like nothing
+    happening on a SELL path."""
+    from src.core.suggestions import get_pending_suggestions   # noqa: F401 (documents the gap)
+    from src.web.routes import suggestions as sg
+    assert "executing" in sg._IN_FLIGHT and "submitted" in sg._IN_FLIGHT
+    src = inspect.getsource(sg._get_suggestions_by_source)
+    assert "TradeSuggestion.status.in_(_IN_FLIGHT)" in src, \
+        "the in-flight query must ask for _IN_FLIGHT, not 'submitted' alone"
+    assert 'TradeSuggestion.status == "submitted"' not in src
+    assert 'status != "submitted"' not in src, "the pending filter must exclude all of _IN_FLIGHT"
+
+
+def test_an_executing_card_is_shown_without_an_approve_or_cancel_button():
+    """Its order may already be at the broker: approving again would double it, cancelling the card
+    would orphan it. The branch must come BEFORE the approve/reject fallthrough."""
+    html = open("src/web/templates/suggestions.html").read()
+    i = html.index("{% elif s.status == 'executing' %}")
+    j = html.index("{% elif s.status in ('approved', 'queued') and 'review' in s.action %}")
+    assert i < j, "the executing branch must precede the approve/reject branches"
+    block = html[i:j]
+    assert "Sending" in block
+    assert "/suggestions/approve" not in block and "/suggestions/cancel" not in block
