@@ -434,9 +434,14 @@ async def portfolio_page(request: Request):
     # (dividend blue, growth emerald, breakthrough purple). Tier comes from the WATCHLIST row when it has
     # one (a holding row keeps the tier of its first buy; the screen can since have re-tiered the name),
     # else the holding's own, else growth — the same precedence _build_tier_breakdown uses.
+    # The cash-park ETF (XEON) is not a tier at all — it is parked cash — so it gets yellow instead.
     _tier_of = {w.symbol: w.tier for w in watchlist if w.tier}
     _tier_cls = {"dividend": "text-blue-300", "breakthrough": "text-purple-300", "growth": "text-emerald-300"}
+    _park_sym_for_colour = getattr(get_settings().portfolio, "cash_yield_symbol", "XEON")
     for _h in holdings:
+        if _h.symbol == _park_sym_for_colour:
+            _h.tier_shown, _h.tier_cls = "cash parking", "text-yellow-300"
+            continue
         _h.tier_shown = _tier_of.get(_h.symbol) or _h.tier or "growth"
         _h.tier_cls = _tier_cls.get(_h.tier_shown, "text-emerald-300")
 
