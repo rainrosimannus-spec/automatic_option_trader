@@ -38,12 +38,35 @@ from src.portfolio.symbols import broker_stock, broker_symbol, internal_symbol
 
 log = get_logger(__name__)
 
-STOCK_ACTIONS = ("sell_stock_review", "reduce_position_review")
+DIRECT_SELL_ACTION = "direct_sell_review"
+HOLDINGS_SELL_SIGNAL = "holdings_direct_sell"
+HOLDINGS_SELL_EXPIRES_HOURS = 24 * 5
+STOCK_ACTIONS = ("sell_stock_review", "reduce_position_review", DIRECT_SELL_ACTION)
 CALL_ACTION = "sell_covered_call_review"
 
 # A sale goes out as a limit a hair under the last trade: marketable in a normal book, never a
 # market order.
 SELL_LIMIT_DISCOUNT = 0.002
+# DIRECT SELL button (Rain, 2026-10-22): the opposite posture to the review sale above. A review sale
+# leaves a name and wants OUT, so it goes a hair UNDER the last trade and fills now. A direct sell is
+# profit-taking by hand — "only over the purchasing price, I'm not in a hurry, but same day if
+# possible, or a couple of days" — so it rests a little ABOVE the last trade and waits.
+# +0.50% is the knee of the curve, measured over the last 250 days on the 76 live holdings
+# (P[the day's high reaches open x (1+x)]):
+#     +0.10% -> 94% same day, 97% in 3d      +0.75% -> 70% / 84%
+#     +0.25% -> 89% / 95%                    +1.00% -> 61% / 79%
+#     +0.50% -> 80% same day, 89% in 3d      +2.00% -> 35% / 60%
+# Four fills in five land the same day and nine in ten inside three days, while still earning ~EUR 500
+# on a EUR 100k sale versus hitting the bid. +1% buys half a percent more and costs 19pp of same-day
+# odds, which stops matching "same day if possible".
+DIRECT_SELL_PREMIUM = 0.005
+# Hard floor: never below the purchase price. The 0.2% covers commission and FX so "above cost" is
+# true NET, not merely gross.
+DIRECT_SELL_COST_FLOOR = 0.002
+DIRECT_SELL_DAYS = 3              # GTD, not DAY (re-clicking daily defeats "a couple of days") and
+                                  # not GTC (an order you forgot can fill weeks later into a
+                                  # different situation). The stale-order sweeper only cancels BUY
+                                  # orders, so nothing else would ever clean a resting sell up.
 # Exit-call rule (Rain, 2026-10-07): a call card beside EVERY sell/reduce card. A long-term holder
 # who has decided to leave a name does better selling a call above today's price than selling
 # today: called away, the stock went for more plus the premium; not called, the shares and the
@@ -128,6 +151,107 @@ def button_call_plan(avg_cost: float, price: float, today: date) -> dict | None:
     strike = float(math.ceil(floor))
     return {"strike": strike, "expiry": expiry, "far": far,
             "pnl_pct": (price / avg_cost - 1) * 100, "called_pnl_pct": (strike / avg_cost - 1) * 100}
+
+
+def _gtd_stamp(trading_days: int) -> str:
+    """IBKR goodTillDate, `trading_days` sessions ahead at 23:59 UTC. Weekends skipped; holidays are
+    not, which only ever makes the order live a day less — the safe direction for a resting sell."""
+    d = date.today()
+    left = max(1, trading_days)
+    while left:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            left -= 1
+    return d.strftime("%Y%m%d 23:59:00 UTC")
+
+
+def request_holding_sell(symbol: str, shares) -> tuple[bool, str]:
+    """The "Sell" button on a holdings row: sell `shares` of this name, by hand, above cost.
+
+    Mirrors request_holding_call deliberately — same shape, same click-is-the-approval, same
+    executor. Everything except the share count is decided here: the limit rests
+    DIRECT_SELL_PREMIUM above the last trade but never below the purchase price net of costs, good
+    for DIRECT_SELL_DAYS sessions.
+
+    Refuses rather than silently selling less. `Book.free_shares` is the live IBKR position minus
+    shares pledged to short calls minus shares already in working sells — so this cannot go short,
+    cannot strip the cover off a written call (naked calls have happened three times on this system:
+    CTAS, LRCX, CCJ), and cannot double-sell on a second click. The broker is the only size that
+    counts; the DB is never consulted for it.
+    """
+    from src.core.config import get_settings
+    from src.core.suggestions import (REVIEW_MANUAL_APPROVAL_NOTE, TradeSuggestion, approve_suggestion,
+                                      create_suggestion)
+    from src.portfolio.connection import _ensure_event_loop, get_portfolio_ib, is_portfolio_connected
+    from src.portfolio.models import PortfolioHolding
+    try:
+        qty = int(str(shares).strip() or 0)
+    except (TypeError, ValueError):
+        return False, f"{symbol}: '{shares}' is not a share count."
+    if qty <= 0:
+        return False, f"{symbol}: share count must be positive."
+
+    if not is_portfolio_connected():
+        return False, (f"{symbol}: the broker is not connected — nothing sent "
+                       f"(the live position is the only size that counts).")
+    with get_db() as db:
+        h = db.query(PortfolioHolding).filter(PortfolioHolding.symbol == symbol).first()
+        if h is None:
+            return False, f"{symbol}: not a holding."
+        tier, ccy = (h.tier or "growth"), (h.currency or "USD")
+        price, avg_cost = float(h.current_price or 0.0), float(h.avg_cost or 0.0)
+
+    try:
+        _ensure_event_loop()
+        ib = get_portfolio_ib()
+        book = read_book(ib, symbol, get_settings().portfolio.ibkr_account)
+    except Exception as e:
+        return False, f"{symbol}: the broker could not be read ({e}) — nothing sent."
+    if book is None:
+        return False, f"{symbol}: IBKR positions could not be read — nothing sent."
+    if book.free_shares <= 0:
+        return False, (f"{symbol}: no free shares — {book.long_shares} held, "
+                       f"{book.short_call_shares} under calls, "
+                       f"{book.working_stock_sells + book.working_call_sells} in working orders.")
+    if qty > book.free_shares:
+        return False, (f"{symbol}: {qty} shares asked, only {book.free_shares} free "
+                       f"({book.long_shares} held, {book.short_call_shares} under calls, "
+                       f"{book.working_stock_sells + book.working_call_sells} in working orders).")
+
+    cost = book.avg_cost or avg_cost
+    limit = max(price * (1 + DIRECT_SELL_PREMIUM), cost * (1 + DIRECT_SELL_COST_FLOOR)) if price else None
+    if limit is None:
+        return False, f"{symbol}: no live price on record — nothing sent."
+    gain_pct = (limit / cost - 1) * 100 if cost else 0.0
+    rationale = (
+        f"DIRECT SELL (holdings page): {symbol} ({tier}), {qty} of {book.long_shares} shares. Limit "
+        f"{limit:.2f} {ccy} — the higher of last {price:.2f} +{DIRECT_SELL_PREMIUM*100:.2f}% and your "
+        f"{cost:.2f} cost +{DIRECT_SELL_COST_FLOOR*100:.1f}% for costs, so it can never fill below the "
+        f"purchase price ({gain_pct:+.1f}% vs cost). Good for {DIRECT_SELL_DAYS} sessions, then it "
+        f"expires. {book.free_shares} shares were free; {book.short_call_shares} stay under calls."
+    )
+    s = create_suggestion(
+        symbol=symbol, action=DIRECT_SELL_ACTION, quantity=qty, source="rescreen", tier=tier,
+        signal=HOLDINGS_SELL_SIGNAL, rationale=rationale, current_price=price, rank=0,
+        funding_source="n/a", expires_hours=HOLDINGS_SELL_EXPIRES_HOURS,
+    )
+    if s is None:
+        return False, f"{symbol}: the card could not be created (a duplicate may exist) — see Suggestions."
+    with get_db() as db:
+        row = db.query(TradeSuggestion).filter(
+            TradeSuggestion.symbol == symbol, TradeSuggestion.action == DIRECT_SELL_ACTION,
+            TradeSuggestion.signal == HOLDINGS_SELL_SIGNAL, TradeSuggestion.status == "pending",
+        ).order_by(TradeSuggestion.id.desc()).first()
+        card_id = row.id if row else None
+    if card_id is None:
+        return False, f"{symbol}: the card was not found after creation — see Suggestions."
+    approve_suggestion(card_id, note=REVIEW_MANUAL_APPROVAL_NOTE)     # the click IS the approval
+    log.info("holdings_sell_requested", symbol=symbol, shares=qty, limit=round(limit, 4),
+             last=price, avg_cost=cost, free_shares=book.free_shares,
+             short_call_shares=book.short_call_shares, card=card_id)
+    return True, (f"{symbol}: SELL {qty} at {limit:.2f} {ccy} ({gain_pct:+.1f}% vs cost), good for "
+                  f"{DIRECT_SELL_DAYS} sessions — goes to the broker within a minute of the market "
+                  f"being open (card #{card_id}).")
 
 
 def request_holding_call(symbol: str, contracts: int) -> tuple[bool, str]:
@@ -591,13 +715,22 @@ def execute_review_stock_sale(suggestion_id: int) -> str:
         # Bars, quotes AND orders are all in the venue's QUOTE unit (London pence, Tel Aviv agorot —
         # priceMagnifier only rescales the tick table, see buyer._price_magnifier, proven 2026-10-16).
         magnifier = b._price_magnifier(details)
-        raw = ref * (1 - SELL_LIMIT_DISCOUNT)
+        if card["action"] == DIRECT_SELL_ACTION:
+            # Rest ABOVE the last trade, but never under the purchase price (net of costs). Whichever
+            # is higher wins: in profit the premium leads; near cost the floor does.
+            cost_floor = (book.avg_cost or 0.0) * (1 + DIRECT_SELL_COST_FLOOR)
+            raw = max(ref * (1 + DIRECT_SELL_PREMIUM), cost_floor)
+        else:
+            raw = ref * (1 - SELL_LIMIT_DISCOUNT)
         tick = b._effective_tick(ib, contract, raw, details=details, currency=ccy,
                                  exchange=getattr(contract, "exchange", None))
         order_price = b._round_to_tick(raw, tick, "SELL")
 
         order = LimitOrder("SELL", qty, order_price)
         order.tif = "DAY"
+        if card["action"] == DIRECT_SELL_ACTION:
+            order.tif = "GTD"
+            order.goodTillDate = _gtd_stamp(DIRECT_SELL_DAYS)
         order.outsideRth = b._outside_rth_ok(ccy)
         with get_portfolio_lock():
             trade = ib.placeOrder(contract, order)

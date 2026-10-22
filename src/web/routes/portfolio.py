@@ -847,6 +847,29 @@ def holdings_sell_call(symbol: str, request: Request, contracts: str = Form(""))
     return RedirectResponse(url="/portfolio?msg=" + quote(("✓ " if ok else "✗ ") + msg), status_code=303)
 
 
+@router.post("/portfolio/holdings/{symbol}/direct-sell")
+def holdings_direct_sell(symbol: str, request: Request, shares: str = Form("")):
+    """The "Sell" button on a holdings row: sell shares of this name by hand, above cost.
+
+    Deliberately the same shape as holdings_sell_call — type the quantity, click, the click is the
+    approval, the portfolio review executor sends it. Everything else is decided behind the button:
+    the limit rests 0.50% above the last trade but never below the purchase price net of costs, good
+    for 3 sessions. Refuses rather than selling less than asked, and cannot touch shares pledged to a
+    written call or already in a working sell (read_book.free_shares, from the broker not the DB).
+
+    Sync, for the same reason as the call route: it talks to the broker, and a synchronous ib_insync
+    request drives the portfolio connection's loop, which is impossible from a coroutine on the web
+    server's running loop."""
+    from src.portfolio.review_orders import request_holding_sell
+    try:
+        ok, msg = request_holding_sell(symbol.upper().strip(), shares)
+    except Exception as e:
+        log.error("holdings_direct_sell_failed", symbol=symbol, error=str(e))
+        ok, msg = False, f"{symbol}: failed — {e}"
+    log.info("holdings_direct_sell", symbol=symbol, shares=shares, ok=ok, msg=msg)
+    return RedirectResponse(url="/portfolio?msg=" + quote(("✓ " if ok else "✗ ") + msg), status_code=303)
+
+
 @router.get("/portfolio/trades", response_class=HTMLResponse)
 async def portfolio_trades_page(request: Request):
     """Full trade history for long-term portfolio."""

@@ -574,6 +574,7 @@ function syncInjections() {
                         <th class="px-3 py-2 text-right">P&L %</th>
                         <th class="px-3 py-2">First Bought</th>
                         <th class="px-3 py-2" title="Sell covered calls on this holding: type the number of contracts, then press. Strike at or above your purchase price, good till cancelled, at the bid. Never more contracts than your free shares cover.">Sell call</th>
+                        <th class="px-3 py-2" title="Sell shares of this holding: type the number of shares, then press. Limit 0.50% over the last trade but never below your purchase price net of costs, good for 3 sessions. Shares under a written call, or already in a working sell, are excluded — this cannot go short or strip a call's cover.">Sell</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-gray-800/50">
@@ -608,6 +609,19 @@ function syncInjections() {
                                 <button type="submit" class="px-2 py-0.5 rounded bg-indigo-800 hover:bg-indigo-700 text-indigo-100 text-xs">Sell call</button>
                             </form>
                             {% else %}<span class="text-xs text-gray-700" title="No option market for this listing">—</span>{% endif %}
+                        </td>
+                        <td class="px-3 py-2">
+                            {# DIRECT SELL — same shape as Sell call: type the quantity, click, done.
+                               The limit rests 0.50% over the last trade but never below your purchase
+                               price net of costs, good for 3 sessions. Shares under a written call or
+                               in a working sell are excluded at the broker, so this cannot go naked. #}
+                            <form method="post" action="/portfolio/holdings/{{h.symbol}}/direct-sell" class="flex items-center gap-1"
+                                  onsubmit="return this.shares.value > 0 && confirm('Sell ' + this.shares.value + ' {{h.symbol}} shares, limit 0.50% over the last trade but never below your purchase price, good for 3 sessions?');">
+                                <input type="number" name="shares" min="1" step="1" placeholder="#" required
+                                       class="w-14 px-1 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs text-right"
+                                       title="Shares to sell. You hold {{h.shares}}; shares under a written call are not sellable here.">
+                                <button type="submit" class="px-2 py-0.5 rounded bg-rose-900 hover:bg-rose-800 text-rose-100 text-xs">Sell</button>
+                            </form>
                         </td>
                     </tr>
                     {% endfor %}
