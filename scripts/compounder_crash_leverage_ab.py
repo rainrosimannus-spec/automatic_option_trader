@@ -53,10 +53,22 @@ START_CAPITAL = yf.START_CAPITAL
 OUT = "data/compounder_crash_leverage_ab.jsonl"
 
 # depth -> extra leverage on the TARGET. Keys are drawdown fractions, checked deepest-first.
+# Arms are callables of (dd, days_since_peak). days_since_peak is the velocity axis: 30 years of SPY
+# say it predicts recovery hard — trough within 60 trading days recovers in 32-46, trough after 150
+# days takes 664. Every deep (>=30%) drawdown in 30y was SLOW except COVID; every rapid one was too
+# shallow to trigger a depth ladder (1998 -19%/30d, 2025 tariff -19%/34d, 2024 -8%, 2026 -9%).
+#
+# small30 exists to BREAK A CONFOUND: `ladder` differs from `all30` both by having a second step AND
+# by starting smaller (7.5 vs 15). If small30 matches ladder, the deeper step earns nothing and the
+# whole effect is "take less at the first tier".
 ARMS = {
-    "current": [],
-    "all30":   [(0.30, 0.150)],
-    "ladder":  [(0.50, 0.150), (0.40, 0.1125), (0.30, 0.075)],
+    "off":       lambda dd, dsp: 0.0,
+    "all30":     lambda dd, dsp: 0.150 if dd >= 0.30 else 0.0,
+    "small30":   lambda dd, dsp: 0.075 if dd >= 0.30 else 0.0,
+    "ladder":    lambda dd, dsp: 0.1125 if dd >= 0.40 else (0.075 if dd >= 0.30 else 0.0),
+    "velo+ladd": lambda dd, dsp: (0.150 if (dd >= 0.18 and dsp <= 45) else
+                                  (0.1125 if dd >= 0.40 else (0.075 if dd >= 0.30 else 0.0))),
+    "velo_only": lambda dd, dsp: 0.150 if (dd >= 0.18 and dsp <= 45) else 0.0,
 }
 # Report buckets for "how much it buys at each crash depth".
 BUCKETS = [(0.00, 0.10, "0-10%"), (0.10, 0.20, "-10 to -20"), (0.20, 0.30, "-20 to -30"),
@@ -92,6 +104,11 @@ SHAPES = {
     # 2000-02-like: three distinct legs to -49% over ~30 months, then a long climb.
     "bear_2000": [(0, 1.00), (130, 0.85), (180, 0.92), (350, 0.72), (410, 0.80),
                   (610, 0.51), (910, 0.75)],
+    # 2025 tariff shock, from real SPY: -19.0% in 34 trading days, back to the peak in 55 more.
+    "tariff_2025": [(0, 1.00), (34, 0.81), (89, 1.00), (200, 1.08)],
+    # 2022, from real SPY: -25.4% over 195 days, recovered after 318 more. The slow trap the
+    # velocity tier must NOT fire into.
+    "bear_2022":   [(0, 1.00), (195, 0.746), (513, 1.00), (600, 1.03)],
 }
 # RECOVERY SENSITIVITY — the sign of the leverage result turns on how far the market comes back, which
 # is the one thing unknowable when you borrow. Same multi-leg path to -49%, only the terminal level
@@ -115,6 +132,42 @@ def synth_factor(shape, n_days):
     return lvl
 
 
+def apply_ai_bubble(dates, OP, HI, LO, CL, i0, i1, uni, ai_trough=0.40, rest_trough=0.90,
+                    down_days=420, recover_days=900, recover_to=0.75):
+    """SECTOR-SPECIFIC crash: AI/tech names collapse, the rest barely move, SPY lands in between.
+
+    WHY THIS IS THE AWKWARD CASE. The crash gauge is SPY, but the book is 56.6% Technology-or-
+    breakthrough — about 1.7x as AI-exposed as the index. So an AI de-rating takes the BOOK down far
+    more than the GAUGE, and the leverage tiers (which read SPY) under-fire exactly when the book is
+    hurt most. Dot-com is the precedent: Nasdaq -78%, SPY -49%, and the Nasdaq took 15 years back.
+    Default recover_to=0.75 encodes "structural de-rating, not a dip".
+    """
+    ai = {u["symbol"] for u in uni
+          if u.get("sector") == "Technology" or u.get("tier") == "breakthrough"}
+    n = i1 - i0 + 1
+    def path(trough):
+        lvl = np.ones(n)
+        d1 = min(down_days, n - 1)
+        lvl[0:d1 + 1] = np.linspace(1.0, trough, d1 + 1)
+        d2 = min(d1 + recover_days, n - 1)
+        if d2 > d1:
+            lvl[d1:d2 + 1] = np.linspace(trough, trough + (recover_to - trough), d2 - d1 + 1)
+        lvl[d2:] = lvl[d2]
+        return lvl
+    lvl_ai, lvl_rest = path(ai_trough), path(rest_trough)
+    # SPY is the cap-weighted blend; ~34% of the index is the AI-exposed sleeve.
+    lvl_spy = 0.34 * lvl_ai + 0.66 * lvl_rest
+    OP2, HI2, LO2, CL2 = {}, {}, {}, {}
+    for sym in CL:
+        tgt = lvl_spy if sym == "SPY" else (lvl_ai if sym in ai else lvl_rest)
+        real = CL[sym][i0:i0 + n]
+        base = real[~np.isnan(real)][0] if np.any(~np.isnan(real)) else 1.0
+        f = np.where(real > 0, (base * tgt) / real, 1.0)
+        for src, dst in ((OP, OP2), (HI, HI2), (LO, LO2), (CL, CL2)):
+            a = src[sym].copy(); a[i0:i0 + n] = a[i0:i0 + n] * f; dst[sym] = a
+    return OP2, HI2, LO2, CL2, lvl_spy, lvl_ai
+
+
 def apply_synthetic(shape, dates, OP, HI, LO, CL, i0, i1):
     """Scale every name's OHLC from i0 onward so SPY traces `shape`. Warmup (<i0) untouched, so the
     252-day SMA/52w-high at i0 are real and the path starts from a genuine peak."""
@@ -130,6 +183,25 @@ def apply_synthetic(shape, dates, OP, HI, LO, CL, i0, i1):
             a[i0:i0 + n] = a[i0:i0 + n] * f
             dst[sym] = a
     return OP2, HI2, LO2, CL2, lvl
+
+
+
+def pick_peak_start(CL, lo, hi):
+    """First index in [lo,hi] where SPY sits at its own 252-day high — so an imposed path begins
+    from a real peak and the gauge's drawdown equals the path's, not the path plus whatever the
+    market was already doing. Falls back to the least-drawn-down index in range."""
+    spy = CL["SPY"]
+    best, best_ratio = lo, -1.0
+    for i in range(lo, min(hi, len(spy) - 1)):
+        w = spy[i - 251:i + 1]
+        if len(w) < 252 or np.isnan(w).any():
+            continue
+        ratio = spy[i] / np.nanmax(w)
+        if ratio >= 0.999:
+            return i
+        if ratio > best_ratio:
+            best, best_ratio = i, ratio
+    return best
 
 
 def leverage_for(dd, schedule):
@@ -153,10 +225,10 @@ def simulate(uni, dates, OP, HI, LO, CL, i0, i1, schedule, rate, preinvested=Fal
     ninput = {u["symbol"]: u for u in uni}
     shares = {s: 0.0 for s in syms}
     cash = START_CAPITAL                      # goes NEGATIVE when borrowing — that is the loan
-    rstate = ReserveState(peak=CL["SPY"][max(0, i0 - 1)], tranches_fired=0)
+    rstate = ReserveState(peak=CL["SPY"][i0], tranches_fired=0)
     prem, maxd = CC.entry_marketable_premium_pct, CC.entry_max_discount_pct
     by_bucket, peak_loan, interest_paid, blocked_days, derate_days = {}, 0.0, 0.0, 0, 0
-    pending, mv_series, rstate_dd = [], [], 0.0
+    pending, mv_series, rstate_dd, pk_idx = [], [], 0.0, i0
 
     if preinvested:
         # THE SCENARIO RAIN ASKED ABOUT: enter the window fully invested with NO dry powder, so the
@@ -210,7 +282,10 @@ def simulate(uni, dates, OP, HI, LO, CL, i0, i1, schedule, rate, preinvested=Fal
         spy_c = CL["SPY"][d]
         if np.isnan(spy_c):
             continue
+        prev_peak = rstate.peak
         rstate, dd = cmp.reserve_update(rstate, spy_c, tuple(CC.drawdown_tranches))
+        if rstate.peak > prev_peak:
+            pk_idx = d
         rstate_dd = dd
         unlocked = cmp.reserve_unlocked_fraction(rstate.tranches_fired, len(CC.drawdown_tranches))
         crash_active = dd >= CC.drawdown_tranches[0]
@@ -248,7 +323,7 @@ def simulate(uni, dates, OP, HI, LO, CL, i0, i1, schedule, rate, preinvested=Fal
         if nlv <= 0:
             break
         investable = nlv * (1 - CC.cash_buffer_pct)
-        lev = leverage_for(dd, schedule)
+        lev = schedule(dd, d - pk_idx)
         live_invest = investable * (CC.base_pct + (1 - CC.base_pct) * unlocked) * (1.0 + lev)
 
         targets = cmp.target_weights(ranked, TIER_BUDGETS, live_invest, CC.per_name_cap_pct,
@@ -323,6 +398,8 @@ def main():
     ap.add_argument("--rate", type=float, default=0.05, help="annual margin interest on the loan")
     ap.add_argument("--synthetic", choices=sorted(SHAPES), nargs="*",
                     help="run imposed market paths instead of the real windows")
+    ap.add_argument("--ai-bubble", action="store_true",
+                    help="sector-specific AI de-rating: AI names -60%, rest -10%, SPY in between")
     ap.add_argument("--preinvested", action="store_true",
                     help="enter each window FULLY INVESTED (no dry powder) — the scenario where "
                          "borrowing is the only funding left")
@@ -336,8 +413,26 @@ def main():
     print(f"margin interest charged at {a.rate:.1%}/yr on the loan "
           f"| START {START_CAPITAL:,.0f} | {len(uni)} names\n")
     rows = []
+    if a.ai_bubble:
+        i0 = pick_peak_start(CL, 260, 520); i1 = min(len(dates) - 2, i0 + 1340)
+        O2, H2, L2, C2, lspy, lai = apply_ai_bubble(dates, OP, HI, LO, CL, i0, i1, uni)
+        print("=" * 104)
+        print(f"  AI BUBBLE BURST   AI names trough -{(1-lai.min())*100:.0f}%   "
+              f"SPY trough -{(1-lspy.min())*100:.0f}%   "
+              f"SPY days below -30%: {int((lspy<=0.70).sum())}   book is 56.6% AI-exposed")
+        print("=" * 104)
+        hdr = f"  {'arm':<9}{'return':>9}{'max DD':>9}{'peak loan':>12}{'interest':>11}   " + \
+              "".join(f"{b[2]:>13}" for b in BUCKETS)
+        print(hdr); print("  " + "-" * (len(hdr) - 2))
+        for arm, sched in ARMS.items():
+            r = simulate(uni, dates, O2, H2, L2, C2, i0, i1, sched, a.rate, a.preinvested)
+            cells = "".join(f"{r['by_bucket'].get(b[2], 0.0)/1e6:>12.2f}M" for b in BUCKETS)
+            print(f"  {arm:<9}{r['ret_pct']:>8.1f}%{r['max_dd_pct']:>8.1f}%"
+                  f"{r['peak_loan']/1e6:>11.2f}M{r['interest']/1e3:>10.0f}k   {cells}")
+        print()
+        return
     if a.synthetic:
-        i0 = 300                                    # leaves a real 252-day warmup before the path
+        i0 = pick_peak_start(CL, 260, 520)   # a genuine 252-day high, after the warmup
         for shape in a.synthetic:
             n = len(SHAPES[shape][-1:][0]) and SHAPES[shape][-1][0] + 1
             i1 = min(len(dates) - 2, i0 + n)

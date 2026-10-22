@@ -220,7 +220,18 @@ class CompounderConfig(BaseModel):
     # loan_hard_limit_crash_pct 30. Raising it means raising those gates, i.e. spending the
     # survivability margin — do not do that without re-running the A/B.
     crash_leverage_enabled: bool = False
-    crash_leverage_ladder: list[tuple[float, float]] = [(0.50, 0.150), (0.40, 0.1125), (0.30, 0.075)]
+    # TWO steps, A/B'd 2026-10-22 across tariff_2025 / v_covid / bear_2022 / bear_2008 / bear_2000:
+    #   the -40% step EARNS ITS KEEP: +1.3pp (bear_2008) and +1.2pp (bear_2000) over a -30%-only arm
+    #   with the same first step, and zero cost elsewhere because -40% is never reached in the shallow
+    #   shapes. So -30% alone leaves money on the table.
+    #   the -50% step was DROPPED: it fired once in 30 years of SPY and for one day in bear_2008.
+    #   a VELOCITY tier (15% at -18% when the fall took <=45 days) was REJECTED: it LOST 0.5pp in the
+    #   2025 tariff shock it was designed for, won only in COVID which -30% already catches, and was
+    #   identical to this ladder in both deep bears — not worth adding a peak DATE to ReserveState.
+    # Residual, irreducible: when the recovery is incomplete (bear_2000, back to 0.75) leverage is
+    # net-negative — off +19.7% beats this ladder +18.0%. The ladder's job is to lose 1.7pp there
+    # instead of all-at-30%'s 4.1pp. That is the trade; no trigger design removes it.
+    crash_leverage_ladder: list[tuple[float, float]] = [(0.40, 0.1125), (0.30, 0.075)]
     drawdown_tranches: list[float] = [0.10, 0.20, 0.30]  # 20% reserve fires at these SPY drawdowns
     backstop_start_days: int = 90      # if no crash within ~3mo, start bleeding the reserve in
     backstop_bleed_days: int = 180     # ...fully deployed over the following ~6mo (never idle long)

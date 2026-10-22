@@ -12,7 +12,7 @@ import inspect
 from src.portfolio import compounder as cmp
 from src.portfolio.config import CompounderConfig
 
-LADDER = [(0.50, 0.150), (0.40, 0.1125), (0.30, 0.075)]
+LADDER = [(0.40, 0.1125), (0.30, 0.075)]
 
 
 # ── ships off ─────────────────────────────────────────────────────────────────
@@ -42,12 +42,13 @@ def test_steps_fire_at_their_depths():
     assert cmp.crash_leverage(0.399, LADDER, True) == 0.075
     assert cmp.crash_leverage(0.40, LADDER, True) == 0.1125
     assert cmp.crash_leverage(0.499, LADDER, True) == 0.1125
-    assert cmp.crash_leverage(0.50, LADDER, True) == 0.150
-    assert cmp.crash_leverage(0.80, LADDER, True) == 0.150      # no step beyond the last
+    # -50% was dropped: once in 30 years of SPY, one day in bear_2008. The top step stays 11.25%.
+    assert cmp.crash_leverage(0.50, LADDER, True) == 0.1125
+    assert cmp.crash_leverage(0.80, LADDER, True) == 0.1125     # no step beyond the last
 
 
 def test_deepest_step_wins_regardless_of_order():
-    assert cmp.crash_leverage(0.55, list(reversed(LADDER)), True) == 0.150
+    assert cmp.crash_leverage(0.55, list(reversed(LADDER)), True) == 0.1125
 
 
 def test_disarms_on_recovery_because_it_keys_off_LIVE_drawdown():
@@ -121,3 +122,14 @@ def test_arming_is_logged_loudly():
     src = inspect.getsource(PortfolioBuyer.run_compounder_scan)
     assert "compounder_crash_leverage_armed" in src
     assert "compounder_crash_leverage_pct" in src          # state key for the dashboard
+
+
+def test_the_40pct_step_is_what_the_ab_paid_for():
+    """A -30%-only schedule loses 1.2-1.3pp in both deep bears vs this two-step ladder, because the
+    deeper step is what deploys into the -40/-50 band (EUR 0.33M vs 0.13M in bear_2008)."""
+    cc = CompounderConfig()
+    assert len(cc.crash_leverage_ladder) == 2
+    depths = sorted(t for t, _ in cc.crash_leverage_ladder)
+    assert depths == [0.30, 0.40], depths
+    assert cmp.crash_leverage(0.35, cc.crash_leverage_ladder, True) == 0.075
+    assert cmp.crash_leverage(0.45, cc.crash_leverage_ladder, True) == 0.1125
