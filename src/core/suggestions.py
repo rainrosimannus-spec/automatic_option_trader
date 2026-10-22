@@ -132,6 +132,13 @@ REVIEW_ONLY_ACTIONS = {
     "sell_stock_review",          # annual review: sell entire position
     "reduce_position_review",     # annual review: reduce overweight position
     "sell_covered_call_review",   # annual review: sell covered call on profitable position
+    # The holdings-row Sell button. Mirrors review_orders.DIRECT_SELL_ACTION — the literal is
+    # repeated because src/core must not import src/portfolio. Membership here is what makes the
+    # card SENDABLE: without it approve_suggestion() falls through to the generic broker path,
+    # rewrites the status to "queued" and wipes the manual-approval marker, and then no executor
+    # owns the card at all (the portfolio one wants action="buy_stock", the options one wants
+    # source="options") — MKTX card #3668 sat inert through a whole open session on 2026-10-22.
+    "direct_sell_review",
 }
 
 # The note the dashboard's Approve button writes on a review card. It is the ONLY thing that lets

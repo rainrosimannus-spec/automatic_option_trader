@@ -129,3 +129,124 @@ def test_it_refuses_rather_than_quietly_selling_less():
     src = inspect.getsource(ro.request_holding_sell)
     i = src.index("qty > book.free_shares")
     assert "return False" in src[i:i + 300]
+
+
+# ── the handoff from the click to the executor ────────────────────────────────
+#
+# LIVE FAILURE 2026-10-22: card #3668 (MKTX, 349 shares) was created and approved correctly at
+# 14:25 and then sat inert through a whole open NASDAQ session — no order ever reached IBKR
+# ("review_sale_order_placed" had fired 0 times in the entire log; Rain's manual cancel came back
+# "no live IBKR order found"). Cause: DIRECT_SELL_ACTION was missing from REVIEW_ONLY_ACTIONS, so
+# approve_suggestion() skipped its review-card early return, fell through to the generic broker
+# path, rewrote the status to "queued" and wiped the manual-approval marker — and no executor owns
+# such a card (the portfolio one wants action="buy_stock", the options one source="options").
+#
+# Every test above this line passed while that was true: they all checked arithmetic, constants and
+# source text, never a card's journey from the click to approved_review_cards(). These do.
+
+from datetime import datetime, timedelta           # noqa: E402
+from types import SimpleNamespace                  # noqa: E402
+
+from sqlalchemy import create_engine               # noqa: E402
+from sqlalchemy.orm import sessionmaker            # noqa: E402
+
+import src.core.database as db_mod                 # noqa: E402
+import src.portfolio.models                        # noqa: E402 (registers the holdings table)
+from src.core.models import Base, SystemState      # noqa: E402
+from src.core.suggestions import (REVIEW_MANUAL_APPROVAL_NOTE, REVIEW_ONLY_ACTIONS,  # noqa: E402
+                                  TradeSuggestion, is_manual_review_approval)
+
+
+def test_the_action_is_a_review_only_action():
+    """The literal in src/core/suggestions.py and the constant here must never drift: src/core
+    cannot import src/portfolio, so nothing but this assertion ties them together. Membership is
+    what makes the card sendable at all — see the comment block above."""
+    assert ro.DIRECT_SELL_ACTION in REVIEW_ONLY_ACTIONS
+
+
+@pytest.fixture
+def sell_db(tmp_path, monkeypatch):
+    """A temp DB holding one 500-share position, with the broker faked and the market open."""
+    eng = create_engine(f"sqlite:///{tmp_path/'t.db'}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(eng)
+    src.portfolio.models.Base.metadata.create_all(eng)
+    monkeypatch.setattr(db_mod, "_engine", eng)
+    monkeypatch.setattr(db_mod, "_SessionLocal", sessionmaker(bind=eng))
+
+    import src.portfolio.connection as conn
+    from src.core.config import get_settings
+    monkeypatch.setattr(conn, "is_portfolio_connected", lambda: True)
+    monkeypatch.setattr(conn, "_ensure_event_loop", lambda: None)
+    monkeypatch.setattr(conn, "get_portfolio_ib", lambda: object())
+    monkeypatch.setattr(get_settings().portfolio, "ibkr_account", "")
+    # read_book itself is covered in tests/test_review_orders.py; here the subject is the handoff.
+    monkeypatch.setattr(ro, "read_book", lambda ib, sym, acct: ro.Book(
+        long_shares=500, avg_cost=10.0, short_call_shares=0,
+        working_stock_sells=0, working_call_sells=0))
+
+    from src.portfolio.models import PortfolioHolding
+    with db_mod.get_db() as db:
+        db.add(PortfolioHolding(symbol="ACME", name="Acme", exchange="SMART", currency="USD",
+                                sector="Tech", shares=500, avg_cost=10.0, total_invested=5000.0,
+                                current_price=12.0, total_dividends=0.0,
+                                first_bought=datetime.utcnow(), updated_at=datetime.utcnow(),
+                                tier="growth"))
+    return eng
+
+
+def _only_card():
+    with db_mod.get_db() as db:
+        rows = db.query(TradeSuggestion).all()
+        assert len(rows) == 1, f"expected exactly one card, got {len(rows)}"
+        r = rows[0]
+        return SimpleNamespace(id=r.id, status=r.status, note=r.review_note or "",
+                               action=r.action, quantity=r.quantity, expires_at=r.expires_at)
+
+
+def test_the_click_leaves_a_card_the_executor_will_actually_send(sell_db):
+    """The assertion whose absence let the live failure ship: after the click the card must be
+    APPROVED, carry the manual marker, and be returned by approved_review_cards() — which is the
+    only queue src/portfolio/review_orders.py ever reads."""
+    ok, msg = ro.request_holding_sell("ACME", "100")
+    assert ok is True, msg
+
+    card = _only_card()
+    assert card.action == ro.DIRECT_SELL_ACTION
+    assert card.status == "approved", f"not sendable: status is {card.status!r}"
+    assert is_manual_review_approval(card.note), f"marker lost: {card.note!r}"
+    assert card.note.startswith(REVIEW_MANUAL_APPROVAL_NOTE)
+    assert card.quantity == 100
+
+    assert (card.id, "ACME", ro.DIRECT_SELL_ACTION) in ro.approved_review_cards()
+
+
+def test_the_card_lives_the_full_five_sessions_not_until_tonight(sell_db):
+    """A GTD order rests for DIRECT_SELL_DAYS sessions, so the card must outlive today's close —
+    #3668 expired at 19:30 the same day because it took the generic end-of-session default."""
+    ok, _ = ro.request_holding_sell("ACME", "100")
+    assert ok is True
+    want = datetime.utcnow() + timedelta(hours=ro.HOLDINGS_SELL_EXPIRES_HOURS)
+    assert abs((_only_card().expires_at - want).total_seconds()) < 3600
+
+
+def test_the_auto_approve_switch_can_never_sell_shares(sell_db):
+    """A sell path must be hand-driven. With auto-approve ON for this source the card is still only
+    created pending — the approval comes from the click in request_holding_sell, nowhere else."""
+    from src.core.suggestions import create_suggestion
+    with db_mod.get_db() as db:
+        db.add(SystemState(key="auto_approve_rescreen", value="true"))
+    s = create_suggestion(symbol="ACME", action=ro.DIRECT_SELL_ACTION, quantity=100,
+                          source="rescreen", tier="growth", signal=ro.HOLDINGS_SELL_SIGNAL,
+                          rationale="x", current_price=12.0, rank=0, funding_source="n/a",
+                          expires_hours=ro.HOLDINGS_SELL_EXPIRES_HOURS)
+    assert s is not None
+    assert _only_card().status == "pending"
+
+
+def test_an_approved_direct_sell_blocks_the_compounder_from_buying_it_back(sell_db):
+    """The sale opens the biggest gap to target in the queue; without this block the buyer would
+    buy straight back into it. review_sale_blocks() keys off status + the manual marker, so this
+    only works once the card really is approved."""
+    ok, _ = ro.request_holding_sell("ACME", "100")
+    assert ok is True
+    assert "ACME" in ro.review_sale_blocks()

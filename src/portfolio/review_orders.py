@@ -758,8 +758,11 @@ def execute_review_stock_sale(suggestion_id: int) -> str:
             return _set(suggestion_id, "pending",
                         f"IBKR did not take the order ({status}{': ' + why if why else ''}) — nothing "
                         f"sold. Approve again to re-send.", reviewed_at=now)
+        # The lifetime shown must be the TIF actually sent, not always "today" (a direct sell is GTD).
+        lifetime = (f"good for {DIRECT_SELL_DAYS} sessions"
+                    if card["action"] == DIRECT_SELL_ACTION else "good for today")
         return _set(suggestion_id, "submitted",
-                    f"Sent to IBKR: SELL {qty} @ {order_price}, good for today "
+                    f"Sent to IBKR: SELL {qty} @ {order_price}, {lifetime} "
                     f"(order {ack.get('order_id')}; position before {book.long_shares})",
                     quantity=qty, limit_price=price_major, reviewed_at=now)
     except Exception as e:
