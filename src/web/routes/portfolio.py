@@ -430,6 +430,16 @@ async def portfolio_page(request: Request):
     holdings.sort(key=lambda _h: _h.market_value_base or 0, reverse=True)
     base_ccy_symbol = _ccy_sym.get((_base_ccy or "USD").upper(), (_base_ccy or "") + " ")
 
+    # Tier colour on each holding's name — same palette as the watchlist/suggestion badges on this page
+    # (dividend blue, growth emerald, breakthrough purple). Tier comes from the WATCHLIST row when it has
+    # one (a holding row keeps the tier of its first buy; the screen can since have re-tiered the name),
+    # else the holding's own, else growth — the same precedence _build_tier_breakdown uses.
+    _tier_of = {w.symbol: w.tier for w in watchlist if w.tier}
+    _tier_cls = {"dividend": "text-blue-300", "breakthrough": "text-purple-300", "growth": "text-emerald-300"}
+    for _h in holdings:
+        _h.tier_shown = _tier_of.get(_h.symbol) or _h.tier or "growth"
+        _h.tier_cls = _tier_cls.get(_h.tier_shown, "text-emerald-300")
+
     # Red "!" beside a holding the LAST monthly screen dropped but could not remove because the position
     # is open ("FLAGGED — OPEN POSITION BLOCKING REMOVAL" in the screener report). Source of truth is the
     # watchlist row's `pending_removal` flag, set on drop and CLEARED on re-admit (scheduler.py), so the
