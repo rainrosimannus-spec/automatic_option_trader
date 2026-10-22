@@ -205,6 +205,28 @@ def apply_sector_caps(targets: dict[str, float], sectors: dict[str, str],
 
 
 # ── 3. Crash reserve (drawdown tranches) ─────────────────────
+def crash_leverage(dd: float, ladder, enabled: bool = False) -> float:
+    """Extra leverage to put on the TARGET at a live drawdown of `dd`. 0.0 unless enabled.
+
+    Keyed to the LIVE drawdown on purpose. `tranches_fired` is monotonic and never resets, so keying
+    leverage to it would leave the book permanently levered after its first 30% drawdown; `dd` falls
+    back below the step as the market recovers and the leverage disarms itself. Deepest step wins, so
+    the ladder can be given in any order. A malformed step is skipped rather than raising — this sits
+    in the scan's hot path and a bad config must not stop the book from buying.
+    """
+    if not enabled or not ladder:
+        return 0.0
+    best = 0.0
+    for step in ladder:
+        try:
+            thresh, lev = float(step[0]), float(step[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if dd >= thresh and lev > best:
+            best = lev
+    return max(0.0, best)
+
+
 def reserve_update(state: ReserveState, market_price: float,
                    thresholds: tuple[float, ...] = (0.10, 0.20, 0.30)) -> tuple[ReserveState, float]:
     """Update trailing peak and fire tranches as drawdown crosses thresholds. Monotonic:

@@ -186,6 +186,41 @@ class CompounderConfig(BaseModel):
     # tomorrow. Runs on the same 15-min reprice sub-grid, extended past the bell. 0 disables. See
     # buyer._aftermarket. This is the "fill before close, else fill in the 60 min after" behaviour.
     aftermarket_deploy_minutes: int = 60
+    # ── CRASH LEVERAGE (2026-10-22, Rain: "if there's a real crash we borrow to buy — the only time
+    # to use leverage with wisdom"). SHIPS OFF. Enable only with the A/B in front of you.
+    #
+    # The bug it fixes: the margin sleeve below was never reachable. Targets are a share of NLV, so a
+    # falling market deflates holdings and targets TOGETHER and no gap opens. Measured on the live book
+    # 2026-10-22: a -30% crash on a fully deployed book buys ~EUR 96k (1.2% of NLV) and leaves
+    # EUR 1.17M of crash margin untouched. The gap binds, never the funding.
+    #
+    # The fix raises the TARGET while a deep drawdown is live:
+    #     live_invest = investable x (base_pct + (1-base_pct)*unlocked) x (1 + crash_leverage)
+    # DO NOT implement this by inflating nlv instead. nlv is the denominator of BOTH safety gates
+    # (loan_pct = borrowed/nlv, margin_pct = maint/nlv) plus the sector cap, the cash buffer, the
+    # order bounds and crash_margin itself. Inflating it by 15% would make a real 15% loan read as
+    # 13%, fire the hard stops late, loosen the sector cap to 34.5% and compute the margin sleeve on
+    # inflated equity — leverage on leverage, brakes off, at the worst possible moment.
+    #
+    # LADDER, not all-at-once, and keyed to the LIVE drawdown (never to tranches_fired, which is
+    # monotonic and would leave the book permanently levered after its first crash). Evidence from
+    # scripts/compounder_crash_leverage_ab.py over imposed multi-leg paths, fully invested, 5% carry:
+    #   bear_2008 (-50%, full recovery) : ladder +83.3% | all30 +81.7% | off +80.3%
+    #       all30 put ALL EUR 1.67M in at -30/-40 and had NOTHING below -40; the ladder deployed
+    #       EUR 0.37M deeper, at lower drawdown and ~half the interest.
+    #   bear_2000 (-49%, recovery to 0.75): off +18.7% BEATS all30 +16.5% and ladder +17.7%
+    #       -> leverage LOSES outright when the market does not come back.
+    #   recovery sweep: break-even is ~80-85% recovery; the ladder beats all30 at EVERY level.
+    #   fast V: all30 +2.0pp over the ladder — its only win, in a shape where every arm profits.
+    # Cost either way: +3-5pp of max drawdown on top of an already deep crash.
+    #
+    # Each step is (drawdown_fraction, extra_leverage). Checked deepest-first. The top step is bounded
+    # in practice by the loan gate: borrowing to 15% of NLV survives another -50% (loan/NLV 15 -> 30,
+    # exactly the crash hard stop), which is why 15% sits mid-way between loan_soft_floor_pct 10 and
+    # loan_hard_limit_crash_pct 30. Raising it means raising those gates, i.e. spending the
+    # survivability margin — do not do that without re-running the A/B.
+    crash_leverage_enabled: bool = False
+    crash_leverage_ladder: list[tuple[float, float]] = [(0.50, 0.150), (0.40, 0.1125), (0.30, 0.075)]
     drawdown_tranches: list[float] = [0.10, 0.20, 0.30]  # 20% reserve fires at these SPY drawdowns
     backstop_start_days: int = 90      # if no crash within ~3mo, start bleeding the reserve in
     backstop_bleed_days: int = 180     # ...fully deployed over the following ~6mo (never idle long)

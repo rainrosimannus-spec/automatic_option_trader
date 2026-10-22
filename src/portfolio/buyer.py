@@ -1325,7 +1325,18 @@ class PortfolioBuyer:
         # Compounder uses its own tier budgets (cc.tier_*) so the universe screener / classic
         # strategy aren't affected; leaders carry the higher cap.
         investable = nlv * (1 - cc.cash_buffer_pct)
-        live_invest = investable * (cc.base_pct + (1 - cc.base_pct) * unlocked)
+        # CRASH LEVERAGE (ships OFF). Raise the TARGET in a deep drawdown so a gap actually opens and
+        # the margin sleeve becomes reachable — without this, holdings and targets deflate together and
+        # a -30% crash buys ~1% of NLV with the whole sleeve unused. Applied HERE and nowhere else:
+        # nlv is left untouched because it is the denominator of both safety gates (see config.py).
+        _crash_lev = cmp.crash_leverage(dd, getattr(cc, "crash_leverage_ladder", None),
+                                        getattr(cc, "crash_leverage_enabled", False))
+        live_invest = investable * (cc.base_pct + (1 - cc.base_pct) * unlocked) * (1.0 + _crash_lev)
+        if _crash_lev > 0:
+            log.warning("compounder_crash_leverage_armed", leverage_pct=round(_crash_lev * 100, 2),
+                        drawdown_pct=round(dd * 100, 1), target_uplift=round(investable * _crash_lev),
+                        note="targeting ABOVE NLV on purpose — the book will borrow to close this gap")
+        self._store_state("compounder_crash_leverage_pct", str(round(_crash_lev * 100, 2)))
         tier_budgets = {
             "breakthrough": cc.tier_breakthrough,
             "dividend": cc.tier_dividend,
