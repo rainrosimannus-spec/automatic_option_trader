@@ -139,6 +139,9 @@ def _migrate_columns(engine):
         # IBKR lookup / event-loop race (July 2026)
         ("trade_suggestions", "opt_con_id", "INTEGER"),
         ("trade_suggestions", "trading_class", "VARCHAR(20)"),
+        # Durability picks — scarce-human-labour index + the five protected growth slots (Oct 2026)
+        ("portfolio_watchlist", "durability_score", "REAL"),
+        ("portfolio_watchlist", "durability_pick", "BOOLEAN DEFAULT 0"),
     ]
     from sqlalchemy import text
     with engine.connect() as conn:
@@ -161,6 +164,7 @@ def _migrate_columns(engine):
             ("portfolio_watchlist", "risk_total_penalty", "0.0"),
             ("portfolio_watchlist", "raw_score", "0.0"),
             ("portfolio_watchlist", "forward_growth_score", "0.0"),
+            ("portfolio_watchlist", "durability_pick", "0"),
             # Intraday-loss halt support (May 2026)
             ("positions", "unrealized_pnl", "0.0"),
         ]

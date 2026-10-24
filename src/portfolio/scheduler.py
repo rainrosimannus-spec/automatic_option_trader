@@ -629,6 +629,7 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                 dividend_count=cfg.tier_count_dividend,
                 breakthrough_count=cfg.tier_count_breakthrough,
                 options_count=_opts_count,
+                durability_protect_count=getattr(cfg, "tier_count_durability_picks", 5),
             )
 
             # Guard: if screener returned 0 stocks, abort — do not overwrite files
@@ -711,7 +712,10 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                             currency=score.currency,
                             sector=score.sector,
                             tier=score.tier,
-                            rationale=score.rationale if score.tier == "breakthrough" else None,
+                            rationale=(score.rationale if score.tier == "breakthrough"
+                                       else (f"Durability pick — {score.durability_note}" if getattr(score, "durability_pick", False) else None)),
+                            durability_score=getattr(score, "durability_score", None),
+                            durability_pick=bool(getattr(score, "durability_pick", False)),
                             growth_score=score.growth_score,
                             valuation_score=score.valuation_score,
                             quality_score=score.quality_score,
@@ -741,6 +745,15 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                         # Update rationale for breakthrough stocks
                         if score.tier == "breakthrough" and score.rationale:
                             w.rationale = score.rationale
+                        # Durability index + the five protected growth slots — re-derived every
+                        # screen, so a row that lost its slot is un-flagged here (never left stale).
+                        w.durability_score = getattr(score, "durability_score", None)
+                        _was_pick = bool(getattr(w, "durability_pick", False))
+                        w.durability_pick = bool(getattr(score, "durability_pick", False))
+                        if w.durability_pick:
+                            w.rationale = f"Durability pick — {getattr(score, 'durability_note', '')}"
+                        elif _was_pick and (w.rationale or "").startswith("Durability pick"):
+                            w.rationale = None
                         w.growth_score = score.growth_score
                         w.valuation_score = score.valuation_score
                         w.quality_score = score.quality_score
@@ -938,6 +951,9 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                 "reclassified": reclassified,
                 "breakthrough_scan": _bt_scan,
                 "growth_gate": _growth_gate,
+                # Durability picks: what the discovery call proposed, what passed the durable gate,
+                # the five protected names and the ordinary members they displaced.
+                "durability": getattr(screener, "_durability", {}),
                 "suggestions_created": [],
             }, indent=2))
 
@@ -1408,6 +1424,12 @@ def _review_existing_holdings_monthly(
             w.symbol: (w.pending_removal_reason or "")
             for w in db.query(_PWL_reason).filter(_PWL_reason.pending_removal == True).all()  # noqa: E712
         }
+        # The growth tier's durability picks (scarce-human-labour names the screen guarantees a
+        # slot at a 3% growth floor) are NOT judged by the growth drop-off rules below — a 5%
+        # grower is what they are meant to be. Their membership is the next screen's call.
+        _durability_picks = {
+            w.symbol for w in db.query(_PWL_reason).filter(_PWL_reason.durability_pick == True).all()  # noqa: E712
+        }
 
         # Check which symbols already have open covered call suggestions
         open_cc_symbols = {
@@ -1436,6 +1458,9 @@ def _review_existing_holdings_monthly(
 
         # Use tier from new screener results if available, else from holding
         tier = new_tiers.get(symbol, holding.tier or "growth")
+        # Growth-tier rules (drop-off sell card, quality sell-off card, growth-slowing CC card) apply
+        # to ordinary growth members only — see _durability_picks above.
+        _growth_rules = tier == "growth" and symbol not in _durability_picks
 
         try:
             current_price = get_stock_price(
@@ -1581,7 +1606,7 @@ def _review_existing_holdings_monthly(
         growth_v = None
         _growth_src = ""
         _growth_brk: dict = {}
-        if tier == "growth":
+        if _growth_rules:
             try:
                 _trend = get_growth_trend(symbol) if fmp_ok else None
                 _growth_src = "provider"
@@ -1606,7 +1631,7 @@ def _review_existing_holdings_monthly(
                                 msg="no revenue history from the provider or the broker — no growth-based card")
             except Exception as _e:
                 log.warning("monthly_review_growth_verdict_failed", symbol=symbol, error=str(_e))
-        if tier == "growth" and growth_v is not None:
+        if _growth_rules and growth_v is not None:
             try:
                 fmp = (get_full_fundamentals(symbol) or {}) if fmp_ok else {}
                 if fmp is not None:
@@ -1703,7 +1728,7 @@ def _review_existing_holdings_monthly(
         _already_carded = any(s_.get("symbol") == symbol and s_.get("action") in ("SELL", "CONSIDER SELL")
                               for s_ in suggestions)
         _q_drop = growth_gate.quality_dropout_from_reason(dropped_reason.get(symbol))
-        if tier == "growth" and not _already_carded and _q_drop and growth_gate.is_quality_selloff(_q_drop[0]):
+        if _growth_rules and not _already_carded and _q_drop and growth_gate.is_quality_selloff(_q_drop[0]):
             _q_score, _q_substance = _q_drop
             _growth_note = (f" Growth is not the problem: {growth_v.reason}."
                             if growth_v is not None and not growth_v.real_dropoff else "")
@@ -1812,7 +1837,7 @@ def _review_existing_holdings_monthly(
         # ── 4. SELL COVERED CALL ────────────────────────────
         # Dividend tier: above SMA + profitable + no open CC + enough shares
         # Growth tier: above SMA + profitable + a real growth drop-off (verdict from 1c)
-        growth_slowing = bool(tier == "growth" and growth_v is not None and growth_v.real_dropoff)
+        growth_slowing = bool(_growth_rules and growth_v is not None and growth_v.real_dropoff)
 
         cc_trigger = (
             pct_vs_sma > 15
@@ -1821,7 +1846,7 @@ def _review_existing_holdings_monthly(
             and symbol not in open_cc_symbols
             and (
                 tier == "dividend"
-                or (tier == "growth" and growth_slowing)
+                or (_growth_rules and growth_slowing)
             )
         )
         if cc_trigger:

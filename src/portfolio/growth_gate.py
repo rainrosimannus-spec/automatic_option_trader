@@ -232,6 +232,36 @@ def removal_reason(reject: dict) -> str:
     return f"growth gate: {detail}" if detail else "growth gate"
 
 
+DURABILITY_GROWTH_FLOOR_PCT = 3.0     # a durability pick needs only this much durable growth
+DURABILITY_MIN_MARKET_CAP_USD = 5e9   # ... and must be a large, established business
+
+
+def passes_durable_entry_gate(durable_pct: Optional[float], quality: Optional[float],
+                              market_cap_usd: Optional[float],
+                              floor_pct: float = DURABILITY_GROWTH_FLOOR_PCT,
+                              quality_floor: float = QUALITY_FLOOR,
+                              min_market_cap_usd: float = DURABILITY_MIN_MARKET_CAP_USD,
+                              quality_measured: bool = True) -> tuple[bool, str]:
+    """Entry gate for a DURABILITY PICK — a growth-tier slot reserved for a scarce-human-labour
+    business (Rain, 2026-10-24). Same quality floor as the growth gate (quality is the pillar that
+    may never be missing), a much lower growth floor (3% — Waste Management, Otis and Service Corp
+    grow mid-single digits and are exactly the names wanted), and a size floor so the pick is an
+    established franchise, not a roll-up story. Returns (ok, reason-if-not)."""
+    if durable_pct is None:
+        return False, "growth unknown"
+    if durable_pct < floor_pct:
+        return False, f"durable growth {durable_pct:.1f}% < {floor_pct:.0f}% durability floor"
+    if not quality_measured:
+        return False, "quality unmeasured — no return-on-capital or operating-margin data"
+    if quality is None or quality < quality_floor:
+        q = "n/a" if quality is None else f"{quality:.0f}"
+        return False, f"quality {q} < {quality_floor:.0f} floor"
+    if not market_cap_usd or market_cap_usd < min_market_cap_usd:
+        mc = "n/a" if not market_cap_usd else f"${market_cap_usd/1e9:.1f}B"
+        return False, f"market cap {mc} < ${min_market_cap_usd/1e9:.0f}B durability floor"
+    return True, ""
+
+
 def quality_dropout_from_reason(reason: Optional[str]) -> Optional[tuple[float, str]]:
     """(quality score, failures in substance) if the watchlist reason says the name left the tier
     on MEASURED quality, else None. The second element is "" when the screen found the score low

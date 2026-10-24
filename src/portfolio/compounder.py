@@ -45,6 +45,10 @@ class NameInput:
     sma200: float | None
     high_52w: float | None
     momentum_12_1: float | None
+    # One of the growth tier's five protected "durability" slots (scarce-human-labour business the
+    # monthly screen guarantees a place; see PortfolioConfig.tier_count_durability_picks). Only
+    # effect here: rank_universe lifts its rank score to the tier's median — nothing else changes.
+    durability_pick: bool = False
 
 
 @dataclass
@@ -57,6 +61,8 @@ class RankedName:
     price: float
     sma200: float | None
     high_52w: float | None
+    durability_pick: bool = False
+    raw_rank_score: float | None = None   # the rank before the durability floor, when it was lifted
 
 
 @dataclass
@@ -75,10 +81,32 @@ def fundamental_10x(n: NameInput) -> float:
     return max(0.0, s - (n.risk_penalty or 0.0))
 
 
+def durability_rank_floor(growth_ranks: list[float], quantile: float) -> float | None:
+    """The rank score a durability pick is lifted to: the `quantile` (0.50 = median) of the growth
+    tier's OWN rank scores, picks included. None when the tier has no ranked names. Pure, so the
+    buyer and the dashboard twin cannot disagree on it."""
+    if not growth_ranks:
+        return None
+    q = min(1.0, max(0.0, float(quantile)))
+    xs = sorted(growth_ranks)
+    pos = q * (len(xs) - 1)
+    lo, hi = int(pos), min(int(pos) + 1, len(xs) - 1)
+    return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
+
+
 def rank_universe(names: list[NameInput], w_fund: float = 0.70,
-                  w_mom: float = 0.30) -> list[RankedName]:
+                  w_mom: float = 0.30, durability_floor_q: float | None = 0.50) -> list[RankedName]:
     """Blend fundamental 10x score with momentum percentile. Names without a live
-    price are dropped (can't be sized); names without momentum get a neutral 0.5."""
+    price are dropped (can't be sized); names without momentum get a neutral 0.5.
+
+    Durability picks (NameInput.durability_pick, growth tier only): after every rank is computed
+    the way it always was, a pick's rank score is lifted to at least the growth tier's
+    `durability_floor_q` quantile (default the median). Rain, 2026-10-24: the picks are
+    scarce-human-labour businesses the screen guarantees a slot; sized by the raw growth-heavy
+    formula a 5%-grower would land at ~0.3-0.5% of the book, which defeats the purpose. The floor
+    sits at the median, never above it, so a pick can never become a leader by this route. Every
+    non-pick keeps exactly the rank it had — this is the only place the picks are treated
+    differently from any other growth row. `durability_floor_q=None` disables the lift."""
     have = [n for n in names if n.price and n.price > 0]
     moms = sorted(n.momentum_12_1 for n in have if n.momentum_12_1 is not None)
 
@@ -93,7 +121,15 @@ def rank_universe(names: list[NameInput], w_fund: float = 0.70,
         mp = mom_pct(n.momentum_12_1)
         rank = w_fund * s10x + w_mom * (mp * 100.0)
         out.append(RankedName(n.symbol, n.tier, round(s10x, 1), round(mp, 3),
-                              round(rank, 2), n.price, n.sma200, n.high_52w))
+                              round(rank, 2), n.price, n.sma200, n.high_52w,
+                              durability_pick=bool(getattr(n, "durability_pick", False))))
+    if durability_floor_q is not None and any(r.durability_pick and r.tier == "growth" for r in out):
+        floor = durability_rank_floor([r.rank_score for r in out if r.tier == "growth"], durability_floor_q)
+        if floor is not None:
+            for r in out:
+                if r.durability_pick and r.tier == "growth" and r.rank_score < floor:
+                    r.raw_rank_score = r.rank_score
+                    r.rank_score = round(floor, 2)
     out.sort(key=lambda r: -r.rank_score)
     return out
 
@@ -566,10 +602,12 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
             price=price, sma200=getattr(w, "sma_200", None),
             high_52w=getattr(w, "high_52w", None),
             momentum_12_1=getattr(w, "momentum_12_1", None),
+            durability_pick=bool(getattr(w, "durability_pick", False)),
         ))
     mom_known = {getattr(w, "symbol", None) for w in rows
                  if getattr(w, "momentum_12_1", None) is not None}
-    ranked = rank_universe(names, cc.rank_fund_weight, cc.rank_mom_weight)
+    ranked = rank_universe(names, cc.rank_fund_weight, cc.rank_mom_weight,
+                           durability_floor_q=getattr(cc, "durability_rank_floor_quantile", 0.50))
     rank_idx = {r.symbol: i + 1 for i, r in enumerate(ranked)}
     investable = max(0.0, nlv) * (1 - cc.cash_buffer_pct)
     # Targets are sized to the base sleeve plus whatever share of the crash reserve has actually
@@ -635,6 +673,9 @@ def build_signals_from_watchlist(rows, held: dict, nlv: float, cc, tier_alloc: d
             "underweight_pct": round(uw * 100, 0), "attractiveness": round(att, 3),
             "action": action,
             **({"action_note": review_sold[r.symbol]} if action == "review_sold" else {}),
+            **({"durability_pick": True,
+                "raw_rank_score": (round(r.raw_rank_score, 1) if r.raw_rank_score is not None else None)}
+               if r.durability_pick else {}),
         })
     return out
 

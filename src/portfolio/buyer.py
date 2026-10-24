@@ -1303,11 +1303,16 @@ class PortfolioBuyer:
                 high_52w=(a.high_52w if a else s.high_52w),
                 momentum_12_1=(getattr(a, "momentum_12_1", None) if a
                                else getattr(s, "momentum_12_1", None)),
+                durability_pick=bool(getattr(s, "durability_pick", False)),
             ))
         if not names:
             log.info("compounder_no_priceable_names"); return bought
 
-        ranked = cmp.rank_universe(names, cc.rank_fund_weight, cc.rank_mom_weight)
+        # Durability picks (the screen's five protected growth slots) are lifted to the growth
+        # tier's median rank INSIDE rank_universe — the dashboard twin calls the same function with
+        # the same quantile, so the two allocations cannot drift on this.
+        ranked = cmp.rank_universe(names, cc.rank_fund_weight, cc.rank_mom_weight,
+                                   durability_floor_q=getattr(cc, "durability_rank_floor_quantile", 0.50))
         rank_idx = {r.symbol: i + 1 for i, r in enumerate(ranked)}
         # Screener drop-out handling (freeze+buffer). A HELD name the monthly screener dropped keeps
         # drawing new capital under the old behaviour, diluting current members. When enabled, FREEZE

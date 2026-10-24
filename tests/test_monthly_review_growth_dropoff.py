@@ -389,3 +389,30 @@ def test_dividend_and_breakthrough_names_are_not_judged_on_growth_tier_quality(r
     review.sess.flush()
     cards = review.run()
     assert _cards_for(cards, "DIVQ") == [] and _cards_for(cards, "BTQ") == []
+
+
+# ── durability picks are not judged by the growth rules ───────────────────────────────────────
+
+def test_durability_pick_with_slow_growth_gets_no_growth_card(review):
+    """A durability pick (WM shape: 5% growth, scarce labour the company prices) holds one of the
+    growth tier's five protected slots at a 3% growth floor. The growth drop-off rules would call
+    5% a real drop-off and raise a sell card — they must not apply to a pick."""
+    from src.portfolio.models import PortfolioWatchlist
+    review.sess.add(PortfolioWatchlist(symbol="WM", name="Waste Management", tier="growth",
+                                       durability_pick=True, durability_score=88.0))
+    review.sess.flush()
+    review.hold("WM", pnl_pct=30.0, held_days=400)
+    review.trends["WM"] = _trend(5.0, 4.0, 3.0)        # a real drop-off by the growth gate's rule
+    review.fundamentals["WM"] = {"dividend_yield": 1.4}
+    review.state.sma = 80.0                              # well above trend too → would be a CC card
+    cards = review.run()
+    assert _cards_for(cards, "WM") == []
+
+
+def test_same_facts_on_an_ordinary_growth_name_still_card(review):
+    review.hold("ORD", pnl_pct=30.0, held_days=400)
+    review.trends["ORD"] = _trend(5.0, 4.0, 3.0)
+    review.fundamentals["ORD"] = {"dividend_yield": 1.4}
+    review.state.sma = 80.0
+    cards = review.run()
+    assert _cards_for(cards, "ORD") != []

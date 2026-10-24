@@ -86,6 +86,17 @@ class CompounderConfig(BaseModel):
     tier_growth: float = 0.65
     tier_breakthrough: float = 0.30
     tier_dividend: float = 0.05
+    # Durability picks (Rain, 2026-10-24): five growth-tier slots are reserved for the names whose
+    # product is SCARCE HUMAN LABOUR — work AI and robots will not do in 10-15 years, few people
+    # willing or able to do it, and the company sets the price or owns the asset (Cintas, WM,
+    # Welltower, HCA, APi type). The screen scores every growth candidate on a durability index and
+    # guarantees the top `tier_count_durability_picks` a place in the 60 (see PortfolioConfig).
+    # They stay ORDINARY growth rows for the buyer — same green/yellow gate, ladder and timing.
+    # The one sizing exception: the raw rank formula (growth-heavy) would size a 5%-grower at
+    # ~0.3-0.5% of the book, so a pick's rank score is lifted to at least this quantile of the
+    # growth tier's rank scores before conviction weighting (0.50 = the tier median → ~1% target,
+    # roughly a mid growth position). Applies to picks only; every other name is sized as before.
+    durability_rank_floor_quantile: float = 0.50
     # Base + crash reserve deployment — deploy the bulk within ~1 trading month, keep a small
     # crash hedge that bleeds in fast if no drawdown materializes.
     base_pct: float = 0.90             # deploy 90% as the fast-DCA'd base (10% parked crash reserve)
@@ -389,6 +400,18 @@ class PortfolioConfig(BaseModel):
     tier_count_dividend: int = 15
     tier_count_breakthrough: int = 25
     tier_count_growth: int = 60
+    # Durability picks inside the growth tier (CompounderConfig.durability_rank_floor_quantile has
+    # the thesis). The screen's AI pass scores every growth candidate 0-100 on durability; the top
+    # `tier_count_durability_picks` are guaranteed a growth slot, displacing the lowest-scored
+    # ordinary members when needed. A pick must still clear quality >= 50 (growth_gate.QUALITY_FLOOR)
+    # but only `durability_growth_floor_pct` of durable growth instead of the tier's 8%, and must be
+    # a large, established business (`durability_min_market_cap_usd`). Pass-through labour
+    # (staffing, collision repair, childcare) and AI-capex contractors are excluded in the prompt:
+    # scarce labour pays shareholders only when the company sets the price (Boyd Group, -51% in
+    # three years, is the counterexample), and the book already carries the AI-capex correlation.
+    tier_count_durability_picks: int = 5
+    durability_growth_floor_pct: float = 3.0
+    durability_min_market_cap_usd: float = 5e9
 
     # Put-entry mechanism
     put_entry: PutEntryConfig = PutEntryConfig()

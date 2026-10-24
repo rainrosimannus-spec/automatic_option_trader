@@ -138,6 +138,13 @@ class PortfolioWatchlist(Base):
     risk_total_penalty: Mapped[float] = mapped_column(Float, default=0.0)  # sum of all penalties
     raw_score: Mapped[float] = mapped_column(Float, default=0.0)  # pre-penalty composite score
 
+    # ── Durability (scarce-human-labour) index, written by the monthly screen ──
+    # 0-100 from the screen's AI pass; NULL for names it did not score (dividend, breakthrough,
+    # below the quality floor). `durability_pick` marks the growth rows that hold one of the five
+    # protected slots this month — the buyer lifts only THEIR rank score to the tier median.
+    durability_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    durability_pick: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Pending removal flag — set when stock drops off screened universe but has open position
     # Cleared automatically when position is closed or stock re-qualifies
     pending_removal: Mapped[bool] = mapped_column(Boolean, default=False)

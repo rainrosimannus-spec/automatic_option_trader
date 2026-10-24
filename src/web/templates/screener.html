@@ -243,6 +243,46 @@
     </div>
     {% endif %}
 
+    <!-- ═══ Durability picks (the growth tier's 5 protected scarce-labour slots) ═══ -->
+    {% set du = run_log.get('durability', {}) %}
+    {% if du and (du.get('picks') or du.get('proposed')) %}
+    {% set du_picks = du.get('picks', []) %}
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-1">🛠 Durability Picks</h2>
+        <div class="text-xs text-gray-500 mb-4">
+            Scarce human labour the company can price — AI and robots will not do the work in 10-15 years, few people will.
+            {{ du.get('indexed', 0) }} growth candidates scored · AI proposed {{ du.get('proposed', [])|length }} new names, {{ du.get('accepted', [])|length }} passed the durable gate
+            (quality ≥ 50, growth ≥ 3%, cap ≥ $5B) · {{ du_picks|length }} of {{ du.get('protect_count', 5) }} slots filled
+            {% if du.get('index_failed_batches') %}· <span class="text-amber-400">{{ du.get('index_failed_batches') }} index batch(es) failed, cached scores used</span>{% endif %}
+        </div>
+        {% if du_picks %}
+        <div class="space-y-1 mb-3">
+            {% for p in du_picks %}
+            <div class="flex items-start gap-3 text-sm border-b border-gray-800/50 pb-1">
+                <span class="font-mono font-bold text-sky-300 w-16 shrink-0">{{ p.symbol }}</span>
+                <span class="px-1.5 py-0.5 rounded text-xs shrink-0 bg-sky-900/50 text-sky-300" title="durability index 0-100">{{ p.durability_score|round|int }}</span>
+                <span class="px-1.5 py-0.5 rounded text-xs shrink-0 {% if p.passes_growth_gate %}bg-gray-800 text-gray-400{% else %}bg-amber-900/50 text-amber-300{% endif %}"
+                      title="growth score {{ p.growth_score }}, durable growth {{ p.durable_growth_pct }}%, quality {{ p.quality }}, ${{ p.market_cap_bn }}B">
+                    {% if p.passes_growth_gate %}{% if p.was_in_top %}in top-60 anyway{% else %}passes gate{% endif %}{% else %}gate bypassed ({{ p.durable_growth_pct }}% growth){% endif %}
+                </span>
+                <span class="text-gray-500 text-xs">{{ p.note }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% if du.get('displaced') %}
+        <div class="text-xs text-gray-500">Displaced from the growth tier:
+            {% for d in du.get('displaced') %}<span class="font-mono text-gray-400">{{ d.symbol }}</span> ({{ d.growth_score }}){% if not loop.last %}, {% endif %}{% endfor %}
+        </div>
+        {% endif %}
+        {% if du.get('rejected') %}
+        <div class="text-xs text-gray-600 mt-1">Proposed but failed the durable gate:
+            {% for d in du.get('rejected') %}<span class="font-mono">{{ d.symbol }}</span> ({{ d.reason }}){% if not loop.last %}, {% endif %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
     <!-- ═══ Growth Gate (kept out of the growth tier) ═══ -->
     {% set gg = run_log.get('growth_gate', {}) %}
     {% if gg %}

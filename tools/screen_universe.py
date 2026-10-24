@@ -1389,6 +1389,233 @@ def _get_breakthrough_candidates() -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# DURABILITY PICKS — scarce-human-labour businesses inside the growth tier
+# ─────────────────────────────────────────────────────────────────────────
+# Rain, 2026-10-24. The growth tier keeps its 60 names and 65% weight; five of the sixty slots are
+# guaranteed to the names whose product is human work that AI and robots will not do in 10-15
+# years, that few people are willing or able to do, and where the COMPANY sets the price or owns
+# the asset (Cintas, WM, Welltower, HCA, APi type). Three pieces, all best-effort — a failure in any
+# of them leaves the growth tier exactly as it was:
+#   1. discovery  — one AI call with web search proposes such names that are not yet in any pool;
+#                   each is scored normally, must pass the DURABLE gate (quality >= 50, durable
+#                   growth >= 3%, cap >= $5B), and is persisted to discovered_pool["growth"] so it is
+#                   a normal candidate from then on;
+#   2. the index  — one rubric prompt, 40 names per batch, scores every durable-gate-passing growth
+#                   candidate 0-100; cached in config/durability_index.yaml so a failed call keeps
+#                   last month's scores;
+#   3. protection — after the ordinary top-60 by growth score, the top five by durability are put in
+#                   (if not already there), displacing the lowest-scored ordinary members.
+# Why these exclusions are in the prompts: scarce labour pays shareholders only when the company
+# sets the price — Boyd Group (collision repair, insurers set the rate) lost half its value in the
+# three years the thesis "worked"; and the trades contractors of the AI build-out (Quanta, EMCOR
+# class) fell 20-37% with the semis in October 2026 — the book already carries that correlation.
+
+DURABILITY_INDEX_PATH = Path("config/durability_index.yaml")
+
+_DURABILITY_THESIS = """THE THESIS (what a "durability" business is):
+- Its product is HUMAN WORK that AI and robots will not be able to do, unsupervised, in the next
+  10-15 years: unstructured physical environments (old buildings, crawl spaces, sewers, patient
+  beds, roadsides, landfills), licensed trades where a human must sign off, hands-on care.
+- Few people are willing or able to do that work (dirty, dangerous, licensed, demographic cliff),
+  so the labour gets scarcer while demand holds or grows.
+- The COMPANY captures the scarcity: it sets the price (recurring contracts with escalators,
+  code-mandated inspections, emergency work, exclusive franchises) or owns the scarce asset the
+  labour works on (landfills, hospitals, senior housing, rights of way, installed bases).
+- It makes very good money in either world: if AI succeeds greatly, and if AI stalls.
+
+HARD EXCLUSIONS (score these 0-20 or do not propose them):
+- Pass-through labour where a THIRD PARTY sets the price: staffing agencies, collision/auto repair
+  paid by insurers, childcare, restaurants, contract catering with thin margins.
+- Contractors whose backlog is the AI data-centre / grid build-out (electrical, mechanical, power
+  infrastructure EPCs) — they trade as AI capex, which this portfolio already holds in size.
+- Information/software businesses whose moat is data or analysis AI can do (ratings, indices,
+  tax/legal software, media). Those may be fine growth names; they are not durability names.
+- Businesses that are merely "defensive" (staples, utilities, tobacco) without the scarce-labour
+  element."""
+
+_DURABILITY_RUBRIC = """SCORE 0-100 as the sum of five parts (be strict; a typical S&P name scores 20-40):
+  irreplaceable_work  0-30: how much of revenue is human work AI/robots cannot do in 10-15 years
+  scarce_workers      0-20: how scarce the willing/able workforce is and how fast it tightens
+  price_setter        0-25: does the company set the price or own the asset (vs a payer/insurer)
+  recurrence          0-15: recurring, contracted, regulated or emergency demand (vs cyclical/project)
+  two_worlds          0-10: earns well whether AI succeeds or stalls (not an AI-capex proxy)
+Subtract up to 30 if any HARD EXCLUSION applies."""
+
+
+def _build_durability_discovery_prompt(excluded_symbols: list[str], incumbents: list[str]) -> str:
+    excl = ", ".join(sorted(set(excluded_symbols)))[:12000]
+    inc = ", ".join(incumbents) if incumbents else "(none yet)"
+    return f"""You are screening for a long-term compounding equity portfolio (10-15 year horizon).
+
+{_DURABILITY_THESIS}
+
+TASK: propose up to 15 LISTED companies that fit the thesis and are NOT in the list below. Prefer
+large, established franchises (market cap above USD 5 billion) with a history of pricing power;
+include non-US listings where they are the best fit. Current incumbents in this role (for context,
+do not repeat them): {inc}
+
+ALREADY CONSIDERED — do not propose any of these: {excl}
+
+Return ONLY a JSON array, no markdown. One object per company:
+{{"symbol": "<ticker as listed on its primary exchange, share class with a space, e.g. BRK B>",
+  "exchange": "<IBKR exchange code: SMART for US, LSE, SBF, IBIS, AEB, EBS, SFB, TSE, ASX, SEHK, TSEJ>",
+  "currency": "<ISO>", "name": "<company>", "market_cap_usd": <number>,
+  "labour_moat": "<one line: the human work and why machines will not do it>",
+  "price_setter": "<one line: how the company captures the scarcity>",
+  "thesis": "<two sentences>"}}"""
+
+
+def _get_durability_candidates(excluded_symbols: list[str], incumbents: list[str]) -> list[dict]:
+    """Discovery call. Returns [] on any failure — discovery is optional; the index and the
+    protection still run on the names already in the pools."""
+    try:
+        text = _anthropic_messages(
+            _build_durability_discovery_prompt(excluded_symbols, incumbents),
+            max_tokens=8000, label="durability discovery", web_search=True).strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        cands = _loads_json_array_salvage(text)
+        out = []
+        for c in cands:
+            if isinstance(c, dict) and c.get("symbol"):
+                c["symbol"] = canonical_symbol(str(c["symbol"]).strip())
+                out.append(c)
+        print(f"  ✅ Durability discovery: {len(out)} proposals")
+        return out
+    except Exception as e:
+        print(f"  ❌ Durability discovery failed: {e}")
+        log.warning("durability_discovery_failed", error=str(e))
+        return []
+
+
+def _build_durability_index_prompt(batch: list[dict], previous_picks: list[str]) -> str:
+    prev = ", ".join(previous_picks) if previous_picks else "(none)"
+    return f"""You are scoring companies for a long-term compounding equity portfolio.
+
+{_DURABILITY_THESIS}
+
+{_DURABILITY_RUBRIC}
+
+Consistency: last month's top picks were {prev}. Score the same company the same way unless the
+facts changed; the scores are compared across months.
+
+Return ONLY a JSON object, no markdown: {{"<symbol>": {{"score": <0-100 integer>, "note": "<one line>"}}, ...}}
+Every symbol in the input must appear in the output.
+
+Companies (symbol, name, sector, exchange, durable revenue growth %/yr, quality 0-100, market cap USD bn):
+{json.dumps(batch, indent=1)}"""
+
+
+def _load_durability_cache(path: Path = None) -> dict:
+    path = path or DURABILITY_INDEX_PATH
+    try:
+        if path.exists():
+            data = yaml.safe_load(path.read_text()) or {}
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        log.warning("durability_cache_unreadable", path=str(path), error=str(e))
+    return {}
+
+
+def _assess_durability_index(candidates: list, previous_picks: list[str],
+                             path: Path = None) -> tuple[dict, int]:
+    """Score `candidates` (StockScore) 0-100 on the durability rubric, 40 per call. Returns
+    ({symbol: {"score", "note"}}, failed_batches). A symbol whose batch failed keeps its cached
+    score from the last run (if any) so one bad call does not reshuffle the picks."""
+    path = path or DURABILITY_INDEX_PATH
+    cached = (_load_durability_cache(path).get("scores") or {})
+    result: dict = {}
+    failed = 0
+    batch_size = 40
+    for i in range(0, len(candidates), batch_size):
+        batch = candidates[i:i + batch_size]
+        payload = [{"symbol": s.symbol, "name": s.name or s.symbol, "sector": s.sector or "",
+                    "exchange": s.exchange, "durable_growth_pct": (None if s.durable_growth_pct is None
+                                                                 else round(s.durable_growth_pct, 1)),
+                    "quality": round(s.quality_pillar or 0.0),
+                    "market_cap_usd_bn": round((s.market_cap or 0) / 1e9, 1)} for s in batch]
+        try:
+            text = _anthropic_messages(_build_durability_index_prompt(payload, previous_picks),
+                                       max_tokens=6000, label="durability index").strip()
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            data = json.loads(text.strip())
+            if not isinstance(data, dict):
+                raise ValueError("index answer is not a JSON object")
+            for s in batch:
+                v = data.get(s.symbol)
+                if isinstance(v, dict) and isinstance(v.get("score"), (int, float)):
+                    result[s.symbol] = {"score": float(max(0.0, min(100.0, v["score"]))),
+                                        "note": str(v.get("note") or "")[:200]}
+                elif isinstance(v, (int, float)):
+                    result[s.symbol] = {"score": float(max(0.0, min(100.0, v))), "note": ""}
+                elif s.symbol in cached:
+                    result[s.symbol] = dict(cached[s.symbol])
+            log.info("durability_index_batch_done", batch=i // batch_size + 1, scored=len(batch))
+        except Exception as e:
+            failed += 1
+            log.warning("durability_index_batch_failed", batch=i // batch_size + 1, error=str(e))
+            for s in batch:
+                if s.symbol in cached:
+                    result[s.symbol] = dict(cached[s.symbol])
+    return result, failed
+
+
+def _write_durability_cache(scores: dict, picks: list[str], path: Path = None) -> None:
+    path = path or DURABILITY_INDEX_PATH
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        header = ("# Durability index — auto-generated monthly by the screener (tools/screen_universe.py)\n"
+                  "# 0-100: scarce-human-labour business the company can price. The top 5 are the\n"
+                  "# growth tier's protected 'durability picks'. DO NOT edit manually.\n\n")
+        body = {"as_of": datetime.now().strftime("%Y-%m-%d %H:%M"), "picks": list(picks),
+                "scores": {k: {"score": round(v.get("score", 0.0), 1), "note": v.get("note", "")}
+                           for k, v in sorted(scores.items())}}
+        path.write_text(header + yaml.safe_dump(body, sort_keys=False, allow_unicode=True))
+    except Exception as e:
+        log.warning("durability_cache_write_failed", path=str(path), error=str(e))
+
+
+def apply_durability_protection(selected_growth: list, eligible: list, growth_count: int,
+                                protect_count: int) -> tuple[list, list, list]:
+    """Pure. Guarantee the top `protect_count` of `eligible` (by durability_score, ties by
+    portfolio_score) a place in the growth tier. Returns (new_selected_growth, picks, displaced).
+
+    A pick already inside the top-`growth_count` keeps its place and displaces nobody. A pick from
+    outside is added and the lowest-scored NON-pick member leaves, so the tier never exceeds
+    `growth_count`. An under-filled tier just gains the picks. Every pick is tagged
+    `durability_pick=True`; nothing else on any StockScore is changed."""
+    for s in selected_growth:
+        s.durability_pick = False
+    scored = [s for s in eligible if s.durability_score is not None]
+    scored.sort(key=lambda s: (-(s.durability_score or 0.0), -(s.portfolio_score or 0.0), s.symbol))
+    picks = scored[:max(0, int(protect_count))]
+    selected = list(selected_growth)
+    have = {s.symbol for s in selected}
+    for p in picks:
+        p.durability_pick = True
+        p.tier = "growth"
+        if p.symbol not in have:
+            selected.append(p)
+            have.add(p.symbol)
+    displaced = []
+    pick_syms = {p.symbol for p in picks}
+    while len(selected) > growth_count:
+        victims = [s for s in selected if s.symbol not in pick_syms]
+        if not victims:
+            break
+        v = min(victims, key=lambda s: ((s.portfolio_score or 0.0), s.symbol))
+        selected.remove(v)
+        displaced.append(v)
+    selected.sort(key=lambda s: -(s.portfolio_score or 0.0))
+    return selected, picks, displaced
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # AUGMENTATION SWAP PROPOSALS (Commit J+K — building blocks, no callers yet)
 # ─────────────────────────────────────────────────────────────────────────
 # Two functions that ask Claude for high-conviction company names that
@@ -3505,6 +3732,15 @@ class StockScore:
     quality_measured: bool = False   # real return-on-capital AND operating-margin figures exist
     quality_failures: list[str] = field(default_factory=list)   # failures in substance (growth_gate)
     fundamentals_source: str = ""    # "fmp", "ibkr", "fmp+ibkr", or "" when there is none
+    # Durability picks (Rain, 2026-10-24): the growth tier's five slots reserved for scarce-human-
+    # labour businesses. `durable_gate_ok` = quality >= 50, durable growth >= 3%, cap >= $5B
+    # (growth_gate.passes_durable_entry_gate); `durability_score` 0-100 from the screen's AI pass;
+    # `durability_pick` = holds one of the protected slots this run.
+    durable_gate_ok: bool = False
+    durable_gate_reason: str = ""
+    durability_score: Optional[float] = None
+    durability_note: str = ""
+    durability_pick: bool = False
     dividend_yield: float = 0
     dividend_total_return_score: float = 0
     options_available: bool = False
@@ -3725,9 +3961,14 @@ class UniverseScreener:
         dividend_count: int = 15,
         breakthrough_count: int = 25,
         options_count: int = 50,
+        durability_protect_count: int = 5,
     ) -> tuple[list[StockScore], list[StockScore]]:
         # Build merged universe (CANDIDATE_POOLS + discovered_pool - evicted)
         growth_universe = _get_growth_universe()
+        # Durability picks (see the DURABILITY PICKS section above) — run-log record.
+        self._durability = {"protect_count": int(durability_protect_count), "proposed": [],
+                            "accepted": [], "rejected": [], "indexed": 0, "index_failed_batches": 0,
+                            "picks": [], "displaced": []}
 
         if regions is None:
             regions = list(growth_universe.keys())
@@ -3807,6 +4048,89 @@ class UniverseScreener:
                     self._note_score_error(str(symbol), e, "dividend")
                 time.sleep(0.3)
 
+        print(f"PHASE 1d: Durability discovery via AI (scarce-human-labour names outside the pools)")
+        print(f"{'='*60}")
+        if durability_protect_count > 0:
+            try:
+                _dur_cache = _load_durability_cache()
+                _dur_incumbents = [str(x) for x in (_dur_cache.get("picks") or [])]
+                _dur_excl = sorted({s.symbol for s in all_scores}
+                                   | {str(sym) for pool in growth_universe.values() for sym in pool["symbols"]}
+                                   | {str(sym) for pool in _get_dividend_universe().values() for sym in pool["symbols"]})
+                _dur_props = _get_durability_candidates(_dur_excl, _dur_incumbents)
+                self._durability["proposed"] = [c.get("symbol") for c in _dur_props if c.get("symbol")]
+                _dur_additions = {"growth": []}
+                _dur_audit = None
+                try:
+                    from src.core.database import get_session_factory as _gsf
+                    _dur_audit = _gsf()()
+                except Exception as _e:
+                    log.warning("durability_audit_session_unavailable", error=str(_e))
+                for c in _dur_props:
+                    sym = c.get("symbol")
+                    if not sym or any(s.symbol == sym for s in all_scores):
+                        continue
+                    try:
+                        sc = self._score_stock(symbol=sym, exchange=c.get("exchange", "SMART"),
+                                               currency=c.get("currency", "USD"))
+                        self._timeout_streak = 0
+                    except BrokerNotAnswering:
+                        raise
+                    except Exception as e:
+                        self._note_score_error(sym, e, "growth")
+                        continue
+                    if sc is None:
+                        self._reject(sym, "no_data", tier="growth", source="durability")
+                        continue
+                    if not sc.durable_gate_ok:
+                        self._reject(sym, "durability_gate", detail=sc.durable_gate_reason, tier="growth",
+                                     source="durability", score=sc.portfolio_score)
+                        self._durability["rejected"].append({"symbol": sym, "reason": sc.durable_gate_reason})
+                        print(f"  ⛔ {sym:8s} | {sc.durable_gate_reason}")
+                        continue
+                    sc.tier = "growth"
+                    sc.durability_note = str(c.get("thesis") or c.get("labour_moat") or "")[:300]
+                    all_scores.append(sc)
+                    self._durability["accepted"].append(sym)
+                    _dur_additions["growth"].append({
+                        "symbol": sym, "exchange": sc.exchange, "currency": sc.currency,
+                        "region": _growth_region_for(sc.exchange, sc.currency),
+                        "score": float(sc.forward_growth_score or 0.0),
+                        "added_date": datetime.utcnow().strftime("%Y-%m-%d"),
+                        "thesis": ("durability: " + str(c.get("thesis") or ""))[:300]})
+                    if _dur_audit is not None:
+                        try:
+                            from src.portfolio.models import AugmentationAudit as _AA
+                            _dur_audit.add(_AA(run_date=datetime.utcnow(), tier="growth", proposed_symbol=sym,
+                                               proposed_score=float(sc.forward_growth_score or 0.0),
+                                               cutoff_score=0.0, accepted=True, reason="durability_discovery",
+                                               notes=f"thesis: {str(c.get('thesis') or '')[:300]}",
+                                               raw_proposal_json=json.dumps(c, default=str)))
+                        except Exception as _e:
+                            log.warning("durability_audit_row_failed", symbol=sym, error=str(_e))
+                    print(f"  ✅ {sym:8s} | Port: {sc.portfolio_score:5.1f} | growth {sc.durable_growth_pct or 0:.1f}% | "
+                          f"quality {sc.quality_pillar:.0f} | MCap ${sc.market_cap/1e9:.1f}B")
+                    time.sleep(0.3)
+                if _dur_audit is not None:
+                    try:
+                        _dur_audit.commit()
+                    except Exception as _e:
+                        _dur_audit.rollback(); log.warning("durability_audit_commit_failed", error=str(_e))
+                    finally:
+                        _dur_audit.close()
+                if _dur_additions["growth"]:
+                    _persist_augmentation_acceptances(_dur_additions)
+                print(f"  Durability discovery: {len(self._durability['accepted'])} accepted of "
+                      f"{len(self._durability['proposed'])} proposed")
+            except BrokerNotAnswering:
+                raise
+            except Exception as e:
+                print(f"  ❌ Durability discovery phase failed: {type(e).__name__}: {e}")
+                log.warning("durability_discovery_phase_failed", error=str(e))
+        else:
+            print("  (off — durability_protect_count = 0)")
+
+        print(f"\n{'='*60}")
         print(f"PHASE 2: Breakthrough scan via AI")
         print(f"{'='*60}")
 
@@ -4199,6 +4523,35 @@ class UniverseScreener:
                 audit_session.close()
 
         print(f"\n{'='*60}")
+        print(f"PHASE 2.6: Durability index (AI rubric, 40 names per call)")
+        print(f"{'='*60}")
+        _dur_scores: dict = {}
+        if durability_protect_count > 0:
+            try:
+                _div_syms_idx = {str(sym) for pool in _get_dividend_universe().values() for sym in pool["symbols"]}
+                _idx_cands = [s for s in all_scores
+                              if s.tier != "breakthrough" and s.symbol not in _div_syms_idx
+                              and (s.dividend_yield or 0.0) <= 2.5 and s.durable_gate_ok]
+                _prev_picks = [str(x) for x in (_load_durability_cache().get("picks") or [])]
+                _dur_scores, _failed = _assess_durability_index(_idx_cands, _prev_picks)
+                for s_ in _idx_cands:
+                    v = _dur_scores.get(s_.symbol)
+                    if v is not None:
+                        s_.durability_score = float(v.get("score", 0.0))
+                        if not s_.durability_note:
+                            s_.durability_note = str(v.get("note") or "")[:200]
+                self._durability["indexed"] = sum(1 for s_ in _idx_cands if s_.durability_score is not None)
+                self._durability["index_failed_batches"] = _failed
+                print(f"  {self._durability['indexed']} of {len(_idx_cands)} durable-gate names scored"
+                      f"{f', {_failed} batch(es) failed (cached scores used where available)' if _failed else ''}")
+                for s_ in sorted((x for x in _idx_cands if x.durability_score is not None),
+                                 key=lambda x: -x.durability_score)[:12]:
+                    print(f"    {s_.symbol:8s} durability {s_.durability_score:5.1f} | growth score {s_.portfolio_score:5.1f} | {s_.durability_note[:70]}")
+            except Exception as e:
+                print(f"  ❌ Durability index failed: {type(e).__name__}: {e}")
+                log.warning("durability_index_phase_failed", error=str(e))
+
+        print(f"\n{'='*60}")
         print(f"PHASE 3: Building portfolio universe")
         print(f"{'='*60}")
 
@@ -4260,6 +4613,42 @@ class UniverseScreener:
         dividend_candidates = [s for s in dividend_candidates if s.symbol not in breakthrough_symbols]
 
         selected_growth = growth_candidates[:growth_count]
+
+        # ── Durability protection: the top five by durability index are IN the growth tier ──────
+        # (Rain, 2026-10-24). Eligible = every non-breakthrough, non-dividend name that passed the
+        # DURABLE gate (quality >= 50, growth >= 3%, cap >= $5B) and was scored by the index — the
+        # growth gate's 8% floor does not apply to them. A pick already in the top-N costs nothing;
+        # a pick from outside displaces the lowest-scored ordinary member. Pure helper, tested alone.
+        if durability_protect_count > 0:
+            _dur_eligible = [s for s in all_scores
+                             if s.tier != "breakthrough" and s.symbol not in breakthrough_symbols
+                             and s.symbol not in _dividend_pool_symbols and (s.dividend_yield or 0.0) <= 2.5
+                             and s.durable_gate_ok and s.durability_score is not None]
+            _in_top_before = {s.symbol for s in selected_growth}
+            selected_growth, _dur_picks, _dur_displaced = apply_durability_protection(
+                selected_growth, _dur_eligible, growth_count, durability_protect_count)
+            for v in _dur_displaced:
+                self._reject(v.symbol, "displaced_by_durability", tier="growth", score=v.portfolio_score,
+                             detail=f"growth score {v.portfolio_score:.1f}: slot taken by a durability pick")
+            _pick_syms = {p.symbol for p in _dur_picks}
+            # A pick the growth gate had rejected is in the tier after all — drop its gate record so the
+            # run-log does not list it as "kept out".
+            self._rejects = [r for r in self._rejects
+                             if not (r.get("category") == "growth_gate" and r.get("symbol") in _pick_syms)]
+            self._durability["picks"] = [
+                {"symbol": p.symbol, "durability_score": round(p.durability_score or 0.0, 1),
+                 "growth_score": round(p.portfolio_score or 0.0, 1),
+                 "durable_growth_pct": (None if p.durable_growth_pct is None else round(p.durable_growth_pct, 1)),
+                 "quality": round(p.quality_pillar or 0.0), "market_cap_bn": round((p.market_cap or 0) / 1e9, 1),
+                 "passes_growth_gate": bool(p.growth_gate_ok), "was_in_top": p.symbol in _in_top_before,
+                 "note": p.durability_note[:200]} for p in _dur_picks]
+            self._durability["displaced"] = [{"symbol": v.symbol, "growth_score": round(v.portfolio_score or 0.0, 1)}
+                                             for v in _dur_displaced]
+            _write_durability_cache(_dur_scores, [p.symbol for p in _dur_picks])
+            print(f"\n  Durability picks ({len(_dur_picks)} of {durability_protect_count}): "
+                  + ", ".join(f"{p.symbol}({p.durability_score:.0f})" for p in _dur_picks)
+                  + (f" — displaced: {', '.join(v.symbol for v in _dur_displaced)}" if _dur_displaced else ""))
+
         selected_dividend = dividend_candidates[:dividend_count]
         selected_breakthrough = breakthrough_scores[:breakthrough_count]
 
@@ -4423,6 +4812,9 @@ class UniverseScreener:
         score.growth_gate_ok, score.growth_gate_reason = growth_gate.passes_entry_gate(
             score.durable_growth_pct, score.quality_pillar,
             quality_measured=score.quality_measured)
+        score.durable_gate_ok, score.durable_gate_reason = growth_gate.passes_durable_entry_gate(
+            score.durable_growth_pct, score.quality_pillar, score.market_cap,
+            quality_measured=score.quality_measured)
 
         # Detect complete-fundamentals-missing: when all three scorers returned
         # the exact default 50.0, neither FMP nor IBKR had fundamental data for
@@ -4523,6 +4915,12 @@ def write_screened_universe(stocks: list[StockScore], path: Path) -> None:
         if s.tier == "breakthrough":
             e["megatrend"] = s.megatrend
             e["rationale"] = s.rationale
+        if s.tier == "growth" and getattr(s, "durability_score", None) is not None:
+            e["durability_score"] = round(s.durability_score, 1)
+        if getattr(s, "durability_pick", False):
+            e["durability_pick"] = True
+            if getattr(s, "durability_note", ""):
+                e["durability_note"] = s.durability_note
         return e
 
     data = {

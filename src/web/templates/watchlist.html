@@ -128,6 +128,7 @@
                     <td class="px-3 py-2">
                         <span class="text-xs px-1.5 py-0.5 rounded
                           {% if s.tier=='growth' %}bg-sky-900/50 text-sky-300{% elif s.tier=='breakthrough' %}bg-fuchsia-900/50 text-fuchsia-300{% else %}bg-emerald-900/50 text-emerald-300{% endif %}">{{s.tier}}</span>
+                        {% if s.durability_pick %}<span class="ml-1 text-xs cursor-help" title="Durability pick — one of the growth tier's 5 protected slots: scarce human labour the company can price (AI/robots won't do it in 10-15y). Durability index {{ w.durability_score|round|int if w and w.durability_score is not none else '?' }}/100.{% if s.raw_rank_score is defined and s.raw_rank_score is not none %}&#10;Rank lifted to the growth-tier median for sizing (raw {{ s.raw_rank_score }}).{% endif %}{% if w and w.rationale %}&#10;&#10;{{ w.rationale|e }}{% endif %}">🛠</span>{% endif %}
                     </td>
                     <td class="px-3 py-2 text-right font-medium">{{"{:.1f}".format(s.rank_score)}}</td>
                     <td class="px-3 py-2 text-right text-gray-300">{{"{:.0f}".format(s.s10x)}}</td>

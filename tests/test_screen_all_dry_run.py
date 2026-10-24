@@ -38,6 +38,10 @@ SPECIAL = {
     "ALAB":   (45.0, False, 60e9),     # member between $50B and $100B: stays
 }
 FRESH = ["NEWBT", "GRADNEW", "BIGNEW", "TINY"]
+# Durability discovery proposal: a scarce-labour name with 5% growth — fails the growth gate,
+# passes the durable gate, and the fake index gives it the top score, so it MUST land in growth.
+DURABLE_NEW = "DURNEW"
+SPECIAL[DURABLE_NEW] = (20.0, False, 90e9)
 
 
 def _fake_score(symbol, exchange, currency):
@@ -52,10 +56,24 @@ def _fake_score(symbol, exchange, currency):
     s.growth_gate_reason = "" if gate else "durable growth 2.0% < 8% floor"
     s.durable_growth_pct = 20.0 if gate else 2.0
     s.quality_pillar = 70.0 if gate else 30.0
+    # Durable gate (quality >= 50, growth >= 3%, cap >= $5B): every gate-passer, plus a slice of
+    # the gate-failers that are quality slow-growers (the WM / Otis shape), plus DURNEW.
+    slow_quality = (not gate) and (h % 7 == 0 or symbol == DURABLE_NEW)
+    if slow_quality:
+        s.durable_growth_pct, s.quality_pillar = 5.0, 65.0
+        s.growth_gate_reason = "durable growth 5.0% < 8% floor"
+    s.durable_gate_ok = (gate or slow_quality) and s.market_cap >= 5e9
+    s.durable_gate_reason = "" if s.durable_gate_ok else "below the durability floors"
     s.dividend_yield = 0.5
     s.dividend_total_return_score = float(40 + h % 40)
     s.options_available, s.options_score = True, float(score)
     return s
+
+
+def _fake_durability_index(candidates, previous_picks, path=None):
+    """Deterministic index: DURNEW tops it; everyone else by hash."""
+    return ({s.symbol: {"score": 100.0 if s.symbol == DURABLE_NEW else float(zlib.crc32(s.symbol.encode()) % 90),
+                        "note": f"note {s.symbol}"} for s in candidates}, 0)
 
 
 MEMBERS = ("VRT", "GEV", "ALAB")
@@ -130,6 +148,14 @@ def dry_run(monkeypatch, tmp_path):
     monkeypatch.setattr(su, "_get_growth_swaps", lambda *a, **k: [
         {"symbol": "SWAPOK", "exchange": "SMART", "currency": "USD", "region": "US", "thesis": "t"}])
     monkeypatch.setattr(su, "_get_dividend_swaps", lambda *a, **k: [])
+    # Durability picks: discovery proposes DURNEW (+ one name that fails the durable gate), the index
+    # is deterministic, and the cache file lives in the temp dir.
+    monkeypatch.setattr(su, "DURABILITY_INDEX_PATH", tmp_path / "config" / "durability_index.yaml")
+    monkeypatch.setattr(su, "_get_durability_candidates", lambda excluded, incumbents: [
+        {"symbol": DURABLE_NEW, "exchange": "SMART", "currency": "USD", "name": "Durable New Co",
+         "thesis": "landfills nobody else may build"},
+        {"symbol": "TINY", "exchange": "SMART", "currency": "USD", "name": "Tiny", "thesis": "too small"}])
+    monkeypatch.setattr(su, "_assess_durability_index", _fake_durability_index)
 
     def run(version):
         monkeypatch.setattr(su, "BREAKTHROUGH_PROMPT_VERSION", version)
@@ -164,7 +190,7 @@ def test_screen_runs_end_to_end_and_tiers_are_well_formed(dry_run, version):
     assert 0 < len(r.tiers["growth"]) <= 60
     assert 0 < len(r.tiers["breakthrough"]) <= 25
     assert len(r.tiers["dividend"]) <= 15
-    assert all(s.growth_gate_ok for s in r.universe if s.tier == "growth")
+    assert all(s.growth_gate_ok or s.durability_pick for s in r.universe if s.tier == "growth")
     assert "TINY" not in all_syms                       # $500M floor, both versions
     assert any(e["symbol"] == "SWAPOK" for e in r.pool["growth"]) == (_fake_score("SWAPOK", "SMART", "USD").growth_gate_ok
         and "SWAPOK" in all_syms or any(e["symbol"] == "SWAPOK" for e in r.pool["growth"]))  # swap path ran without error
@@ -275,3 +301,47 @@ def test_aliased_names_are_kept_out_of_the_options_universe(dry_run):
     from src.portfolio.symbols import is_aliased
     r = dry_run("v2")
     assert not [s.symbol for s in r.options if is_aliased(s.symbol)]
+
+
+# ── durability picks (the growth tier's five protected scarce-labour slots) ───────────────────
+
+def test_durability_picks_fill_five_growth_slots_without_growing_the_tier(dry_run):
+    r = dry_run("v2")
+    growth = [s for s in r.universe if s.tier == "growth"]
+    picks = [s for s in growth if s.durability_pick]
+    assert len(growth) <= 60
+    assert len(picks) == 5
+    assert len(r.screener._durability["picks"]) == 5
+    # the picks ARE the top five by index among durable-gate names outside breakthrough/dividend
+    eligible = [s for s in r.all_scores if s.tier != "breakthrough" and s.durable_gate_ok
+                and s.durability_score is not None and s.dividend_yield <= 2.5]
+    top5 = sorted(eligible, key=lambda s: (-s.durability_score, -s.portfolio_score, s.symbol))[:5]
+    assert {s.symbol for s in picks} == {s.symbol for s in top5}
+    assert all(s.durable_gate_ok for s in picks)
+
+
+def test_a_discovered_slow_grower_bypasses_the_growth_gate_and_is_persisted(dry_run):
+    r = dry_run("v2")
+    assert DURABLE_NEW in r.tiers["growth"]
+    sc = next(s for s in r.universe if s.symbol == DURABLE_NEW)
+    assert sc.durability_pick and not sc.growth_gate_ok and sc.durable_gate_ok
+    assert DURABLE_NEW in r.screener._durability["accepted"]
+    assert any(e["symbol"] == DURABLE_NEW and e["thesis"].startswith("durability:") for e in r.pool["growth"])
+    # its growth-gate verdict is not reported as "kept out"
+    assert not any(x["symbol"] == DURABLE_NEW and x["category"] == "growth_gate" for x in r.screener._rejects)
+    # the gate-failing proposal was refused and recorded
+    assert "TINY" not in [s.symbol for s in r.universe]
+    assert any(d["symbol"] == "TINY" for d in r.screener._durability["rejected"])
+
+
+def test_displaced_members_are_the_lowest_scored_ordinary_names(dry_run):
+    r = dry_run("v2")
+    growth = [s for s in r.universe if s.tier == "growth"]
+    displaced = r.screener._durability["displaced"]
+    if displaced:   # only when the tier was full before protection
+        worst_kept = min(s.portfolio_score for s in growth if not s.durability_pick)
+        assert all(d["growth_score"] <= worst_kept for d in displaced)
+        assert all(r.rejects[d["symbol"]]["category"] == "displaced_by_durability" for d in displaced)
+    cache = yaml.safe_load(su.DURABILITY_INDEX_PATH.read_text())
+    assert set(cache["picks"]) == {s.symbol for s in growth if s.durability_pick}
+    assert DURABLE_NEW in cache["scores"]
