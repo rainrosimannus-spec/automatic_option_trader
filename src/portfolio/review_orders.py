@@ -86,6 +86,12 @@ REBUY_BLOCK_DAYS = 90
 MAX_ATTEMPTS = 10
 # A just-placed order is not judged "ended" before its status has had time to arrive.
 RECONCILE_GRACE_SECONDS = 90
+# A card the executor claimed ("executing") but never resolved — the process was restarted mid-send,
+# or the send hung on a slow gateway (ASTS 2026-10-20: claimed at 13:35 UTC, the job hung for an hour,
+# the 14:36 restart killed it, and the card sat on "Sending to IBKR" for six days because nothing
+# looked at "executing" again) — is recovered once it is this old. On the first pass after a start
+# every such card is recovered at once: nothing can be in flight in a process that has just begun.
+EXECUTING_STALE_SECONDS = 600
 
 _DONE = ("Filled", "Cancelled", "ApiCancelled", "Inactive", "Rejected")
 _PARTLY = "Partly filled"
@@ -614,12 +620,13 @@ def _retry_or_release(suggestion_id: int, reason: str) -> str:
 
 
 def _claim(suggestion_id: int) -> bool:
-    """approved -> executing, atomically, so two passes can never both send the order."""
+    """approved -> executing, atomically, so two passes can never both send the order. Stamps the
+    claim time so recover_stuck_executing() can tell a send in progress from one that died."""
     from src.core.suggestions import TradeSuggestion
     with get_db() as db:
         n = db.query(TradeSuggestion).filter(
             TradeSuggestion.id == suggestion_id, TradeSuggestion.status == "approved",
-        ).update({"status": "executing"}, synchronize_session=False)
+        ).update({"status": "executing", "reviewed_at": datetime.utcnow()}, synchronize_session=False)
         return n == 1
 
 
@@ -966,6 +973,56 @@ def reconcile_review_orders() -> int:
     return settled
 
 
+def recover_stuck_executing(stale_seconds: float = EXECUTING_STALE_SECONDS) -> int:
+    """Settle review cards left in "executing" by a restart, a crash or a hung send. The broker
+    decides: a working sell order of the card's kind means the order did go out -> "submitted", and
+    the reconcile pass settles it from there; no working order -> back to "pending" for a fresh
+    approval. Never re-sends anything. A card younger than `stale_seconds` may still be on its way
+    and is left alone. Returns the count recovered."""
+    from src.core.config import get_settings
+    from src.core.suggestions import REVIEW_ONLY_ACTIONS, TradeSuggestion
+    from src.portfolio.connection import _ensure_event_loop, get_portfolio_ib
+    now = datetime.utcnow()
+    with get_db() as db:
+        cards = [(s.id, s.symbol, s.action, s.reviewed_at)
+                 for s in db.query(TradeSuggestion).filter(
+                     TradeSuggestion.status == "executing",
+                     TradeSuggestion.action.in_(REVIEW_ONLY_ACTIONS)).all()]
+    cards = [c for c in cards if c[3] is None or (now - c[3]).total_seconds() >= stale_seconds]
+    if not cards:
+        return 0
+    _ensure_event_loop()
+    ib = get_portfolio_ib()
+    recovered = 0
+    for sid, symbol, action, since in cards:
+        book = read_book(ib, symbol, get_settings().portfolio.ibkr_account)
+        if book is None:
+            log.warning("review_card_stuck_unreadable", id=sid, symbol=symbol)
+            continue
+        is_call = action == CALL_ACTION
+        working = book.working_call_sells if is_call else book.working_stock_sells
+        stuck_min = int((now - since).total_seconds() // 60) if since else None
+        if working > 0:
+            # The reconcile pass settles a "submitted" card from the "before" figure in its note.
+            # The order is still working, so today's position is the best "before" we have (a
+            # partial fill before this point would be counted as never sold — the note says so).
+            marker = (f"short call shares before {book.short_call_shares}" if is_call
+                      else f"position before {book.long_shares}")
+            status = _set(sid, "submitted",
+                          f"Sent to IBKR — recovered: the executor was interrupted while sending, but a "
+                          f"working {'call' if is_call else 'sell'} order for it is at the broker "
+                          f"(position read at recovery; {marker})", reviewed_at=now)
+        else:
+            status = _set(sid, "pending",
+                          "Nothing sent: the executor was interrupted while sending this order (a restart "
+                          "or a hung gateway call) and IBKR shows no working order for it. Check the "
+                          "position, then approve again if still wanted.", reviewed_at=now)
+        log.info("review_card_recovered", id=sid, symbol=symbol, action=action, working=working,
+                 stuck_minutes=stuck_min, status=status)
+        recovered += 1
+    return recovered
+
+
 def approved_review_cards() -> list[tuple[int, str, str]]:
     """Hand-approved review cards still to be sent, oldest first, as (id, symbol, action)."""
     from src.core.suggestions import REVIEW_ONLY_ACTIONS, TradeSuggestion, is_manual_review_approval
@@ -977,10 +1034,19 @@ def approved_review_cards() -> list[tuple[int, str, str]]:
                 if is_manual_review_approval(s.review_note)]
 
 
+# True until the first pass of this process has run: that pass recovers every "executing" card
+# whatever its age, since a process that has just started cannot have a send in flight.
+_first_pass = True
+
+
 def run_review_orders() -> None:
-    """One pass: settle ended orders, then send every hand-approved card — at most ONE per name.
-    A sale and a call approved together on the same stock go a minute apart, so the second reads
-    the position after the first has landed and can never commit the same shares twice."""
+    """One pass: recover cards a dead send left in "executing", settle ended orders, then send every
+    hand-approved card — at most ONE per name. A sale and a call approved together on the same stock
+    go a minute apart, so the second reads the position after the first has landed and can never
+    commit the same shares twice."""
+    global _first_pass
+    recover_stuck_executing(0 if _first_pass else EXECUTING_STALE_SECONDS)
+    _first_pass = False
     reconcile_review_orders()
     seen: set[str] = set()
     for sid, symbol, action in approved_review_cards():

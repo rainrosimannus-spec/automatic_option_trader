@@ -663,3 +663,96 @@ def test_holdings_sell_call_route_is_synchronous():
     import inspect
     from src.web.routes import portfolio as routes
     assert not inspect.iscoroutinefunction(routes.holdings_sell_call)
+
+
+# ── Cards a dead send left in "executing" ──────────────────────────────────────────────────
+# ASTS 2026-10-20: the executor claimed the call card at the US open, hung on the gateway for an
+# hour, and a restart killed it. Nothing looked at "executing" again, so the card sat on "Sending
+# to IBKR…" for six days with no button. The broker decides what the card becomes.
+
+def _executing(action="sell_covered_call_review", age_minutes=30, qty=9):
+    with db_mod.get_db() as db:
+        s = TradeSuggestion(symbol="ACME", action=action, status="executing", source="rescreen",
+                            quantity=qty, review_note=MANUAL,
+                            reviewed_at=datetime.utcnow() - timedelta(minutes=age_minutes))
+        db.add(s)
+        db.flush()
+        return s.id
+
+
+def test_stuck_executing_card_with_no_order_at_the_broker_goes_back_to_pending(wired):
+    ib = wired["ib"] = FakeIB([_stk(qty=983)])
+    sid = _executing()
+    assert ro.recover_stuck_executing() == 1
+    card = _get(sid)
+    assert card.status == "pending" and "interrupted" in card.note
+    # nothing was re-sent, and the card is no longer anything the executor would send
+    ro.run_review_orders()
+    assert ib.placed == [] and _get(sid).status == "pending"
+
+
+def test_stuck_executing_card_whose_order_did_reach_the_broker_becomes_submitted(wired):
+    wired["ib"] = FakeIB([_stk(qty=983), _short_call(contracts=2)],
+                         open_trades=[_working(sec="OPT", right="C", qty=9)])
+    sid = _executing()
+    assert ro.recover_stuck_executing() == 1
+    card = _get(sid)
+    assert card.status == "submitted"
+    assert "short call shares before 200" in card.note     # what reconcile settles from later
+    # and the stock variant reads the stock position
+    wired["ib"] = FakeIB([_stk(qty=300)], open_trades=[_working(qty=300)])
+    sid2 = _executing(action="sell_stock_review", qty=300)
+    ro.recover_stuck_executing()
+    assert _get(sid2).status == "submitted" and "position before 300" in _get(sid2).note
+
+
+def test_a_send_in_progress_is_not_touched(wired):
+    wired["ib"] = FakeIB([_stk(qty=983)])
+    sid = _executing(age_minutes=1)
+    assert ro.recover_stuck_executing() == 0
+    assert _get(sid).status == "executing"
+
+
+def test_first_pass_after_a_start_recovers_regardless_of_age(wired, monkeypatch):
+    wired["ib"] = FakeIB([_stk(qty=983)])
+    sid = _executing(age_minutes=1)                 # young, but the process has just started
+    monkeypatch.setattr(ro, "_first_pass", True)
+    ro.run_review_orders()
+    assert _get(sid).status == "pending"
+    assert ro._first_pass is False
+    sid2 = _executing(age_minutes=1)                # second pass: a young card is a live send
+    ro.run_review_orders()
+    assert _get(sid2).status == "executing"
+
+
+def test_unreadable_broker_leaves_the_stuck_card_for_the_next_pass(wired):
+    wired["ib"] = FakeIB([])                          # positions not loaded
+    sid = _executing()
+    assert ro.recover_stuck_executing() == 0
+    assert _get(sid).status == "executing"
+
+
+def test_claim_stamps_the_time_so_age_is_measured_from_the_claim(wired):
+    sid = _card(action="sell_stock_review", qty=300)
+    with db_mod.get_db() as db:
+        s = db.query(TradeSuggestion).filter(TradeSuggestion.id == sid).first()
+        s.reviewed_at = datetime.utcnow() - timedelta(days=2)       # approved two days ago
+    assert ro._claim(sid)
+    with db_mod.get_db() as db:
+        s = db.query(TradeSuggestion).filter(TradeSuggestion.id == sid).first()
+        assert s.status == "executing"
+        assert (datetime.utcnow() - s.reviewed_at).total_seconds() < 60
+
+
+def test_suggestions_page_marks_only_an_old_executing_card_stuck(temp_db, monkeypatch):
+    from src.web.routes import suggestions as page
+    # the live session keeps rows readable after the session closes; the fixture's does not
+    monkeypatch.setattr(db_mod, "_SessionLocal", sessionmaker(bind=temp_db, expire_on_commit=False))
+    old = _executing(age_minutes=30)
+    young = _executing(age_minutes=1)
+    sent = _sent("Sent to IBKR: SELL 300 @ 99.8, good for today (order 7; position before 300)")
+    pending, _recent = page._get_suggestions_by_source("portfolio")
+    by_id = {s.id: s for s in pending}
+    assert by_id[old].stuck is True and by_id[old].stuck_minutes >= 30
+    assert by_id[young].stuck is False
+    assert by_id[sent].stuck is False                 # submitted cards keep their own Cancel button

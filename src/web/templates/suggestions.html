@@ -149,6 +149,21 @@
                     🛑 Cancel Order
                 </button>
             </form>
+            {% elif s.status == 'executing' and s.stuck %}
+            {# Claimed by the executor long ago and never resolved: the send died (a restart, a hung
+               gateway call). Nothing is in flight any more, so Cancel is safe; it also cancels any
+               live IBKR order found for the card, in case the order did get out. #}
+            <div class="w-24 px-3 py-2 rounded-lg text-center bg-amber-900/50 border border-amber-600/50"
+                 title="Claimed by the executor {{ s.stuck_minutes }} min ago and never resolved — the send was interrupted. The executor recovers it on its next pass; Cancel withdraws it now.">
+                <span class="text-amber-300 text-xs font-medium">📨 Sending<br>stuck</span>
+            </div>
+            <form method="post" action="/suggestions/cancel/{{ s.id }}"
+                  onsubmit="return confirm('This card has been sending for too long. Cancel it (and any live IBKR order found for it)?');">
+                <input type="hidden" name="source" value="{{ source }}">
+                <button class="w-24 px-4 py-2 rounded-lg font-medium bg-red-700 hover:bg-red-600 text-white text-sm transition">
+                    🛑 Cancel
+                </button>
+            </form>
             {% elif s.status == 'executing' %}
             {# Claimed by the executor — the order is being sent right now (a few seconds). No
                button: approving again would double it, and cancelling the card while the order is

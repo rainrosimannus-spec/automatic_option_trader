@@ -40,6 +40,10 @@ def _get_auto_approve_state(source: str) -> bool:
 # Statuses that mean "the order is already on its way, nothing left to approve": fetched and shown
 # separately from the cards awaiting a decision, and never offered an Approve button.
 _IN_FLIGHT = ("submitted", "executing")
+# An "executing" card older than this is not being sent any more — the send died (restart, hung
+# gateway call) and the card is stuck (ASTS 2026-10-20, six days on "Sending to IBKR…" with no
+# button). The page then offers Cancel; the executor recovers such cards on its own pass too.
+EXECUTING_STUCK_AFTER_SECONDS = 600
 
 _PAGE_SOURCES = {
     "portfolio": ("portfolio", "rescreen"),
@@ -64,6 +68,13 @@ def _get_suggestions_by_source(source: str):
             TradeSuggestion.status.in_(_IN_FLIGHT),
             TradeSuggestion.source.in_(sources),
         ).order_by(TradeSuggestion.created_at.desc()).all()
+        for s in in_flight:
+            since = s.reviewed_at or s.created_at
+            age = (datetime.utcnow() - since).total_seconds() if since is not None else 0.0
+            s.stuck = bool(s.status == "executing" and since is not None and age >= EXECUTING_STUCK_AFTER_SECONDS)
+            s.stuck_minutes = int(age // 60)
+            # Force-load before the session closes, as for `recent` below
+            _ = s.id, s.symbol, s.status, s.action, s.quantity, s.limit_price, s.strike, s.expiry, s.review_note, s.reviewed_at, s.source, s.created_at, s.opt_exchange
         # Prepend them so an order on its way shows at the top
         pending = in_flight + pending
 
