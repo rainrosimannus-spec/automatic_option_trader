@@ -26,7 +26,7 @@ from src.portfolio.models import (
     PortfolioHolding, PortfolioTransaction, PortfolioWatchlist,
     PortfolioPutEntry, PortfolioState,
 )
-from src.portfolio.analyzer import PortfolioAnalyzer, StockAnalysis
+from src.portfolio.analyzer import HistoryFarmDead, PortfolioAnalyzer, StockAnalysis
 from src.portfolio.config import PortfolioConfig
 from src.portfolio.venues import partition_tradable
 from src.portfolio.connection import _NON_SMART_EXCHANGES, _ensure_event_loop, get_portfolio_lock
@@ -1282,6 +1282,8 @@ class PortfolioBuyer:
             if self._is_market_open(s.currency, getattr(s, "exchange", None)) or _aftermarket(s.currency, cc.aftermarket_deploy_minutes):
                 try:
                     a = self.analyzer.analyze_stock(s.symbol, s.exchange, s.currency, tier=s.tier)
+                except HistoryFarmDead:
+                    raise               # abort the scan and free the lock — see job_portfolio_scan
                 except Exception as e:
                     log.warning("compounder_analyze_error", symbol=s.symbol, error=str(e))
                     a = None
@@ -3939,6 +3941,12 @@ class PortfolioBuyer:
                 else:
                     failed += 1
                     failed_exchanges[stock.exchange] = failed_exchanges.get(stock.exchange, 0) + 1
+            except HistoryFarmDead as e:
+                # Nothing further will price until the farm answers again; stop crawling and let
+                # the other portfolio jobs have the lock. The metrics already saved stand.
+                log.error("portfolio_metrics_aborted_history_farm_dead", updated=updated,
+                          failed=failed, error=str(e))
+                break
             except Exception as e:
                 failed += 1
                 failed_exchanges[stock.exchange] = failed_exchanges.get(stock.exchange, 0) + 1

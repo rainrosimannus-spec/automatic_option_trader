@@ -93,12 +93,27 @@ class StockAnalysis:
         self.momentum_12_1: float | None = None
 
 
+class HistoryFarmDead(RuntimeError):
+    """The broker's history farm has stopped answering: FARM_DEAD_AFTER names in a row got no
+    bars with every request running to its timeout. Raised out of the scan so the portfolio lock
+    is released at once instead of being held for a 34-second-per-name crawl through the whole
+    list (2026-10-29: 125 names, 80 minutes, every other portfolio job starved — the ESLT buy
+    never reached IBKR and the European window was lost). A quick "no data" answer (HMDS error
+    162 for a name the farm simply has nothing on) does NOT count: it returns in well under the
+    timeout and resets the streak."""
+
+
+FARM_DEAD_AFTER = 4          # consecutive names, each ~2 x BAR_TIMEOUT_S of silence
+BAR_TIMEOUT_S = 15           # per request (TRADES, then MIDPOINT)
+
+
 class PortfolioAnalyzer:
     """Analyze stocks for buy opportunities with tier-aware multi-timeframe signals."""
 
     def __init__(self, ib: IB, sma_period: int = 200, rsi_period: int = 14,
                  min_discount_pct: float = 5.0, rsi_oversold: float = 30.0):
         self.ib = ib
+        self._farm_silent_streak = 0      # names in a row whose bar requests all timed out
         # These are defaults — overridden per-tier in analyze_stock
         self.sma_period = sma_period
         self.rsi_period = rsi_period
@@ -323,6 +338,8 @@ class PortfolioAnalyzer:
 
             return analysis
 
+        except HistoryFarmDead:
+            raise                         # the scan must stop, not log this as one bad name
         except Exception as e:
             log.warning("portfolio_analysis_error", symbol=symbol,
                         error=str(e), error_type=type(e).__name__)
@@ -346,7 +363,9 @@ class PortfolioAnalyzer:
     def _fetch_bars(self, contract, max_period: int):
         """Fetch historical bars with TRADES→MIDPOINT fallback."""
         bars = None
+        silent = True            # every attempt ran to its timeout and returned nothing
         for what in ("TRADES", "MIDPOINT"):
+            t0 = time.monotonic()
             try:
                 with get_portfolio_lock():
                     bars = self.ib.reqHistoricalData(
@@ -357,12 +376,14 @@ class PortfolioAnalyzer:
                         whatToShow=what,
                         useRTH=False,
                         formatDate=1,
-                        timeout=15,
+                        timeout=BAR_TIMEOUT_S,
                     )
                 if bars and len(bars) > 50:
                     break
             except Exception:
                 pass
+            if bars or (time.monotonic() - t0) < BAR_TIMEOUT_S * 0.8:
+                silent = False   # answered (even "no data") — the farm is alive
             # Pacing gap between historical-data requests. Use a plain thread sleep, NOT
             # self.ib.sleep() — the latter drives the shared portfolio event loop while OUTSIDE
             # get_portfolio_lock(). That both (a) raced concurrent portfolio-loop jobs (IPO scans,
@@ -373,7 +394,22 @@ class PortfolioAnalyzer:
             # no lock held during the sleep. (Re-applies reverted 803b017 — the revert was for
             # failing to fix an unrelated startup burst, not for any regression.)
             time.sleep(2)  # IBKR pacing: max 60 requests per 10 min
+        self._note_farm_silence(bool(bars), silent)
         return bars
+
+    def _note_farm_silence(self, answered: bool, silent: bool) -> None:
+        """Count names whose every bar request timed out; raise HistoryFarmDead at the threshold.
+        Any answer — bars, or a quick refusal — resets the count."""
+        if answered or not silent:
+            self._farm_silent_streak = 0
+            return
+        self._farm_silent_streak += 1
+        if self._farm_silent_streak >= FARM_DEAD_AFTER:
+            log.error("portfolio_history_farm_dead", silent_names=self._farm_silent_streak,
+                      timeout_s=BAR_TIMEOUT_S)
+            raise HistoryFarmDead(
+                f"{self._farm_silent_streak} names in a row got no bars, every request running to "
+                f"its {BAR_TIMEOUT_S}s timeout")
 
     @staticmethod
     def _compute_composite_score(analysis: StockAnalysis, params: dict) -> float:

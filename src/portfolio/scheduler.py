@@ -173,12 +173,40 @@ def job_portfolio_health_check(cfg: PortfolioConfig):
         log.warning("portfolio_scan_liveness_check_failed", error=str(e))
 
 
-def job_portfolio_scan(cfg: PortfolioConfig):
-    """Scan watchlist for buy opportunities."""
+# A dead history farm (analyzer.HistoryFarmDead) gets ONE reconnect of the portfolio session per
+# this many seconds. 2026-10-29 a fresh session answered bars at once after 80 minutes of silence;
+# 2026-10-08 the farm was broken on both gateways for 16 h, so the reconnect is a cheap try, not a
+# cure, and must not be retried every pass.
+FARM_RECONNECT_EVERY_S = 1800
+_last_farm_reconnect = 0.0
+
+
+def _reconnect_for_dead_farm() -> bool:
+    """Fresh portfolio session after HistoryFarmDead, rate-limited. True when a reconnect ran."""
+    global _last_farm_reconnect
+    now = time.time()
+    if now - _last_farm_reconnect < FARM_RECONNECT_EVERY_S:
+        log.warning("portfolio_farm_reconnect_skipped",
+                    last_s_ago=int(now - _last_farm_reconnect))
+        return False
+    _last_farm_reconnect = now
+    try:
+        from src.portfolio.connection import reconnect_portfolio
+        reconnect_portfolio()
+        log.info("portfolio_farm_reconnected", connected=is_portfolio_connected())
+    except Exception as e:
+        log.error("portfolio_farm_reconnect_failed", error=str(e))
+    return True
+
+
+def job_portfolio_scan(cfg: PortfolioConfig) -> bool:
+    """Scan watchlist for buy opportunities. True on a clean completion, False when the scan did
+    not run to the end (disabled, raised, or aborted on a dead history farm)."""
 
     if not cfg.enabled:
-        return
+        return False
 
+    from src.portfolio.analyzer import HistoryFarmDead
     with get_portfolio_lock():
         try:
             ib = get_portfolio_ib()
@@ -189,8 +217,16 @@ def job_portfolio_scan(cfg: PortfolioConfig):
             global _last_successful_portfolio_scan
             _last_successful_portfolio_scan = time.time()
             log.info("portfolio_scan_job_done", bought=bought)
+            return True
+        except HistoryFarmDead as e:
+            # Stop crawling: every further name would time out too, and the lock this job holds
+            # is what the buy executor, trade sync and the other windows are waiting for.
+            log.error("portfolio_scan_aborted_history_farm_dead", error=str(e))
+            _reconnect_for_dead_farm()
+            return False
         except Exception as e:
             log.error("portfolio_scan_job_error", error=str(e))
+            return False
 
 
 def job_portfolio_aftermarket_fill(cfg: PortfolioConfig):
@@ -335,7 +371,18 @@ def job_portfolio_late_session_fill(cfg: PortfolioConfig):
     for ccy, day in open_now.items():
         _late_session_served[ccy] = day
     log.info("portfolio_late_session_fill_pass", venues=sorted(unserved))
-    job_portfolio_scan(cfg)          # serialized via get_portfolio_lock — safe alongside the 2h grid
+    ok = job_portfolio_scan(cfg)     # serialized via get_portfolio_lock — safe alongside the 2h grid
+    if ok is False:
+        # The scan did not run to the end (dead history farm, or it raised). The window is still
+        # open, so give it back to the sub-grid: the next 5-min tick retries — on the fresh session
+        # when the farm was the cause — instead of writing the venue off for the day.
+        _unlatch_late_session(unserved)
+
+
+def _unlatch_late_session(venues) -> None:
+    for ccy in venues:
+        _late_session_served.pop(ccy, None)
+    log.warning("portfolio_late_session_fill_unlatched", venues=sorted(venues))
 
 
 def job_portfolio_fx_treasury(cfg: PortfolioConfig):
