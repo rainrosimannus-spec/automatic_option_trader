@@ -276,20 +276,39 @@ def _build_tier_breakdown(holdings, fx_rates=None, tier_of: dict | None = None) 
     Breakthrough 20% while /watchlist (and the buyer, which allocates off the watchlist) said 13%.
     The watchlist tier is the one the capital is actually managed under, so it wins here; the
     holding tier is only the fallback for a name that has left the watchlist."""
-    from src.core.config import get_settings
-    _park = getattr(get_settings().portfolio, "cash_yield_symbol", None)
     # Everything in the account BASE currency (EUR). The old helper here was named _to_usd but fed
     # with IBKR's local→BASE rates, so non-USD names became euros while USD names passed through at
     # face value — a €/$ mix that summed ~€520k above Market Value (2026-10-07) and skewed the slices.
+    return {tier: b["value"] for tier, b in _tier_buckets(holdings, fx_rates, tier_of).items()}
+
+
+def _build_tier_returns(holdings, fx_rates=None, tier_of: dict | None = None) -> dict:
+    """{tier: return % on cost basis} for the Tier Allocation legend — the same definition the
+    sector / home-country pies use (value / basis − 1, both legs in BASE currency), so a tier that
+    holds one name agrees with that name's P&L% column. A tier with no cost basis maps to None and
+    the template prints nothing for it. Same watchlist-tier-first bucketing as the slices."""
+    out = {}
+    for tier, b in _tier_buckets(holdings, fx_rates, tier_of).items():
+        out[tier] = ((b["value"] / b["basis"] - 1) * 100) if b["basis"] > 0 else None
+    return out
+
+
+def _tier_buckets(holdings, fx_rates=None, tier_of: dict | None = None) -> dict:
+    """{tier: {"value", "basis"}} in BASE currency; park ETF → "cash". Shared by the slice sums
+    and the per-tier return so the two can never disagree on which name sits in which tier."""
+    from src.core.config import get_settings
+    _park = getattr(get_settings().portfolio, "cash_yield_symbol", None)
     _base = _portfolio_base_ccy(fx_rates)
-    tiers = {"dividend": 0, "growth": 0, "breakthrough": 0, "cash": 0}
+    buckets = {t: {"value": 0.0, "basis": 0.0} for t in ("dividend", "growth", "breakthrough", "cash")}
     for h in holdings:
         if _park and h.symbol == _park:
-            tiers["cash"] += _to_base(h.market_value or 0, h.currency, fx_rates, _base)
-            continue
-        tier = (tier_of or {}).get(h.symbol) or h.tier or "growth"
-        tiers[tier] = tiers.get(tier, 0) + _to_base(h.market_value or 0, h.currency, fx_rates, _base)
-    return tiers
+            tier = "cash"
+        else:
+            tier = (tier_of or {}).get(h.symbol) or h.tier or "growth"
+        b = buckets.setdefault(tier, {"value": 0.0, "basis": 0.0})
+        b["value"] += _to_base(h.market_value or 0, h.currency, fx_rates, _base)
+        b["basis"] += _to_base(getattr(h, "total_invested", 0) or 0, h.currency, fx_rates, _base)
+    return buckets
 
 
 # Categorical palette for the composition doughnuts. Six hues, validated for colour-blind
@@ -509,8 +528,9 @@ async def portfolio_page(request: Request):
 
     # Performance data
     perf = _build_portfolio_performance()
-    tiers = _build_tier_breakdown(holdings, fx_rates,
-                                  tier_of={w.symbol: w.tier for w in watchlist if w.tier})
+    _tier_of = {w.symbol: w.tier for w in watchlist if w.tier}
+    tiers = _build_tier_breakdown(holdings, fx_rates, tier_of=_tier_of)
+    tier_returns = _build_tier_returns(holdings, fx_rates, tier_of=_tier_of)
     performers = _build_top_performers(holdings)
 
     # Composition doughnuts — where the invested book actually sits, by sector and by the
@@ -803,6 +823,7 @@ async def portfolio_page(request: Request):
         "tier_growth": tiers.get("growth", 0),
         "tier_breakthrough": tiers.get("breakthrough", 0),
         "tier_cash": tiers.get("cash", 0),
+        "tier_returns": tier_returns,     # {tier: return % on cost basis | None}
         # Top performers (gainers) vs underperformers (losers), split by SIGN — not a fixed
         # top-5/bottom-5 slice (which hid the losers card entirely with <=5 holdings and could show
         # a name that's actually down as a "top performer"). `performers` is sorted P&L%-desc.

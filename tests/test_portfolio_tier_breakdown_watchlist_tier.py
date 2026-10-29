@@ -29,3 +29,14 @@ def test_name_off_the_watchlist_keeps_holding_tier():
     holdings = [_h("OLD", "breakthrough", 7.0)]
     out = _build_tier_breakdown(holdings, {"EUR": 1.0}, tier_of={"OTHER": "dividend"})
     assert out["breakthrough"] == 7.0
+
+
+def test_tier_returns_follow_same_buckets_as_slices():
+    from src.web.routes.portfolio import _build_tier_returns
+    holdings = [NS(symbol="VRT", tier="breakthrough", market_value=120.0, currency="EUR", total_invested=100.0),
+                NS(symbol="T", tier="dividend", market_value=90.0, currency="EUR", total_invested=100.0),
+                NS(symbol="NEW", tier="growth", market_value=0.0, currency="EUR", total_invested=0.0)]
+    r = _build_tier_returns(holdings, {"EUR": 1.0}, tier_of={"VRT": "growth"})
+    assert abs(r["growth"] - 20.0) < 1e-9   # VRT counted as growth, like the slice
+    assert r["breakthrough"] is None      # empty tier prints nothing
+    assert abs(r["dividend"] + 10.0) < 1e-9
