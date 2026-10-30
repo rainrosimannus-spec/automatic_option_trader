@@ -3743,7 +3743,9 @@ class PortfolioBuyer:
             _bid = price * 1.001
             _tick = _effective_tick(self.ib, contract, _bid,
                                     currency=self.cfg.cash_yield_currency)
-            order = LimitOrder("BUY", shares, _round_to_tick(_bid, _tick, "BUY"))
+            # Cent grid, same reason as the un-park sell: raw minTick 0.0001 vs market rule 0.005
+            # put the price off-grid and IBKR never accepted the order (Error 110, 2026-10-30).
+            order = LimitOrder("BUY", shares, _round_to_tick(_bid, max(_tick or 0.0, 0.01), "BUY"))
             order.tif = "DAY"
             order.outsideRth = _outside_rth_ok(self.cfg.cash_yield_currency)
             with get_portfolio_lock():
@@ -4601,11 +4603,18 @@ def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool
         # confirmed instead of firing it and walking away. The limit is a cap, not the fill price —
         # Xetra executes at the best bid — so the discount only has to clear the spread plus a day's
         # NAV drift on a money-market ETF (~0.01%); 0.2% is ample and bounds the worst case.
+        # Snap to a CENT, never finer. Without contract details _effective_tick returns IBKR's raw
+        # minTick (0.0001 for XEON) while the venue's market rule is 0.005: 2026-10-30 every un-park
+        # sell went out at 150.3497 and IBKR refused it (Error 110, "does not conform to the minimum
+        # price variation") — the order never existed, sat PendingSubmit for the 20 s wait, and the
+        # cancel came back 10147. A cent is a multiple of every grid this ETF can have (0.005 / 0.001
+        # / 0.0001), the SELL rounds UP so the cap only gets looser, and a cent on a 0.2% discount is
+        # noise. The park BUY below uses the same floor.
         try:
             _tick = _effective_tick(ib, contract, price, currency=park_ccy)
         except Exception:
             _tick = None
-        limit = _round_to_tick(price * (1.0 - _UNPARK_LIMIT_DISCOUNT), _tick, "SELL")
+        limit = _round_to_tick(price * (1.0 - _UNPARK_LIMIT_DISCOUNT), max(_tick or 0.0, 0.01), "SELL")
         order = LimitOrder("SELL", shares, limit)
         order.tif = "DAY"
         with get_portfolio_lock():

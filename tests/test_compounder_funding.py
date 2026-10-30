@@ -473,3 +473,18 @@ def test_unpark_unconfirmed_cancel_is_reported_and_fatal_for_same_ccy(park_open,
     assert _unpark_yield(ib, _cfg(), 50_000, settle_ccy="USD") is False
     assert ib.orders_cancelled == 1
     assert "portfolio_unpark_cancel_unconfirmed" in events
+
+
+class _FineTickIB(_RecordingIB):
+    """IBKR's raw minTick for XEON is 0.0001; the venue's market rule is 0.005. A limit snapped to
+    the raw tick (150.3497) is refused with Error 110 and never exists — 2026-10-30, every attempt."""
+    def reqContractDetails(self, *a, **k):
+        return [SimpleNamespace(minTick=0.0001, priceMagnifier=1, marketRuleIds="")]
+
+
+def test_unpark_limit_is_snapped_to_a_cent_not_the_raw_min_tick(park_open):
+    ib = _FineTickIB(cash=[("CashBalance", "USD", 0)], sgov_shares=5000, sgov_price=150.65)
+    assert _unpark_yield(ib, _cfg(), 300_000, settle_ccy="USD") is True
+    (_, order), = ib.placed
+    assert order.lmtPrice == round(order.lmtPrice, 2), order.lmtPrice      # on the cent grid
+    assert abs(order.lmtPrice - 150.35) < 1e-9                              # 150.65 × 0.998 = 150.3487 → SELL rounds UP
