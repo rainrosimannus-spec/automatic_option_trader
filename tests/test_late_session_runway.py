@@ -272,15 +272,15 @@ def test_only_currencies_on_the_watchlist_wake_the_job(monkeypatch):
 
 def test_one_pass_per_venue_window(monkeypatch):
     """Each venue gets exactly one pass, at the first 5-min tick after ITS 40-min window opens: Sydney
-    (05:31 for the 06:11 close), Tokyo (05:50 / 06:30), Hong Kong (07:30 / 08:10), Europe (15:00 /
-    15:40), London (15:10 / 15:50), US/Canada (19:20 / 20:00). Six passes a day for seven held
+    (05:31 for the 06:11 close), Tokyo (05:50 / 06:30), Hong Kong (07:30 / 08:10), London (14:50 /
+    15:30 — CLOSE_CAP, Rain 2026-10-30), Europe (15:00 / 15:40), US/Canada (19:20 / 20:00). Six passes a day for seven held
     currencies — before the minute-exact table the hour-rounded closes made Tokyo/Sydney and
     Europe/London coincide and it looked like four."""
     import src.portfolio.scheduler as sch
     monkeypatch.setattr(sch, "_watchlist_currencies", lambda: {"USD", "EUR", "JPY", "AUD", "HKD", "GBP", "CAD"})
     fired = [m for m in range(0, 24 * 60, 5)
              if _fire(monkeypatch, f"2026-09-22T{m // 60:02d}:{m % 60:02d}:00")]
-    assert [f"{m // 60:02d}:{m % 60:02d}" for m in fired] == ["05:35", "05:50", "07:30", "15:00", "15:10", "19:20"]
+    assert [f"{m // 60:02d}:{m % 60:02d}" for m in fired] == ["05:35", "05:50", "07:30", "14:50", "15:00", "19:20"]   # London 14:50 = 16:30 BST capped close − 40 (was 15:10 off IBKR's 16:50)
 
 
 def test_filter_fails_open(monkeypatch):

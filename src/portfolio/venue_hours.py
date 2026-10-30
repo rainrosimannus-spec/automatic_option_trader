@@ -43,7 +43,7 @@ MARKET_HOURS: dict[str, tuple[str, tuple[tuple[str, str], ...], tuple[int, ...]]
     "MXN": ("US/Central",          (("08:30", "15:00"),), MON_FRI),   # BMV keeps step with NYSE; IBKR zone US/Central
     "EUR": ("Europe/Berlin",       (("09:00", "17:40"),), MON_FRI),   # earliest EUR close: AEB/SBF 17:40 (BVME 17:42, IBIS/VSE/BM 17:45)
     "CHF": ("Europe/Zurich",       (("09:00", "17:40"),), MON_FRI),
-    "GBP": ("Europe/London",       (("08:00", "16:50"),), MON_FRI),
+    "GBP": ("Europe/London",       (("08:00", "16:30"),), MON_FRI),   # IBKR says 16:50 (post-close reporting); CLOSE_CAP below
     "NOK": ("Europe/Oslo",         (("09:00", "16:30"),), MON_FRI),
     "SEK": ("Europe/Stockholm",    (("09:00", "17:30"),), MON_FRI),
     "DKK": ("Europe/Copenhagen",   (("09:00", "17:00"),), MON_FRI),
@@ -61,6 +61,30 @@ MARKET_HOURS: dict[str, tuple[str, tuple[tuple[str, str], ...], tuple[int, ...]]
 EARLY_CLOSE: dict[str, dict[int, str]] = {
     "ILS": {4: "13:50"},
 }
+
+# currency -> latest close "HH:MM" we will ever use, applied AFTER the overlay. IBKR's liquidHours for
+# the LSE run to 16:50, but continuous trading ends 16:30 and the closing auction uncrosses by 16:35;
+# the last twenty minutes are trade reporting where a resting limit cannot fill. Keyed off 16:50 the
+# late-session window opened at 16:10 and the 2026-10-30 ABF bid had fifteen minutes of real market.
+# Rain 2026-10-30: London closes 16:30. A cap only ever LOWERS a close (half-days stay as the overlay
+# says); a session the cap would empty is dropped.
+CLOSE_CAP: dict[str, str] = {
+    "GBP": "16:30",
+}
+
+
+def _apply_close_cap(currency: str, sessions):
+    cap = CLOSE_CAP.get(currency)
+    if not cap or not sessions:
+        return sessions
+    out = []
+    for start, end in sessions:
+        capped = end.tzinfo.localize(datetime.combine(end.date(), hhmm(cap))) if hasattr(end.tzinfo, "localize") \
+            else end.replace(hour=hhmm(cap).hour, minute=hhmm(cap).minute, second=0, microsecond=0)
+        end = min(end, capped)
+        if end > start:
+            out.append((start, end))
+    return tuple(out)
 
 
 def hhmm(s: str) -> time:
@@ -191,15 +215,17 @@ def overlay_sessions(currency: str | None, now: datetime,
 
 def sessions_for(currency: str | None, now: datetime,
                  exchange: str | None = None) -> tuple[tuple[datetime, datetime], ...] | None:
-    """Overlay first, static table second. `now` must be tz-aware. None for an unmapped currency."""
+    """Overlay first, static table second, CLOSE_CAP over both. `now` must be tz-aware. None for an
+    unmapped currency."""
+    ccy = (currency or "").upper()
     ov = overlay_sessions(currency, now, exchange)
     if ov is not None:
-        return ov
-    spec = MARKET_HOURS.get((currency or "").upper())
+        return _apply_close_cap(ccy, ov)
+    spec = MARKET_HOURS.get(ccy)
     if not spec:
         return None
     local = now.astimezone(pytz.timezone(spec[0]))
-    return static_sessions(currency, local.date())
+    return _apply_close_cap(ccy, static_sessions(currency, local.date()))
 
 
 def calendar_age_s(now: datetime | None = None) -> float | None:

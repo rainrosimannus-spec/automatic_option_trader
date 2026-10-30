@@ -62,7 +62,8 @@ def test_unknown_currency_stays_permissive(at):
     ("EUR", "2026-07-10T15:35:00", True),    # 17:35 Berlin — Euronext closing auction
     ("EUR", "2026-07-10T15:41:00", False),   # 17:41 Berlin — shut
     ("NOK", "2026-07-10T14:35:00", False),   # 16:35 Oslo — shut (the old table said open until 17:00)
-    ("GBP", "2026-07-10T15:45:00", True),    # 16:45 London — IBKR's liquid hours run to 16:50
+    ("GBP", "2026-07-10T15:25:00", True),    # 16:25 London — continuous trading until 16:30
+    ("GBP", "2026-07-10T15:45:00", False),   # 16:45 London — IBKR's liquid hours run to 16:50, but that is post-close reporting (CLOSE_CAP, Rain 2026-10-30)
     ("USD", "2026-07-10T13:45:00", False),   # 09:45 ET? no — 13:45 UTC is 09:45 ET: open. See next line.
 ])
 def test_minute_exact_sessions(at, ccy, utc, expected):

@@ -47,7 +47,7 @@ def _hm(sessions):
 
 IBKR_CLOSES = {   # currency: (venue, last liquid minute, lunch break?)
     "USD": ("SMART", "16:00", False), "CAD": ("SMART", "16:00", False), "MXN": ("MEXI", "15:00", False),
-    "EUR": ("AEB", "17:40", False), "CHF": ("EBS", "17:40", False), "GBP": ("LSE", "16:50", False),
+    "EUR": ("AEB", "17:40", False), "CHF": ("EBS", "17:40", False), "GBP": ("LSE", "16:30", False),   # IBKR 16:50 is post-close reporting; capped (Rain 2026-10-30)
     "NOK": ("OSE", "16:30", False), "DKK": ("CPH", "17:00", False), "ZAR": ("JSE", "17:15", False),
     "ILS": ("TASE", "17:25", False), "INR": ("NSE", "15:30", False), "KRW": ("KRX", "15:30", False),
     "JPY": ("TSEJ", "15:30", True), "HKD": ("SEHK", "16:10", True), "SGD": ("SGX", "17:16", True),
@@ -208,3 +208,36 @@ def test_refresh_survives_a_broken_venue():
             return _details(ESLT_LIQUID, "Israel")
     assert vh.refresh_calendar(_IB(), [("HKD", "SEHK", "700"), ("ILS", "TASE", "ESLT")],
                                contract_factory=lambda s, e, c: (s, e, c)) == 1
+
+
+# ── CLOSE_CAP: London closes 16:30 whatever IBKR's liquidHours say (Rain 2026-10-30) ──────────
+
+def _ov(monkeypatch, text, ccy="GBP", exch="LSE", tz="GB-Eire"):
+    monkeypatch.setattr(vh, "_CALENDAR", {}); monkeypatch.setattr(vh, "_CALENDAR_TZ", {})
+    d = type("D", (), {"liquidHours": text, "timeZoneId": tz})()
+    assert vh.note_venue_hours(ccy, exch, d) >= 1
+
+
+def test_london_overlay_1650_is_capped_to_1630(monkeypatch):
+    _ov(monkeypatch, "20261030:0800-20261030:1650")
+    now = pytz.timezone("Europe/London").localize(dt.datetime(2026, 10, 30, 12, 0))
+    assert _hm(vh.sessions_for("GBP", now, "LSE")) == [("08:00", "16:30")]
+    assert _hm(vh.sessions_for("GBP", now)) == [("08:00", "16:30")]          # merged per-currency view too
+
+
+def test_london_half_day_overlay_is_not_raised_by_the_cap(monkeypatch):
+    _ov(monkeypatch, "20261224:0800-20261224:1230")
+    now = pytz.timezone("Europe/London").localize(dt.datetime(2026, 12, 24, 10, 0))
+    assert _hm(vh.sessions_for("GBP", now, "LSE")) == [("08:00", "12:30")]
+
+
+def test_cap_applies_to_the_static_table_as_well(monkeypatch):
+    monkeypatch.setattr(vh, "_CALENDAR", {}); monkeypatch.setattr(vh, "_CALENDAR_TZ", {})
+    now = pytz.timezone("Europe/London").localize(dt.datetime(2026, 11, 2, 12, 0))
+    assert _hm(vh.sessions_for("GBP", now)) == [("08:00", "16:30")]
+
+
+def test_cap_leaves_other_currencies_alone(monkeypatch):
+    _ov(monkeypatch, "20261030:0900-20261030:1740", ccy="EUR", exch="AEB", tz="MET")
+    now = pytz.timezone("Europe/Amsterdam").localize(dt.datetime(2026, 10, 30, 12, 0))
+    assert _hm(vh.sessions_for("EUR", now, "AEB")) == [("09:00", "17:40")]
