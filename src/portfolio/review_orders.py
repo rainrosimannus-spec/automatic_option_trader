@@ -449,18 +449,36 @@ def read_book(ib, symbol: str, account: str = "") -> Book | None:
 
 
 def _last_price(ib, contract) -> float | None:
-    """Last trade (else midpoint) for a qualified contract, in the unit the venue quotes."""
+    """Last trade (else midpoint) for a qualified contract, in the unit the venue quotes.
+
+    Asked on the native listing first; if that answers nothing, again routed SMART. The account
+    holds no market-data permission for Tokyo's own feed ("No market data permissions for TSEJ
+    STK"), so a DISCO (6146) call card approved by hand three times never priced — ten silent
+    retries, back to "pending", approve again — while the buy scan prices the same names every
+    two hours through SMART without trouble. Mirrors analyzer.analyze_stock, which qualifies on
+    the native exchange and fetches bars via SMART."""
+    import copy
     from src.portfolio.connection import get_portfolio_lock
-    for what in ("TRADES", "MIDPOINT"):
-        try:
-            with get_portfolio_lock():
-                bars = ib.reqHistoricalData(contract, endDateTime="", durationStr="2 D",
-                                            barSizeSetting="1 day", whatToShow=what, useRTH=False,
-                                            formatDate=1, timeout=8)
-            if bars and bars[-1].close and bars[-1].close > 0:
-                return float(bars[-1].close)
-        except Exception as e:
-            log.debug("review_order_price_failed", what=what, error=str(e) or repr(e))
+    routes = [contract]
+    if (getattr(contract, "exchange", "") or "").upper() != "SMART":
+        via_smart = copy.copy(contract)
+        via_smart.exchange = "SMART"
+        routes.append(via_smart)
+    for c in routes:
+        for what in ("TRADES", "MIDPOINT"):
+            try:
+                with get_portfolio_lock():
+                    bars = ib.reqHistoricalData(c, endDateTime="", durationStr="2 D",
+                                                barSizeSetting="1 day", whatToShow=what, useRTH=False,
+                                                formatDate=1, timeout=8)
+                if bars and bars[-1].close and bars[-1].close > 0:
+                    if c is not contract:
+                        log.info("review_order_price_via_smart", symbol=getattr(contract, "symbol", "?"),
+                                 native=getattr(contract, "exchange", "?"))
+                    return float(bars[-1].close)
+            except Exception as e:
+                log.debug("review_order_price_failed", what=what, exchange=getattr(c, "exchange", "?"),
+                          error=str(e) or repr(e))
     return None
 
 

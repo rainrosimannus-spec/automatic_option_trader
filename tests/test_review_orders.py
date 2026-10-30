@@ -756,3 +756,50 @@ def test_suggestions_page_marks_only_an_old_executing_card_stuck(temp_db, monkey
     assert by_id[old].stuck is True and by_id[old].stuck_minutes >= 30
     assert by_id[young].stuck is False
     assert by_id[sent].stuck is False                 # submitted cards keep their own Cancel button
+
+
+# ── Tokyo: the account has no permission for the venue's own price feed ───────────────────────
+# DISCO (6146) call card, approved by hand 10-26, 10-27, 10-28 and 10-30: every attempt got
+# "No market data permissions for TSEJ STK", ten silent retries, back to "pending". The buy scan
+# prices the same names through SMART every two hours. The executor now does the same.
+
+class TokyoIB(FakeIB):
+    """Native-exchange bar requests answer nothing; the same request routed SMART answers."""
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.asked = []
+
+    def reqHistoricalData(self, contract, *a, **k):
+        self.asked.append(contract.exchange)
+        if contract.exchange == "TSEJ":
+            return []
+        return [SimpleNamespace(close=self.close)]
+
+
+def test_price_falls_back_to_smart_when_the_native_feed_is_not_permitted():
+    ib = TokyoIB([], close=49540.0)
+    c = SimpleNamespace(symbol="6146", exchange="TSEJ", currency="JPY")
+    assert ro._last_price(ib, c) == 49540.0
+    assert ib.asked == ["TSEJ", "TSEJ", "SMART"]           # TRADES, MIDPOINT native, then SMART
+    assert c.exchange == "TSEJ"                            # the order contract itself is untouched
+
+
+def test_price_does_not_ask_smart_when_the_native_feed_answers():
+    ib = TokyoIB([], close=100.0)
+    assert ro._last_price(ib, SimpleNamespace(symbol="ACME", exchange="SMART", currency="USD")) == 100.0
+    assert ib.asked == ["SMART"]
+
+
+def test_tokyo_call_card_is_sent_with_the_smart_priced_spot(wired):
+    from src.portfolio.models import PortfolioHolding
+    with db_mod.get_db() as db:
+        db.add(PortfolioHolding(symbol="6146", exchange="TSEJ", currency="JPY", shares=400))
+    ib = wired["ib"] = TokyoIB([_stk(symbol="6146", qty=400, avg=57954.0)], close=49540.0,
+                               chains=[("OSE.JPN", "6146", 100)],
+                               strikes=(55000, 57000, 58000, 60000, 62000))
+    sid = _card(action="sell_covered_call_review", qty=2, strike=57954.0, right="C", symbol="6146")
+    assert ro.execute_review_covered_call(sid) == "submitted"
+    (opt, order), = ib.placed
+    assert order.totalQuantity == 2 and opt.exchange == "OSE.JPN"
+    assert opt.strike == 58000.0                           # first listed strike at or above cost
+    assert "SMART" in ib.asked                             # priced via SMART, ordered on OSE.JPN
