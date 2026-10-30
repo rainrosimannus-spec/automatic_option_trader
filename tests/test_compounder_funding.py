@@ -414,3 +414,62 @@ def test_order_ack_fields_on_an_accepted_order():
     trade.contract = SimpleNamespace(conId=1, exchange="IDEALPRO",
                                      primaryExchange="", tradingClass="")
     assert _buyer._order_ack_fields(trade)["perm_id"] == 1771057849
+
+
+# ── un-park order type (2026-10-30) ──────────────────────────────────────────────────────
+# IBKR rejects IOC on Xetra's ETF segment outright ("The time-in-force IOC is invalid for this
+# combination of exchange and security type") and only SIMULATES it on SMART, where it came back
+# "Cancelled by System" with nothing sold on 45 of 52 attempts 2026-10-16→30. The sell is now a
+# marketable DAY limit and the cancel is confirmed rather than fired and forgotten.
+
+class _RecordingIB(FakeIB):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.placed = []
+
+    def placeOrder(self, contract, order):
+        self.placed.append((contract, order))
+        return super().placeOrder(contract, order)
+
+
+def test_unpark_sells_with_a_marketable_day_limit_not_ioc(park_open):
+    ib = _RecordingIB(cash=[("CashBalance", "USD", 0)], sgov_shares=1000, sgov_price=100.0)
+    assert _unpark_yield(ib, _cfg(), 50_000, settle_ccy="USD") is True
+    (_, order), = ib.placed
+    assert order.action == "SELL"
+    assert order.orderType == "LMT", "a market IOC is not supported on the park venue"
+    assert order.tif == "DAY"
+    assert order.lmtPrice == pytest.approx(100.0 * (1 - _buyer._UNPARK_LIMIT_DISCOUNT), abs=0.01)
+    assert order.lmtPrice < 100.0, "the limit must be marketable — a cap under the last close"
+
+
+class _FillsOnCancelIB(FakeIB):
+    """The order trades in the gap between our cancel and IBKR's acknowledgement."""
+    def cancelOrder(self, order, *a, **k):
+        self.orders_cancelled += 1
+        self._last.orderStatus.status = "Filled"
+        self._last.orderStatus.filled = self._last_qty
+
+    def placeOrder(self, contract, order):
+        t = super().placeOrder(contract, order)
+        self._last, self._last_qty = t, order.totalQuantity
+        return t
+
+
+def test_unpark_counts_a_fill_that_lands_while_cancelling(park_open):
+    """2026-07-28 regression: a fire-and-forget cancel let 755 shares fill unseen and the parker
+    bought them back. The cancel is now confirmed, and a fill in that gap is a success."""
+    ib = _FillsOnCancelIB(cash=[("CashBalance", "USD", 0)], sgov_shares=1000,
+                          sgov_price=100.0, fill_status="Submitted")
+    assert _unpark_yield(ib, _cfg(), 50_000, settle_ccy="USD") is True
+    assert ib.orders_cancelled == 1
+
+
+def test_unpark_unconfirmed_cancel_is_reported_and_fatal_for_same_ccy(park_open, monkeypatch):
+    events = []
+    monkeypatch.setattr(_buyer.log, "error", lambda ev, **kw: events.append(ev))
+    ib = FakeIB(cash=[("CashBalance", "USD", 0)], sgov_shares=1000,
+                sgov_price=100.0, fill_status="Submitted")
+    assert _unpark_yield(ib, _cfg(), 50_000, settle_ccy="USD") is False
+    assert ib.orders_cancelled == 1
+    assert "portfolio_unpark_cancel_unconfirmed" in events

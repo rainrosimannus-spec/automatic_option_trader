@@ -4431,6 +4431,8 @@ def _ensure_currency_funding(ib, stock_ccy: str, base_ccy: str, notional_ccy: fl
 # the un-park raised nothing on three consecutive scans (EUR cash line unchanged at €549,754) so the
 # runway never refilled. Poll instead, and only give up on a genuine timeout.
 _ORDER_FILL_WAIT_SECONDS = 20.0
+_CANCEL_CONFIRM_SECONDS = 5.0      # how long an un-park waits for IBKR to acknowledge its cancel
+_UNPARK_LIMIT_DISCOUNT = 0.002     # un-park sell limit = last close × (1 − this); a cap, not the fill price
 _ORDER_POLL_SECONDS = 1.0
 _ORDER_DONE_STATES = ("Filled", "Cancelled", "ApiCancelled", "Inactive", "Rejected")
 
@@ -4588,39 +4590,64 @@ def _unpark_yield(ib, cfg, needed: float, settle_ccy: str | None = None) -> bool
         shares = min(held_shares, int(shortfall / price) + 1)
         if shares <= 0:
             return True
-        order = MarketOrder("SELL", shares)
-        # IOC, not DAY. With tif=DAY this order could fill AFTER the wait below gave up on it: the
-        # cancel is fire-and-forget inside a bare except, and a market order on an open venue routinely
-        # trades before the cancel lands. 2026-07-28 is the proof — 1,116 shares reported
-        # filled=0/Submitted at 08:54:55, 755 filled anyway, and the 09:03 scan bought some back. Cash
-        # we had decided we did not need arrived regardless, and the parker round-tripped it.
-        # Immediate-or-cancel makes a late fill impossible: it fills now or it is gone. A partial still
-        # raises what it raised, and the failure path is unchanged (return not fatal_on_fail).
-        order.tif = "IOC"
+        # A marketable DAY LIMIT a hair under the last close, NOT a market IOC. IOC was chosen on
+        # 2026-07-28 so a sell could never fill after the wait below gave up on it (the cancel was
+        # fire-and-forget). But IBKR does not support IOC on Xetra's ETF segment at all — a direct
+        # IBIS2 order is rejected with "The time-in-force IOC is invalid for this combination of
+        # exchange and security type" (what-if probe 2026-10-30) — and on SMART it merely SIMULATES
+        # it: 2026-10-16→30 the simulated IOC came back "Cancelled by System", filled 0, on 45 of 52
+        # attempts, so the EUR runway sat at €52k against a €340k target for two weeks. A limit DAY
+        # is native everywhere; the late-fill hazard is closed below by WAITING for the cancel to be
+        # confirmed instead of firing it and walking away. The limit is a cap, not the fill price —
+        # Xetra executes at the best bid — so the discount only has to clear the spread plus a day's
+        # NAV drift on a money-market ETF (~0.01%); 0.2% is ample and bounds the worst case.
+        try:
+            _tick = _effective_tick(ib, contract, price, currency=park_ccy)
+        except Exception:
+            _tick = None
+        limit = _round_to_tick(price * (1.0 - _UNPARK_LIMIT_DISCOUNT), _tick, "SELL")
+        order = LimitOrder("SELL", shares, limit)
+        order.tif = "DAY"
         with get_portfolio_lock():
             trade = ib.placeOrder(contract, order)
-        # Wait for a real outcome. A market sell into an open Xetra normally trades in well under a
-        # second, but the fill callback does not always land inside a single short sleep — deciding
+        # Wait for a real outcome. A marketable sell into an open Xetra normally trades in well under
+        # a second, but the fill callback does not always land inside a single short sleep — deciding
         # after ~2s and cancelling killed sells that were about to trade.
         status, filled = _await_order_outcome(ib, trade, shares)
-        if filled > 0:
-            _last_unpark_at[sym] = datetime.utcnow()      # arm the parker's cool-down
         if status == "Filled" or filled >= shares * 0.9:
-            log.info("portfolio_unparked", symbol=sym, shares=shares, filled=filled,
+            _last_unpark_at[sym] = datetime.utcnow()      # arm the parker's cool-down
+            log.info("portfolio_unparked", symbol=sym, shares=shares, filled=filled, limit=limit,
                      raised=round(filled * price) or round(shares * price), status=status)
             return True
         # Still not done after the wait. Cancel the leftover so it can't rest and fill later against a
-        # buy that has long since expired (see the market-closed note above), then fail closed if this
-        # unpark was the authoritative funding path. Mirrors _ensure_currency_funding.
+        # buy that has long since expired (see the market-closed note above) — and CONFIRM the cancel:
+        # a DAY order that trades in the gap between our cancel and IBKR's acknowledgement is a fill
+        # we must count (2026-07-28: 755 shares filled after a fire-and-forget cancel and the parker
+        # bought them back an hour later). Fail closed if this unpark was the authoritative funding
+        # path. Mirrors _ensure_currency_funding.
         if status not in _ORDER_DONE_STATES:
             try:
                 with get_portfolio_lock():
                     ib.cancelOrder(trade.order)
             except Exception:
                 pass
+            status, filled = _await_order_outcome(ib, trade, shares, timeout=_CANCEL_CONFIRM_SECONDS)
+            if status == "Filled" or filled >= shares * 0.9:
+                _last_unpark_at[sym] = datetime.utcnow()
+                log.info("portfolio_unparked", symbol=sym, shares=shares, filled=filled, limit=limit,
+                         raised=round(filled * price), status=status, note="filled while cancelling")
+                return True
+            if status not in _ORDER_DONE_STATES:
+                # IBKR has not acknowledged the cancel. The order may still trade; nothing else to do
+                # from here but say so loudly — the parker's cool-down and the next scan's position
+                # read absorb a late fill, exactly as before.
+                log.error("portfolio_unpark_cancel_unconfirmed", symbol=sym, shares=shares,
+                          status=status, filled=filled)
+        if filled > 0:
+            _last_unpark_at[sym] = datetime.utcnow()      # a partial still raised cash
         # A partial fill still raised cash; report it so the shortfall is visible.
         log.warning("portfolio_unpark_unfilled", symbol=sym, shares=shares, status=status,
-                    filled=filled, raised=round(filled * price))
+                    filled=filled, raised=round(filled * price), limit=limit)
         return not fatal_on_fail
     except Exception as e:
         log.warning("portfolio_unpark_error", error=str(e))
