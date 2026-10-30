@@ -41,6 +41,19 @@ def _state(key: str, default: str = "") -> str:
         return default
 
 
+def _state_at(key: str) -> str:
+    """'HH:MM' UTC of the last write to a state key — '' when unknown. The buy-queue stars are a
+    SCAN's decision (every 2 h plus the late-session passes) while the green/yellow badges follow
+    the half-hourly price update, so a name can turn green on the page while the star still points
+    at the previous scan's head. Stamping the scan time on the star says which is the older fact."""
+    try:
+        with get_db() as db:
+            s = db.query(PortfolioState).filter(PortfolioState.key == key).first()
+            return s.updated_at.strftime("%H:%M") if s and s.updated_at else ""
+    except Exception:
+        return ""
+
+
 def _num(key: str, default: float = 0.0) -> float:
     try:
         return float(_state(key) or default)
@@ -205,6 +218,7 @@ async def watchlist_page(request: Request):
     # universe (hollow star), which differs when the leading name's own exchange is shut.
     next_buy = (_state("compounder_next_buy") or "").strip().upper()
     next_buy_now = (_state("compounder_next_buy_now") or "").strip().upper()
+    next_buy_at = _state_at("compounder_next_buy_now")
 
     # Active sell/reduce review cards → a SELL badge beside the ticker, mirroring the buy stars.
     sell_reviews = _sell_reviews()
@@ -218,6 +232,7 @@ async def watchlist_page(request: Request):
         "wl_map": wl_map,
         "next_buy": next_buy,
         "next_buy_now": next_buy_now,
+        "next_buy_at": next_buy_at,
         "sell_reviews": sell_reviews,
         "base_ccy": base_ccy,
         "base_sym": base_sym,

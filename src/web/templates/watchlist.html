@@ -78,7 +78,8 @@
                    MKTX was reached at 20:59:58 and got in, SPGI after 21:00:00 and did not — both
                    USD. Hence the wording here; don't promise a reason we haven't established. #}
                 {% if next_buy_now %}<span class="text-xs text-gray-500">&#9733; top pick:
-                    <span class="text-amber-400 font-semibold">{{next_buy_now}}</span></span>{% endif %}
+                    <span class="text-amber-400 font-semibold">{{next_buy_now}}</span>{% if next_buy_at %}
+                    <span class="text-gray-600" title="The stars are the last scan's decision; the green/yellow badges follow the half-hourly price update, so a name can turn green here before the next scan re-ranks it.">(as of {{next_buy_at}} UTC scan)</span>{% endif %}</span>{% endif %}
                 {% if next_buy and next_buy != next_buy_now %}<span class="text-xs text-gray-500">&#9734; next in line:
                     <span class="text-amber-300/70 font-semibold">{{next_buy}}</span>
                     <span class="text-gray-600">(not tradeable last scan)</span></span>{% endif %}
