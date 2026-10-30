@@ -5,7 +5,7 @@ export DISPLAY=:10
 Xvfb :10 -screen 0 1024x768x24 &>/dev/null &
 sleep 2
 
-export TWS_MAJOR_VRSN=1037
+export TWS_MAJOR_VRSN=1050
 # Private copy of the IBC config (2026-09-13): the /opt one is root-owned AND world-readable
 # with IbPassword in it; this one is 0600 under ~. Two settings differ from /opt:
 #   CommandServerPort=0  — IBC's command server was bound on every interface incl. the public
@@ -24,8 +24,8 @@ export TRADING_MODE=live
 # (another push); with 'exit' the tmux session ends and watchdog-trader.sh relaunches it, but
 # only once the last push is 30 min old — 5 pushes in 30 min on 2026-09-13 became 1.
 export TWOFA_TIMEOUT_ACTION=exit
-export IBC_PATH=/opt/ibc
-export TWS_PATH=/opt/ibkr
+export IBC_PATH=/home/rain/ibc-3.24.2
+export TWS_PATH=/home/rain/ibkr
 export TWS_SETTINGS_PATH=/home/rain/ibgateway-settings/options
 export LOG_PATH=/home/rain/ibc/logs/options
 export JAVA_PATH=
@@ -39,4 +39,4 @@ export HIDE=YES
 mkdir -p /home/rain/ibgateway-settings/options
 mkdir -p /home/rain/ibc/logs/options
 
-exec /opt/ibc/scripts/displaybannerandlaunch.sh
+exec /home/rain/ibc-3.24.2/scripts/displaybannerandlaunch.sh

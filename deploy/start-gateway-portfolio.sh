@@ -3,12 +3,12 @@ export DISPLAY=:11
 Xvfb :11 -screen 0 1024x768x24 &>/dev/null &
 sleep 2
 
-export TWS_MAJOR_VRSN=1037
+export TWS_MAJOR_VRSN=1050
 export IBC_INI=/opt/ibc/config-portfolio.ini
 export TRADING_MODE=live
 export TWOFA_TIMEOUT_ACTION=restart
-export IBC_PATH=/home/rain/ibc-3.24
-export TWS_PATH=/opt/ibkr
+export IBC_PATH=/home/rain/ibc-3.24.2
+export TWS_PATH=/home/rain/ibkr
 export TWS_SETTINGS_PATH=/home/rain/ibgateway-settings/portfolio
 export LOG_PATH=/home/rain/ibc/logs/portfolio
 export JAVA_PATH=
@@ -45,4 +45,4 @@ fi
 pkill -u rain -f 'portfolio-gw-autofill.sh' 2>/dev/null; sleep 1
 nohup /home/rain/portfolio-gw-autofill.sh >/dev/null 2>&1 &
 
-exec /home/rain/ibc-3.24/scripts/displaybannerandlaunch.sh
+exec /home/rain/ibc-3.24.2/scripts/displaybannerandlaunch.sh
