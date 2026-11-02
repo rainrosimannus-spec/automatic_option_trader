@@ -3824,6 +3824,64 @@ def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0, *,
     return True, ""
 
 
+def _positive(v) -> bool:
+    """True for a real, finite price above zero. ib_insync fills missing ticks with nan, which
+    is truthy and compares False to 0 — `if not price or price <= 0` let nan straight through."""
+    try:
+        return v is not None and v == v and float(v) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+# FMP keys non-US listings by ticker + exchange suffix (ASML.AS, 7203.T, 0700.HK, ABF.L). The
+# broker's exchange code -> FMP suffix. US listings (SMART/NYSE/NASDAQ..., USD) use the bare ticker.
+_FMP_SUFFIX = {
+    "AEB": ".AS", "IBIS": ".DE", "IBIS2": ".DE", "FWB": ".DE", "LSE": ".L", "LSEETF": ".L",
+    "SEHK": ".HK", "TSEJ": ".T", "ASX": ".AX", "CPH": ".CO", "SGX": ".SI", "TASE": ".TA",
+    "KRX": ".KS", "KSE": ".KS", "NSE": ".NS", "SBF": ".PA", "EBS": ".SW", "SWX": ".SW",
+    "SFB": ".ST", "OSE": ".OL", "BVME": ".MI", "BM": ".MC", "HEX": ".HE", "VSE": ".VI",
+    "TSE": ".TO", "MEXI": ".MX", "BVMF": ".SA", "WSE": ".WA", "ATH": ".AT",
+}
+# FMP labels London in pence and Tel Aviv in agorot but states market cap in POUNDS / SHEKELS
+# (HSBC "GBp" 219,909,306,600 = GBP 220B; Elbit "ILA" 112,048,162,821 = ILS 112B).
+_FMP_MINOR_UNIT_CCY = {"GBP": "GBP", "GBX": "GBP", "ILA": "ILS", "ZAC": "ZAR"}
+
+
+def fmp_symbol(symbol, exchange, currency) -> str:
+    """The FMP ticker for a broker listing: bare for US listings, exchange-suffixed elsewhere."""
+    sym = str(symbol or "").strip().upper().replace(" ", "-")
+    if "." in sym:
+        return sym                      # already suffixed (internal names like SU.PA)
+    ex = str(exchange or "").upper()
+    ccy = str(currency or "USD").upper()
+    if ccy == "CAD" and ex in ("", "SMART", "TSE"):
+        return f"{sym}.TO"
+    if ex == "SEHK":
+        return f"{sym.zfill(4)}.HK"
+    suffix = _FMP_SUFFIX.get(ex)
+    return f"{sym}{suffix}" if suffix else sym
+
+
+def _fmp_profile_market_cap_usd(ib, contract) -> Optional[float]:
+    """Market cap in US dollars from the FMP company profile, or None. The profile states the
+    cap in the listing currency; it is converted with the broker's own rate (_usd_per_unit)."""
+    ex = getattr(contract, "exchange", None)
+    if not ex or str(ex).upper() == "SMART":
+        ex = getattr(contract, "primaryExchange", None) or ex
+    prof = _fmp_get("profile", fmp_symbol(getattr(contract, "symbol", ""), ex,
+                                          getattr(contract, "currency", None)))
+    if not prof or not isinstance(prof, list) or not isinstance(prof[0], dict):
+        return None
+    row = prof[0]
+    cap = row.get("marketCap") or row.get("mktCap")
+    if not cap or float(cap) <= 0:
+        return None
+    ccy = str(row.get("currency") or getattr(contract, "currency", None) or "USD")
+    ccy = _FMP_MINOR_UNIT_CCY.get(ccy.upper(), ccy.upper())
+    usd = _usd_per_unit(ib, ccy)
+    return float(cap) * usd if usd else None
+
+
 def _snapshot_market_cap(snapshot_xml: str | None) -> tuple[float | None, str | None]:
     """(market cap in MILLIONS, its currency) from the broker's ReportSnapshot, or (None, None).
 
@@ -4699,12 +4757,15 @@ class UniverseScreener:
             score.name = details.longName or symbol
             score.sector = details.industry or details.category or "Unknown"
 
-        ticker = self.ib.reqMktData(contract, "100,258", False, False)
+        # Generic tick 258 (fundamental ratios) was de-supported with the rest of the fundamentals
+        # in TWS API 10.47: asking for it made the whole request fail on gateway 10.50, the price
+        # came back nan, and nan x 100M shares "failed" the market-cap floor for every name.
+        ticker = self.ib.reqMktData(contract, "100", False, False)
         self.ib.sleep(3)
         self.ib.cancelMktData(contract)
 
-        price = ticker.last if ticker.last and ticker.last > 0 else ticker.close
-        if not price or price <= 0:
+        price = ticker.last if _positive(ticker.last) else ticker.close
+        if not _positive(price):
             # Fallback to FMP price when IBKR returns no data
             try:
                 key = _fmp_key()
@@ -4720,7 +4781,7 @@ class UniverseScreener:
                         print(f"  ℹ️  {symbol}: using FMP price ${price:.2f} (IBKR returned no data)")
             except Exception as _fmp_e:
                 print(f"  🔎 {symbol}: FMP price fallback exception: {type(_fmp_e).__name__}: {_fmp_e}")
-        if not price or price <= 0:
+        if not _positive(price):
             print(f"  🔎 {symbol}: no price from IBKR or FMP -> None (final price={price})")
             self._reject(symbol, "no_price", price=price)
             return None
@@ -4850,7 +4911,10 @@ class UniverseScreener:
         back to the old guess (price x 100M shares) — and says so in the log."""
         why = "no figure in the broker report"
         try:
-            cap_m, ccy = _snapshot_market_cap(self.ib.reqFundamentalData(contract, "ReportSnapshot"))
+            from src.portfolio.ibkr_fundamentals import fundamentals_available
+            snap = (self.ib.reqFundamentalData(contract, "ReportSnapshot")
+                    if fundamentals_available(self.ib) else None)
+            cap_m, ccy = _snapshot_market_cap(snap)
             if cap_m:
                 ccy = ccy or getattr(contract, "currency", None)
                 usd = _usd_per_unit(self.ib, ccy)
@@ -4859,6 +4923,15 @@ class UniverseScreener:
                 why = f"no dollar rate for {ccy}"
         except Exception as e:
             why = f"{type(e).__name__}: {e}"
+        # FMP company profile, keyed by ticker + exchange suffix — the source of record since the
+        # broker de-supported fundamentals (TWS API 10.47; gateway 10.50 refuses with Error 10358).
+        try:
+            cap_usd = _fmp_profile_market_cap_usd(self.ib, contract)
+            if cap_usd:
+                return cap_usd
+            why = "no figure in the broker report or the FMP profile"
+        except Exception as e:
+            why = f"FMP profile: {type(e).__name__}: {e}"
         log.info("screener_market_cap_guessed", symbol=getattr(contract, "symbol", "?"),
                  currency=getattr(contract, "currency", None), reason=why)
         return price * 1e8

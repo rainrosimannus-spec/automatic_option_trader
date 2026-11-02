@@ -72,6 +72,7 @@ def test_foreign_listing_is_converted_to_dollars(monkeypatch):
 
 
 def test_falls_back_to_the_old_guess_only_when_there_is_nothing_better(monkeypatch):
+    monkeypatch.setattr(su, "_fmp_profile_market_cap_usd", lambda ib, c: None)  # FMP has nothing either
     scr = su.UniverseScreener(_IB(_snapshot(mktcap=None)))
     assert scr._estimate_market_cap(_stock(), price=50.0) == 50.0 * 1e8             # no figure
     scr = su.UniverseScreener(_IB(raises=TimeoutError()))

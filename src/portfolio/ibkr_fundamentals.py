@@ -100,6 +100,36 @@ def _cagr(start: float, end: float, years: int) -> Optional[float]:
     return (((end / start) ** (1.0 / years)) - 1.0) * 100
 
 
+# IBKR de-supported reqFundamentalData in TWS API 10.47 (May 2026). Gateway 10.50 answers every
+# request with Error 10358 "Fundamentals data is not allowed." — the 2026-11-02 monthly screen got
+# 4,900 refusals at ~3 s each and, with no market cap or growth figures, kept 32 names of ~700.
+# Once a connection has been refused, stop asking it: every reader below returns "no data" at once.
+_DESUPPORTED_CODE = 10358
+
+
+def fundamentals_available(ib) -> bool:
+    """False once this connection has been refused fundamentals (Error 10358); True until then.
+    Installs a one-time error listener on the connection so the first refusal flips the flag."""
+    if getattr(ib, "_aot_fundamentals_refused", False):
+        return False
+    if not getattr(ib, "_aot_fundamentals_watch", False):
+        def _on_error(reqId, code, msg, contract=None, *rest):
+            if code == _DESUPPORTED_CODE:
+                if not getattr(ib, "_aot_fundamentals_refused", False):
+                    log.error("ibkr_fundamentals_desupported", code=code, msg=str(msg)[:120],
+                              note="TWS API 10.47+ has no reqFundamentalData; skipping all further requests on this connection")
+                try:
+                    ib._aot_fundamentals_refused = True
+                except Exception:
+                    pass
+        try:
+            ib.errorEvent += _on_error
+            ib._aot_fundamentals_watch = True
+        except Exception:
+            pass
+    return True
+
+
 def get_ibkr_fundamentals(ib, contract, current_price: Optional[float] = None) -> dict:
     """
     Fetch and parse IBKR fundamentals for a contract.
@@ -111,6 +141,8 @@ def get_ibkr_fundamentals(ib, contract, current_price: Optional[float] = None) -
         current_price: optional current price for yield calculation
     """
     result: dict = {}
+    if not fundamentals_available(ib):
+        return result
 
     # ReportsFinSummary — dividend history, EPS, revenue
     try:
@@ -259,6 +291,8 @@ def get_next_earnings_date(ib, contract) -> EarningsResult:
     Note: uses get_portfolio_lock() to serialize against other Winston/Maggy
     IBKR calls during merge period. Same pattern as get_ibkr_fundamentals.
     """
+    if not fundamentals_available(ib):
+        return EarningsResult(next_date=None, status="fetch_failed")
     try:
         from src.portfolio.connection import get_portfolio_lock
         with get_portfolio_lock():
@@ -503,6 +537,8 @@ def parse_quality_fundamentals(resc_xml: Optional[str], snapshot_xml: Optional[s
 def get_ibkr_quality_fundamentals(ib, contract) -> dict:
     """Fetch RESC (+ ReportSnapshot for the share count) and return the quality inputs.
     {} when the company has no analyst coverage or the request fails — never a default."""
+    if not fundamentals_available(ib):
+        return {}
     try:
         from src.portfolio.connection import get_portfolio_lock
         with get_portfolio_lock():
@@ -615,6 +651,8 @@ def get_ibkr_review_fundamentals(ib, contract, current_price: Optional[float] = 
     {} if the broker has nothing; individual keys absent when they cannot be computed."""
     from datetime import datetime
     out: dict = {}
+    if not fundamentals_available(ib):
+        return out
     try:
         from src.portfolio.connection import get_portfolio_lock
         with get_portfolio_lock():

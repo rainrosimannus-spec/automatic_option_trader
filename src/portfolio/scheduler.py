@@ -687,6 +687,29 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                     "Screener returned 0 stocks globally — see the per-name errors in the console log. "
                     "Existing universe preserved."
                 )
+            # Guard: a COLLAPSED screen must not overwrite a healthy universe either. 2026-11-02:
+            # the broker refused every fundamentals request (TWS API 10.47 de-supported them), the
+            # price request died with it, 561 names "failed" the market-cap floor and a 32-name
+            # universe was written over 128 — 36 watchlist names deleted, 69 holdings flagged for
+            # removal, the options universe cut to 27. Below 60% of the previous count (and never
+            # below 40 names) the run stops here with the files and the watchlist untouched.
+            try:
+                from src.core.database import get_db as _get_db
+                from src.portfolio.models import PortfolioWatchlist as _PW
+                with _get_db() as _db:
+                    _prev_n = int(_db.query(_PW).count())
+            except Exception:
+                _prev_n = 0
+            _floor_n = max(40, int(0.6 * _prev_n))
+            if len(portfolio_universe) < _floor_n:
+                log.error("portfolio_monthly_screen_collapsed", screened=len(portfolio_universe),
+                          previous=_prev_n, floor=_floor_n)
+                raise RuntimeError(
+                    f"Screener returned only {len(portfolio_universe)} stocks against a universe of "
+                    f"{_prev_n} (floor {_floor_n}) — aborting to preserve the existing universe. "
+                    "Check the console log for broker refusals (Error 10358 = fundamentals "
+                    "de-supported) or missing prices."
+                )
 
             # Write output files
             write_screened_universe(
