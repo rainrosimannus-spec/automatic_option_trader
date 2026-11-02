@@ -239,6 +239,21 @@ def job_expire_market_suggestions(market: str):
                      market=market, count=len(active))
 
 
+def _order_is_ours(trade) -> bool:
+    """True when an open order was placed by THIS API client (settings ibkr.client_id).
+
+    IBKR delivers every open order of the account on connect, including ones placed from
+    another client id (a hand order, a script). Those cannot be cancelled from here —
+    cancelOrder returns Error 10147 — so sweeps must skip them.
+    """
+    try:
+        own = int(get_settings().ibkr.client_id)
+    except Exception:
+        return True  # unknown config: keep the old behaviour
+    cid = getattr(getattr(trade, "order", None), "clientId", None)
+    return cid is None or int(cid) == own
+
+
 def job_check_assignments():
     """Check for put assignments and write covered calls."""
     _ensure_event_loop()
@@ -271,8 +286,17 @@ def job_check_assignments():
         from src.broker.orders import get_open_orders, cancel_order
         from src.core.database import get_db
         from src.core.suggestions import TradeSuggestion
-        # Cancel ALL unfilled options orders before fresh scan
+        # Cancel ALL unfilled options orders before fresh scan — but only OUR orders.
+        # The gateway also hands us open orders of other API clients (2026-10-29..11-02: a
+        # hand-placed GTC "SELL 1 XFFE @ 217.90" from client 19); IBKR refuses to cancel those
+        # from this client (Error 10147 "OrderId ... not found") so the sweep just logged an
+        # error every 30 min. Foreign orders are left alone.
         for oo in get_open_orders():
+            if not _order_is_ours(oo):
+                log.debug("cc_scan_skipping_foreign_order",
+                          symbol=getattr(oo.contract, 'symbol', '?'),
+                          order_id=oo.order.orderId, client_id=oo.order.clientId)
+                continue
             log.info("cc_scan_cancelling_unfilled_order",
                      symbol=getattr(oo.contract, 'symbol', '?'),
                      order_id=oo.order.orderId)
