@@ -254,6 +254,41 @@ def _order_is_ours(trade) -> bool:
     return cid is None or int(cid) == own
 
 
+def _catchup_monthly_screen_if_still_needed(portfolio_cfg):
+    """Startup catch-up for the monthly screen, re-checked AT FIRE TIME.
+
+    2026-11-03: the catch-up was scheduled at startup (run log said the month's run had failed),
+    Rain pressed Run-now a minute later, the catch-up queued behind that run on the job lock and
+    started the moment it finished — a second 75-minute screen over a universe that had just
+    been rebuilt. The collapse guard stopped it from writing, but its error log overwrote the
+    successful run's log and the page said the month had failed. So: skip when a screen is
+    running now, or when the run log already shows a success this month.
+    """
+    try:
+        from src.portfolio.screener_flag import is_screener_running
+        if is_screener_running():
+            log.info("monthly_screen_catchup_skipped", reason="a screen is running right now")
+            return
+    except Exception:
+        pass
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        _rl = _json.loads(_Path("data/screener_last_run.json").read_text())
+        _last = datetime.strptime(_rl.get("run_date", ""), "%Y-%m-%d %H:%M UTC").date()
+        _today = datetime.now(pytz.UTC).date()
+        _first = _today.replace(day=1)
+        _fm = _first + timedelta(days=(7 - _first.weekday()) % 7)
+        if _rl.get("status") == "success" and _last >= _fm:
+            log.info("monthly_screen_catchup_skipped", reason="this month's screen already succeeded",
+                     run_date=_rl.get("run_date"))
+            return
+    except Exception:
+        pass
+    from src.portfolio.scheduler import job_portfolio_monthly_screen as _run_screen
+    _run_screen(portfolio_cfg)
+
+
 def job_check_assignments():
     """Check for put assignments and write covered calls."""
     _ensure_event_loop()
@@ -1936,7 +1971,7 @@ def create_scheduler() -> BackgroundScheduler:
             if dt.now(pytz.UTC) > _fire_utc and not _completed_this_month:
                 _catchup_at = dt.now(pytz.UTC) + timedelta(minutes=5)
                 scheduler.add_job(
-                    partial(job_portfolio_monthly_screen, portfolio_cfg),
+                    partial(_catchup_monthly_screen_if_still_needed, portfolio_cfg),
                     DateTrigger(run_date=_catchup_at),
                     id="portfolio_rescreen_catchup",
                     name="Portfolio Monthly Screen (startup catch-up)",
