@@ -72,6 +72,8 @@ def test_positive_price_rejects_nan(v, ok):
     ("PME", "ASX", "AUD", "PME.AX"), ("ZEAL", "CPH", "DKK", "ZEAL.CO"), ("S68", "SGX", "SGD", "S68.SI"),
     ("ESLT", "TASE", "ILS", "ESLT.TA"), ("042660", "KRX", "KRW", "042660.KS"), ("ITC", "NSE", "INR", "ITC.NS"),
     ("CSU", "SMART", "CAD", "CSU.TO"), ("INVE B", "SFB", "SEK", "INVE-B.ST"), ("SU.PA", "SBF", "EUR", "SU.PA"),
+    ("VOLV.B", "SFB", "SEK", "VOLV-B.ST"), ("ATCO.A", "SFB", "SEK", "ATCO-A.ST"), ("NOKIA", "HEX", "EUR", "NOKIA.HE"),
+    ("BRK B", "SMART", "USD", "BRK-B"),
 ])
 def test_fmp_symbol_suffixes(sym, ex, ccy, want):
     assert su.fmp_symbol(sym, ex, ccy) == want
@@ -96,3 +98,43 @@ def test_estimate_market_cap_uses_fmp_when_broker_refuses(monkeypatch):
     assert scr._estimate_market_cap(c, 270.0) == 4.9e12
     assert scr._estimate_market_cap(c, 270.0) == 4.9e12
     assert ib.calls == 1  # the broker was asked once, then never again
+
+
+def test_fmp_fundamentals_ask_by_suffixed_ticker_and_use_renamed_dividends(monkeypatch):
+    seen = []
+    this_year = __import__("datetime").datetime.utcnow().year
+
+    def fake_get(ep, sym, params={}):
+        seen.append((ep, sym))
+        if ep == "ratios":
+            return [{"dividendYield": 0.03, "operatingProfitMargin": 0.2}] * 5
+        if ep == "dividends":   # stable-API name; rows newest first, incl. a FUTURE ex-date and a partial year
+            rows = [{"date": f"{this_year + 1}-03-30", "dividend": 9.0}, {"date": f"{this_year}-02-01", "dividend": 0.5}]
+            for i, y in enumerate(range(this_year - 1, this_year - 8, -1)):
+                rows.append({"date": f"{y}-06-01", "dividend": 2.0 * (0.9 ** i)})
+            return rows
+        return []
+    monkeypatch.setattr(su, "_fmp_get", fake_get)
+    out = su._get_fmp_fundamentals("ASML", "AEB", "EUR")
+    assert all(sym == "ASML.AS" for _, sym in seen), seen
+    assert "historical-dividends" not in [ep for ep, _ in seen]
+    assert ("dividends", "ASML.AS") in seen
+    # complete years only: 2.0 vs 2.0*0.9^3 three years back → +11.1%/yr; the 9.0 future row is ignored
+    assert out["dividend_cagr_3yr"] == pytest.approx(11.1, abs=0.1)
+
+
+def test_breakthrough_eligibility_uses_suffixed_ticker_and_splits_endpoint(monkeypatch):
+    seen = []
+
+    def fake_get(ep, sym, params={}):
+        seen.append((ep, sym))
+        if ep == "profile":
+            return [{"isEtf": False, "marketCap": 3.6e13, "currency": "JPY"}]
+        if ep == "splits":
+            return [{"date": "2021-09-29", "numerator": 5, "denominator": 1}]
+        return []
+    monkeypatch.setattr(su, "_fmp_get", fake_get)
+    ok, why = su._check_breakthrough_eligibility("7203", 2.3e11, currency="JPY", exchange="TSEJ")
+    assert ok, why
+    assert ("profile", "7203.T") in seen and ("splits", "7203.T") in seen
+    assert not any(ep == "historical-stock-splits" for ep, _ in seen)

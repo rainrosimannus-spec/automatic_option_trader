@@ -2774,7 +2774,7 @@ def _fmp_get(endpoint: str, symbol: str, params: dict = {}) -> Optional[list]:
     return None
 
 
-def _get_fmp_fundamentals(symbol: str) -> dict:
+def _get_fmp_fundamentals(symbol: str, exchange: str | None = None, currency: str | None = None) -> dict:
     """
     Fetch all fundamental metrics needed for scoring.
     Includes gross margin, FCF margin trend, and dividend CAGR for 10-year total return.
@@ -2783,6 +2783,9 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
     Uses 4-5 API calls — monthly screener only.
     """
     result = {}
+    # FMP keys non-US listings by ticker + exchange suffix (ASML.AS, 7203.T). Since the FMP plan
+    # upgrade (2026-11-03, Ultimate) statements, ratios and dividends are served for all of them.
+    symbol = fmp_symbol(symbol, exchange, currency)
 
     # ── Income statement: revenue, margins, R&D, dilution, neg-NI count ──
     income = _fmp_get("income-statement", symbol, {"limit": 5})
@@ -3009,7 +3012,9 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
     div_yield = result.get("dividend_yield", 0)
     if div_yield > 0.5:
         try:
-            hist = _fmp_get("historical-dividends", symbol)
+            # The stable API renamed this endpoint: "historical-dividends" has answered 404 for
+            # every symbol (US included) — dividend CAGR silently came from the broker alone.
+            hist = _fmp_get("dividends", symbol)
             if hist and isinstance(hist, dict):
                 payments = hist.get("historical", [])
             elif hist and isinstance(hist, list):
@@ -3017,12 +3022,20 @@ def _get_fmp_fundamentals(symbol: str) -> dict:
             else:
                 payments = []
             from collections import defaultdict
+            from datetime import datetime as _dt
+            _this_year = _dt.utcnow().year
+            _today_s = _dt.utcnow().strftime("%Y-%m-%d")
             by_year = defaultdict(float)
             for p in payments:
                 date_str = p.get("date", "") or p.get("paymentDate", "")
                 dividend = p.get("dividend", 0) or p.get("adjDividend", 0)
                 if date_str and dividend:
                     year = int(date_str[:4])
+                    # Only COMPLETE calendar years: the current year is partial and FMP lists
+                    # declared future ex-dates (7203.T carries 2027-03-30) — either would make
+                    # the latest "year" a fraction and the CAGR nonsense.
+                    if year >= _this_year or date_str[:10] > _today_s:
+                        continue
                     by_year[year] += float(dividend)
             years_sorted = sorted(by_year.keys(), reverse=True)
             if len(years_sorted) >= 4:
@@ -3757,8 +3770,8 @@ class StockScore:
 
 
 def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0, *,
-                                    currency: str = "USD", ceiling_usd: float | None = None
-                                    ) -> tuple[bool, str]:
+                                    currency: str = "USD", ceiling_usd: float | None = None,
+                                    exchange: str | None = None) -> tuple[bool, str]:
     """
     For breakthrough-tier candidates ONLY: validate against quality floors.
     Returns (eligible, reason_if_not).
@@ -3776,6 +3789,7 @@ def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0, *,
     """
     from datetime import datetime, timedelta
     fmp_cap_usd = 0.0
+    symbol = fmp_symbol(symbol, exchange, currency)   # ASML.AS, 7203.T ... bare for US listings
 
     # ── Profile: ETF check + market cap backup ──
     profile = _fmp_get("profile", symbol)
@@ -3802,7 +3816,8 @@ def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0, *,
                        f"${ceiling_usd/1e9:.0f}B size ceiling")
 
     # ── Stock splits: reverse split detection ──
-    splits = _fmp_get("historical-stock-splits", symbol)
+    # Stable API name is "splits" ("historical-stock-splits" answers 404 for every symbol).
+    splits = _fmp_get("splits", symbol)
     if splits and isinstance(splits, list):
         cutoff = datetime.utcnow() - timedelta(days=18 * 30)
         for s in splits:
@@ -3853,18 +3868,25 @@ _FMP_SUFFIX = {
     "SEHK": ".HK", "TSEJ": ".T", "ASX": ".AX", "CPH": ".CO", "SGX": ".SI", "TASE": ".TA",
     "KRX": ".KS", "KSE": ".KS", "NSE": ".NS", "SBF": ".PA", "EBS": ".SW", "SWX": ".SW",
     "SFB": ".ST", "OSE": ".OL", "BVME": ".MI", "BM": ".MC", "HEX": ".HE", "VSE": ".VI",
-    "TSE": ".TO", "MEXI": ".MX", "BVMF": ".SA", "WSE": ".WA", "ATH": ".AT",
+    "TSE": ".TO", "MEXI": ".MX", "BVMF": ".SA", "WSE": ".WA", "ATH": ".AT", "ISE": ".IR",
 }
 # FMP labels London in pence and Tel Aviv in agorot but states market cap in POUNDS / SHEKELS
 # (HSBC "GBp" 219,909,306,600 = GBP 220B; Elbit "ILA" 112,048,162,821 = ILS 112B).
 _FMP_MINOR_UNIT_CCY = {"GBP": "GBP", "GBX": "GBP", "ILA": "ILS", "ZAC": "ZAR"}
 
 
+_FMP_KNOWN_SUFFIXES = tuple(sorted(set(_FMP_SUFFIX.values()) | {".TO", ".HK"}))
+
+
 def fmp_symbol(symbol, exchange, currency) -> str:
-    """The FMP ticker for a broker listing: bare for US listings, exchange-suffixed elsewhere."""
+    """The FMP ticker for a broker listing: bare for US listings, exchange-suffixed elsewhere.
+
+    Share-class dots become dashes (Stockholm "VOLV.B" -> "VOLV-B.ST", "INVE B" -> "INVE-B.ST");
+    an internal name that already carries an FMP venue suffix (SU.PA) is returned as is."""
     sym = str(symbol or "").strip().upper().replace(" ", "-")
-    if "." in sym:
+    if sym.endswith(_FMP_KNOWN_SUFFIXES):
         return sym                      # already suffixed (internal names like SU.PA)
+    sym = sym.replace(".", "-")
     ex = str(exchange or "").upper()
     ccy = str(currency or "USD").upper()
     if ccy == "CAD" and ex in ("", "SMART", "TSE"):
@@ -4273,6 +4295,7 @@ class UniverseScreener:
                     _is_member = symbol in _member_syms
                     eligible, reject_reason = _check_breakthrough_eligibility(
                         symbol, score.market_cap, currency=candidate.get("currency", "USD"),
+                        exchange=candidate.get("exchange", "SMART"),
                         ceiling_usd=((_retention_ceiling if _is_member else _entry_ceiling)
                                      if _v2_rules else None))
                     if not eligible:
@@ -4331,7 +4354,8 @@ class UniverseScreener:
                     _cap_anchor = 0.0
                     if (_e_anchor.get("currency") or "USD").upper() == "USD":
                         try:
-                            _p_anchor = _fmp_get("profile", _sym_anchor) or []
+                            _p_anchor = _fmp_get("profile", fmp_symbol(
+                                _sym_anchor, _e_anchor.get("exchange"), _e_anchor.get("currency"))) or []
                             _cap_anchor = float((_p_anchor[0] or {}).get("marketCap") or 0) if _p_anchor else 0.0
                         except Exception:
                             _cap_anchor = 0.0
@@ -4828,17 +4852,24 @@ class UniverseScreener:
         # when FMP is describing the SAME company the broker qualified; otherwise they are
         # discarded and the broker's own figures below are the source. USD listings share FMP's
         # ticker space and are trusted as before.
+        # Since 2026-11-03 FMP is asked by exchange-suffixed ticker (fmp_symbol: ASML.AS, 0700.HK,
+        # ABF.L …), which is unambiguous, so a suffixed listing is trusted on the ticker itself and
+        # a name mismatch is only logged. A non-USD listing that still maps to a BARE ticker
+        # (unknown venue) keeps the old rule: FMP must describe the same company the broker did.
         _fmp_trusted = True
         if (currency or "USD").upper() != "USD":
+            _fsym = fmp_symbol(symbol, exchange, currency)
             try:
-                _prof = _fmp_get("profile", symbol) or []
+                _prof = _fmp_get("profile", _fsym) or []
                 _fmp_name = (_prof[0] or {}).get("companyName") if _prof else None
             except Exception:
                 _fmp_name = None
-            _fmp_trusted = bool(_fmp_name and _same_company(score.name, _fmp_name))
-            if _fmp_name and not _fmp_trusted:
-                log.info("screener_fmp_identity_mismatch", symbol=symbol, broker=score.name, fmp=_fmp_name)
-        fmp = _get_fmp_fundamentals(symbol) if _fmp_trusted else {}
+            _same = bool(_fmp_name and _same_company(score.name, _fmp_name))
+            _fmp_trusted = _same or (_fsym != symbol.upper() and bool(_fmp_name))
+            if _fmp_name and not _same:
+                log.info("screener_fmp_identity_mismatch", symbol=symbol, fmp_symbol=_fsym,
+                         broker=score.name, fmp=_fmp_name, trusted=_fmp_trusted)
+        fmp = _get_fmp_fundamentals(symbol, exchange, currency) if _fmp_trusted else {}
         _has_fmp = bool(fmp)
 
         # IBKR fundamentals fallback — covers LSE/AEB/HKEX/etc. where FMP
