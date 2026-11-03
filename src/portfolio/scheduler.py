@@ -1384,7 +1384,8 @@ def _send_rescreen_alert(stocks_screened: int, review_suggestions: list[dict]):
     alert._send("\n".join(lines), priority="high", tags="clipboard")
 
 
-def _fmp_matches_holding(symbol: str, name: str | None, currency: str | None) -> bool:
+def _fmp_matches_holding(symbol: str, name: str | None, currency: str | None,
+                         exchange: str | None = None) -> bool:
     """Is the company FMP returns for `symbol` the company we hold?
 
     FMP is keyed by US ticker and tickers collide across markets: Verbund (VSE: VER) comes back
@@ -1398,13 +1399,19 @@ def _fmp_matches_holding(symbol: str, name: str | None, currency: str | None) ->
         return True
     try:
         from src.portfolio.fmp import _get as _fmp_get_raw
-        from tools.screen_universe import _same_company
-        prof = _fmp_get_raw("profile", symbol)
+        from tools.screen_universe import _same_company, fmp_symbol
+        # Since 2026-11-03 FMP is asked by exchange-suffixed ticker (ASML.AS, 0700.HK ...), which
+        # is unambiguous — a suffixed listing is trusted on the ticker, a name mismatch is logged.
+        fsym = fmp_symbol(symbol, exchange, currency)
+        prof = _fmp_get_raw("profile", fsym)
         fmp_name = (prof[0] or {}).get("companyName") if isinstance(prof, list) and prof else None
-        ok = bool(name and fmp_name and _same_company(name, fmp_name))
-        if not ok:
-            log.warning("monthly_review_fmp_identity_mismatch", symbol=symbol, held=name,
-                        fmp=fmp_name, msg="FMP data is not this company — no fundamentals-based card")
+        same = bool(name and fmp_name and _same_company(name, fmp_name))
+        ok = same or (fsym != str(symbol).upper() and bool(fmp_name))
+        if fmp_name and not same:
+            log.warning("monthly_review_fmp_identity_mismatch", symbol=symbol, fmp_symbol=fsym, held=name,
+                        fmp=fmp_name, trusted=ok,
+                        msg=("suffixed ticker trusted despite the name" if ok else
+                             "FMP data is not this company — no fundamentals-based card"))
         return ok
     except Exception as e:
         log.warning("monthly_review_fmp_identity_check_failed", symbol=symbol, error=str(e))
@@ -1577,14 +1584,16 @@ def _review_existing_holdings_monthly(
 
         # Every fundamentals-based suggestion below reads FMP by ticker; make sure FMP is
         # talking about THIS company before believing any of it.
-        fmp_ok = _fmp_matches_holding(symbol, holding.name, holding.currency)
+        fmp_ok = _fmp_matches_holding(symbol, holding.name, holding.currency, holding.exchange)
+        from tools.screen_universe import fmp_symbol as _fmp_symbol
+        _fsym = _fmp_symbol(symbol, holding.exchange, holding.currency)   # FMP ticker for this listing
 
         # ── 1b. Dividend disqualification ──────────────────
         # Primary: dividend cut OR payout >90%
         # Secondary (2+ triggers): FCF negative 2yr, high debt, revenue shrinking in both windows
         if tier == "dividend":
             try:
-                fmp = (get_full_fundamentals(symbol) or {}) if fmp_ok else {}
+                fmp = (get_full_fundamentals(_fsym) or {}) if fmp_ok else {}
                 brk = _broker_review_figures(ib, holding, symbol, current_price)
                 _src = "+".join(n for n, d in (("provider", fmp), ("broker", brk)) if d)
                 if fmp or brk:
@@ -1678,7 +1687,7 @@ def _review_existing_holdings_monthly(
         _growth_brk: dict = {}
         if _growth_rules:
             try:
-                _trend = get_growth_trend(symbol) if fmp_ok else None
+                _trend = get_growth_trend(_fsym) if fmp_ok else None
                 _growth_src = "provider"
                 if not _trend or _trend.get("revenue_ttm_pct") is None:
                     # The provider has nothing for this company (most non-US names): use the
@@ -1703,7 +1712,7 @@ def _review_existing_holdings_monthly(
                 log.warning("monthly_review_growth_verdict_failed", symbol=symbol, error=str(_e))
         if _growth_rules and growth_v is not None:
             try:
-                fmp = (get_full_fundamentals(symbol) or {}) if fmp_ok else {}
+                fmp = (get_full_fundamentals(_fsym) or {}) if fmp_ok else {}
                 if fmp is not None:
                     div_yield = fmp.get("dividend_yield") or _growth_brk.get("dividend_yield") or 0
                     growth_slowing = growth_v.real_dropoff

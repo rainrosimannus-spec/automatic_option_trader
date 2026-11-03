@@ -56,11 +56,11 @@ def review(monkeypatch):
                         lambda ib, holding, symbol, price: broker.get(symbol, {}))
 
     def hold(symbol, tier="growth", shares=50, pnl_pct=0.0, held_days=200, currency="USD",
-             name=None, value=10_000.0):
+             name=None, value=10_000.0, exchange="SMART"):
         sess.add(PortfolioHolding(
             symbol=symbol, name=name or symbol, tier=tier, shares=shares, avg_cost=PRICE,
             current_price=PRICE, market_value=value, total_invested=value,
-            unrealized_pnl_pct=pnl_pct, currency=currency, exchange="SMART"))
+            unrealized_pnl_pct=pnl_pct, currency=currency, exchange=exchange))
         sess.add(PortfolioTransaction(
             symbol=symbol, action="buy", shares=shares, price=PRICE, amount=value,
             created_at=dt.datetime.utcnow() - dt.timedelta(days=held_days)))
@@ -174,10 +174,19 @@ def test_foreign_holding_is_not_judged_on_another_companys_data(review):
 
 
 def test_foreign_holding_with_matching_us_line_is_judged(review):
+    # Since 2026-11-03 FMP is asked by exchange-suffixed ticker: a CAD listing is SU.TO at FMP.
     review.hold("SU", tier="dividend", currency="CAD", name="SUNCOR ENERGY INC")
-    review.profiles["SU"] = [{"companyName": "Suncor Energy Inc."}]
-    review.fundamentals["SU"] = DIV_CUT
+    review.profiles["SU.TO"] = [{"companyName": "Suncor Energy Inc."}]
+    review.fundamentals["SU.TO"] = DIV_CUT
     assert _cards_for(review.run(), "SU") == [("sell_stock_review", "monthly_dividend_disqualified")]
+
+
+def test_suffixed_listing_is_trusted_on_the_ticker_even_when_the_names_differ(review):
+    # The broker truncates names ("CIE FINANCIERE RICHEMO-A REG"); FMP's CFR.SW is unambiguous.
+    review.hold("CFR", tier="dividend", currency="CHF", exchange="EBS", name="CIE FINANCIERE RICHEMO-A REG")
+    review.profiles["CFR.SW"] = [{"companyName": "Compagnie Financière Richemont SA"}]
+    review.fundamentals["CFR.SW"] = DIV_CUT
+    assert _cards_for(review.run(), "CFR") == [("sell_stock_review", "monthly_dividend_disqualified")]
 
 
 def test_identity_check_fails_closed_without_a_profile(review):
