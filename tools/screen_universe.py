@@ -3824,6 +3824,19 @@ def _check_breakthrough_eligibility(symbol: str, score_market_cap: float = 0, *,
     return True, ""
 
 
+def _smart_copy(contract):
+    """The same listing routed SMART (same conId/currency), or None when it already is."""
+    try:
+        if str(getattr(contract, "exchange", "")).upper() == "SMART":
+            return None
+        c = Stock(contract.symbol, "SMART", contract.currency)
+        c.conId = getattr(contract, "conId", 0) or 0
+        c.primaryExchange = getattr(contract, "primaryExchange", "") or getattr(contract, "exchange", "")
+        return c
+    except Exception:
+        return None
+
+
 def _positive(v) -> bool:
     """True for a real, finite price above zero. ib_insync fills missing ticks with nan, which
     is truthy and compares False to 0 — `if not price or price <= 0` let nan straight through."""
@@ -4772,7 +4785,7 @@ class UniverseScreener:
                 if key:
                     import requests as _req
                     r = _req.get(
-                        f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={key}",
+                        f"https://financialmodelingprep.com/stable/quote?symbol={fmp_symbol(symbol, exchange, currency)}&apikey={key}",
                         timeout=10,
                     )
                     data = r.json()
@@ -4781,6 +4794,24 @@ class UniverseScreener:
                         print(f"  ℹ️  {symbol}: using FMP price ${price:.2f} (IBKR returned no data)")
             except Exception as _fmp_e:
                 print(f"  🔎 {symbol}: FMP price fallback exception: {type(_fmp_e).__name__}: {_fmp_e}")
+        if not _positive(price):
+            # Last resort: the broker's own daily bar. Market data (even delayed) is a venue
+            # subscription — TSEJ answers Error 354 while Tokyo is OPEN, so a screen started in
+            # Asian hours lost every Japanese name — but history needs none.
+            # Native venue first, then SMART: Tokyo history is only served SMART-routed on this
+            # account (Error 162 "No market data permissions for TSEJ STK" on the native request;
+            # the buyer routes TSEJ -> SMART for the same reason).
+            for _route in (contract, _smart_copy(contract)):
+                if _route is None:
+                    continue
+                try:
+                    bars = self.ib.reqHistoricalData(_route, "", "5 D", "1 day", "TRADES", True, 1, False, [])
+                    if bars and _positive(bars[-1].close):
+                        price = float(bars[-1].close)
+                        print(f"  ℹ️  {symbol}: using last daily close {price:.2f} via {_route.exchange} (no quote from IBKR or FMP)")
+                        break
+                except Exception as _bar_e:
+                    print(f"  🔎 {symbol}: daily-bar price fallback exception: {type(_bar_e).__name__}: {_bar_e}")
         if not _positive(price):
             print(f"  🔎 {symbol}: no price from IBKR or FMP -> None (final price={price})")
             self._reject(symbol, "no_price", price=price)
