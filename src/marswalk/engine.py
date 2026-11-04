@@ -26,6 +26,8 @@ from datetime import date, datetime, timedelta
 from src.core.config import get_settings
 from src.strategy.option_scoring import score_put_candidates, score_call_candidates
 from src.marswalk import pricing
+from src.strategy import wheel_rules
+from src.strategy import realized_move
 
 TARGET_ANNUAL = 0.24
 
@@ -140,6 +142,31 @@ class Params:
     cc_bbe_min_age_days: int = 90        # G2: quarter for the recovery thesis
     cc_bbe_min_drawdown: float = 0.20    # G3: only lots >=20% below basis
     cc_bbe_max_lock: float = 0.10        # G5: never lock more than 10% below basis
+    # ── Short-put profit taker (parity with live ProfitTaker._should_close) ──
+    # Live has profit_take_enabled=True but the taker hard-skips DTE<=3
+    # (profit_taker.py:121), so at the default 0-3 DTE window it NEVER fires —
+    # which is why MarsWalk had no model of it. Enabled here with the same
+    # DTE>put_pt_min_dte gate, so bare Params() stays byte-identical to every
+    # prior run; it only starts acting once the DTE window is extended past 3.
+    #
+    # Ladder mirrors live exactly: DTE>14 → 75%, DTE>7 → 65%, DTE>3 → 50% of
+    # premium captured. Set put_pt_flat_pct > 0 to test a single flat target at
+    # every DTE instead of the ladder.
+    put_profit_take_enabled: bool = True
+    put_pt_min_dte: int = 3          # never close at or below this DTE — let it expire/assign
+    put_pt_target_long: float = 0.75    # DTE > put_pt_dte_long
+    put_pt_target_mid: float = 0.65     # DTE > put_pt_dte_mid
+    put_pt_target_near: float = 0.50    # DTE > put_pt_min_dte
+    put_pt_dte_long: int = 14
+    put_pt_dte_mid: int = 7
+    put_pt_flat_pct: float = 0.0     # >0 = one flat target at all DTE (overrides the ladder)
+    # Per-contract commission charged on short-put legs (entry + profit-take
+    # buyback). 0.0 = free, which is what every prior MarsWalk run assumed —
+    # keep it 0 for comparability, raise it (~1.30 = IBKR) to price in the fact
+    # that profit-taking DOUBLES the leg count on every position it closes.
+    # Only short-put legs are charged; CC legs are untouched so wheel results
+    # stay comparable to prior sweeps.
+    put_commission_per_contract: float = 0.0
     # ── Covered calls ──
     cc_dte_min: int = 1            # live cfg.cc_dte_min
     cc_dte_max: int = 7            # live cfg.cc_dte_max
@@ -187,6 +214,34 @@ class Params:
     cc_early_close_stock_over_strike_pct: float = 0.05   # deep-ITM pre-filter: spot >= strike*(1+X)
     cc_early_close_fees_per_share: float = 0.03           # commissions, per share of the lot (mirrors live)
     cc_early_close_min_dte: int = 2                       # skip near-expiry self-resolvers
+    # ── Assigned-lot STOP (Rain 2026-11-04; live RiskConfig.wheel_stop_loss_*) ──
+    # Sell the whole lot at the close once close <= assignment strike x (1 - pct); an open
+    # covered call is bought back first at value_call_ask + 5c. Live default ON (0.08);
+    # sim default OFF so every prior run stays byte-identical — the sweep flips it.
+    wheel_stop_loss_enabled: bool = False
+    wheel_stop_loss_pct: float = 0.08
+    # ── Package UNWIND (Rain's manual rule; live RiskConfig.cc_package_unwind_*) ──
+    # On a covered lot: when close - (call ask + 5c) - fees >= net basis + min_profit x basis
+    # (net basis = cost basis - realized CC premium/share - this call's premium), buy the call
+    # back and sell the shares the same day. Sim uses the close for the stock bid (no stock
+    # spread). Live default ON; sim default OFF (byte-identical prior runs).
+    cc_package_unwind_enabled: bool = False
+    cc_package_unwind_min_profit_pct: float = 0.005
+    # ── Per-name strike floor from the realised 3-day move (rule 3; live StrategyConfig.put_otm_*) ──
+    # "flat" = today's fixed window (default, byte-identical); "realized" = floor lifted to
+    # max(put_otm_floor, k × pctl-quantile of trailing forward declines), target/cap ≥ floor.
+    put_otm_floor_mode: str = "flat"
+    put_otm_realized_k: float = 1.0
+    put_otm_realized_lookback: int = 60
+    put_otm_realized_pctl: float = 0.80
+    put_otm_realized_horizon: int = 3
+    # ── Per-name breach-rate gate (rule 4; live RiskConfig.put_universe_*) ──
+    # Skip a name whose trailing fraction of >threshold forward declines exceeds the ceiling.
+    # 1.0 = off (default, byte-identical). Proposed live 0.30 after the sweep.
+    put_universe_max_breach_rate: float = 1.0
+    put_universe_breach_lookback: int = 120
+    put_universe_breach_horizon: int = 3
+    put_universe_breach_threshold: float = 0.025
     # ── Rule B (2026-08-05, tested-only): don't-cap momentum lots ──
     # Rain's floated alternative: on a lot whose stock is in a strong uptrend, skip
     # the covered call entirely and hold the shares UNCAPPED for recovery/upside,
@@ -238,6 +293,7 @@ class Params:
     margin_on: bool = True            # live runs with IBKR portfolio margin
     margin_multiple: float = 5.0      # IBKR portfolio-margin proxy (~5x typical OTM put)
     max_single_name_notional_pct: float = 0.25  # per-name assignment-notional cap as % of NLV (mirrors live RiskConfig)
+    max_single_name_one_lot_pct: float = 0.25   # a single lot may still be sold up to this % of NLV (live 0.20 since 2026-11-04; sim default = old cap → byte-identical)
     # ── Live-system defenses (ports from src.strategy.risk) ──
     # 0 = use the live config default (so the backtest mirrors production); >0 overrides.
     dynamic_delta_enabled: bool = True   # VIX-tiered delta range (mirrors risk.dynamic_delta_range)
@@ -583,9 +639,13 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     n_assign = 0
     n_puts_sold = 0          # short-put SALE events (one per position opened)
     put_bid_sum = 0.0        # Σ premium bid per contract at sale (fee-floor proxy)
+    n_put_profit_takes = 0   # short puts bought back early by the profit taker
+    pt_captured_sum = 0.0    # Σ captured-premium fraction at each profit take
     uncovered_lot_days = 0   # Σ over days of held 100-share lots with NO covering CC
     n_bbe_writes = 0         # below-breakeven CC writes (strict last-resort lever)
     n_cc_early_closes = 0    # deep-ITM covered calls bought-to-close + stock sold early
+    n_stop_losses = 0        # assigned lots sold at the -X% stop (wheel_stop_loss_*)
+    n_cc_unwinds = 0         # covered lots unwound as a package above net basis
     margin_interest_total = 0.0  # Σ interest charged on negative (margin-debit) cash
     points = []
     peak = start_cap
@@ -626,6 +686,57 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 for i in range(200, len(sym_closes)):
                     sym_ma[sym_dates[i]] = sum(sym_closes[i-200:i]) / 200
                 per_name_ma200[sym] = sym_ma
+
+    # Per-symbol sorted close series (pre-regime warmup + in-regime), for the realised
+    # strike floor (rule 3) and the breach-rate gate (rule 4). Built lazily — only when a
+    # rule is on — so default runs do no extra work. `_closes_up_to(sym, d)` returns the
+    # closes strictly BEFORE d (no look-ahead), like live FMP history on the scan day.
+    _realized_on = (getattr(params, "put_otm_floor_mode", "flat") == "realized")
+    _breach_on = (getattr(params, "put_universe_max_breach_rate", 1.0) < 1.0)
+    _close_series: dict[str, tuple[list, list]] = {}
+    _move_cache: dict[tuple, object] = {}
+    if _realized_on or _breach_on:
+        import bisect as _bisect
+        for sym in universe:
+            merged: dict = {}
+            for b in market.get(f"_pre:{sym}", []):
+                merged[b[0]] = b[1]
+            for b in market.get(sym, []):
+                merged[b[0]] = b[1]
+            if not merged:
+                continue
+            bars_sorted = sorted(merged.items())
+            _close_series[sym] = ([x for x, _ in bars_sorted], [c for _, c in bars_sorted])
+
+        def _closes_up_to(sym, day, n):
+            ser = _close_series.get(sym)
+            if not ser:
+                return None
+            idx = _bisect.bisect_left(ser[0], day)
+            return ser[1][max(0, idx - n):idx]
+
+        def _sym_otm_window(sym, day):
+            key = ("otm", sym, day)
+            if key not in _move_cache:
+                closes = _closes_up_to(sym, day, params.put_otm_realized_lookback + params.put_otm_realized_horizon)
+                _move_cache[key] = realized_move.resolve_otm_window(
+                    "realized", closes,
+                    flat_floor=params.put_otm_floor, flat_target=params.put_otm_target,
+                    flat_cap=params.put_otm_cap, k=params.put_otm_realized_k,
+                    lookback=params.put_otm_realized_lookback, pctl=params.put_otm_realized_pctl,
+                    horizon=params.put_otm_realized_horizon)
+            return _move_cache[key]
+
+        def _sym_breach_rate(sym, day):
+            key = ("br", sym, day)
+            if key not in _move_cache:
+                closes = _closes_up_to(sym, day, params.put_universe_breach_lookback + params.put_universe_breach_horizon)
+                _move_cache[key] = realized_move.breach_rate(
+                    closes or [], lookback=params.put_universe_breach_lookback,
+                    horizon=params.put_universe_breach_horizon,
+                    threshold=params.put_universe_breach_threshold) if closes else None
+            return _move_cache[key]
+    n_breach_skips = 0
 
     # Per-symbol running IV min/max up to each date (for the IV-rank gate).
     iv_rank_lut: dict[str, dict] = {}
@@ -883,6 +994,10 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     cb = p["strike"] - p["premium"]
                     tot = st["shares"] + add
                     st["cost_basis"] = (st["cost_basis"] * st["shares"] + cb * add) / tot if tot else cb
+                    # share-weighted ASSIGNMENT strike (the stop's reference, mirrors live
+                    # _assignment_strike); inert for every rule that does not read it
+                    prev_k = st.get("assign_strike") or p["strike"]
+                    st["assign_strike"] = (prev_k * st["shares"] + p["strike"] * add) / tot if tot else p["strike"]
                     st["shares"] = tot
                     st["assigned_idx"] = day_idx     # for coverage-lag gating
                     n_assign += 1
@@ -890,6 +1005,55 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             else:
                 keep.append(p)
         short_puts = keep
+
+        # ── 1b. Short-put profit taker (mirror of live ProfitTaker) ─────────
+        # For each still-open put, mark it at the synthetic ASK (what a buy-to-
+        # close pays — NOT the mid; see pricing.value_put_ask) and close when the
+        # captured fraction of the entry premium clears the DTE-tiered target.
+        # Closing here, before the entry pass further down, frees the collateral
+        # AND the position slot on the same day — which is the whole point of the
+        # lever: recycle capital instead of sitting on a 90%-decayed put.
+        # No-op at the default 0-3 DTE window (every put is <= put_pt_min_dte),
+        # so prior results are unchanged.
+        if params.put_profit_take_enabled and short_puts:
+            keep = []
+            for p in short_puts:
+                dte_left = (p["expiry"] - d).days
+                if dte_left <= params.put_pt_min_dte or p["premium"] <= 0:
+                    keep.append(p)
+                    continue
+                q = pv(p["sym"], d)
+                if not q:
+                    keep.append(p)
+                    continue
+                spot_pt, iv_pt = q[0], q[1]
+                if params.put_pt_flat_pct > 0:
+                    target = params.put_pt_flat_pct
+                elif dte_left > params.put_pt_dte_long:
+                    target = params.put_pt_target_long
+                elif dte_left > params.put_pt_dte_mid:
+                    target = params.put_pt_target_mid
+                else:
+                    target = params.put_pt_target_near
+                k_pt = params.short_dte_uplift_k
+                if params.k_vix_adaptive_enabled and vix_now is not None:
+                    if vix_now > params.k_vix_panic_threshold:
+                        k_pt = params.k_vix_panic
+                    elif vix_now > params.k_vix_high_threshold:
+                        k_pt = params.k_vix_high
+                ask_now = pricing.value_put_ask(
+                    spot_pt, p["strike"], p["expiry"].strftime("%Y%m%d"), d, iv_pt, k_pt)
+                captured = (p["premium"] - ask_now) / p["premium"]
+                if captured >= target:
+                    cash -= ask_now * 100 * p["qty"]
+                    cash -= params.put_commission_per_contract * p["qty"]
+                    # portfolio_delta is rebuilt from short_puts each day (below),
+                    # so dropping the position here releases its delta automatically.
+                    n_put_profit_takes += 1
+                    pt_captured_sum += captured
+                else:
+                    keep.append(p)
+            short_puts = keep
 
         # ── 2. Settle expiring short calls ──
         keep = []
@@ -953,6 +1117,73 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 n_cc_early_closes += 1
                 n_trades += 1
             short_calls = keep
+
+        # ── 2a-bis. Package unwind (Rain's manual rule, 2026-11-04) ───────
+        # Mirror of live ProfitTaker Rule C: a covered lot whose package (stock at the
+        # close − (call ask + 5c) − fees) clears the NET basis by min_profit × basis is
+        # unwound now — call bought back, shares sold — instead of waiting for expiry.
+        # Rule A (2a) ran first and keeps precedence, as live. Default OFF in the sim.
+        if params.cc_package_unwind_enabled and short_calls:
+            keep = []
+            for c in short_calls:
+                st = stocks.get(c["sym"])
+                q = pv(c["sym"], d)
+                if not st or not q or d >= c["expiry"]:
+                    keep.append(c)
+                    continue
+                spot, iv = q
+                ask = pricing.value_call_ask(spot, c["strike"], c["expiry"].strftime("%Y%m%d"),
+                                             d, iv, params.short_dte_uplift_k)
+                if not wheel_rules.package_unwind_triggered(
+                        spot, ask, st["cost_basis"], st.get("realized_cc", 0.0), c["premium"],
+                        min_profit_pct=params.cc_package_unwind_min_profit_pct,
+                        fees_per_share=params.cc_early_close_fees_per_share, pad=0.05):
+                    keep.append(c)
+                    continue
+                qty = c["qty"]
+                buy_limit = round(ask + 0.05, 2)
+                cash -= buy_limit * 100 * qty
+                cash -= params.cc_early_close_fees_per_share * 100 * qty
+                cash += spot * 100 * qty
+                st["realized_cc"] = st.get("realized_cc", 0.0) + c["premium"]
+                st["shares"] -= 100 * qty
+                if st["shares"] <= 0:
+                    stocks.pop(c["sym"], None)
+                n_cc_unwinds += 1
+                n_trades += 1
+            short_calls = keep
+
+        # ── 2e. Assigned-lot stop (Rain, 2026-11-04) ──────────────────────
+        # Mirror of live WheelManager.check_stop_loss (15:45 ET ≈ the daily close): a lot
+        # whose close is wheel_stop_loss_pct below its share-weighted assignment strike is
+        # sold outright; its covered call (if any) is bought back first at ask + 5c.
+        # Default OFF in the sim.
+        if params.wheel_stop_loss_enabled and stocks:
+            for sym, st in list(stocks.items()):
+                q = pv(sym, d)
+                k_assign = st.get("assign_strike")
+                if not q or not k_assign or st["shares"] <= 0:
+                    continue
+                spot, iv = q
+                if not wheel_rules.stop_loss_triggered(spot, k_assign, params.wheel_stop_loss_pct):
+                    continue
+                keep = []
+                for c in short_calls:
+                    if c["sym"] != sym:
+                        keep.append(c)
+                        continue
+                    ask = pricing.value_call_ask(spot, c["strike"], c["expiry"].strftime("%Y%m%d"),
+                                                 d, iv, params.short_dte_uplift_k)
+                    cash -= round(ask + 0.05, 2) * 100 * c["qty"]
+                    cash -= params.cc_early_close_fees_per_share * 100 * c["qty"]
+                    st["realized_cc"] = st.get("realized_cc", 0.0) + c["premium"]
+                    n_trades += 1
+                short_calls = keep
+                cash += spot * st["shares"]
+                cash -= params.cc_early_close_fees_per_share * st["shares"]
+                stocks.pop(sym, None)
+                n_stop_losses += 1
+                n_trades += 1
 
         # ── 2b. Settle naked short calls (strangle/IC short-leg) ──────────
         # Settled in cash. If close > strike, pay out (close - strike) × 100
@@ -1470,6 +1701,12 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     sym_ma = per_name_ma200.get(sym, {}).get(d)
                     if sym_ma is not None and spot < sym_ma:
                         continue
+                # Rule 4: per-name breach-rate gate (mirrors RiskManager.check_breach_rate).
+                if _breach_on:
+                    _br = _sym_breach_rate(sym, d)
+                    if _br is not None and _br > params.put_universe_max_breach_rate:
+                        n_breach_skips += 1
+                        continue
                 # Bear-market gate mode E: breadth_gradual — only SKIP when ≥
                 # breadth_full of the universe is below MA200 today. Below
                 # breadth_off, gate is OFF. In between is HALVE (handled at the
@@ -1515,11 +1752,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                         k_today = params.k_vix_high
                 score_iv = pricing.effective_iv(iv, (day_dte_min + day_dte_max) // 2,
                                                 k_today)
+                # Rule 3: per-name realised-move window overrides the day window
+                # (mirrors RiskManager.realized_otm_window → screen_puts(otm_window=)).
+                sym_otm = _sym_otm_window(sym, d) if _realized_on else day_otm
                 cands = score_put_candidates(spot, score_iv, chain, put_cfg,
                                              day_delta_min, day_delta_max,
                                              day_dte_min, day_dte_max, d,
-                                             otm_floor=day_otm[0], otm_target=day_otm[1],
-                                             otm_cap=day_otm[2])
+                                             otm_floor=sym_otm[0], otm_target=sym_otm[1],
+                                             otm_cap=sym_otm[2])
                 if cands:
                     top = max(cands, key=lambda c: c.score)
                     ranked.append((top.score, sym, top, ivr))
@@ -1590,7 +1830,9 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 # `contracts` above is already sized to fit the cap below $500K, this
                 # only skips a name where even one lot blows the cap. Mirrors live
                 # risk.check_position_size Layer 3 + adaptive_name_notional_pct.
-                if prev_nlv > 0 and need > _name_pct * prev_nlv:
+                _one_lot_ok = (contracts == 1 and prev_nlv > 0
+                               and need <= max(_name_pct, params.max_single_name_one_lot_pct) * prev_nlv)
+                if prev_nlv > 0 and need > _name_pct * prev_nlv and not _one_lot_ok:
                     continue
                 if params.margin_on:
                     # Margin mode: the % NLV cap admits notional up to NLV*cap*multiple
@@ -1618,6 +1860,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 if delta_cap_on and portfolio_delta >= max_delta_cap:
                     continue
                 cash += top.bid * 100 * contracts
+                cash -= params.put_commission_per_contract * contracts
                 entry_delta = abs(getattr(top, "delta", 0.0) or 0.0)
                 short_puts.append({"sym": sym, "strike": top.strike,
                                    "expiry": _exp_date(top.expiry),
@@ -1798,9 +2041,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "n_trades": n_trades, "n_assignments": n_assign,
         "n_puts_sold": n_puts_sold,
         "put_bid_sum": round(put_bid_sum, 2),
+        "n_put_profit_takes": n_put_profit_takes,
+        "pt_avg_captured": round(pt_captured_sum / n_put_profit_takes, 4) if n_put_profit_takes else 0.0,
         "uncovered_lot_days": uncovered_lot_days,
         "n_bbe_writes": n_bbe_writes,
         "n_cc_early_closes": n_cc_early_closes,
+        "n_stop_losses": n_stop_losses,
+        "n_cc_unwinds": n_cc_unwinds,
+        "n_breach_skips": n_breach_skips,
         "margin_interest_total": round(margin_interest_total, 2),
         "n_halt_days": n_halt_days,
         "n_hvg_days": hvg_active_days,

@@ -137,6 +137,24 @@ def value_put(spot: float, strike: float, expiry: str, today: date, iv: float,
     return float(g.mid) if g else 0.0
 
 
+def value_put_ask(spot: float, strike: float, expiry: str, today: date, iv: float,
+                  k: float = SHORT_DTE_K) -> float:
+    """BSM ASK of a put — what a buy-to-close actually pays.
+
+    `value_put` returns the mid (theo). The engine SELLS puts at `greeks.bid`, so
+    marking an early close at mid would hand the profit-taker half the spread for
+    free and make it look better than it is. This returns the same synthetic ask
+    the entry path's bid came from (compute_put_greeks, 5% spread, $0.01 min
+    half-spread), so a sell-at-bid → buy-at-ask round trip pays the full spread.
+    """
+    dte = _dte(expiry, today)
+    if dte < 0:
+        return max(0.0, strike - spot)  # intrinsic at/after expiry
+    T = max(dte, 0.25) / 365.0
+    g = compute_put_greeks(spot, strike, T, effective_iv(iv, dte, k))
+    return float(g.ask) if g else 0.0
+
+
 def value_call(spot: float, strike: float, expiry: str, today: date, iv: float,
                k: float = SHORT_DTE_K) -> float:
     """BSM mid value of a call (the daily mark). 0 if expired/unpriceable."""

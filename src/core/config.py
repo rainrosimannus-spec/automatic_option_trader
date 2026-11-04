@@ -27,6 +27,11 @@ class IBKRConfig(BaseModel):
     # options-side deposit/dividend feature; no consumer wired yet.
     flex_token: str = ""
     flex_query_id: str = ""
+    # Optional SECOND Flex query for /reports — long-period (e.g. "Year to Date"
+    # or a full calendar year) with Open Positions included. flex_query_id above
+    # is short-period and shared with the SKXHoldco bookkeeping bridge, so it
+    # must not be repointed. Falls back to flex_query_id when unset.
+    report_flex_query_id: str = ""
 
 
 class DteTierLow(BaseModel):
@@ -63,6 +68,16 @@ class StrategyConfig(BaseModel):
     put_otm_floor: float = 0.02         # min OTM distance (skip strikes closer than this)
     put_otm_target: float = 0.05        # preferred OTM distance (scorer peak)
     put_otm_cap: float = 0.12           # max OTM distance (skip farther — no premium)
+    # Per-name strike floor from the REALISED 3-day move (Rain, 2026-11-04). "flat" keeps the
+    # window above exactly; "realized" lifts the floor to max(put_otm_floor, k × the pctl-quantile
+    # of the trailing-lookback forward `horizon`-day declines) and never lets target/cap sit
+    # below it. Evidence: 164 live puts at a median 2.5% OTM on names that breach 2.5% within
+    # 3 days 35-65% of the time → 33% finished ITM. Mirrored in MarsWalk Params.put_otm_*.
+    put_otm_floor_mode: str = "flat"     # "flat" | "realized"
+    put_otm_realized_k: float = 1.0
+    put_otm_realized_lookback: int = 60   # trading days of history
+    put_otm_realized_pctl: float = 0.80   # quantile of the forward declines
+    put_otm_realized_horizon: int = 3     # days ≈ the 0-3 DTE holding period
     min_open_interest: int = 10
     min_bid: float = 0.05
     min_net_premium_multiplier: float = 5.0
@@ -186,7 +201,16 @@ class RiskConfig(BaseModel):
     # underlying's assignment notional as % of NLV (steers small accounts off lumpy
     # high-priced names; non-binding at large NLV).
     cash_reserve_pct: float = 0.15           # reserve floor = max(min_cash_reserve, this * NLV), tested vs excess liquidity
-    max_single_name_notional_pct: float = 0.25  # per-name assignment notional cap as % of NLV
+    max_single_name_notional_pct: float = 0.10  # per-name assignment notional cap as % of NLV (0.25 → 0.10 on 2026-11-04: a 25% lot that gapped 35% cost ~9% of NLV; seven such lots sank the account)
+    max_single_name_one_lot_pct: float = 0.20   # a SINGLE lot may still be sold up to this % of NLV (keeps $200-400 names tradable at $205k NLV; 2+ lots must fit the 10% cap)
+    # Per-name BREACH-RATE gate (Rain, 2026-11-04). Skip a put on a name whose trailing-lookback
+    # fraction of days with a >threshold decline over the next `horizon` closes exceeds the
+    # ceiling. 1.0 = off (default; the sweep decides the live value, proposed 0.30). Data-driven
+    # per name — no hand list. Fail-open on missing history. Mirrored in MarsWalk Params.
+    put_universe_max_breach_rate: float = 1.0
+    put_universe_breach_lookback: int = 120
+    put_universe_breach_horizon: int = 3
+    put_universe_breach_threshold: float = 0.025
     daily_deployment_pct: float = 0.03       # max new collateral per day as % of NLV
     max_daily_deployment: float = 500000.0   # hard ceiling new collateral per day
     intraday_loss_halt_pct: float = 0.025    # halt if unrealized loss > 2.5% of NLV (Option C: max of pct or floor)
@@ -361,6 +385,28 @@ class RiskConfig(BaseModel):
     # tolerance knob any more; the only parameter is the commission estimate below.
     cc_early_close_fees_per_share: float = 0.03           # ≈ $1 call commission + $2 stock sale per 100 shares
     cc_early_close_min_dte: int = 2                       # skip near-expiry self-resolvers
+    # ── Assigned-lot STOP (Rain, 2026-11-04) ──
+    # The first four months on the dedicated account: 36 assignments, nine lots still held =
+    # 1.5x NLV in stock, -$92k unrealized; holding cost $37k MORE than selling the next day
+    # while the covered calls earned $36k back. Rain chose: sell the whole lot the day its
+    # live mid is >= wheel_stop_loss_pct below the assignment strike (daily-close basis — one
+    # evaluation at 15:45 ET). An open covered call is bought back FIRST (ask + 5c) and the
+    # shares leave only after that buyback shows Filled at IBKR, so no naked-call window
+    # opens. Above the stop the velocity CC keeps running. Mirrored in MarsWalk Params
+    # (wheel_stop_loss_enabled, sim default OFF so prior runs stay byte-identical).
+    wheel_stop_loss_enabled: bool = True
+    wheel_stop_loss_pct: float = 0.08          # sell when mid <= assignment strike * (1 - this)
+    wheel_stop_fill_wait_secs: float = 20.0    # how long to wait for the CC buyback to fill before selling
+    # ── Package UNWIND (Rain's manual rule, 2026-11-04) ──
+    # On a covered lot, whenever stock bid - (call ask + 5c) - fees clears the lot's NET basis
+    # (cost basis - realized CC premium/share - this call's premium) by min_profit_pct of the
+    # basis, buy the call back and sell the shares in the SAME 5-min pass — what Rain did by hand
+    # on VRT 10-29, CTAS 10-27, ISRG 10-07. Gives up the call's remaining extrinsic, frees the
+    # capital weeks before expiry. Rule A (deep-ITM early close) keeps precedence: it never gives
+    # up extrinsic. Reuses cc_early_close_fees_per_share. Mirrored in MarsWalk (sim default OFF).
+    cc_package_unwind_enabled: bool = True
+    cc_package_unwind_min_profit_pct: float = 0.005   # package must beat net basis by 0.5% of cost basis
+    cc_package_unwind_fill_wait_secs: float = 20.0    # wait for the buyback before selling the shares
     # Sweep (cc_early_close_sweep.py, 2026-08-05): this TIGHT config (over=5%, ext≤0.5%)
     # is return-NEUTRAL on the 6y replay (−0.09pp, +1.2pp DD) and HELPS the bear_2022
     # recovery (+3.2pp, −2.4pp DD); the looser over=8%/ext=1% variant gave up 3pp

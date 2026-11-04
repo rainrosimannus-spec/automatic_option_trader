@@ -1034,6 +1034,41 @@ def job_wheel_exit_check():
         log.error("wheel_exit_check_error", error=str(e))
 
 
+def job_wheel_stop_check():
+    """🛑  Assigned-lot stop (Rain, 2026-11-04) — once a day at 15:45 ET.
+
+    Sells a wheel stock lot outright when its live mid is wheel_stop_loss_pct (8%) or
+    more below the assignment strike; an open covered call is bought back first and the
+    shares leave only after that fill. Serialized through _scan_lock because it mutates
+    lots and places orders, like job_check_assignments.
+    """
+    _ensure_event_loop()
+    if _is_paused():
+        return
+    if not is_connected():
+        return
+    acquired = _scan_lock.acquire(timeout=60)
+    if not acquired:
+        log.warning("wheel_stop_skipped_scan_lock_timeout")
+        return
+    try:
+        universe = UniverseManager()
+        risk = RiskManager(universe)
+        wheel = WheelManager(risk, universe)
+        sold = wheel.check_stop_loss()
+        if sold:
+            log.info("wheel_stop_check_completed", symbols=sold, count=len(sold))
+            try:
+                alerts._send(f"🛑 Assigned-lot stop sold: {', '.join(sold)}",
+                             priority="default", tags="wheel,stop")
+            except Exception:
+                pass
+    except Exception as e:
+        log.error("wheel_stop_check_error", error=str(e))
+    finally:
+        _scan_lock.release()
+
+
 def job_heartbeat():
     """💚 Daily heartbeat — proof of life sent every morning.
     If you stop receiving this, something is wrong."""
@@ -1738,6 +1773,15 @@ def create_scheduler() -> BackgroundScheduler:
         CronTrigger(hour=9, minute=35, day_of_week="mon-fri", timezone=us_tz),
         id="wheel_exit_check_rth",
         name="Wheel Exit Check (RTH safety net)",
+        max_instances=1,
+    )
+
+    # ── Assigned-lot stop — 15:45 ET daily (daily-close basis) ──
+    scheduler.add_job(
+        job_wheel_stop_check,
+        CronTrigger(hour=15, minute=45, day_of_week="mon-fri", timezone=us_tz),
+        id="wheel_stop_check",
+        name="Wheel Stop Check (assigned-lot −8% stop)",
         max_instances=1,
     )
 

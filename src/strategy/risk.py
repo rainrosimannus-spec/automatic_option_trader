@@ -150,7 +150,7 @@ def adaptive_name_notional_pct(net_liq: float) -> float:
     reverses bc2439e's small-account tightening on purpose; the guard is loosened,
     not removed (see memory: assignment-cash-lockout-prevention).
 
-    At/above $100K the tighter target (max_single_name_notional_pct, 25%) applies.
+    At/above $100K the tighter target (max_single_name_notional_pct, 10% since 2026-11-04; was 25%) applies.
     Mirrors MarsWalk engine's per-name cap (src/marswalk/engine.py)."""
     if net_liq < 100_000:
         return 0.50
@@ -219,6 +219,9 @@ class RiskManager:
         self._iv_rank_cache: dict[str, tuple[datetime, float | None]] = {}
         # Per-name MA200 cache: (date_iso, is_below). One IBKR call/sym/day.
         self._ma200_cache: dict[str, tuple[str, bool | None]] = {}
+        # Per-name daily-close history cache (date_iso, closes|None) shared by the realised
+        # strike floor and the breach-rate gate — one FMP call per symbol per day for both.
+        self._closes_cache: dict[str, tuple[str, list | None]] = {}
         # Cash-and-carry grind detector state (cached per scan). Persists across
         # process restarts via SystemState keys (grind_active / grind_raw_true_streak
         # / grind_raw_false_streak / grind_last_eval_date).
@@ -1056,6 +1059,13 @@ class RiskManager:
         name_notional = price * 100 * base_contracts
         name_notional_pct = adaptive_name_notional_pct(net_liq)
         name_notional_cap = net_liq * name_notional_pct
+        # One-lot allowance (2026-11-04): the 10% target would reject every name above
+        # ~$205/share outright at $205k NLV (the sizing floor is one lot). A single lot is
+        # still allowed up to max_single_name_one_lot_pct of NLV; two or more lots must fit
+        # the target. Mirrored in MarsWalk (Params.max_single_name_one_lot_pct).
+        one_lot_cap = net_liq * float(getattr(self.cfg, "max_single_name_one_lot_pct", name_notional_pct))
+        if base_contracts == 1 and name_notional <= max(name_notional_cap, one_lot_cap):
+            return RiskCheck(True)
         if name_notional > name_notional_cap:
             return RiskCheck(
                 False,
@@ -1584,6 +1594,72 @@ class RiskManager:
                  distance_below_ma200=round(dist, 4),
                  multiplier=self.cfg.bear_market_size_multiplier)
         return self.cfg.bear_market_size_multiplier
+
+    def _daily_closes(self, symbol: str, min_bars: int) -> list[float] | None:
+        """Trailing daily closes (oldest → newest) from FMP, cached per symbol per day.
+        FAIL-SAFE: None on any error / short history — callers fall back to today's
+        behaviour (flat window, gate open). Never raises."""
+        today_iso = date.today().isoformat()
+        cached = self._closes_cache.get(symbol)
+        if cached and cached[0] == today_iso:
+            return cached[1]
+        closes = None
+        try:
+            from src.portfolio.fmp import get_price_history
+            # calendar days ≈ trading days × 1.45 + a buffer so holidays never starve it
+            closes = get_price_history(symbol, int(min_bars * 1.5) + 20)
+            if closes is not None and len(closes) < max(10, min_bars // 2):
+                closes = None
+        except Exception as e:
+            log.warning("daily_closes_unavailable", symbol=symbol, error=str(e))
+            closes = None
+        self._closes_cache[symbol] = (today_iso, closes)
+        return closes
+
+    def realized_otm_window(self, symbol: str) -> tuple[float, float, float] | None:
+        """Per-name (floor, target, cap) for the 0-3 DTE put screen (rule 3, 2026-11-04).
+        None in "flat" mode so screen_puts keeps the configured window untouched."""
+        from src.strategy.realized_move import resolve_otm_window
+        scfg = get_settings().strategy
+        mode = getattr(scfg, "put_otm_floor_mode", "flat")
+        if mode != "realized":
+            return None
+        lookback = int(getattr(scfg, "put_otm_realized_lookback", 60))
+        horizon = int(getattr(scfg, "put_otm_realized_horizon", 3))
+        closes = self._daily_closes(symbol, lookback + horizon)
+        window = resolve_otm_window(
+            mode, closes,
+            flat_floor=scfg.put_otm_floor, flat_target=scfg.put_otm_target, flat_cap=scfg.put_otm_cap,
+            k=float(getattr(scfg, "put_otm_realized_k", 1.0)), lookback=lookback,
+            pctl=float(getattr(scfg, "put_otm_realized_pctl", 0.80)), horizon=horizon)
+        log.info("put_otm_window_resolved", symbol=symbol, mode=mode,
+                 floor=window[0], target=window[1], cap=window[2],
+                 bars=(len(closes) if closes else 0))
+        return window
+
+    def check_breach_rate(self, symbol: str) -> RiskCheck:
+        """Rule 4 (2026-11-04): skip a name whose trailing fraction of days with a
+        >threshold decline over the next `horizon` closes exceeds the ceiling. 1.0 = off.
+        FAIL-OPEN on missing history (a data hiccup never blocks the trading path)."""
+        from src.strategy.realized_move import breach_rate
+        rc = self.cfg
+        ceiling = float(getattr(rc, "put_universe_max_breach_rate", 1.0))
+        if ceiling >= 1.0:
+            return RiskCheck(True)
+        lookback = int(getattr(rc, "put_universe_breach_lookback", 120))
+        horizon = int(getattr(rc, "put_universe_breach_horizon", 3))
+        threshold = float(getattr(rc, "put_universe_breach_threshold", 0.025))
+        closes = self._daily_closes(symbol, lookback + horizon)
+        if not closes:
+            return RiskCheck(True)
+        rate = breach_rate(closes, lookback=lookback, horizon=horizon, threshold=threshold)
+        if rate is None:
+            return RiskCheck(True)
+        if rate > ceiling:
+            return RiskCheck(False, reason=(
+                f"{symbol} {horizon}d breach rate {rate:.2f} > {ceiling:.2f} "
+                f"({lookback}d, >{threshold:.1%} declines) — momentum name, skipped"))
+        return RiskCheck(True)
 
     def is_below_ma200(self, symbol: str) -> bool | None:
         """True iff the symbol is trading below its 200d SMA today.
@@ -2385,6 +2461,7 @@ class RiskManager:
             self.check_buying_power(),
             self.check_earnings(symbol),
             self.check_iv_rank(symbol),
+            self.check_breach_rate(symbol),   # FMP history, daily-cached; off at ceiling 1.0
             ma200_check,
         ]
         for check in checks:

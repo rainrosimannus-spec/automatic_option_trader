@@ -88,10 +88,13 @@ def screen_puts(
     stock_exchange: str | None = None,
     dte_min: int | None = None,
     dte_max: int | None = None,
+    otm_window: tuple[float, float, float] | None = None,
 ) -> Optional[ScoredContract]:
     """
     Screen and rank put contracts for a symbol.
     delta_override: (min, max) to use instead of config defaults (for dynamic delta).
+    otm_window: (floor, target, cap) for the 0-3 DTE moneyness window — the per-name
+      realised-move window (RiskManager.realized_otm_window). None = cfg.put_otm_* as before.
     Uses Black-Scholes theoretical pricing from historical IV data.
     Returns the best candidate or None.
     exchange: used for option chain queries (DTB, ICEEU, etc.)
@@ -143,10 +146,12 @@ def screen_puts(
     today = datetime.now().date()
     delta_min = delta_override[0] if delta_override else cfg.delta_min
     delta_max = delta_override[1] if delta_override else cfg.delta_max
+    _of, _ot, _oc = otm_window if otm_window else (None, None, None)
     candidates = score_put_candidates(
         stock_price, iv, contracts, cfg,
         delta_min, delta_max,
         resolved_dte_min, resolved_dte_max, today,
+        otm_floor=_of, otm_target=_ot, otm_cap=_oc,
     )
 
     if not candidates:

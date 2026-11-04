@@ -241,7 +241,8 @@ class PutSeller:
             return None
         dte_min, dte_max = dte_range
 
-        candidate = screen_puts(symbol, exchange=opt_exchange, currency=currency, delta_override=delta_range, stock_exchange=exchange, dte_min=dte_min, dte_max=dte_max)
+        otm_window = self.risk.realized_otm_window(symbol)   # None in flat mode (today's window)
+        candidate = screen_puts(symbol, exchange=opt_exchange, currency=currency, delta_override=delta_range, stock_exchange=exchange, dte_min=dte_min, dte_max=dte_max, otm_window=otm_window)
         if not candidate:
             return None
 
@@ -370,7 +371,8 @@ class PutSeller:
         dte_min, dte_max = dte_range
 
         # Screen for best put contract with dynamic delta and VIX-adaptive DTE
-        candidate = screen_puts(symbol, exchange=opt_exchange, currency=currency, delta_override=delta_range, stock_exchange=exchange, dte_min=dte_min, dte_max=dte_max)
+        otm_window = self.risk.realized_otm_window(symbol)   # None in flat mode (today's window)
+        candidate = screen_puts(symbol, exchange=opt_exchange, currency=currency, delta_override=delta_range, stock_exchange=exchange, dte_min=dte_min, dte_max=dte_max, otm_window=otm_window)
         if not candidate:
             return False
 

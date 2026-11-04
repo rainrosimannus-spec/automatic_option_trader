@@ -669,6 +669,18 @@ class ProfitTaker:
                                 acted.append(pos.symbol)
                             continue  # acted/churn-blocked — skip the 80%-profit branch
 
+                    # ── Package unwind (Rule C, Rain's manual rule, 2026-11-04) ──
+                    # Rule A never gives up extrinsic and keeps precedence above. This one
+                    # does, deliberately: whenever stock bid − (call ask + 5c) − fees clears the
+                    # lot's NET basis (basis − realized CC premium/share − this call's premium)
+                    # by cc_package_unwind_min_profit_pct of basis, buy the call back and sell
+                    # the shares in this same pass — profit banked now, capital freed weeks
+                    # before expiry (VRT 10-29, CTAS 10-27, ISRG 10-07 were done by hand).
+                    if getattr(rc, "cc_package_unwind_enabled", False) and \
+                            self._package_unwind(db, pos, live_ask, opt_exchange, currency, rc):
+                        acted.append(pos.symbol)
+                        continue
+
                     # ── Iron-logic CC exit (Phase 16) ──
                     # Single rule: if CC is 80%+ profitable, close it. Next wheel cycle
                     # writes a fresh closer-to-money CC at lower strike, tracking the
@@ -703,10 +715,92 @@ class ProfitTaker:
         log.info("cc_profit_check_done", acted=acted)
         return acted
 
+    def _package_unwind(self, db, pos: Position, live_ask: float, opt_exchange: str,
+                        currency: str, rc) -> bool:
+        """Rule C body: judge the package with a fresh two-sided STOCK quote, buy the call back,
+        wait for the fill, then sell the shares the call covered. True when the sale was placed.
+        Every exit invariant is kept: IBKR positions read before any sale (fail-closed), the
+        stock leaves only after the buyback shows Filled, orders.sell_stock clamps to held."""
+        from src.broker.market_data import get_stock_live_quote
+        from src.broker.account import get_stock_positions
+        from src.broker.connection import get_ib
+        from src.strategy.fx_treasury import _wait_fill
+        from src.strategy.wheel import (_realized_cc_premium_per_share, _ibkr_share_verdict,
+                                        _liquidation_in_flight, _sell_lot_direct)
+        from src.strategy.wheel_rules import package_unwind_triggered, package_unwind_net_basis
+
+        symbol = pos.symbol
+        stock_pos = db.query(Position).filter(
+            Position.symbol == symbol,
+            Position.status == PositionStatus.OPEN,
+            Position.position_type == "stock",
+            Position.is_wheel == True,
+        ).order_by(Position.opened_at.asc()).first()
+        if not stock_pos or not stock_pos.cost_basis:
+            return False
+        if _liquidation_in_flight(db, symbol):
+            return False
+        quote = get_stock_live_quote(symbol, "SMART", currency)
+        if quote is None:
+            return False
+        stock_bid, stock_ask, _last = quote
+        if not stock_bid or not stock_ask or (stock_ask - stock_bid) / ((stock_ask + stock_bid) / 2) >= 0.02:
+            return False
+        realized = _realized_cc_premium_per_share(db, stock_pos)
+        fees = float(getattr(rc, "cc_early_close_fees_per_share", 0.0))
+        min_profit = float(getattr(rc, "cc_package_unwind_min_profit_pct", 0.005))
+        if not package_unwind_triggered(stock_bid, live_ask, stock_pos.cost_basis, realized,
+                                        pos.entry_premium or 0.0,
+                                        min_profit_pct=min_profit, fees_per_share=fees,
+                                        pad=EARLY_CLOSE_ASK_PAD):
+            return False
+        net_basis = package_unwind_net_basis(stock_pos.cost_basis, realized, pos.entry_premium or 0.0)
+        shares = 100 * pos.quantity
+        try:
+            ibkr_shares = get_stock_positions()
+        except Exception as e:
+            log.warning("cc_unwind_ibkr_shares_unavailable", symbol=symbol, error=str(e))
+            return False
+        verdict, real = _ibkr_share_verdict(ibkr_shares, symbol, shares)
+        if verdict == "skip":
+            log.info("cc_unwind_skip_no_ibkr_shares", symbol=symbol)
+            return False
+        if verdict == "clamp":
+            shares = real
+        log.info("cc_package_unwind_triggered", symbol=symbol, strike=pos.strike,
+                 stock_bid=round(stock_bid, 2), call_ask=round(live_ask, 2),
+                 net_basis=round(net_basis, 2),
+                 package=round(stock_bid - (live_ask + EARLY_CLOSE_ASK_PAD) - fees, 2),
+                 shares=shares)
+        ctrade = self._close_covered_call(db, pos, live_ask, opt_exchange, currency,
+                                          reason="package_unwind",
+                                          limit_price=early_close_limit(live_ask))
+        if not ctrade:
+            return False
+        wait_secs = float(getattr(rc, "cc_package_unwind_fill_wait_secs", 20.0))
+        status, _filled = _wait_fill(get_ib(), ctrade, wait_secs)
+        if status != "Filled":
+            log.warning("cc_unwind_buyback_pending", symbol=symbol, strike=pos.strike,
+                        status=status, note="buyback not filled — shares kept, re-judged next pass")
+            return False
+        trade = _sell_lot_direct(
+            db, symbol, shares, stock_bid,
+            source="wheel_unwind",
+            signal=f"bid={round(stock_bid, 2)} call_ask={round(live_ask, 2)} net_basis={round(net_basis, 2)}",
+            rationale=(f"Package unwind: stock bid ${round(stock_bid, 2)} − call ask "
+                       f"${round(live_ask, 2)} (+5c, fees) beats net basis ${round(net_basis, 2)} "
+                       f"by ≥{min_profit:.1%}. Call bought back; sell {shares} {symbol} now "
+                       f"instead of waiting for {pos.expiry}."),
+            current_price=(stock_bid + stock_ask) / 2, currency=currency)
+        return trade is not None
+
     def _close_covered_call(self, db, pos: Position, ask_price: float,
                           opt_exchange: str, currency: str, reason: str = "profit_take",
-                          limit_price: float | None = None) -> bool:
+                          limit_price: float | None = None):
         """Buy to close a covered call. Records trade, position stays open until trade_sync confirms fill.
+
+        Returns the placed IBTrade (truthy) or False — the stop / package-unwind callers wait
+        on `trade.orderStatus` before they sell the shares; `if success:` callers are unchanged.
 
         Order pricing: ask * 1.02 (floor ask + 0.05) to absorb stale-feed error — unless the
         caller passes `limit_price` (the deep-ITM early close does: the exact limit its gate
@@ -804,4 +898,4 @@ class ProfitTaker:
         log.info("cc_close_order_placed", symbol=pos.symbol,
                  reason=reason, order_id=trade.order.orderId,
                  ask=round(ask_price, 2), limit_price=target_price)
-        return True
+        return trade

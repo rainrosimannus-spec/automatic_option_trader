@@ -22,6 +22,7 @@ from src.core.logger import get_logger
 from src.strategy.screener import screen_calls
 from src.strategy.risk import RiskManager
 from src.strategy.universe import UniverseManager
+from src.strategy.wheel_rules import stop_loss_triggered
 
 log = get_logger(__name__)
 
@@ -131,6 +132,107 @@ def _covered_call_contracts(db, symbol: str) -> int:
         Trade.created_at >= today_str,
     ).scalar() or 0
     return int(covered) + int(today_qty)
+
+
+def _assignment_strike(db, symbol: str, lots_needed: int) -> float | None:
+    """Share-weighted ASSIGNMENT strike over the most recent assignments up to `lots_needed`
+    lots — the price the shares were put to us at. With blended lots (215 + 105 → 160) a
+    single trade's strike is wrong, so weight across the lots actually held. None when no
+    assignment trade carries a strike (caller must fail closed)."""
+    assignment_trades = db.query(Trade).filter(
+        Trade.symbol == symbol,
+        Trade.trade_type == TradeType.ASSIGNMENT,
+    ).order_by(Trade.created_at.desc()).all()
+    acc_lots = 0
+    strike_num = 0.0
+    for t in assignment_trades:
+        if not t.strike or not t.quantity:
+            continue
+        take = min(t.quantity, lots_needed - acc_lots)
+        if take <= 0:
+            break
+        strike_num += t.strike * take
+        acc_lots += take
+        if acc_lots >= lots_needed:
+            break
+    if acc_lots <= 0:
+        return None
+    return round(strike_num / acc_lots, 2)
+
+
+LIQUIDATION_SOURCES = ("wheel_stop", "wheel_unwind")
+
+
+def _liquidation_in_flight(db, symbol: str) -> bool:
+    """True while a stop/unwind stock sale for `symbol` is submitted but not yet synced.
+    The CC writer and the pre-market exit must leave such a lot alone — never write a new
+    call on shares that are on their way out."""
+    from src.core.suggestions import TradeSuggestion
+    return db.query(TradeSuggestion).filter(
+        TradeSuggestion.symbol == symbol,
+        TradeSuggestion.action == "sell_stock",
+        TradeSuggestion.source.in_(LIQUIDATION_SOURCES),
+        TradeSuggestion.status == "submitted",
+    ).count() > 0
+
+
+def _sell_lot_direct(db, symbol: str, shares: int, bid: float, *, source: str,
+                     rationale: str, signal: str, current_price: float | None,
+                     currency: str = "USD"):
+    """Sell `shares` of a wheel lot NOW at a limit of `bid` and record it — the stop and the
+    package unwind both end here. Direct order (not a suggestion awaiting approval: only
+    auto_approve_options/portfolio exist, so a sell_stock suggestion would sit unapproved),
+    recorded exactly like _write_call records a covered call: a SUBMITTED Trade row plus a
+    TradeSuggestion(status="submitted") so the sale shows on /suggestions and trade_sync can
+    reconcile the fill. orders.sell_stock itself clamps to the shares IBKR shows held and
+    refuses on a flat position (fail-closed) — the naked-short guard stays inside the order
+    helper. Returns the IBTrade or None."""
+    from src.broker.orders import sell_stock
+    from src.core.suggestions import TradeSuggestion
+    from datetime import timedelta
+    if shares <= 0 or not bid or bid <= 0:
+        return None
+    trade = sell_stock(symbol, shares, limit_price=round(bid, 2), currency=currency)
+    if not trade:
+        log.warning("wheel_lot_sell_not_placed", symbol=symbol, shares=shares, source=source)
+        return None
+    db.add(Trade(
+        position_id=None,
+        symbol=symbol,
+        trade_type=TradeType.SELL_STOCK,
+        strike=0.0,
+        expiry="",
+        premium=0.0,
+        quantity=shares,
+        fill_price=round(bid, 2),
+        commission=0.0,
+        order_id=trade.order.orderId,
+        order_status=OrderStatus.SUBMITTED,
+        notes=f"{source}: sell {shares} {symbol} @ {round(bid, 2)} — {signal}",
+    ))
+    db.add(TradeSuggestion(
+        symbol=symbol,
+        action="sell_stock",
+        order_type="LMT",
+        quantity=shares,
+        limit_price=round(bid, 2),
+        source=source,
+        tier="wheel",
+        signal=signal,
+        rationale=rationale,
+        current_price=round(current_price, 2) if current_price else None,
+        status="submitted",
+        reviewed_at=None,
+        review_note="Pending fill — submitted to IBKR",
+        rank=1,
+        rank_score=1.0,
+        funding_source="wheel",
+        expires_at=datetime.utcnow() + timedelta(days=30),
+    ))
+    db.commit()
+    log.info("wheel_lot_sell_placed", symbol=symbol, shares=shares, limit=round(bid, 2),
+             source=source, order_id=trade.order.orderId)
+    return trade
 
 
 class WheelManager:
@@ -442,6 +544,9 @@ class WheelManager:
                     total_shares = _real
                     lots_needed = total_shares // 100
 
+                if _liquidation_in_flight(db, symbol):
+                    continue  # stop/unwind sale already on its way — nothing to exit
+
                 covered_contracts = _covered_call_contracts(db, symbol)
 
                 pending_contracts = sum(
@@ -518,28 +623,12 @@ class WheelManager:
         # Share-weighted called-away level across the most-recent assignments up to the held lot
         # count. With blended lots (e.g. 215 + 105 → 160) a single trade's strike is wrong — using
         # the latest would dump the whole lot at a loss.
-        assignment_trades = db.query(Trade).filter(
-            Trade.symbol == symbol,
-            Trade.trade_type == TradeType.ASSIGNMENT,
-        ).order_by(Trade.created_at.desc()).all()
-        acc_lots = 0
-        strike_num = 0.0
-        for t in assignment_trades:
-            if not t.strike or not t.quantity:
-                continue
-            take = min(t.quantity, lots_needed - acc_lots)
-            if take <= 0:
-                break
-            strike_num += t.strike * take
-            acc_lots += take
-            if acc_lots >= lots_needed:
-                break
-        if acc_lots <= 0:
+        strike = _assignment_strike(db, symbol, lots_needed)   # share-weighted called-away level
+        if strike is None:
             log.warning("wheel_exit_no_assignment_strike", symbol=symbol,
                         note="cannot compute threshold without strike")
             return False
 
-        strike = round(strike_num / acc_lots, 2)          # share-weighted called-away level
         sell_fee = _gs().risk.wheel_sell_fee_per_share
         threshold = strike + sell_fee
 
@@ -579,6 +668,154 @@ class WheelManager:
         log.info("wheel_exit_suggestion_fired", symbol=symbol, mid=round(mid, 2),
                  strike=strike, shares=qty_to_sell)
         return True
+
+    def check_stop_loss(self) -> list[str]:
+        """Assigned-lot STOP (Rain, 2026-11-04): sell a wheel lot outright once its live mid is
+        `wheel_stop_loss_pct` (8%) or more below the share-weighted assignment strike.
+
+        Runs once a day at 15:45 ET (daily-close basis, the same bar the MarsWalk mirror
+        judges on). Order of operations is the naked-call-safe one:
+          1. IBKR positions first — skip/clamp a lot the broker no longer shows (fail-closed).
+          2. Two-sided live quote, spread < 2% (same guard as the live exit).
+          3. If an open covered call backs the lot: buy it back at ask + 5c and WAIT for the
+             fill (wheel_stop_fill_wait_secs). No fill → log, leave the lot, retry tomorrow.
+          4. Only then sell the whole lot at bid via _sell_lot_direct.
+        Returns the symbols whose sale was placed. US/SMART lots only (orders.sell_stock).
+        """
+        from src.core.config import get_settings as _gs
+        from src.broker.market_data import get_stock_live_quote, get_option_live_price
+        from src.strategy.profit_taker import ProfitTaker, early_close_limit
+        from src.strategy.fx_treasury import _wait_fill
+        from src.broker.connection import get_ib
+
+        rc = _gs().risk
+        if not self.cfg.wheel_enabled or not getattr(rc, "wheel_stop_loss_enabled", False):
+            return []
+        stop_pct = float(rc.wheel_stop_loss_pct)
+        wait_secs = float(getattr(rc, "wheel_stop_fill_wait_secs", 20.0))
+        sold: list[str] = []
+        log.info("wheel_stop_scan_started", stop_pct=stop_pct)
+
+        with get_db() as db:
+            stock_positions = (
+                db.query(Position)
+                .filter(
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "stock",
+                    Position.is_wheel == True,
+                )
+                .all()
+            )
+            try:
+                ibkr_shares = get_stock_positions()
+            except Exception as e:
+                ibkr_shares = None
+                log.warning("wheel_stop_ibkr_shares_unavailable", error=str(e))
+
+            symbols_seen: set[str] = set()
+            for stock_pos in stock_positions:
+                symbol = stock_pos.symbol
+                if symbol in symbols_seen:
+                    continue
+                symbols_seen.add(symbol)
+                currency = self.universe.get_currency(symbol) or "USD"
+                if currency != "USD":
+                    log.info("wheel_stop_skip_foreign", symbol=symbol, currency=currency)
+                    continue
+                if _liquidation_in_flight(db, symbol):
+                    log.info("wheel_stop_already_in_flight", symbol=symbol)
+                    continue
+
+                all_stock = db.query(Position).filter(
+                    Position.symbol == symbol,
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "stock",
+                    Position.is_wheel == True,
+                ).all()
+                total_shares = sum(p.quantity for p in all_stock)
+                verdict, real = _ibkr_share_verdict(ibkr_shares, symbol, total_shares)
+                if verdict == "skip":
+                    log.info("wheel_stop_skip_no_ibkr_shares", symbol=symbol, db_shares=total_shares)
+                    continue
+                if verdict == "clamp":
+                    total_shares = real
+                lots_needed = total_shares // 100
+                if lots_needed <= 0:
+                    continue
+
+                strike = _assignment_strike(db, symbol, lots_needed)
+                if strike is None:
+                    log.warning("wheel_stop_no_assignment_strike", symbol=symbol)
+                    continue
+                quote = get_stock_live_quote(symbol, "SMART", currency)
+                if quote is None:
+                    log.info("wheel_stop_no_quote", symbol=symbol)
+                    continue
+                bid, ask, _last = quote
+                mid = (bid + ask) / 2 if bid and ask else 0.0
+                if not mid or (ask - bid) / mid >= 0.02:
+                    log.info("wheel_stop_spread_too_wide", symbol=symbol, bid=bid, ask=ask)
+                    continue
+                if not stop_loss_triggered(mid, strike, stop_pct):
+                    log.debug("wheel_stop_not_triggered", symbol=symbol, mid=round(mid, 2),
+                              strike=strike, trigger=round(strike * (1 - stop_pct), 2))
+                    continue
+
+                log.warning("wheel_stop_triggered", symbol=symbol, mid=round(mid, 2),
+                            assignment_strike=strike, shares=total_shares,
+                            drawdown_pct=round((mid / strike - 1) * 100, 1))
+
+                # Step 3: buy back every open covered call on the name and wait for the fills.
+                open_calls = db.query(Position).filter(
+                    Position.symbol == symbol,
+                    Position.status == PositionStatus.OPEN,
+                    Position.position_type == "covered_call",
+                ).all()
+                all_filled = True
+                if open_calls:
+                    stock = self.universe.get_stock(symbol)
+                    opt_exchange = stock.opt_exchange if stock else "SMART"
+                    taker = ProfitTaker()
+                    ib = get_ib()
+                    for cpos in open_calls:
+                        _cbid, cask = get_option_live_price(
+                            symbol, cpos.expiry, cpos.strike, "C", opt_exchange, currency)
+                        if not cask or cask <= 0:
+                            log.warning("wheel_stop_no_call_ask", symbol=symbol, strike=cpos.strike)
+                            all_filled = False
+                            break
+                        ctrade = taker._close_covered_call(
+                            db, cpos, cask, opt_exchange, currency,
+                            reason="stop_loss", limit_price=early_close_limit(cask))
+                        if not ctrade:
+                            all_filled = False
+                            break
+                        status, _filled = _wait_fill(ib, ctrade, wait_secs)
+                        if status != "Filled":
+                            log.warning("wheel_stop_buyback_pending", symbol=symbol,
+                                        strike=cpos.strike, status=status,
+                                        note="call buyback not filled — lot kept, retry next run")
+                            all_filled = False
+                            break
+                        log.info("wheel_stop_buyback_filled", symbol=symbol, strike=cpos.strike)
+                if not all_filled:
+                    continue
+
+                # Step 4: the lot is uncovered (or just became so) — sell it at bid.
+                trade = _sell_lot_direct(
+                    db, symbol, total_shares, bid,
+                    source="wheel_stop",
+                    signal=f"mid={round(mid, 2)} strike={strike} stop={stop_pct:.0%}",
+                    rationale=(f"Assigned-lot stop: live mid ${round(mid, 2)} is "
+                               f"{abs(mid / strike - 1):.1%} below the assignment strike ${strike} "
+                               f"(stop {stop_pct:.0%}). Sell all {total_shares} shares of {symbol} "
+                               f"instead of holding a broken name."),
+                    current_price=mid, currency=currency)
+                if trade:
+                    sold.append(symbol)
+
+        log.info("wheel_stop_scan_completed", symbols=sold)
+        return sold
 
     def write_covered_calls(self) -> list[str]:
         """
@@ -663,6 +900,12 @@ class WheelManager:
                              db_shares=total_shares, ibkr_shares=_real)
                     total_shares = _real
                     lots_needed = total_shares // 100
+
+                # A stop / package-unwind sale in flight → the lot is leaving; never write a
+                # new call on it (would be naked the moment the sale fills).
+                if _liquidation_in_flight(db, symbol):
+                    log.info("covered_call_skipped_liquidation_in_flight", symbol=symbol)
+                    continue
 
                 # Covered-call contracts already backing this name — gap-safe (see helper).
                 covered_contracts = _covered_call_contracts(db, symbol)
