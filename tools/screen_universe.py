@@ -2360,10 +2360,15 @@ def _run_breakthrough_selection(
     Caller (Commit 4b) reads selected_symbols to filter breakthrough_scores
     before the persist hook fires.
 
-    Fallback policy: if Claude call B fails (HTTP error, JSON parse, missing
-    fields), we fall back to "use fresh as-is, no anchor merge" — preserves
-    today's pre-selection behavior so a call-B outage doesn't kill the run.
-    Logged in audit as fallback_used=True with reason in notes.
+    Fallback policy (Rain, 2026-11-04): if Claude call B fails (HTTP error, JSON
+    parse, missing fields) the tier KEEPS THE PREVIOUS SELECTION — every anchor
+    name that is still staying — and takes no fresh proposal, because entering
+    the tier needs the judgement the failed call was meant to provide. The
+    2026-11-03 re-run showed why: an exhausted API credit emptied the tier
+    (0 names), the total fell to 75 and the collapse guard aborted the whole
+    screen. Only with no anchor at all (first run of the design) does the
+    fallback take the fresh list as-is. Logged in audit as fallback_used=True
+    with the reason in notes.
 
     Caller is responsible for audit_session.commit(). Mirrors
     _process_augmentation_proposal pattern.
@@ -2385,15 +2390,26 @@ def _run_breakthrough_selection(
     fallback_used = False
     notes = "ok"
 
-    if not response:
-        # Call B failed entirely — fallback to fresh as-is
-        fallback_used = True
-        notes = "call_B_failed_empty_response"
+    def _fallback(why: str) -> str:
+        """Previous selection kept when there is one, else the fresh list as-is (bootstrap)."""
+        if anchor_syms:
+            for sym in anchor_syms:
+                selected_with_reasoning.append({
+                    "symbol": sym,
+                    "reasoning": f"fallback: {why}, previous selection kept",
+                })
+            return "anchor_kept"
         for sym in fresh_syms:
             selected_with_reasoning.append({
                 "symbol": sym,
-                "reasoning": "fallback: call B failed, fresh-as-is",
+                "reasoning": f"fallback: {why}, fresh-as-is",
             })
+        return "fresh_as_is"
+
+    if not response:
+        # Call B failed entirely
+        fallback_used = True
+        notes = "call_B_failed_empty_response:" + _fallback("call B failed")
     else:
         # Validate each entry has required fields
         for item in response["selected"]:
@@ -2409,12 +2425,7 @@ def _run_breakthrough_selection(
         # Edge case: call B returned a response but no usable picks
         if not selected_with_reasoning:
             fallback_used = True
-            notes = "call_B_returned_no_valid_picks"
-            for sym in fresh_syms:
-                selected_with_reasoning.append({
-                    "symbol": sym,
-                    "reasoning": "fallback: call B returned no valid picks, fresh-as-is",
-                })
+            notes = "call_B_returned_no_valid_picks:" + _fallback("call B returned no valid picks")
 
     selected_symbols = {item["symbol"] for item in selected_with_reasoning}
 
