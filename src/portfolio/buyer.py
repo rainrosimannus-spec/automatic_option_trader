@@ -4480,9 +4480,22 @@ def _order_ack_fields(trade) -> dict:
                 "con_id": int(getattr(trade.contract, "conId", 0) or 0),
                 "route": getattr(trade.contract, "exchange", "") or "",
                 "primary": getattr(trade.contract, "primaryExchange", "") or "",
-                "trading_class": getattr(trade.contract, "tradingClass", "") or ""}
+                "trading_class": getattr(trade.contract, "tradingClass", "") or "",
+                # IBKR's own words on the order (error/cancel reasons land in trade.log). 2026-11-04:
+                # two SGX buys came back Cancelled seconds after acceptance and nothing recorded why.
+                "ibkr_messages": _trade_messages(trade)}
     except Exception:
         return {}
+
+
+def _trade_messages(trade, limit: int = 3) -> str:
+    """The last broker messages attached to an order, '; '-joined, '' when there are none."""
+    try:
+        msgs = [str(e.message).strip() for e in (getattr(trade, "log", None) or [])
+                if getattr(e, "message", None)]
+        return "; ".join(msgs[-limit:])[:400]
+    except Exception:
+        return ""
 
 
 def _ccy_cash(ib, ccy: str) -> float | None:
@@ -4949,6 +4962,8 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                     # cadence; permanently-blocked ones just show their reason and stop churning.
                     s.status = "rejected"
                     s.review_note = f"Order {fill_status} — not placed"
+                    if _ack.get("ibkr_messages"):
+                        s.review_note += f" — IBKR: {_ack['ibkr_messages']}"
                     # If the rejection is a permission / no-security-definition error (the account
                     # can't trade this exchange yet — e.g. HK/3690), pause the symbol so the scan
                     # stops re-creating doomed suggestions and the daily budget flows to fillable
@@ -4967,7 +4982,7 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                  shares=shares, price=order_price, raw_limit=limit_price,
                  exchange=exch, currency=ccy,
                  order_status=fill_status, perm_id=_ack.get("perm_id"),
-                 why_held=_ack.get("why_held"))
+                 why_held=_ack.get("why_held"), ibkr_messages=_ack.get("ibkr_messages"))
         return fill_status
 
     except Exception as e:
