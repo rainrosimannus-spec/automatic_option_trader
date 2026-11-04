@@ -739,3 +739,89 @@ def get_cached_open_orders() -> list:
     """Return cached open orders (non-blocking, for dashboard)."""
     with _cache_lock:
         return list(_cached_orders)
+
+
+# ── Phase 2 (2026-11-04): cash-settled index puts (XSP on CBOE) ─────────────────────────
+def _index_option(symbol: str, expiry: str, strike: float, right: str, exchange: str,
+                  trading_class: str | None, con_id: int | None):
+    c = Option(symbol, expiry, strike, right, exchange, currency="USD")
+    c.multiplier = "100"
+    if trading_class:
+        c.tradingClass = trading_class
+    if con_id:
+        c.conId = con_id
+    return c
+
+
+def get_whatif_margin_index(symbol: str, expiry: str, strike: float, quantity: int = 1,
+                            limit_price: float = 0.0, exchange: str = "CBOE",
+                            trading_class: str | None = None) -> float | None:
+    """IBKR whatIf initial margin for selling `quantity` index puts. None when unavailable."""
+    try:
+        with get_ib_lock():
+            ib = get_ib()
+            c = _index_option(symbol, expiry, strike, "P", exchange, trading_class, None)
+            if not ib.qualifyContracts(c):
+                return None
+            st = ib.whatIfOrder(c, LimitOrder("SELL", quantity, limit_price or 0.01))
+            val = getattr(st, "initMarginChange", None)
+            if val and str(val) not in ("", "1.7976931348623157E308"):
+                return abs(float(val))
+    except Exception as e:
+        log.warning("whatif_margin_index_error", symbol=symbol, error=str(e) or repr(e))
+    return None
+
+
+def sell_index_put(symbol: str, expiry: str, strike: float, quantity: int, limit_price: float,
+                   exchange: str = "CBOE", trading_class: str | None = None,
+                   con_id: int | None = None) -> Optional[IBTrade]:
+    """Sell to open a cash-settled index put (LIMIT, DAY, RTH)."""
+    with get_ib_lock():
+        ib = get_ib()
+        c = _index_option(symbol, expiry, strike, "P", exchange, trading_class, con_id)
+        if not ib.qualifyContracts(c):
+            log.error("sell_index_put_qualify_failed", symbol=symbol, expiry=expiry, strike=strike)
+            return None
+        order = LimitOrder("SELL", quantity, round(limit_price, 2))
+        order.tif = "DAY"
+        order.outsideRth = False
+        log.info("placing_sell_index_put", symbol=symbol, expiry=expiry, strike=strike,
+                 qty=quantity, limit=round(limit_price, 2))
+        trade = ib.placeOrder(c, order)
+        ib.sleep(2)
+        status = trade.orderStatus.status
+        msg = trade.log[-1].message if trade.log and trade.log[-1].message else ""
+        log.info("order_status_after_place", symbol=symbol, strike=strike, expiry=expiry,
+                 status=status, action="sell_index_put", message=msg[:200])
+        if status in ("Cancelled", "Inactive"):
+            log.error("sell_index_put_rejected", symbol=symbol, strike=strike, status=status,
+                      reason=msg[:200])
+            return None
+        return trade
+
+
+def buy_to_close_index_put(symbol: str, expiry: str, strike: float, quantity: int,
+                           limit_price: float, exchange: str = "CBOE",
+                           trading_class: str | None = None) -> Optional[IBTrade]:
+    """Buy to close a short index put (LIMIT, DAY). Verifies a matching short at IBKR first."""
+    if not _verify_short_position(symbol, expiry, strike, "P", quantity):
+        log.error("buy_to_close_index_put_BLOCKED_no_matching_short",
+                  symbol=symbol, expiry=expiry, strike=strike, quantity=quantity)
+        return None
+    with get_ib_lock():
+        ib = get_ib()
+        c = _index_option(symbol, expiry, strike, "P", exchange, trading_class, None)
+        ib.qualifyContracts(c)
+        order = LimitOrder("BUY", quantity, round(limit_price, 2))
+        order.tif = "DAY"
+        log.info("placing_buy_index_put_close", symbol=symbol, expiry=expiry, strike=strike,
+                 qty=quantity, limit=round(limit_price, 2))
+        trade = ib.placeOrder(c, order)
+        ib.sleep(2)
+        status = trade.orderStatus.status
+        if status in ("Cancelled", "Inactive"):
+            msg = trade.log[-1].message if trade.log and trade.log[-1].message else ""
+            log.error("buy_to_close_index_put_rejected", symbol=symbol, strike=strike,
+                      status=status, reason=msg[:200])
+            return None
+        return trade

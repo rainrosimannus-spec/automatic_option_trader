@@ -1069,6 +1069,46 @@ def job_wheel_stop_check():
         _scan_lock.release()
 
 
+def job_index_put_scan():
+    """📐 Phase 2 — index put sleeve scan (XSP, cash-settled). Off / dry-run until enabled."""
+    _ensure_event_loop()
+    from src.core.config import get_settings as _gs
+    if not _gs().index_puts.enabled:
+        return
+    if _is_paused() or not is_connected():
+        return
+    acquired = _scan_lock.acquire(timeout=120)
+    if not acquired:
+        log.warning("index_put_scan_skipped_scan_lock_timeout")
+        return
+    try:
+        from src.strategy.index_puts import IndexPutSeller
+        universe = UniverseManager()
+        risk = RiskManager(universe)
+        IndexPutSeller(risk).scan()
+    except Exception as e:
+        log.error("index_put_scan_error", error=str(e))
+    finally:
+        _scan_lock.release()
+
+
+def job_index_put_manage():
+    """📐 Phase 2 — index put sleeve: stop (ask ≥ 3× credit) + cash settlement of expiries."""
+    _ensure_event_loop()
+    from src.core.config import get_settings as _gs
+    if not _gs().index_puts.enabled:
+        return
+    if _is_paused() or not is_connected():
+        return
+    try:
+        from src.strategy.index_puts import IndexPutSeller
+        acted = IndexPutSeller(None).manage()
+        if acted:
+            log.info("index_put_manage_acted", acted=acted)
+    except Exception as e:
+        log.error("index_put_manage_error", error=str(e))
+
+
 def job_heartbeat():
     """💚 Daily heartbeat — proof of life sent every morning.
     If you stop receiving this, something is wrong."""
@@ -1784,6 +1824,28 @@ def create_scheduler() -> BackgroundScheduler:
         name="Wheel Stop Check (assigned-lot −8% stop)",
         max_instances=1,
     )
+
+    # ── Phase 2: index put sleeve — scans at the configured ET times, manage every 5 min RTH ──
+    try:
+        from src.core.config import get_settings as _gs_idx
+        for _t in (_gs_idx().index_puts.scan_times_et or []):
+            _hh, _mm = [int(x) for x in _t.split(":")]
+            scheduler.add_job(
+                job_index_put_scan,
+                CronTrigger(hour=_hh, minute=_mm, day_of_week="mon-fri", timezone=us_tz),
+                id=f"index_put_scan_{_hh:02d}{_mm:02d}",
+                name=f"Index Put Scan {_t} ET (XSP sleeve)",
+                max_instances=1,
+            )
+        scheduler.add_job(
+            job_index_put_manage,
+            CronTrigger(hour="9-16", minute="*/5", day_of_week="mon-fri", timezone=us_tz),
+            id="index_put_manage",
+            name="Index Put Manage (stop + settlement)",
+            max_instances=1,
+        )
+    except Exception as _e:
+        log.warning("index_put_jobs_not_registered", error=str(_e))
 
     # ── Margin & drawdown monitor — every 30 min during US hours ──
     scheduler.add_job(

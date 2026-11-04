@@ -28,6 +28,7 @@ from src.strategy.option_scoring import score_put_candidates, score_call_candida
 from src.marswalk import pricing
 from src.strategy import wheel_rules
 from src.strategy import realized_move
+from bisect import bisect_left as _bisect_left
 
 TARGET_ANNUAL = 0.24
 
@@ -242,6 +243,28 @@ class Params:
     put_universe_breach_lookback: int = 120
     put_universe_breach_horizon: int = 3
     put_universe_breach_threshold: float = 0.025
+    # ── Phase 2: cash-settled INDEX PUT sleeve (XSP proxy = SPY closes under ^IDX) ──
+    # A second instrument class beside the single-name wheel: short index puts that settle
+    # in cash at expiry (no stock lot, no covered-call stage). Strike = spot × (1 − max(
+    # index_put_otm_floor, index_put_sigma_k × σ_daily(20d) × √DTE)); IV for pricing = VIX
+    # × index_put_iv_mult (flat, no skew — conservative; the k uplift is NOT applied).
+    # Sizing: contracts = min(max_contracts, budget_pct × NLV / margin_per_contract) with
+    # margin_per_contract = max(index_put_margin_pct × spot − OTM amount, 0.10 × strike) × 100.
+    # Respects the same `halted` gates as the wheel. Default OFF → byte-identical runs.
+    index_put_enabled: bool = False
+    index_put_only: bool = False          # True = switch the single-name put engine OFF (pure sleeve)
+    index_put_dte: int = 2                # trading days to expiry for each new put
+    index_put_max_open: int = 2           # ladder: sell again while fewer than this are open
+    index_put_sigma_k: float = 2.0
+    index_put_otm_floor: float = 0.01
+    index_put_sigma_lookback: int = 20
+    index_put_iv_mult: float = 1.0        # VIX × this = pricing IV (1.0 flat; real 0-2 DTE skew is richer)
+    index_put_budget_pct: float = 0.20    # share of NLV committed as margin to the sleeve
+    index_put_max_contracts: int = 500
+    index_put_margin_pct: float = 0.15    # SPAN-like proxy: 15% of spot minus OTM amount, floor 10% of strike
+    index_put_stop_mult: float = 3.0      # buy back when the put's mark ≥ this × credit (0 = off)
+    index_put_commission: float = 1.00    # per contract per leg
+    index_put_vix_max: float = 35.0       # no new index puts above this VIX (mirrors vix_halt)
     # ── Rule B (2026-08-05, tested-only): don't-cap momentum lots ──
     # Rain's floated alternative: on a lot whose stock is in a strong uptrend, skip
     # the covered call entirely and hold the shares UNCAPPED for recovery/upside,
@@ -645,6 +668,30 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     n_bbe_writes = 0         # below-breakeven CC writes (strict last-resort lever)
     n_cc_early_closes = 0    # deep-ITM covered calls bought-to-close + stock sold early
     n_stop_losses = 0        # assigned lots sold at the -X% stop (wheel_stop_loss_*)
+    index_puts: list = []    # open cash-settled index puts: {strike, expiry(date), premium, qty, iv}
+    n_index_puts = 0; n_index_itm = 0; n_index_stops = 0
+    index_premium_sum = 0.0; index_intrinsic_sum = 0.0; index_commission_sum = 0.0
+    idx_series = market.get("^IDX") or market.get("^SPY") or []
+    idx_closes = {b[0]: b[1] for b in idx_series}
+    idx_dates = sorted(idx_closes)
+    _idx_sigma_cache: dict = {}
+
+    def _idx_sigma(day):
+        """Trailing index_put_sigma_lookback-day daily log-return σ of the index, as of `day`
+        (closes strictly before day). None when history is short."""
+        if day in _idx_sigma_cache:
+            return _idx_sigma_cache[day]
+        import bisect as _b, math as _m
+        i = _b.bisect_left(idx_dates, day)
+        win = idx_dates[max(0, i - params.index_put_sigma_lookback - 1):i]
+        if len(win) < 6:
+            _idx_sigma_cache[day] = None
+            return None
+        rets = [_m.log(idx_closes[win[j]] / idx_closes[win[j - 1]]) for j in range(1, len(win))]
+        mu = sum(rets) / len(rets)
+        var = sum((r - mu) ** 2 for r in rets) / len(rets)
+        _idx_sigma_cache[day] = var ** 0.5
+        return _idx_sigma_cache[day]
     n_cc_unwinds = 0         # covered lots unwound as a package above net basis
     margin_interest_total = 0.0  # Σ interest charged on negative (margin-debit) cash
     points = []
@@ -1055,6 +1102,34 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     keep.append(p)
             short_puts = keep
 
+        # ── 1c. Index-put sleeve: settle expiring puts in cash, apply the stop ──────
+        if params.index_put_enabled and index_puts:
+            idx_close = idx_closes.get(d)
+            keep = []
+            for ip in index_puts:
+                if d >= ip["expiry"]:
+                    close_px = idx_close if idx_close is not None else idx_closes.get(
+                        idx_dates[max(0, _bisect_left(idx_dates, d) - 1)], ip["strike"])
+                    intr = max(0.0, ip["strike"] - close_px)
+                    cash -= intr * 100 * ip["qty"]
+                    index_intrinsic_sum += intr * 100 * ip["qty"]
+                    if intr > 0:
+                        n_index_itm += 1
+                    continue
+                if params.index_put_stop_mult > 0 and idx_close is not None:
+                    iv_now = ((vix_now or 20.0) / 100.0) * params.index_put_iv_mult
+                    mark = pricing.value_put_ask(idx_close, ip["strike"], ip["expiry"].strftime("%Y%m%d"),
+                                                 d, iv_now, 0.0)
+                    if mark >= params.index_put_stop_mult * ip["premium"]:
+                        cash -= mark * 100 * ip["qty"]
+                        cash -= params.index_put_commission * ip["qty"]
+                        index_commission_sum += params.index_put_commission * ip["qty"]
+                        n_index_stops += 1
+                        n_trades += 1
+                        continue
+                keep.append(ip)
+            index_puts = keep
+
         # ── 2. Settle expiring short calls ──
         keep = []
         for c in short_calls:
@@ -1453,6 +1528,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         # (c-bull) Bull-regime detector: VIX < bull_regime_vix_max AND SPY >
         # MA200. When True, three adaptive overrides flip (delta band, per-name
         # cap, iv_rank floor) — mirrors live risk.in_bull_regime().
+        single_name_halted = halted or params.index_put_only   # Phase 2: pure-sleeve mode
         bull_today = False
         if params.bull_regime_enabled and vix_now is not None:
             spy_ma_today = spy_ma200.get(d)
@@ -1659,7 +1735,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                        and not params.crash_strangle_when_active)
         if _hvg_halt or _crash_halt:
             slots = 0
-        if slots > 0 and not halted:
+        if slots > 0 and not single_name_halted:
             ranked = []
             for sym in scan_universe:
                 if sym in held:
@@ -1955,6 +2031,39 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                         })
                         n_trades += 1
 
+        # ── 4b. Index-put sleeve: new cash-settled puts (Phase 2) ─────────────────
+        if params.index_put_enabled and not halted and prev_nlv > 0:
+            idx_spot = idx_closes.get(d)
+            sig = _idx_sigma(d)
+            vix_ok = (vix_now is None) or (vix_now <= params.index_put_vix_max)
+            if idx_spot and sig and vix_ok and len(index_puts) < params.index_put_max_open:
+                i_d = dates.index(d)
+                exp_i = min(i_d + params.index_put_dte, len(dates) - 1)
+                if exp_i > i_d:
+                    exp_d = dates[exp_i]
+                    otm = max(params.index_put_otm_floor,
+                              params.index_put_sigma_k * sig * (params.index_put_dte ** 0.5))
+                    strike = float(int(idx_spot * (1.0 - otm)))          # 1-point grid (XSP)
+                    iv_idx = ((vix_now or 20.0) / 100.0) * params.index_put_iv_mult
+                    prem = pricing.value_put(idx_spot, strike, exp_d.strftime("%Y%m%d"), d, iv_idx, 0.0)
+                    bid = prem * 0.975                                     # half the 5% synthetic spread
+                    margin_pc = max(params.index_put_margin_pct * idx_spot - (idx_spot - strike),
+                                    0.10 * strike) * 100
+                    budget = params.index_put_budget_pct * prev_nlv
+                    used = sum(max(params.index_put_margin_pct * idx_spot - (idx_spot - ip["strike"]),
+                                   0.10 * ip["strike"]) * 100 * ip["qty"] for ip in index_puts)
+                    qty = int(max(0.0, budget - used) / margin_pc)
+                    qty = min(qty, params.index_put_max_contracts)
+                    if qty > 0 and bid * 100 >= params.index_put_commission * 2:
+                        cash += bid * 100 * qty
+                        cash -= params.index_put_commission * qty
+                        index_commission_sum += params.index_put_commission * qty
+                        index_premium_sum += bid * 100 * qty
+                        index_puts.append({"strike": strike, "expiry": exp_d, "premium": bid,
+                                           "qty": qty, "iv": iv_idx})
+                        n_index_puts += 1
+                        n_trades += 1
+
         # ── 5. Mark-to-market NLV (with optional gap stress on big down days) ──
         gs = params.gap_stress
 
@@ -1994,6 +2103,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             if q:
                 px = _mpx(lc["sym"], q[0])
                 nlv += pricing.value_call(px, lc["strike"], lc["expiry"].strftime("%Y%m%d"), d, q[1], k) * 100 * lc["qty"]
+
+        if index_puts:
+            idx_px = idx_closes.get(d)
+            if idx_px is not None:
+                iv_idx = ((vix_now or 20.0) / 100.0) * params.index_put_iv_mult
+                for ip in index_puts:
+                    nlv -= pricing.value_put(idx_px, ip["strike"], ip["expiry"].strftime("%Y%m%d"),
+                                             d, iv_idx, 0.0) * 100 * ip["qty"]
 
         ret = (nlv / start_cap - 1) * 100
         days = (d - start_date).days
@@ -2049,6 +2166,9 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "n_stop_losses": n_stop_losses,
         "n_cc_unwinds": n_cc_unwinds,
         "n_breach_skips": n_breach_skips,
+        "n_index_puts": n_index_puts, "n_index_itm": n_index_itm, "n_index_stops": n_index_stops,
+        "index_premium_sum": round(index_premium_sum, 2), "index_intrinsic_sum": round(index_intrinsic_sum, 2),
+        "index_commission_sum": round(index_commission_sum, 2),
         "margin_interest_total": round(margin_interest_total, 2),
         "n_halt_days": n_halt_days,
         "n_hvg_days": hvg_active_days,

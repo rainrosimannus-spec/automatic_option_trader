@@ -64,6 +64,8 @@ function forceClose(id, symbol) {
                         <span class="text-yellow-400">Stock</span>
                     {% elif p.position_type == 'covered_call' %}
                         <span class="text-purple-400">Covered Call</span>
+                    {% elif p.position_type == 'index_put' %}
+                        <span class="text-cyan-400">Index Put (cash)</span>
                     {% endif %}
                 </td>
                 <td class="py-3 px-4 text-right">${{ "%.2f"|format(p.strike) if p.strike else '—' }}</td>

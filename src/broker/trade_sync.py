@@ -722,7 +722,7 @@ def sync_ibkr_positions() -> int:
     with get_db() as db:
         open_positions = db.query(Position).filter(
             Position.status == PositionStatus.OPEN,
-            Position.position_type.in_(["short_put", "short_call", "covered_call"]),
+            Position.position_type.in_(["short_put", "short_call", "covered_call", "index_put"]),
         ).all()
 
         tracked_keys = set()

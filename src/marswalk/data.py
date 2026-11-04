@@ -68,7 +68,46 @@ def load_market(regime, universe):
         sbars = [(_pdate(r.date), r.close, 0.0) for r in srows if r.close]
         if sbars:
             out["^SPY"] = sbars
+        # Index-put sleeve underlying (Phase 2, 2026-11-04): SPY closes stored under ^IDX so
+        # the wheel's ^SPY signal series (which changes the bull detector / MA50 clamp on
+        # regimes that lack it) stays untouched and prior wheel runs remain comparable.
+        irows = (db.query(MarketBar)
+                 .filter_by(regime_id=regime.id, symbol="^IDX")
+                 .order_by(MarketBar.date).all())
+        ibars = [(_pdate(r.date), r.close, 0.0) for r in irows if r.close]
+        if ibars:
+            out["^IDX"] = ibars
     return out
+
+
+def fetch_index_yahoo(regime, force: bool = False, ticker: str = "SPY"):
+    """Index-put sleeve underlying: SPY closes via Yahoo stored under `^IDX` for the
+    regime (300 calendar days of warm-up for the trailing-vol strike rule). Idempotent."""
+    import urllib.request, json
+    from datetime import timedelta
+    if not force and has_data(regime.id, "^IDX"):
+        return
+    eff_start, eff_end, _ = regime.effective_window()
+    start = _pdate(eff_start) - timedelta(days=300)
+    end = _pdate(eff_end) + timedelta(days=1)
+    p1 = int(datetime.combine(start, datetime.min.time()).timestamp())
+    p2 = int(datetime.combine(end, datetime.min.time()).timestamp())
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+           f"?period1={p1}&period2={p2}&interval=1d")
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        body = urllib.request.urlopen(req, timeout=20).read()
+        result = json.loads(body)["chart"]["result"][0]
+        rows = []
+        for t, c in zip(result["timestamp"], result["indicators"]["quote"][0]["close"]):
+            if c is None:
+                continue
+            rows.append((datetime.utcfromtimestamp(t).date().strftime("%Y-%m-%d"), float(c), 0.0))
+        if rows:
+            _store(regime.id, "^IDX", rows)
+            log.info("marswalk_index_yahoo_cached", regime=regime.id, bars=len(rows))
+    except Exception as e:
+        log.warning("marswalk_index_yahoo_failed", regime=regime.id, error=str(e))
 
 
 def fetch_spy_yahoo(regime, force: bool = False):

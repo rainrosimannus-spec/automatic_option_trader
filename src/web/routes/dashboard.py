@@ -747,6 +747,8 @@ def dashboard(request: Request):
         "eurusd": eurusd,
         # Cash parking (FX treasury: EUR→XEON / USD→XFFE, USD debit auto-close)
         "parking": parking,
+        "index_puts_on": bool(getattr(getattr(get_settings(), "index_puts", None), "enabled", False)
+                              and not getattr(get_settings().index_puts, "dry_run", True)),
         # Performance chart
         "perf_labels": performance["labels"],
         "perf_actual": performance["actual"],

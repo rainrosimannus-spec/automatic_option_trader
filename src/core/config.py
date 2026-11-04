@@ -519,6 +519,40 @@ class AppConfig(BaseModel):
     bruno_run_integrations: bool = False  # gated: True on MesiCap clone, False on Rain dev
 
 
+# ── Phase 2 (2026-11-04): cash-settled INDEX PUT sleeve ──────────────────────
+class IndexPutConfig(BaseModel):
+    """Short XSP (mini-SPX, cash-settled, European) puts beside the single-name wheel.
+
+    Why: the account's 0-3 DTE single-name puts finished ITM 33% of the time on names that
+    move 7-10% in a day; SPY breached a 3-day 2.5% put 1% of the time this year, and a
+    cash-settled index put can never become a stock bag. MarsWalk (flat-VIX pricing, no
+    skew — conservative): wheel + sleeve k=2.0 / 1 DTE / 30% margin budget ≈ 24%/yr over
+    the 6-year replay at 8.8% max DD (sleeve alone 13.5%/yr). Mirrors Params.index_put_*.
+
+    Ships DISABLED and in dry_run: the scan logs the exact contract, quote, whatIf margin
+    and size it WOULD sell; flip dry_run after reading a few of those lines."""
+    enabled: bool = False
+    dry_run: bool = True                 # log the would-be order, place nothing
+    symbol: str = "XSP"                  # XSP = SPX/10, $100 multiplier, CBOE, PM-settled
+    exchange: str = "CBOE"
+    trading_class: str = "XSP"
+    dte: int = 1                         # trading days to expiry for each new put
+    max_open: int = 1                    # ladder: sell again while fewer than this are open
+    strike_mode: str = "sigma"           # "sigma" | "delta" (delta = target_delta via BSM)
+    sigma_k: float = 2.0
+    sigma_lookback: int = 20             # daily closes for σ
+    otm_floor: float = 0.01
+    target_delta: float = 0.10
+    budget_pct: float = 0.30             # share of NLV committed as initial margin to the sleeve
+    max_contracts: int = 50
+    margin_pct_fallback: float = 0.15    # SPAN-like proxy when whatIf margin is unavailable
+    min_bid: float = 0.15                # skip when the put's bid is below this (fee floor)
+    stop_mult: float = 3.0               # buy back when ask ≥ this × credit (0 = off)
+    vix_max: float = 35.0                # no new puts above this VIX
+    scan_times_et: list[str] = ["10:00", "14:00"]
+    settle_time_et: str = "09:45"        # book yesterday's expiries at the official close
+
+
 # ── Portfolio config ─────────────────────────────────────────
 from src.portfolio.config import PortfolioConfig
 
@@ -534,6 +568,7 @@ class Settings(BaseModel):
     schedule: ScheduleConfig = ScheduleConfig()
     web: WebConfig = WebConfig()
     portfolio: PortfolioConfig = PortfolioConfig()
+    index_puts: IndexPutConfig = IndexPutConfig()
     raw: dict = {}  # full YAML dict for sections not modeled (alerts, bridge)
 
 

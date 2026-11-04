@@ -1161,3 +1161,79 @@ def get_option_live_price(
     except Exception as e:
         log.debug("option_live_price_error", symbol=symbol, strike=strike, error=str(e))
         return None, None
+
+
+# ── Phase 2 (2026-11-04): index-option helpers for the XSP sleeve ────────────────────────
+def get_index_spot(symbol: str = "XSP", exchange: str = "CBOE") -> Optional[float]:
+    """Live/last value of a CBOE index (XSP, SPX). Falls back to SPX/10 for XSP when the
+    mini index itself has no quote. None when nothing usable comes back."""
+    def _one(sym):
+        try:
+            with get_ib_lock():
+                _ensure_market_data_type()
+                ib = get_ib()
+                c = Index(sym, exchange, "USD")
+                if not ib.qualifyContracts(c):
+                    return None
+                t = ib.reqMktData(c, "", False, False)
+                ib.sleep(3)
+                ib.cancelMktData(c)
+                for v in (t.last, t.close, (t.bid + t.ask) / 2 if t.bid and t.ask else None):
+                    if v and v > 0:
+                        return float(v)
+        except Exception as e:
+            log.debug("index_spot_error", symbol=sym, error=str(e))
+        return None
+    v = _one(symbol)
+    if v is None and symbol == "XSP":
+        spx = _one("SPX")
+        v = spx / 10.0 if spx else None
+    return v
+
+
+def get_index_option_params(symbol: str = "XSP", exchange: str = "CBOE") -> tuple[list[str], list[float], Optional[int]]:
+    """(expirations yyyymmdd sorted, strikes sorted, underlying conId) for a CBOE index's
+    option chain via reqSecDefOptParams on the IND contract. ([], [], None) on failure."""
+    try:
+        with get_ib_lock():
+            ib = get_ib()
+            c = Index(symbol, exchange, "USD")
+            if not ib.qualifyContracts(c):
+                return [], [], None
+            chains = ib.reqSecDefOptParams(c.symbol, "", c.secType, c.conId)
+            exps, strikes = set(), set()
+            for ch in chains or []:
+                if ch.tradingClass and ch.tradingClass != symbol:
+                    continue
+                exps.update(ch.expirations or [])
+                strikes.update(ch.strikes or [])
+            return sorted(exps), sorted(strikes), c.conId
+    except Exception as e:
+        log.warning("index_option_params_error", symbol=symbol, error=str(e))
+        return [], [], None
+
+
+def get_index_option_quote(symbol: str, expiry: str, strike: float, right: str = "P",
+                           exchange: str = "CBOE", trading_class: str | None = None
+                           ) -> tuple[Optional[float], Optional[float], Optional[int]]:
+    """(bid, ask, conId) for one index option. (None, None, None) when unavailable."""
+    try:
+        with get_ib_lock():
+            _ensure_market_data_type()
+            ib = get_ib()
+            c = Option(symbol, expiry, strike, right, exchange, currency="USD")
+            c.multiplier = "100"
+            if trading_class:
+                c.tradingClass = trading_class
+            if not ib.qualifyContracts(c):
+                log.info("index_option_qualify_failed", symbol=symbol, expiry=expiry, strike=strike)
+                return None, None, None
+            t = ib.reqMktData(c, "", False, False)
+            ib.sleep(3)
+            ib.cancelMktData(c)
+            bid = float(t.bid) if t.bid and t.bid > 0 else None
+            ask = float(t.ask) if t.ask and t.ask > 0 else None
+            return bid, ask, c.conId
+    except Exception as e:
+        log.debug("index_option_quote_error", symbol=symbol, strike=strike, error=str(e))
+        return None, None, None
