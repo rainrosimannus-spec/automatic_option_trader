@@ -718,6 +718,35 @@ def get_cached_portfolio_account() -> dict:
 # ── Open orders cache (mirrors broker/orders.py pattern) ────
 _cached_portfolio_orders: list = []
 _portfolio_orders_lock = threading.Lock()
+# The dashboard's "Open Options Positions" box reads this cache; it is refreshed by the 5-minute
+# health check, which needs the portfolio lock. After a restart the in-memory list is empty and,
+# while a screen holds the lock (90+ min), the box said "No open options positions" the whole
+# time (2026-11-04). Mirror of _CACHE_FILE: every refresh also lands on disk, and an empty
+# in-memory cache falls back to the last refresh written there.
+_OPTIONS_CACHE_FILE = "data/portfolio_open_options_cache.json"
+
+
+def _write_options_cache_file(entries: list) -> None:
+    try:
+        import json as _json, os as _os
+        _os.makedirs(_os.path.dirname(_OPTIONS_CACHE_FILE), exist_ok=True)
+        tmp = _OPTIONS_CACHE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            _json.dump({"as_of": time.time(), "positions": entries}, f)
+        _os.replace(tmp, _OPTIONS_CACHE_FILE)
+    except Exception as e:
+        log.warning("portfolio_options_cache_file_write_failed", error=str(e))
+
+
+def _read_options_cache_file() -> list:
+    try:
+        import json as _json
+        with open(_OPTIONS_CACHE_FILE) as f:
+            data = _json.load(f)
+        entries = data.get("positions") if isinstance(data, dict) else None
+        return list(entries) if isinstance(entries, list) else []
+    except Exception:
+        return []
 
 
 def refresh_portfolio_open_orders_cache() -> None:
@@ -766,6 +795,7 @@ def refresh_portfolio_open_orders_cache() -> None:
                 continue
         with _portfolio_orders_lock:
             _cached_portfolio_orders = new_cache
+        _write_options_cache_file(new_cache)
         log.info("portfolio_options_cache_refreshed", count=len(new_cache))
     except Exception as e:
         log.warning("portfolio_options_cache_failed", error=str(e))
@@ -861,6 +891,10 @@ def get_cached_portfolio_pending_orders() -> list:
         return list(_cached_portfolio_pending)
 
 def get_cached_portfolio_open_orders() -> list:
-    """Return cached portfolio open orders (non-blocking, for dashboard)."""
+    """Return cached portfolio open orders (non-blocking, for dashboard). An empty in-memory
+    cache (fresh restart, first refresh still waiting for the lock) answers from the last
+    refresh saved on disk — the positions as they were, not an empty box."""
     with _portfolio_orders_lock:
-        return list(_cached_portfolio_orders)
+        if _cached_portfolio_orders:
+            return list(_cached_portfolio_orders)
+    return _read_options_cache_file()

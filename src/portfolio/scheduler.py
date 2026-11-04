@@ -645,6 +645,15 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
         log.info("portfolio_monthly_screen_started", attempt=attempt,
                  date=datetime.utcnow().strftime("%Y-%m-%d"))
 
+        # Per-run archive (src/portfolio/screener_runs.py): before-snapshot now, results as soon
+        # as the screener returns, status at the end. Never allowed to stop the screen.
+        _run_dir = None
+        try:
+            from src.portfolio import screener_runs as _sr
+            _run_dir = _sr.start_run()
+        except Exception as _e_sr:
+            log.warning("screener_run_archive_start_failed", error=str(_e_sr))
+
         try:
             ib = get_portfolio_ib()
 
@@ -678,6 +687,11 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                 options_count=_opts_count,
                 durability_protect_count=getattr(cfg, "tier_count_durability_picks", 5),
             )
+            if _run_dir is not None:
+                try:
+                    _sr.save_results(_run_dir, screener, portfolio_universe, options_universe, all_scores)
+                except Exception as _e_sr:
+                    log.warning("screener_run_archive_results_failed", error=str(_e_sr))
 
             # Guard: if screener returned 0 stocks, abort — do not overwrite files
             if len(portfolio_universe) == 0:
@@ -1032,8 +1046,19 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                      added=len(added),
                      flagged=len(flagged_removal),
                      suggestions=0)
+            if _run_dir is not None:
+                try:
+                    _sr.finish_run(_run_dir, "success")
+                except Exception as _e_sr:
+                    log.warning("screener_run_archive_finish_failed", error=str(_e_sr))
 
         except Exception as e:
+            if _run_dir is not None:
+                try:
+                    _sr.finish_run(_run_dir, "retry" if (_broker_not_answering(e) and attempt == 1)
+                                   else "error", error=str(e))
+                except Exception as _e_sr:
+                    log.warning("screener_run_archive_finish_failed", error=str(_e_sr))
             if _broker_not_answering(e) and attempt == 1:
                 raise _RetryAfterReconnect(str(e)) from e      # wrapper reconnects and retries
             import traceback
