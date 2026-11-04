@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, date, timedelta
 
+from src.core.logger import get_logger
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
@@ -16,6 +17,7 @@ from src.broker.connection import is_connected
 from src.strategy.risk import adaptive_max_positions
 
 router = APIRouter()
+log = get_logger(__name__)
 
 # ── Dashboard IB reads, decoupled from the scan lock ───────────────────────────
 # The options + portfolio scans share ONE IB RLock (src/portfolio/connection.py:37)
@@ -682,6 +684,13 @@ def dashboard(request: Request):
 
     # Open orders — use cached data to prevent dashboard freeze
     # The cache is updated by the health check job every 5 minutes
+    sleeve_pnl = None
+    try:
+        from src.strategy.sleeve_pnl import compute_sleeve_pnl
+        with get_db() as _sdb:
+            sleeve_pnl = compute_sleeve_pnl(_sdb)
+    except Exception as _e:
+        log.warning("sleeve_pnl_failed", error=str(_e))
     open_orders = []
     try:
         from src.broker.orders import get_cached_open_orders
@@ -758,6 +767,7 @@ def dashboard(request: Request):
         # Cash parking (FX treasury: EUR→XEON / USD→XFFE, USD debit auto-close)
         "parking": parking,
         "index_puts_on": _index_puts_on(),
+        "sleeve_pnl": sleeve_pnl,
         # Performance chart
         "perf_labels": performance["labels"],
         "perf_actual": performance["actual"],

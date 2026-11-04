@@ -106,3 +106,12 @@ def api_recent_trades():
         }
         for t in recent
     ]
+
+
+@router.get("/api/sleeve-pnl")
+def api_sleeve_pnl():
+    """Per-sleeve P&L (single puts / covered calls / stock / index puts), lifetime and 30d."""
+    from src.core.database import get_db
+    from src.strategy.sleeve_pnl import compute_sleeve_pnl
+    with get_db() as db:
+        return compute_sleeve_pnl(db)

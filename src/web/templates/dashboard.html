@@ -387,6 +387,30 @@
     </div>
 </div>
 
+<!-- ═══ P&L by sleeve (options account, USD, from the account's own fills) ═══ -->
+{% if sleeve_pnl %}
+<div class="mt-6 bg-gray-900 border border-gray-800 rounded-lg p-4">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider">P&amp;L by sleeve — USD, own fills, as of {{ sleeve_pnl.as_of }}</h2>
+        <span class="text-xs text-gray-600">lifetime vs last {{ sleeve_pnl.window_days }} days (realised cash); open lots at IBKR's unrealised; excludes margin interest and EUR/USD moves, so it will not tie to NLV to the euro</span>
+    </div>
+    <table class="w-full text-sm">
+        <thead><tr class="text-gray-500 text-xs border-b border-gray-800">
+            <th class="text-left py-1">Sleeve</th><th class="text-right">Lifetime</th><th class="text-right">Last {{ sleeve_pnl.window_days }}d</th><th class="text-right">Count</th></tr></thead>
+        <tbody class="font-mono">
+        {% set r = sleeve_pnl.rows %}
+        {% macro cell(v) %}<span class="{% if v >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">{{ "%+,.0f"|format(v) }}</span>{% endmacro %}
+        <tr class="border-b border-gray-800/40"><td class="py-1 text-gray-300">Single-name puts</td><td class="text-right">{{ cell(r.single_puts.all) }}</td><td class="text-right">{{ cell(r.single_puts.d30) }}</td><td class="text-right text-gray-500">{{ r.single_puts.n_30 }} / {{ r.single_puts.n_all }} sold</td></tr>
+        <tr class="border-b border-gray-800/40"><td class="py-1 text-gray-300">Covered calls</td><td class="text-right">{{ cell(r.covered_calls.all) }}</td><td class="text-right">{{ cell(r.covered_calls.d30) }}</td><td class="text-right text-gray-500">{{ r.covered_calls.n_30 }} / {{ r.covered_calls.n_all }} written</td></tr>
+        <tr class="border-b border-gray-800/40"><td class="py-1 text-gray-300">Assigned stock — realised</td><td class="text-right">{{ cell(r.stock.all) }}</td><td class="text-right">{{ cell(r.stock.d30) }}</td><td class="text-right text-gray-500">{{ r.stock.open_lots }} lots open</td></tr>
+        <tr class="border-b border-gray-800/40"><td class="py-1 text-gray-300">Assigned stock — open, unrealised</td><td class="text-right">{{ cell(r.stock.open_unrealised) }}</td><td class="text-right text-gray-600">—</td><td class="text-right text-gray-500">cost ${{ "%,.0f"|format(r.stock.open_cost) }}</td></tr>
+        <tr class="border-b border-gray-800/40"><td class="py-1 text-cyan-300">Index puts (XSP sleeve)</td><td class="text-right">{{ cell(r.index_puts.all) }}</td><td class="text-right">{{ cell(r.index_puts.d30) }}</td><td class="text-right text-gray-500">{{ r.index_puts.n_30 }} / {{ r.index_puts.n_all }} sold</td></tr>
+        <tr class="font-semibold"><td class="py-1 text-gray-200">Total</td><td class="text-right">{{ cell(sleeve_pnl.total_all) }}</td><td class="text-right">{{ cell(sleeve_pnl.total_30) }}</td><td class="text-right text-gray-500">fees ${{ "%,.0f"|format(sleeve_pnl.fees_all) }}</td></tr>
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 <!-- ═══ Performance Chart: NLV Return vs 24% Target ═══ -->
 {% if perf_labels and perf_labels|length > 1 %}
 <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
