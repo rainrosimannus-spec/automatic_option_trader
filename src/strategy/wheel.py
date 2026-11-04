@@ -163,16 +163,60 @@ def _assignment_strike(db, symbol: str, lots_needed: int) -> float | None:
 LIQUIDATION_SOURCES = ("wheel_stop", "wheel_unwind")
 
 
-def _liquidation_in_flight(db, symbol: str) -> bool:
-    """True while a stop/unwind stock sale for `symbol` is submitted but not yet synced.
-    The CC writer and the pre-market exit must leave such a lot alone — never write a new
-    call on shares that are on their way out."""
+def _reconcile_liquidation_suggestions(db) -> int:
+    """Flip stale wheel_stop / wheel_unwind sale markers so they cannot block a lot forever.
+
+    The sale itself is a DAY limit order; nothing in trade_sync matches a stock-sale
+    suggestion to its fill (that matching is keyed on strike/expiry). Without this, every
+    stop/unwind marker stayed "submitted" for good — the 2026-11-04 first run left FTNT's
+    unfilled sale marker in place, which would have blocked both the next day's retry and
+    any covered call on the still-held lot. Rule: a marker whose symbol has a FILLED
+    SELL_STOCK trade at/after its creation → "filled"; a marker from an earlier UTC day
+    (its DAY order is dead) → "expired". Today's markers stay live. Returns rows changed."""
     from src.core.suggestions import TradeSuggestion
+    from datetime import date as _date
+    today_start = datetime.combine(_date.today(), datetime.min.time())
+    rows = db.query(TradeSuggestion).filter(
+        TradeSuggestion.action == "sell_stock",
+        TradeSuggestion.source.in_(LIQUIDATION_SOURCES),
+        TradeSuggestion.status == "submitted",
+    ).all()
+    changed = 0
+    for sg in rows:
+        filled = db.query(Trade).filter(
+            Trade.symbol == sg.symbol,
+            Trade.trade_type == TradeType.SELL_STOCK,
+            Trade.order_status == OrderStatus.FILLED,
+            Trade.created_at >= sg.created_at,
+        ).first()
+        if filled:
+            sg.status = "filled"
+            sg.review_note = "Filled at IBKR (reconciled by the wheel)"
+            changed += 1
+        elif sg.created_at and sg.created_at < today_start:
+            sg.status = "expired"
+            sg.review_note = "DAY sale order not filled — marker expired (reconciled by the wheel)"
+            changed += 1
+    if changed:
+        db.commit()
+        log.info("liquidation_markers_reconciled", changed=changed)
+    return changed
+
+
+def _liquidation_in_flight(db, symbol: str) -> bool:
+    """True while a stop/unwind stock sale for `symbol` placed TODAY is submitted and not
+    yet seen filled. The CC writer and the pre-market exit must leave such a lot alone —
+    never write a new call on shares that are on their way out. Older markers are dead
+    DAY orders (see _reconcile_liquidation_suggestions) and never block."""
+    from src.core.suggestions import TradeSuggestion
+    from datetime import date as _date
+    today_start = datetime.combine(_date.today(), datetime.min.time())
     return db.query(TradeSuggestion).filter(
         TradeSuggestion.symbol == symbol,
         TradeSuggestion.action == "sell_stock",
         TradeSuggestion.source.in_(LIQUIDATION_SOURCES),
         TradeSuggestion.status == "submitted",
+        TradeSuggestion.created_at >= today_start,
     ).count() > 0
 
 
@@ -697,6 +741,7 @@ class WheelManager:
         log.info("wheel_stop_scan_started", stop_pct=stop_pct)
 
         with get_db() as db:
+            _reconcile_liquidation_suggestions(db)
             stock_positions = (
                 db.query(Position)
                 .filter(
@@ -841,6 +886,7 @@ class WheelManager:
         risk_cfg = _gs().risk
 
         with get_db() as db:
+            _reconcile_liquidation_suggestions(db)
             stock_positions = (
                 db.query(Position)
                 .filter(

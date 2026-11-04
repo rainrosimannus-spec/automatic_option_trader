@@ -75,3 +75,31 @@ def test_liquidation_in_flight_blocks_new_calls():
                             quantity=100, rank=1, rank_score=1.0))
     db2.flush()
     assert _liquidation_in_flight(db2, "Y") is False
+
+
+def test_stale_liquidation_markers_are_reconciled_and_do_not_block():
+    """2026-11-04: FTNT's unfilled DAY sale marker must not block the next day's retry or a
+    covered call; a filled one flips to 'filled'."""
+    from datetime import date as _date
+    from src.strategy.wheel import _reconcile_liquidation_suggestions
+    db = _session()
+    yesterday = datetime.combine(_date.today(), datetime.min.time()) - timedelta(hours=3)
+    # FTNT: marker from yesterday, no fill → expired, no longer in flight
+    db.add(TradeSuggestion(symbol="FTNT", action="sell_stock", source="wheel_stop", status="submitted",
+                           quantity=200, rank=1, rank_score=1.0, created_at=yesterday))
+    # FTAI: marker from yesterday with a FILLED SELL_STOCK after it → filled
+    db.add(TradeSuggestion(symbol="FTAI", action="sell_stock", source="wheel_stop", status="submitted",
+                           quantity=300, rank=1, rank_score=1.0, created_at=yesterday))
+    db.add(Trade(symbol="FTAI", trade_type=TradeType.SELL_STOCK, strike=0, expiry="", premium=0,
+                 quantity=300, fill_price=181.01, commission=0, order_status=OrderStatus.FILLED,
+                 created_at=yesterday + timedelta(minutes=5)))
+    # CIEN: marker placed today, no fill yet → still in flight
+    db.add(TradeSuggestion(symbol="CIEN", action="sell_stock", source="wheel_stop", status="submitted",
+                           quantity=300, rank=1, rank_score=1.0, created_at=datetime.utcnow()))
+    db.flush()
+    assert _reconcile_liquidation_suggestions(db) == 2
+    rows = {s.symbol: s.status for s in db.query(TradeSuggestion).all()}
+    assert rows == {"FTNT": "expired", "FTAI": "filled", "CIEN": "submitted"}
+    assert _liquidation_in_flight(db, "FTNT") is False
+    assert _liquidation_in_flight(db, "FTAI") is False
+    assert _liquidation_in_flight(db, "CIEN") is True
