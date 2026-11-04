@@ -495,6 +495,16 @@ def _estimate_suggestion_pnl(s) -> float:
     return 0.0
 
 
+def _index_puts_on() -> bool:
+    """Phase 2 chip state: sleeve enabled AND out of dry-run."""
+    try:
+        from src.core.config import get_settings as _gs
+        ip = getattr(_gs(), "index_puts", None)
+        return bool(ip and ip.enabled and not ip.dry_run)
+    except Exception:
+        return False
+
+
 @router.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
     with get_db() as db:
@@ -747,8 +757,7 @@ def dashboard(request: Request):
         "eurusd": eurusd,
         # Cash parking (FX treasury: EUR→XEON / USD→XFFE, USD debit auto-close)
         "parking": parking,
-        "index_puts_on": bool(getattr(getattr(get_settings(), "index_puts", None), "enabled", False)
-                              and not getattr(get_settings().index_puts, "dry_run", True)),
+        "index_puts_on": _index_puts_on(),
         # Performance chart
         "perf_labels": performance["labels"],
         "perf_actual": performance["actual"],
