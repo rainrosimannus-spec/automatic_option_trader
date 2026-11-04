@@ -134,6 +134,7 @@ def save_results(run_dir: Path, screener, portfolio_universe, options_universe, 
         "breakthrough_proposed": getattr(screener, "_breakthrough_proposed", []),
         "breakthrough_graduated": getattr(screener, "_breakthrough_graduated", []),
         "durability": getattr(screener, "_durability", {}),
+        "tier_rankings": getattr(screener, "_tier_rankings", {}),
     })
     log.info("screener_run_archive_results_saved", run_dir=str(run_dir),
              selected=len(portfolio_universe), scored=len(all_scores))

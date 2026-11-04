@@ -28,6 +28,38 @@ router = APIRouter()
 _CCY_SYM = CCY_SYMBOLS
 
 
+# Drop-out triangle: a flagged holding ranked within these depths of its tier's candidate list
+# in the last screen is a near miss, not a drop-out, and shows no warning (Rain, 2026-11-04).
+TIER_REACH = {"growth": 100, "dividend": 25, "breakthrough": 40}
+
+
+def _load_tier_rankings() -> dict:
+    """Per-tier ranked candidate lists [[symbol, score], ...] from the last screen's run log."""
+    try:
+        import json
+        from pathlib import Path
+        data = json.loads(Path("data/screener_last_run.json").read_text())
+        rankings = data.get("tier_rankings") if isinstance(data, dict) else None
+        return rankings if isinstance(rankings, dict) else {}
+    except Exception:
+        return {}
+
+
+def _within_tier_reach(symbol: str, tier: str | None, rankings: dict) -> bool:
+    """True when the last screen ranked `symbol` within TIER_REACH of its tier. Unknown tier,
+    missing rankings (run log predates them) or a symbol absent from the list → False (triangle)."""
+    depth = TIER_REACH.get(tier or "")
+    rows = rankings.get(tier or "") if rankings else None
+    if not depth or not rows:
+        return False
+    for rank, row in enumerate(rows, start=1):
+        if rank > depth:
+            return False
+        if (row[0] if isinstance(row, (list, tuple)) else row) == symbol:
+            return True
+    return False
+
+
 def _ccy_symbol(currency: str | None) -> str:
     return ccy_symbol(currency)
 
@@ -472,6 +504,12 @@ async def portfolio_page(request: Request):
         w.symbol: (w.pending_removal_reason or "Dropped by the last screen; open position blocks removal.")
         for w in watchlist if getattr(w, "pending_removal", False)
     }
+    # Rain, 2026-11-04: the triangle only for a REAL drop-out — a held name the last screen ranked
+    # beyond reach of its tier (growth past rank 100, dividend past 25, breakthrough outside the
+    # scored pool's top 40) or did not rank at all (gate failure, no data). A name that merely
+    # missed the 60/15/25 cut stays frozen in the buyer but carries no warning on this page.
+    flagged_removal = {sym: why for sym, why in flagged_removal.items()
+                       if not _within_tier_reach(sym, _tier_of.get(sym), _load_tier_rankings())}
 
     # Parked-cash card (top of page): idle cash swept into the money-market ETF (XEON) for ~€STR yield.
     # Amount is the ETF holding's market value in BASE ccy (0 when nothing is parked); the annual % is the

@@ -4718,6 +4718,19 @@ class UniverseScreener:
         growth_candidates = [s for s in growth_candidates if s.symbol not in breakthrough_symbols]
         dividend_candidates = [s for s in dividend_candidates if s.symbol not in breakthrough_symbols]
 
+        # Full ranked candidate lists per tier (Rain, 2026-11-04): the portfolio page uses them to
+        # show the drop-out triangle only for a held name that fell OUT OF REACH of its tier
+        # (growth beyond rank 100, dividend beyond 25, breakthrough outside the scored pool's
+        # top 40), not for one that merely missed a 60/15/25-slot cut. Display only — the
+        # freeze itself still keys on pending_removal.
+        self._tier_rankings = {
+            "growth": [[s.symbol, round(s.portfolio_score, 1)] for s in growth_candidates],
+            "dividend": [[s.symbol, round(s.dividend_total_return_score or 0.0, 1)]
+                         for s in dividend_candidates],
+            "breakthrough": [[s.symbol, round(s.portfolio_score, 1)] for s in
+                             sorted(breakthrough_scores, key=lambda s: s.portfolio_score, reverse=True)],
+        }
+
         selected_growth = growth_candidates[:growth_count]
 
         # ── Durability protection: the top five by durability index are IN the growth tier ──────

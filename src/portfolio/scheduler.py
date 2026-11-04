@@ -1038,6 +1038,8 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                 # Durability picks: what the discovery call proposed, what passed the durable gate,
                 # the five protected names and the ordinary members they displaced.
                 "durability": getattr(screener, "_durability", {}),
+                # Ranked candidate lists per tier — the portfolio page's soft/hard drop-out rule.
+                "tier_rankings": getattr(screener, "_tier_rankings", {}),
                 "suggestions_created": [],
             }, indent=2))
 
