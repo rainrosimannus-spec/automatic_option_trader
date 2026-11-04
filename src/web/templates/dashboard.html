@@ -399,13 +399,13 @@
             <th class="text-left py-1">Sleeve</th><th class="text-right">Lifetime</th><th class="text-right">Last {{ sleeve_pnl.window_days }}d</th><th class="text-right">Count</th></tr></thead>
         <tbody class="font-mono">
         {% set r = sleeve_pnl.rows %}
-        {% macro cell(v) %}<span class="{% if v >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">{{ "%+,.0f"|format(v) }}</span>{% endmacro %}
+        {% macro cell(v) %}<span class="{% if v >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">{{ "{:+,.0f}".format(v) }}</span>{% endmacro %}
         <tr class="border-b border-gray-800/40"><td class="py-1 text-gray-300">Single-name puts</td><td class="text-right">{{ cell(r.single_puts.all) }}</td><td class="text-right">{{ cell(r.single_puts.d30) }}</td><td class="text-right text-gray-500">{{ r.single_puts.n_30 }} / {{ r.single_puts.n_all }} sold</td></tr>
         <tr class="border-b border-gray-800/40"><td class="py-1 text-gray-300">Covered calls</td><td class="text-right">{{ cell(r.covered_calls.all) }}</td><td class="text-right">{{ cell(r.covered_calls.d30) }}</td><td class="text-right text-gray-500">{{ r.covered_calls.n_30 }} / {{ r.covered_calls.n_all }} written</td></tr>
         <tr class="border-b border-gray-800/40"><td class="py-1 text-gray-300">Assigned stock — realised</td><td class="text-right">{{ cell(r.stock.all) }}</td><td class="text-right">{{ cell(r.stock.d30) }}</td><td class="text-right text-gray-500">{{ r.stock.open_lots }} lots open</td></tr>
-        <tr class="border-b border-gray-800/40"><td class="py-1 text-gray-300">Assigned stock — open, unrealised</td><td class="text-right">{{ cell(r.stock.open_unrealised) }}</td><td class="text-right text-gray-600">—</td><td class="text-right text-gray-500">cost ${{ "%,.0f"|format(r.stock.open_cost) }}</td></tr>
+        <tr class="border-b border-gray-800/40"><td class="py-1 text-gray-300">Assigned stock — open, unrealised</td><td class="text-right">{{ cell(r.stock.open_unrealised) }}</td><td class="text-right text-gray-600">—</td><td class="text-right text-gray-500">cost ${{ "{:,.0f}".format(r.stock.open_cost) }}</td></tr>
         <tr class="border-b border-gray-800/40"><td class="py-1 text-cyan-300">Index puts (XSP sleeve)</td><td class="text-right">{{ cell(r.index_puts.all) }}</td><td class="text-right">{{ cell(r.index_puts.d30) }}</td><td class="text-right text-gray-500">{{ r.index_puts.n_30 }} / {{ r.index_puts.n_all }} sold</td></tr>
-        <tr class="font-semibold"><td class="py-1 text-gray-200">Total</td><td class="text-right">{{ cell(sleeve_pnl.total_all) }}</td><td class="text-right">{{ cell(sleeve_pnl.total_30) }}</td><td class="text-right text-gray-500">fees ${{ "%,.0f"|format(sleeve_pnl.fees_all) }}</td></tr>
+        <tr class="font-semibold"><td class="py-1 text-gray-200">Total</td><td class="text-right">{{ cell(sleeve_pnl.total_all) }}</td><td class="text-right">{{ cell(sleeve_pnl.total_30) }}</td><td class="text-right text-gray-500">fees ${{ "{:,.0f}".format(sleeve_pnl.fees_all) }}</td></tr>
         </tbody>
     </table>
 </div>
