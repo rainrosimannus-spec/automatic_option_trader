@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from src.core.models import Position, PositionStatus, Trade, TradeType, OrderStatus
 
 INDEX_SYMBOLS = ("XSP", "SPX", "SPXW", "NDX", "XND", "RUT")
+HEDGE_SYMBOLS = ("SPY",)   # the tail hedge buys SPY puts (hedge.py); nothing else trades SPY options here
 _PREMIUM_IN = (TradeType.SELL_PUT, TradeType.SELL_CALL)
 _PREMIUM_OUT = (TradeType.BUY_PUT, TradeType.BUY_CALL)
 _STOCK_IN = (TradeType.SELL_STOCK, TradeType.CALLED_AWAY)
@@ -41,9 +42,11 @@ def compute_sleeve_pnl(db, now: datetime | None = None, window_days: int = 30) -
     trades = db.query(Trade).filter(Trade.order_status == OrderStatus.FILLED).all()
     trades = [t for t in trades if t.symbol not in ("XEON", "XFFE")]      # cash-parking ETFs are not a sleeve
     is_index = lambda t: t.symbol in INDEX_SYMBOLS  # noqa: E731
-    puts_all = [t for t in trades if t.trade_type in (TradeType.SELL_PUT, TradeType.BUY_PUT) and not is_index(t)]
+    is_hedge = lambda t: t.symbol in HEDGE_SYMBOLS and t.trade_type in (TradeType.BUY_PUT, TradeType.SELL_PUT)  # noqa: E731
+    puts_all = [t for t in trades if t.trade_type in (TradeType.SELL_PUT, TradeType.BUY_PUT) and not is_index(t) and not is_hedge(t)]
     calls_all = [t for t in trades if t.trade_type in (TradeType.SELL_CALL, TradeType.BUY_CALL) and not is_index(t)]
     idx_all = [t for t in trades if is_index(t)]
+    hedge_all = [t for t in trades if is_hedge(t)]
 
     def win(ts):
         return [t for t in ts if t.created_at and t.created_at >= since]
@@ -74,6 +77,11 @@ def compute_sleeve_pnl(db, now: datetime | None = None, window_days: int = 30) -
         "index_puts": {"all": _option_cash(idx_all), "d30": _option_cash(win(idx_all)),
                        "n_all": sum(1 for t in idx_all if t.trade_type == TradeType.SELL_PUT),
                        "n_30": sum(1 for t in win(idx_all) if t.trade_type == TradeType.SELL_PUT)},
+        # tail hedge: long SPY puts, so BUY_PUT is the cost and SELL_PUT / settlement the proceeds —
+        # _option_cash already signs them that way (sells +, buys −)
+        "tail_hedge": {"all": _option_cash(hedge_all), "d30": _option_cash(win(hedge_all)),
+                       "n_all": sum(1 for t in hedge_all if t.trade_type == TradeType.BUY_PUT),
+                       "n_30": sum(1 for t in win(hedge_all) if t.trade_type == TradeType.BUY_PUT)},
     }
     total_all = sum(r["all"] for r in rows.values()) + open_unreal
     total_30 = sum(r["d30"] for r in rows.values())

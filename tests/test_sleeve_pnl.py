@@ -44,10 +44,16 @@ def test_sleeves_are_separated_and_windowed():
     assert round(rows["covered_calls"]["all"]) == 299
     assert round(rows["index_puts"]["all"]) == 600 - 1 - 150 - 1 and rows["index_puts"]["n_all"] == 1
     assert rows["stock"]["all"] == -500.0 and rows["stock"]["d30"] == -500.0
+    # a SPY put bought as tail hedge lands in its own row, not in single-name puts
+    _t(db, "SPY", TradeType.BUY_PUT, prem=4.0, qty=2, days_ago=2)
+    db.flush()
+    r_h = compute_sleeve_pnl(db, now=now)
+    assert round(r_h["rows"]["tail_hedge"]["all"]) == -(800 + 1) and r_h["rows"]["tail_hedge"]["n_all"] == 1
+    assert round(r_h["rows"]["single_puts"]["all"]) == round(rows["single_puts"]["all"])
     assert rows["stock"]["open_unrealised"] == -1200.0 and rows["stock"]["open_lots"] == 1
     assert round(r["total_all"]) == round(rows["single_puts"]["all"] + 299 + 448 - 500 - 1200)
     # the parking ETF never counts as a sleeve
     _t(db, "XEON", TradeType.SELL_STOCK, fill=150.0, qty=10, comm=5.0)
     db.flush()
     r2 = compute_sleeve_pnl(db, now=now)
-    assert round(r2["total_all"]) == round(r["total_all"])
+    assert round(r2["total_all"]) == round(r_h["total_all"])   # r_h already carries the SPY hedge
