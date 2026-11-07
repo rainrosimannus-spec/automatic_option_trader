@@ -53,9 +53,15 @@ data/statements/
 data/backups/
 data/contracts/
 
+# Account statements (/reports) — archived IBKR Flex XML + generated PDFs.
+# Raw broker statements; never committed.
+data/flex_archive/
+data/account_statements/
+
 # Bookkeeping bridge — live-mode idempotency ledger (posted journal refs, per entity)
 data/bookkeeping_posted*.jsonl
 
 # Historical backup files (kept locally, never committed)
 *.v1-backup
 *.pre-*
+config/settings.yaml.bak
