@@ -30,6 +30,7 @@ from src.core.models import Position, Trade, PositionStatus, TradeType, OrderSta
 log = get_logger(__name__)
 
 POSITION_TYPE = "index_put"
+WING_TYPE = "index_put_wing"
 INDEX_SYMBOLS = ("XSP", "SPX", "SPXW", "NDX", "XND", "RUT")
 
 
@@ -75,6 +76,42 @@ def settlement_pnl(premium: float, strike: float, settle_px: float, qty: int,
     intrinsic = max(0.0, strike - settle_px) * 100.0 * qty
     realized = premium * 100.0 * qty - intrinsic - commission_total
     return round(intrinsic, 2), round(realized, 2)
+
+
+def wing_strike(short_strike: float, width_pct: float, strikes: list[float] | None = None,
+                grid: float = 1.0) -> float:
+    """Wing `width_pct` below the short strike, rounded DOWN to the grid / snapped to the chain."""
+    raw = short_strike * (1.0 - width_pct)
+    k = math.floor(raw / grid) * grid
+    if strikes:
+        below = [x for x in strikes if x <= k]
+        if below:
+            k = max(below)
+    return k
+
+
+def spread_max_loss_per_contract(short_strike: float, wing: float, net_credit: float) -> float:
+    """Defined-risk max loss per spread contract in dollars: (width − credit) × 100, floor $1."""
+    return max((short_strike - wing) - net_credit, 0.01) * 100.0
+
+
+def contracts_for_max_loss(nlv: float, max_loss_pct: float, max_loss_per_contract: float,
+                           loss_in_use: float, max_contracts: int) -> int:
+    """How many spreads the remaining max-loss budget (max_loss_pct × NLV − open spreads' max loss)
+    affords at `max_loss_per_contract`."""
+    if nlv <= 0 or max_loss_per_contract <= 0:
+        return 0
+    free = max_loss_pct * nlv - loss_in_use
+    return int(max(0, min(max_contracts, math.floor(free / max_loss_per_contract))))
+
+
+def spread_settlement_pnl(net_credit: float, short_strike: float, wing: Optional[float],
+                          settle_px: float, qty: int, commission_total: float = 0.0) -> tuple[float, float, float]:
+    """(short intrinsic paid, wing payoff received, realized) for a cash-settled put spread."""
+    intrinsic = max(0.0, short_strike - settle_px) * 100.0 * qty
+    wing_pay = max(0.0, (wing or 0.0) - settle_px) * 100.0 * qty if wing else 0.0
+    realized = net_credit * 100.0 * qty - intrinsic + wing_pay - commission_total
+    return round(intrinsic, 2), round(wing_pay, 2), round(realized, 2)
 
 
 def stop_triggered(ask: Optional[float], credit: float, stop_mult: float) -> bool:
@@ -157,7 +194,7 @@ class IndexPutSeller:
             return None
         from src.broker.market_data import (get_index_spot, get_index_option_params,
                                             get_index_option_quote)
-        from src.broker.orders import get_whatif_margin_index, sell_index_put
+        from src.broker.orders import get_whatif_margin_index, sell_index_put, buy_index_put_open
         from src.portfolio.fmp import get_price_history
 
         with get_db() as db:
@@ -194,17 +231,39 @@ class IndexPutSeller:
             nlv = self._nlv()
             if not nlv:
                 return None
-            m1 = get_whatif_margin_index(self.cfg.symbol, expiry, strike, 1, bid,
-                                         self.cfg.exchange, self.cfg.trading_class)
-            margin_pc = m1 if m1 else margin_proxy_per_contract(spot, strike, self.cfg.margin_pct_fallback)
-            in_use = sum(margin_proxy_per_contract(spot, p.strike, self.cfg.margin_pct_fallback) * p.quantity
-                         for p in open_puts)
-            qty = contracts_for_budget(nlv, self.cfg.budget_pct, margin_pc, in_use, self.cfg.max_contracts)
+            wing = None; wing_bid = wing_ask = None; wing_con = None
+            net_credit = bid
+            if self.cfg.spread_enabled:
+                wing = wing_strike(strike, self.cfg.spread_width_pct, strikes)
+                wing_bid, wing_ask, wing_con = get_index_option_quote(
+                    self.cfg.symbol, expiry, wing, "P", self.cfg.exchange, self.cfg.trading_class)
+                if not wing_ask or wing_ask <= 0:
+                    log.info("index_put_wing_no_quote", wing=wing, expiry=expiry)
+                    return None
+                net_credit = bid - wing_ask
+                if net_credit < self.cfg.min_net_credit:
+                    log.info("index_put_net_credit_too_small", strike=strike, wing=wing, bid=bid,
+                             wing_ask=wing_ask, net_credit=round(net_credit, 2))
+                    return None
+                ml_pc = spread_max_loss_per_contract(strike, wing, net_credit)
+                in_use = sum(spread_max_loss_per_contract(p.strike, self._wing_of(db, p) or p.strike,
+                                                          p.entry_premium or 0.0) * p.quantity for p in open_puts)
+                qty = contracts_for_max_loss(nlv, self.cfg.max_loss_pct, ml_pc, in_use, self.cfg.max_contracts)
+                margin_pc = ml_pc; m1 = None
+            else:
+                m1 = get_whatif_margin_index(self.cfg.symbol, expiry, strike, 1, bid,
+                                             self.cfg.exchange, self.cfg.trading_class)
+                margin_pc = m1 if m1 else margin_proxy_per_contract(spot, strike, self.cfg.margin_pct_fallback)
+                in_use = sum(margin_proxy_per_contract(spot, p.strike, self.cfg.margin_pct_fallback) * p.quantity
+                             for p in open_puts)
+                qty = contracts_for_budget(nlv, self.cfg.budget_pct, margin_pc, in_use, self.cfg.max_contracts)
             decision = {
                 "symbol": self.cfg.symbol, "expiry": expiry, "strike": strike, "spot": round(spot, 2),
                 "sigma_daily": round(sigma, 5), "otm_pct": round((1 - strike / spot) * 100, 2),
-                "bid": bid, "ask": ask, "margin_per_contract": round(margin_pc, 0),
-                "margin_source": "whatif" if m1 else "proxy", "nlv": round(nlv, 0),
+                "bid": bid, "ask": ask, "wing": wing, "wing_ask": wing_ask,
+                "net_credit": round(net_credit, 2),
+                "max_loss_or_margin_per_contract": round(margin_pc, 0),
+                "sizing": ("max_loss" if wing else ("whatif" if m1 else "proxy")), "nlv": round(nlv, 0),
                 "qty": qty, "dry_run": self.cfg.dry_run,
             }
             if qty <= 0:
@@ -214,6 +273,32 @@ class IndexPutSeller:
                 log.info("index_put_DRY_RUN_would_sell", **decision)
                 return decision
 
+            now = datetime.utcnow()
+            if wing:
+                # wing FIRST: defined risk exists before the short put is ever on
+                wtrade = buy_index_put_open(self.cfg.symbol, expiry, wing, qty, wing_ask,
+                                            self.cfg.exchange, self.cfg.trading_class, wing_con)
+                if not wtrade:
+                    log.warning("index_put_wing_not_placed", **decision)
+                    return decision
+                from src.strategy.fx_treasury import _wait_fill
+                from src.broker.connection import get_ib
+                status, _f = _wait_fill(get_ib(), wtrade, 20.0)
+                if status != "Filled":
+                    log.warning("index_put_wing_not_filled_short_skipped", status=status, **decision)
+                    # keep the wing: it is a cheap long; it is recorded so manage() settles it
+                db.add(Trade(position_id=None, symbol=self.cfg.symbol, trade_type=TradeType.BUY_PUT,
+                             strike=wing, expiry=expiry, premium=wing_ask, quantity=qty, fill_price=wing_ask,
+                             commission=0.0, order_id=wtrade.order.orderId, order_status=OrderStatus.SUBMITTED,
+                             notes=f"index_put wing (long) under {strike}P"))
+                db.add(Position(symbol=self.cfg.symbol, status=PositionStatus.OPEN, position_type=WING_TYPE,
+                                strike=wing, expiry=expiry, entry_premium=wing_ask, cost_basis=None,
+                                wheel_exit_mode=False, quantity=qty, total_premium_collected=0.0,
+                                realized_pnl=0.0, unrealized_pnl=0.0, is_wheel=False, opened_at=now))
+                db.commit()
+                if status != "Filled":
+                    return decision
+
             trade = sell_index_put(self.cfg.symbol, expiry, strike, qty, bid,
                                    self.cfg.exchange, self.cfg.trading_class, con_id)
             if not trade:
@@ -222,21 +307,26 @@ class IndexPutSeller:
                          strike=strike, expiry=expiry, premium=bid, quantity=qty, fill_price=bid,
                          commission=0.0, order_id=trade.order.orderId, order_status=OrderStatus.SUBMITTED,
                          bid_at_entry=bid, ask_at_entry=ask, mid_at_entry=(bid + ask) / 2 if ask else bid,
-                         notes=f"index_put sleeve: spot {spot:.2f} σ {sigma:.4f} otm {decision['otm_pct']}%"))
+                         notes=f"index_put sleeve: spot {spot:.2f} σ {sigma:.4f} otm {decision['otm_pct']}%"
+                               + (f" wing {wing}" if wing else "")))
             db.add(Position(symbol=self.cfg.symbol, status=PositionStatus.OPEN, position_type=POSITION_TYPE,
-                            strike=strike, expiry=expiry, entry_premium=bid, cost_basis=None,
-                            wheel_exit_mode=False, quantity=qty, total_premium_collected=bid * 100 * qty,
-                            realized_pnl=0.0, unrealized_pnl=0.0, is_wheel=False, opened_at=datetime.utcnow()))
+                            strike=strike, expiry=expiry, entry_premium=net_credit, cost_basis=wing,
+                            wheel_exit_mode=False, quantity=qty, total_premium_collected=net_credit * 100 * qty,
+                            realized_pnl=0.0, unrealized_pnl=0.0, is_wheel=False, opened_at=now))
             db.commit()
             log.info("index_put_sold", order_id=trade.order.orderId, **decision)
             return decision
+
+    def _wing_of(self, db, short_pos: Position) -> Optional[float]:
+        """The wing strike paired with a short index put: stored in cost_basis at entry."""
+        return short_pos.cost_basis if short_pos.cost_basis else None
 
     # -- manage: stop + settlement
     def manage(self) -> list[str]:
         if not self.cfg.enabled:
             return []
         from src.broker.market_data import get_index_option_quote, get_index_spot
-        from src.broker.orders import buy_to_close_index_put
+        from src.broker.orders import buy_to_close_index_put, sell_index_put_close
         from src.portfolio.fmp import get_price_history
         acted: list[str] = []
         today = date.today().strftime("%Y%m%d")
@@ -258,29 +348,49 @@ class IndexPutSeller:
                     if settle_px is None:
                         log.warning("index_put_settlement_price_missing", symbol=pos.symbol, expiry=pos.expiry)
                         continue
-                    intrinsic, realized = settlement_pnl(pos.entry_premium or 0.0, pos.strike or 0.0,
-                                                         settle_px, pos.quantity)
+                    wing = self._wing_of(db, pos)
+                    intrinsic, wing_pay, realized = spread_settlement_pnl(
+                        pos.entry_premium or 0.0, pos.strike or 0.0, wing, settle_px, pos.quantity)
                     db.add(Trade(position_id=pos.id, symbol=pos.symbol, trade_type=TradeType.BUY_PUT,
                                  strike=pos.strike, expiry=pos.expiry, premium=intrinsic / (100 * max(pos.quantity, 1)),
                                  quantity=pos.quantity, fill_price=intrinsic / (100 * max(pos.quantity, 1)),
                                  commission=0.0, order_status=OrderStatus.FILLED,
                                  notes=f"index_put settlement at {settle_px:.2f} (intrinsic ${intrinsic:,.0f})"))
+                    if wing:
+                        db.add(Trade(position_id=pos.id, symbol=pos.symbol, trade_type=TradeType.SELL_PUT,
+                                     strike=wing, expiry=pos.expiry, premium=wing_pay / (100 * max(pos.quantity, 1)),
+                                     quantity=pos.quantity, fill_price=wing_pay / (100 * max(pos.quantity, 1)),
+                                     commission=0.0, order_status=OrderStatus.FILLED,
+                                     notes=f"index_put settlement wing payoff at {settle_px:.2f} (${wing_pay:,.0f})"))
+                        for wp in db.query(Position).filter(
+                                Position.symbol == pos.symbol, Position.position_type == WING_TYPE,
+                                Position.strike == wing, Position.expiry == pos.expiry,
+                                Position.status == PositionStatus.OPEN).all():
+                            wp.status = PositionStatus.CLOSED if wing_pay > 0 else PositionStatus.EXPIRED
+                            wp.closed_at = datetime.utcnow()
+                            wp.realized_pnl = wing_pay - (wp.entry_premium or 0.0) * 100 * wp.quantity
                     pos.status = PositionStatus.CLOSED if intrinsic > 0 else PositionStatus.EXPIRED
                     pos.closed_at = datetime.utcnow()
                     pos.realized_pnl = realized
                     db.commit()
-                    log.info("index_put_settled", symbol=pos.symbol, strike=pos.strike, expiry=pos.expiry,
-                             settle=settle_px, intrinsic=intrinsic, realized=realized)
+                    log.info("index_put_settled", symbol=pos.symbol, strike=pos.strike, wing=wing, expiry=pos.expiry,
+                             settle=settle_px, intrinsic=intrinsic, wing_payoff=wing_pay, realized=realized)
                     acted.append(f"settle {pos.strike}")
                     continue
                 if pos.status != PositionStatus.OPEN or self.cfg.stop_mult <= 0:
                     continue
                 _bid, ask, _cid = get_index_option_quote(pos.symbol, pos.expiry, pos.strike, "P",
                                                          self.cfg.exchange, self.cfg.trading_class)
-                if stop_triggered(ask, pos.entry_premium or 0.0, self.cfg.stop_mult):
+                wing = self._wing_of(db, pos)
+                wing_bid = None
+                if wing:
+                    wing_bid, _wa, _wc = get_index_option_quote(pos.symbol, pos.expiry, wing, "P",
+                                                                self.cfg.exchange, self.cfg.trading_class)
+                spread_mark = (ask - (wing_bid or 0.0)) if ask else None
+                if stop_triggered(spread_mark, pos.entry_premium or 0.0, self.cfg.stop_mult):
                     limit = round(ask * 1.02 + 0.05, 2)
-                    log.warning("index_put_stop_triggered", symbol=pos.symbol, strike=pos.strike,
-                                expiry=pos.expiry, credit=pos.entry_premium, ask=ask, limit=limit)
+                    log.warning("index_put_stop_triggered", symbol=pos.symbol, strike=pos.strike, wing=wing,
+                                expiry=pos.expiry, credit=pos.entry_premium, ask=ask, wing_bid=wing_bid, limit=limit)
                     if self.cfg.dry_run:
                         continue
                     trade = buy_to_close_index_put(pos.symbol, pos.expiry, pos.strike, pos.quantity, limit,
@@ -293,6 +403,23 @@ class IndexPutSeller:
                                      notes=f"index_put stop at {self.cfg.stop_mult}x credit"))
                         db.commit()
                         acted.append(f"stop {pos.strike}")
+                        # the short is gone (or going): sell the wing back only after the buyback fills
+                        if wing and wing_bid:
+                            from src.strategy.fx_treasury import _wait_fill
+                            from src.broker.connection import get_ib
+                            status, _f = _wait_fill(get_ib(), trade, 20.0)
+                            if status == "Filled":
+                                wtrade = sell_index_put_close(pos.symbol, pos.expiry, wing, pos.quantity,
+                                                              round(wing_bid * 0.98, 2), self.cfg.exchange,
+                                                              self.cfg.trading_class)
+                                if wtrade:
+                                    db.add(Trade(position_id=pos.id, symbol=pos.symbol, trade_type=TradeType.SELL_PUT,
+                                                 strike=wing, expiry=pos.expiry, premium=round(wing_bid * 0.98, 2),
+                                                 quantity=pos.quantity, fill_price=round(wing_bid * 0.98, 2),
+                                                 commission=0.0, order_id=wtrade.order.orderId,
+                                                 order_status=OrderStatus.SUBMITTED,
+                                                 notes="index_put wing sold after stop"))
+                                    db.commit()
         return acted
 
     def _settlement_price(self, expiry: str, get_price_history) -> Optional[float]:

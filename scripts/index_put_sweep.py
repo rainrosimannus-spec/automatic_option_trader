@@ -46,6 +46,16 @@ for k in (1.5, 2.0, 2.5, 3.0):
                     "index_put_max_open": dte, "index_put_budget_pct": b}
             CONFIGS[f"idx_k{k}_d{dte}_b{b:.2f}"] = {**base, "index_put_only": True}
             CONFIGS[f"both_k{k}_d{dte}_b{b:.2f}"] = {**PHASE1, **base}
+# Defined-risk wing (2026-11-07): width × max-loss share × k × dte, sleeve alone and with the wheel
+for k in (1.5, 2.0):
+    for dte in (1, 2):
+        for w in (0.02, 0.03, 0.05):
+            for ml in (0.05, 0.10, 0.20):
+                base = {"index_put_enabled": True, "index_put_sigma_k": k, "index_put_dte": dte,
+                        "index_put_max_open": dte, "index_put_spread_enabled": True,
+                        "index_put_spread_width_pct": w, "index_put_max_loss_pct": ml}
+                CONFIGS[f"spr_k{k}_d{dte}_w{w:.2f}_ml{ml:.2f}"] = {**base, "index_put_only": True}
+                CONFIGS[f"sprboth_k{k}_d{dte}_w{w:.2f}_ml{ml:.2f}"] = {**PHASE1, **base}
 
 _CACHE: dict = {}
 
@@ -85,6 +95,8 @@ def main():
     names = list(CONFIGS)
     if "--quick" in sys.argv:
         names = ["legacy_wheel", "phase1_wheel", "idx_k2.0_d2_b0.20", "both_k2.0_d2_b0.20"]
+    if "--spread-only" in sys.argv:
+        names = ["phase1_wheel", "idx_k2.0_d1_b0.30", "both_k2.0_d1_b0.30"] + [c for c in CONFIGS if c.startswith("spr")]
     jobs = [(rid, c) for rid in REGIMES for c in names]
     jobs.sort(key=lambda j: 0 if j[0] == REPLAY else 1)
     print(f"\nIndex-put sweep — {len(jobs)} runs across {os.cpu_count()} cores", flush=True)
@@ -113,13 +125,13 @@ def _report(rows):
         if not rr:
             continue
         print(f"\n  {rid}")
-        print(f"    {'config':22} {'return':>9} {'ann%':>7} {'maxDD':>6} {'idxPuts':>7} {'ITM':>4} "
-              f"{'stops':>5} {'idxPrem$':>10} {'idxIntr$':>10} {'wheelPuts':>9}")
+        print(f"    {'config':30} {'return':>9} {'ann%':>7} {'maxDD':>6} {'idxPuts':>7} {'ITM':>4} "
+              f"{'stops':>5} {'idxPrem$':>10} {'idxIntr$':>10} {'wing$':>9} {'wheelPuts':>9}")
         for r in sorted(rr, key=lambda x: list(CONFIGS).index(x["config"])):
-            print(f"    {r['config']:22} {r['final_return_pct']:>+8.2f}% {r['annualized_pct']:>+6.1f} "
+            print(f"    {r['config']:30} {r['final_return_pct']:>+8.2f}% {r['annualized_pct']:>+6.1f} "
                   f"{r['max_drawdown_pct']:>5.1f}% {r.get('n_index_puts', 0):>7d} {r.get('n_index_itm', 0):>4d} "
                   f"{r.get('n_index_stops', 0):>5d} {r.get('index_premium_sum', 0):>10,.0f} "
-                  f"{r.get('index_intrinsic_sum', 0):>10,.0f} {r['n_puts_sold']:>9d}")
+                  f"{r.get('index_intrinsic_sum', 0):>10,.0f} {r.get('index_wing_payoff_sum', 0) - r.get('index_wing_cost_sum', 0):>+9,.0f} {r['n_puts_sold']:>9d}")
 
 
 if __name__ == "__main__":

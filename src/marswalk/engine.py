@@ -265,6 +265,13 @@ class Params:
     index_put_stop_mult: float = 3.0      # buy back when the put's mark ≥ this × credit (0 = off)
     index_put_commission: float = 1.00    # per contract per leg
     index_put_vix_max: float = 35.0       # no new index puts above this VIX (mirrors vix_halt)
+    # Defined-risk wing (2026-11-07, after the −4.4% SPY day): buy a put `index_put_spread_width_pct`
+    # below the short strike. Max loss per contract = (width − net credit) × 100 and sizing switches
+    # from margin budget to `index_put_max_loss_pct` of NLV per ladder position. Default OFF (sim).
+    index_put_spread_enabled: bool = False
+    index_put_spread_width_pct: float = 0.03
+    index_put_max_loss_pct: float = 0.10  # share of NLV risked per spread position (defined risk)
+    index_put_min_net_credit: float = 0.10
     # ── Rule B (2026-08-05, tested-only): don't-cap momentum lots ──
     # Rain's floated alternative: on a lot whose stock is in a strong uptrend, skip
     # the covered call entirely and hold the shares UNCAPPED for recovery/upside,
@@ -671,6 +678,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     index_puts: list = []    # open cash-settled index puts: {strike, expiry(date), premium, qty, iv}
     n_index_puts = 0; n_index_itm = 0; n_index_stops = 0
     index_premium_sum = 0.0; index_intrinsic_sum = 0.0; index_commission_sum = 0.0
+    index_wing_cost_sum = 0.0; index_wing_payoff_sum = 0.0
     idx_series = market.get("^IDX") or market.get("^SPY") or []
     idx_closes = {b[0]: b[1] for b in idx_series}
     idx_dates = sorted(idx_closes)
@@ -1107,12 +1115,15 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             idx_close = idx_closes.get(d)
             keep = []
             for ip in index_puts:
+                wing_k = ip.get("wing")
                 if d >= ip["expiry"]:
                     close_px = idx_close if idx_close is not None else idx_closes.get(
                         idx_dates[max(0, _bisect_left(idx_dates, d) - 1)], ip["strike"])
                     intr = max(0.0, ip["strike"] - close_px)
-                    cash -= intr * 100 * ip["qty"]
+                    wing_pay = max(0.0, wing_k - close_px) if wing_k else 0.0
+                    cash -= (intr - wing_pay) * 100 * ip["qty"]
                     index_intrinsic_sum += intr * 100 * ip["qty"]
+                    index_wing_payoff_sum += wing_pay * 100 * ip["qty"]
                     if intr > 0:
                         n_index_itm += 1
                     continue
@@ -1120,10 +1131,13 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     iv_now = ((vix_now or 20.0) / 100.0) * params.index_put_iv_mult
                     mark = pricing.value_put_ask(idx_close, ip["strike"], ip["expiry"].strftime("%Y%m%d"),
                                                  d, iv_now, 0.0)
-                    if mark >= params.index_put_stop_mult * ip["premium"]:
-                        cash -= mark * 100 * ip["qty"]
-                        cash -= params.index_put_commission * ip["qty"]
-                        index_commission_sum += params.index_put_commission * ip["qty"]
+                    wing_bid = (pricing.value_put(idx_close, wing_k, ip["expiry"].strftime("%Y%m%d"),
+                                                  d, iv_now, 0.0) * 0.975) if wing_k else 0.0
+                    if (mark - wing_bid) >= params.index_put_stop_mult * ip["premium"]:
+                        cash -= (mark - wing_bid) * 100 * ip["qty"]
+                        legs = 2 if wing_k else 1
+                        cash -= params.index_put_commission * ip["qty"] * legs
+                        index_commission_sum += params.index_put_commission * ip["qty"] * legs
                         n_index_stops += 1
                         n_trades += 1
                         continue
@@ -2047,20 +2061,38 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     iv_idx = ((vix_now or 20.0) / 100.0) * params.index_put_iv_mult
                     prem = pricing.value_put(idx_spot, strike, exp_d.strftime("%Y%m%d"), d, iv_idx, 0.0)
                     bid = prem * 0.975                                     # half the 5% synthetic spread
-                    margin_pc = max(params.index_put_margin_pct * idx_spot - (idx_spot - strike),
-                                    0.10 * strike) * 100
-                    budget = params.index_put_budget_pct * prev_nlv
-                    used = sum(max(params.index_put_margin_pct * idx_spot - (idx_spot - ip["strike"]),
-                                   0.10 * ip["strike"]) * 100 * ip["qty"] for ip in index_puts)
-                    qty = int(max(0.0, budget - used) / margin_pc)
+                    wing_k = None; wing_ask = 0.0
+                    if params.index_put_spread_enabled:
+                        wing_k = float(int(strike * (1.0 - params.index_put_spread_width_pct)))
+                        wing_ask = pricing.value_put_ask(idx_spot, wing_k, exp_d.strftime("%Y%m%d"),
+                                                         d, iv_idx, 0.0)
+                    net_credit = bid - wing_ask
+                    if wing_k is not None:
+                        # defined risk: size by max loss per spread, not by margin budget
+                        max_loss_pc = max((strike - wing_k) - net_credit, 0.01) * 100
+                        budget = params.index_put_max_loss_pct * prev_nlv
+                        used = sum(max((ip["strike"] - ip["wing"]) - ip["premium"], 0.01) * 100 * ip["qty"]
+                                   for ip in index_puts if ip.get("wing"))
+                        qty = int(max(0.0, budget - used) / max_loss_pc)
+                        ok = net_credit >= params.index_put_min_net_credit
+                    else:
+                        margin_pc = max(params.index_put_margin_pct * idx_spot - (idx_spot - strike),
+                                        0.10 * strike) * 100
+                        budget = params.index_put_budget_pct * prev_nlv
+                        used = sum(max(params.index_put_margin_pct * idx_spot - (idx_spot - ip["strike"]),
+                                       0.10 * ip["strike"]) * 100 * ip["qty"] for ip in index_puts if not ip.get("wing"))
+                        qty = int(max(0.0, budget - used) / margin_pc)
+                        ok = bid * 100 >= params.index_put_commission * 2
                     qty = min(qty, params.index_put_max_contracts)
-                    if qty > 0 and bid * 100 >= params.index_put_commission * 2:
-                        cash += bid * 100 * qty
-                        cash -= params.index_put_commission * qty
-                        index_commission_sum += params.index_put_commission * qty
+                    if qty > 0 and ok:
+                        legs = 2 if wing_k else 1
+                        cash += net_credit * 100 * qty
+                        cash -= params.index_put_commission * qty * legs
+                        index_commission_sum += params.index_put_commission * qty * legs
                         index_premium_sum += bid * 100 * qty
-                        index_puts.append({"strike": strike, "expiry": exp_d, "premium": bid,
-                                           "qty": qty, "iv": iv_idx})
+                        index_wing_cost_sum += wing_ask * 100 * qty
+                        index_puts.append({"strike": strike, "expiry": exp_d, "premium": net_credit,
+                                           "qty": qty, "iv": iv_idx, "wing": wing_k})
                         n_index_puts += 1
                         n_trades += 1
 
@@ -2111,6 +2143,9 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 for ip in index_puts:
                     nlv -= pricing.value_put(idx_px, ip["strike"], ip["expiry"].strftime("%Y%m%d"),
                                              d, iv_idx, 0.0) * 100 * ip["qty"]
+                    if ip.get("wing"):
+                        nlv += pricing.value_put(idx_px, ip["wing"], ip["expiry"].strftime("%Y%m%d"),
+                                                 d, iv_idx, 0.0) * 100 * ip["qty"]
 
         ret = (nlv / start_cap - 1) * 100
         days = (d - start_date).days
@@ -2169,6 +2204,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "n_index_puts": n_index_puts, "n_index_itm": n_index_itm, "n_index_stops": n_index_stops,
         "index_premium_sum": round(index_premium_sum, 2), "index_intrinsic_sum": round(index_intrinsic_sum, 2),
         "index_commission_sum": round(index_commission_sum, 2),
+        "index_wing_cost_sum": round(index_wing_cost_sum, 2), "index_wing_payoff_sum": round(index_wing_payoff_sum, 2),
         "margin_interest_total": round(margin_interest_total, 2),
         "n_halt_days": n_halt_days,
         "n_hvg_days": hvg_active_days,

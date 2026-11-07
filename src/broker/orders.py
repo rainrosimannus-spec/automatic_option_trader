@@ -825,3 +825,61 @@ def buy_to_close_index_put(symbol: str, expiry: str, strike: float, quantity: in
                       status=status, reason=msg[:200])
             return None
         return trade
+
+
+def buy_index_put_open(symbol: str, expiry: str, strike: float, quantity: int, limit_price: float,
+                       exchange: str = "CBOE", trading_class: str | None = None,
+                       con_id: int | None = None) -> Optional[IBTrade]:
+    """Buy to OPEN a long index put — the defined-risk wing under a short put (LIMIT, DAY, RTH)."""
+    with get_ib_lock():
+        ib = get_ib()
+        c = _index_option(symbol, expiry, strike, "P", exchange, trading_class, con_id)
+        if not ib.qualifyContracts(c):
+            log.error("buy_index_put_open_qualify_failed", symbol=symbol, expiry=expiry, strike=strike)
+            return None
+        order = LimitOrder("BUY", quantity, round(limit_price, 2))
+        order.tif = "DAY"
+        order.outsideRth = False
+        log.info("placing_buy_index_put_open", symbol=symbol, expiry=expiry, strike=strike,
+                 qty=quantity, limit=round(limit_price, 2))
+        trade = ib.placeOrder(c, order)
+        ib.sleep(2)
+        status = trade.orderStatus.status
+        if status in ("Cancelled", "Inactive"):
+            msg = trade.log[-1].message if trade.log and trade.log[-1].message else ""
+            log.error("buy_index_put_open_rejected", symbol=symbol, strike=strike, status=status, reason=msg[:200])
+            return None
+        return trade
+
+
+def sell_index_put_close(symbol: str, expiry: str, strike: float, quantity: int, limit_price: float,
+                         exchange: str = "CBOE", trading_class: str | None = None) -> Optional[IBTrade]:
+    """Sell to CLOSE a long index put (the wing). Refuses unless IBKR shows the long."""
+    try:
+        with get_ib_lock():
+            ib = get_ib()
+            held = 0
+            for p in ib.positions():
+                cc = p.contract
+                if (cc.secType == "OPT" and cc.symbol == symbol and cc.right == "P"
+                        and float(cc.strike) == float(strike)
+                        and cc.lastTradeDateOrContractMonth == expiry and p.position > 0):
+                    held += int(p.position)
+    except Exception as e:
+        log.error("sell_index_put_close_position_check_failed", symbol=symbol, error=str(e))
+        return None
+    if held < quantity:
+        log.error("sell_index_put_close_BLOCKED_not_held", symbol=symbol, strike=strike, held=held, wanted=quantity)
+        return None
+    with get_ib_lock():
+        ib = get_ib()
+        c = _index_option(symbol, expiry, strike, "P", exchange, trading_class, None)
+        ib.qualifyContracts(c)
+        order = LimitOrder("SELL", quantity, round(limit_price, 2))
+        order.tif = "DAY"
+        trade = ib.placeOrder(c, order)
+        ib.sleep(2)
+        status = trade.orderStatus.status
+        if status in ("Cancelled", "Inactive"):
+            return None
+        return trade

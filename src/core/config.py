@@ -551,6 +551,16 @@ class IndexPutConfig(BaseModel):
     vix_max: float = 35.0                # no new puts above this VIX
     scan_times_et: list[str] = ["10:00", "14:00"]
     settle_time_et: str = "09:45"        # book yesterday's expiries at the official close
+    # Defined-risk wing (2026-11-07, after the −4.4% SPY day): buy a put spread_width_pct below the
+    # short strike in the same expiry. Max loss per contract = (width − net credit) × 100 and the
+    # position is sized by max_loss_pct of NLV instead of margin budget. The wing is bought FIRST
+    # and the short put sold second, so no naked window ever exists. Mirrors Params.index_put_spread_*.
+    spread_enabled: bool = True
+    spread_width_pct: float = 0.03
+    max_loss_pct: float = 0.05           # share of NLV at risk per spread position (defined risk). 0.05 to start:
+                                         # the sim prices the wing with flat VIX (no skew) so its net credit is
+                                         # overstated; raise toward 0.10 only after live fills show the real credit
+    min_net_credit: float = 0.10         # skip when short bid − wing ask is below this
 
 
 # ── Portfolio config ─────────────────────────────────────────

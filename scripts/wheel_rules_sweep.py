@@ -126,6 +126,8 @@ def run_one(reg, universe, earnings, overrides: dict, start_capital=None) -> dic
         "index_premium_sum": res.get("index_premium_sum", 0.0),
         "index_intrinsic_sum": res.get("index_intrinsic_sum", 0.0),
         "index_commission_sum": res.get("index_commission_sum", 0.0),
+        "index_wing_cost_sum": res.get("index_wing_cost_sum", 0.0),
+        "index_wing_payoff_sum": res.get("index_wing_payoff_sum", 0.0),
     }
 
 

@@ -66,3 +66,31 @@ def test_position_type_is_tracked_by_sync_but_not_by_the_wheel():
     # the wheel's assignment detection and the put profit taker only look at short_put
     assert POSITION_TYPE not in inspect.getsource(wheel)
     assert POSITION_TYPE not in inspect.getsource(profit_taker)
+
+
+def test_wing_helpers():
+    from src.strategy.index_puts import (wing_strike, spread_max_loss_per_contract, contracts_for_max_loss,
+                                         spread_settlement_pnl)
+    # 3% under 666 → 646.02 → grid 646; snapped to a 5-point chain → 645
+    assert wing_strike(666.0, 0.03) == 646.0
+    assert wing_strike(666.0, 0.03, strikes=[640.0, 645.0, 650.0]) == 645.0
+    # width 20, credit 1.20 → max loss $1,880 per spread
+    assert abs(spread_max_loss_per_contract(666.0, 646.0, 1.20) - 1880.0) < 1e-6
+    # 10% of $205k = $20.5k → 10 spreads; budget already used → 0; cap respected
+    assert contracts_for_max_loss(205_000, 0.10, 1880.0, 0.0, 50) == 10
+    assert contracts_for_max_loss(205_000, 0.10, 1880.0, 20_000.0, 50) == 0
+    assert contracts_for_max_loss(205_000, 0.10, 1880.0, 0.0, 3) == 3
+    # settlement: index at 630 → short pays 36, wing pays 16 → net loss capped at width − credit
+    intr, wp, real = spread_settlement_pnl(1.20, 666.0, 646.0, 630.0, 2)
+    assert intr == 7200.0 and wp == 3200.0 and real == 1.20 * 200 - 7200 + 3200
+    assert real == -(20 - 1.20) * 200
+    # no wing → behaves like the naked settlement
+    intr, wp, real = spread_settlement_pnl(1.20, 666.0, None, 630.0, 2)
+    assert wp == 0.0 and real == 1.20 * 200 - 7200
+
+
+def test_spread_config_defaults():
+    from src.core.config import IndexPutConfig
+    c = IndexPutConfig()
+    assert c.spread_enabled is True and c.spread_width_pct == 0.03 and c.max_loss_pct == 0.05
+    assert c.min_net_credit == 0.10
