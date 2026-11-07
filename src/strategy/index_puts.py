@@ -189,9 +189,15 @@ class IndexPutSeller:
     def scan(self) -> dict | None:
         """One scan: returns the decision dict (also logged), or None when nothing to do."""
         ok, why = self._gates()
+        blocked_by = None
         if not ok:
-            log.info("index_put_scan_blocked", reason=why)
-            return None
+            if not self.cfg.enabled or not self.cfg.dry_run:
+                log.info("index_put_scan_blocked", reason=why)
+                return None
+            # dry-run observes THROUGH the gates: price the trade it would have made and say
+            # which gate would have stopped it, so a breaker week still produces data
+            blocked_by = why
+            log.info("index_put_scan_gate_would_block", reason=why)
         from src.broker.market_data import (get_index_spot, get_index_option_params,
                                             get_index_option_quote)
         from src.broker.orders import get_whatif_margin_index, sell_index_put, buy_index_put_open
@@ -264,12 +270,12 @@ class IndexPutSeller:
                 "net_credit": round(net_credit, 2),
                 "max_loss_or_margin_per_contract": round(margin_pc, 0),
                 "sizing": ("max_loss" if wing else ("whatif" if m1 else "proxy")), "nlv": round(nlv, 0),
-                "qty": qty, "dry_run": self.cfg.dry_run,
+                "qty": qty, "dry_run": self.cfg.dry_run, "blocked_by": blocked_by,
             }
             if qty <= 0:
                 log.info("index_put_no_budget", **decision)
                 return decision
-            if self.cfg.dry_run:
+            if self.cfg.dry_run or blocked_by:
                 log.info("index_put_DRY_RUN_would_sell", **decision)
                 return decision
 

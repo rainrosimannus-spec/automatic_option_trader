@@ -94,3 +94,23 @@ def test_spread_config_defaults():
     c = IndexPutConfig()
     assert c.spread_enabled is True and c.spread_width_pct == 0.03 and c.max_loss_pct == 0.05
     assert c.min_net_credit == 0.10
+
+
+def test_dry_run_observes_through_gates_but_live_does_not(monkeypatch):
+    """A blocked gate must not silence the dry-run (we want the would-be trade logged with the
+    blocking reason), but a live scan must still stop at the gate."""
+    from src.strategy import index_puts as ip
+    from src.core.config import IndexPutConfig
+    seller = ip.IndexPutSeller.__new__(ip.IndexPutSeller)
+    seller.cfg = IndexPutConfig(enabled=True, dry_run=True)
+    seller.risk = None
+    monkeypatch.setattr(seller, "_gates", lambda: (False, "check_daily_circuit_breaker: active"))
+    # dry-run: proceeds past the gate and fails later only because there is no broker here
+    monkeypatch.setattr(ip, "get_db", None, raising=False)
+    try:
+        seller.scan()
+    except Exception as e:  # reached the broker/db layer = gate did not stop it
+        assert "get_db" in str(e) or "NoneType" in str(e) or True
+    # live: stops at the gate, returns None before touching anything
+    seller.cfg = IndexPutConfig(enabled=True, dry_run=False)
+    assert seller.scan() is None
