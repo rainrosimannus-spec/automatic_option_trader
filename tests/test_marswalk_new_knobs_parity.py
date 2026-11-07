@@ -18,3 +18,10 @@ def test_knobs_accept_overrides():
                max_single_name_notional_pct=0.10)
     assert p.wheel_stop_loss_enabled and p.cc_package_unwind_enabled
     assert p.put_otm_floor_mode == "realized" and p.put_universe_max_breach_rate == 0.30
+
+
+def test_sleeve_wing_and_hedge_defaults_are_inert():
+    p = Params()
+    assert p.index_put_enabled is False and p.index_put_spread_enabled is False
+    assert p.index_put_spread_width_pct == 0.03 and p.index_put_max_loss_pct == 0.10
+    assert p.hedge_enabled is False and p.hedge_otm_pct == 0.05 and p.hedge_budget_pct == 0.04

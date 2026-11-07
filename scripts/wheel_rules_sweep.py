@@ -128,6 +128,8 @@ def run_one(reg, universe, earnings, overrides: dict, start_capital=None) -> dic
         "index_commission_sum": res.get("index_commission_sum", 0.0),
         "index_wing_cost_sum": res.get("index_wing_cost_sum", 0.0),
         "index_wing_payoff_sum": res.get("index_wing_payoff_sum", 0.0),
+        "n_hedge_buys": res.get("n_hedge_buys", 0), "hedge_cost_sum": res.get("hedge_cost_sum", 0.0),
+        "hedge_proceeds_sum": res.get("hedge_proceeds_sum", 0.0),
     }
 
 

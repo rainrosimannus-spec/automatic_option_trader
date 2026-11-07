@@ -272,6 +272,20 @@ class Params:
     index_put_spread_width_pct: float = 0.03
     index_put_max_loss_pct: float = 0.10  # share of NLV risked per spread position (defined risk)
     index_put_min_net_credit: float = 0.10
+    # ── SPY tail hedge (mirror of live src/strategy/hedge.py, 2026-11-07 sweep) ──
+    # One rolling long put on the index series (^IDX = SPY): strike spot × (1 − otm), target
+    # DTE, rolled (sold at bid) at/below roll_dte, settled at the close at expiry. Budget =
+    # hedge_budget_pct × cumulative premium collected (puts + CCs + index sleeve) minus
+    # cumulative hedge spend (proceeds do not refill it — same as live). Sizing: as many
+    # contracts as the remaining budget buys at each (re)purchase (live buys a fixed 1).
+    # Priced at flat VIX (no skew) → the sim's hedge is CHEAPER than a real OTM put; read
+    # its benefit as an upper bound. Default OFF.
+    hedge_enabled: bool = False
+    hedge_otm_pct: float = 0.05
+    hedge_dte_target: int = 30          # calendar days
+    hedge_roll_dte: int = 7
+    hedge_budget_pct: float = 0.04      # of cumulative premium collected
+    hedge_max_contracts: int = 2000
     # ── Rule B (2026-08-05, tested-only): don't-cap momentum lots ──
     # Rain's floated alternative: on a lot whose stock is in a strong uptrend, skip
     # the covered call entirely and hold the shares UNCAPPED for recovery/upside,
@@ -679,6 +693,9 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     n_index_puts = 0; n_index_itm = 0; n_index_stops = 0
     index_premium_sum = 0.0; index_intrinsic_sum = 0.0; index_commission_sum = 0.0
     index_wing_cost_sum = 0.0; index_wing_payoff_sum = 0.0
+    cum_premium_collected = 0.0   # feeds the tail-hedge budget
+    hedge = None                  # {"strike","expiry","qty","cost"}
+    hedge_cost_sum = 0.0; hedge_proceeds_sum = 0.0; n_hedge_buys = 0
     idx_series = market.get("^IDX") or market.get("^SPY") or []
     idx_closes = {b[0]: b[1] for b in idx_series}
     idx_dates = sorted(idx_closes)
@@ -1439,6 +1456,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             top = max(cands, key=lambda c: c.score)
             lots = st["shares"] // 100
             cash += top.bid * 100 * lots
+            cum_premium_collected += top.bid * 100 * lots
             short_calls.append({"sym": sym, "strike": top.strike,
                                 "expiry": _exp_date(top.expiry),
                                 "premium": top.bid, "qty": lots})
@@ -1950,6 +1968,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 if delta_cap_on and portfolio_delta >= max_delta_cap:
                     continue
                 cash += top.bid * 100 * contracts
+                cum_premium_collected += top.bid * 100 * contracts
                 cash -= params.put_commission_per_contract * contracts
                 entry_delta = abs(getattr(top, "delta", 0.0) or 0.0)
                 short_puts.append({"sym": sym, "strike": top.strike,
@@ -2087,6 +2106,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     if qty > 0 and ok:
                         legs = 2 if wing_k else 1
                         cash += net_credit * 100 * qty
+                        cum_premium_collected += net_credit * 100 * qty
                         cash -= params.index_put_commission * qty * legs
                         index_commission_sum += params.index_put_commission * qty * legs
                         index_premium_sum += bid * 100 * qty
@@ -2095,6 +2115,40 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                                            "qty": qty, "iv": iv_idx, "wing": wing_k})
                         n_index_puts += 1
                         n_trades += 1
+
+        # ── 4c. SPY tail hedge (mirror of live hedge.py; default OFF) ─────────────
+        if params.hedge_enabled:
+            idx_spot = idx_closes.get(d)
+            if idx_spot:
+                iv_h = ((vix_now or 20.0) / 100.0)
+                if hedge is not None:
+                    if d >= hedge["expiry"]:
+                        pay = max(0.0, hedge["strike"] - idx_spot) * 100 * hedge["qty"]
+                        cash += pay; hedge_proceeds_sum += pay; hedge = None
+                    elif (hedge["expiry"] - d).days <= params.hedge_roll_dte:
+                        bid_h = pricing.value_put(idx_spot, hedge["strike"], hedge["expiry"].strftime("%Y%m%d"),
+                                                  d, iv_h, 0.0) * 0.975
+                        cash += bid_h * 100 * hedge["qty"]; hedge_proceeds_sum += bid_h * 100 * hedge["qty"]
+                        hedge = None
+                        n_trades += 1
+                if hedge is None:
+                    remaining = params.hedge_budget_pct * cum_premium_collected - hedge_cost_sum
+                    if remaining > 0:
+                        from datetime import timedelta as _td_h
+                        target = d + _td_h(days=params.hedge_dte_target)
+                        exp_i = _bisect_left(dates, target)
+                        if exp_i < len(dates) and exp_i > dates.index(d):
+                            exp_h = dates[exp_i]
+                            k_h = float(int(idx_spot * (1.0 - params.hedge_otm_pct)))
+                            ask_h = pricing.value_put_ask(idx_spot, k_h, exp_h.strftime("%Y%m%d"), d, iv_h, 0.0)
+                            qty_h = int(remaining / max(ask_h * 100, 1.0)) if ask_h > 0 else 0
+                            qty_h = min(qty_h, params.hedge_max_contracts)
+                            if qty_h >= 1:
+                                cash -= ask_h * 100 * qty_h
+                                hedge_cost_sum += ask_h * 100 * qty_h
+                                hedge = {"strike": k_h, "expiry": exp_h, "qty": qty_h, "cost": ask_h}
+                                n_hedge_buys += 1
+                                n_trades += 1
 
         # ── 5. Mark-to-market NLV (with optional gap stress on big down days) ──
         gs = params.gap_stress
@@ -2146,6 +2200,12 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     if ip.get("wing"):
                         nlv += pricing.value_put(idx_px, ip["wing"], ip["expiry"].strftime("%Y%m%d"),
                                                  d, iv_idx, 0.0) * 100 * ip["qty"]
+
+        if hedge is not None:
+            idx_px_h = idx_closes.get(d)
+            if idx_px_h:
+                nlv += pricing.value_put(idx_px_h, hedge["strike"], hedge["expiry"].strftime("%Y%m%d"),
+                                         d, (vix_now or 20.0) / 100.0, 0.0) * 100 * hedge["qty"]
 
         ret = (nlv / start_cap - 1) * 100
         days = (d - start_date).days
@@ -2205,6 +2265,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "index_premium_sum": round(index_premium_sum, 2), "index_intrinsic_sum": round(index_intrinsic_sum, 2),
         "index_commission_sum": round(index_commission_sum, 2),
         "index_wing_cost_sum": round(index_wing_cost_sum, 2), "index_wing_payoff_sum": round(index_wing_payoff_sum, 2),
+        "n_hedge_buys": n_hedge_buys, "hedge_cost_sum": round(hedge_cost_sum, 2),
+        "hedge_proceeds_sum": round(hedge_proceeds_sum, 2), "cum_premium_collected": round(cum_premium_collected, 2),
         "margin_interest_total": round(margin_interest_total, 2),
         "n_halt_days": n_halt_days,
         "n_hvg_days": hvg_active_days,
