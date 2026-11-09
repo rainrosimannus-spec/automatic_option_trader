@@ -549,7 +549,7 @@ class IndexPutConfig(BaseModel):
     min_bid: float = 0.15                # skip when the put's bid is below this (fee floor)
     stop_mult: float = 3.0               # buy back when ask ≥ this × credit (0 = off)
     vix_max: float = 35.0                # no new puts above this VIX
-    scan_times_et: list[str] = ["10:00", "14:00"]
+    scan_times_et: list[str] = ["10:10", "14:10"]   # off the :00/:30 single-name scans, which hold the scan lock for minutes
     settle_time_et: str = "09:45"        # book yesterday's expiries at the official close
     # Defined-risk wing (2026-11-07, after the −4.4% SPY day): buy a put spread_width_pct below the
     # short strike in the same expiry. Max loss per contract = (width − net credit) × 100 and the

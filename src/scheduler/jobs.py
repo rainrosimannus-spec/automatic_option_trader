@@ -1077,7 +1077,7 @@ def job_index_put_scan():
         return
     if _is_paused() or not is_connected():
         return
-    acquired = _scan_lock.acquire(timeout=120)
+    acquired = _scan_lock.acquire(timeout=600)
     if not acquired:
         log.warning("index_put_scan_skipped_scan_lock_timeout")
         return
