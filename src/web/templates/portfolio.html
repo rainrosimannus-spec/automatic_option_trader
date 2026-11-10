@@ -190,6 +190,13 @@ function syncInjections() {
                 {{"{:.2f}".format(parked_annual_pct)}}%/yr{% if parked_amount > 0 %} · ≈{{ parked_base_sym }}{{"{:,.0f}".format(parked_amount * parked_annual_pct / 100)}}/yr{% endif %}
             </div>
         </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4" title="Net of buybacks and fees. Each fill converted from its own currency.">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Covered Calls</div>
+            <div class="text-2xl font-bold mt-1 {% if call_premium.net >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">{{ parked_base_sym }}{{"{:,.0f}".format(call_premium.net)}}</div>
+            <div class="text-xs text-gray-500 mt-1">
+                {% if call_premium.written %}premium collected · {{ call_premium.written }} fill{{ "s" if call_premium.written != 1 else "" }} on {{ call_premium.names }} name{{ "s" if call_premium.names != 1 else "" }}{% if call_premium.paid_back > 0 %} · {{ parked_base_sym }}{{"{:,.0f}".format(call_premium.paid_back)}} bought back{% endif %}{% else %}no calls written yet{% endif %}
+            </div>
+        </div>
     </div>
 
     <!-- ═══ Performance Chart + Tier Breakdown ═══ -->

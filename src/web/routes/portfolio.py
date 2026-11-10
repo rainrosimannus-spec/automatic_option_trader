@@ -408,6 +408,33 @@ def _build_composition(holdings, key_fn, fx_rates=None, base_ccy=None,
     return out
 
 
+def summarise_call_premium(rows, fx_rates=None, base_ccy=None) -> dict:
+    """Covered-call premium the PORTFOLIO account has collected, in BASE currency.
+
+    Rows are PortfolioTransaction fills written by the IBKR sync: a written call is action
+    "sell_call" with the gross premium (price x contracts x multiplier) as `amount` and the fee in
+    `commission`; a buyback is "buy_call" with the premium paid back as `amount`. "call_expired"
+    carries no money and "call_assigned" carries the STOCK delivery (strike x shares), so neither
+    is premium — they are counted only as closed contracts. Net = premium taken in − premium paid
+    back − fees on both legs, each fill converted at its own currency's rate (AZN in GBP, XRO in
+    AUD, 3690 in HKD sit beside the USD names). Same sign convention as the options dashboard."""
+    gross = paid_back = fees = 0.0
+    written = bought = 0
+    names: set[str] = set()
+    for t in rows:
+        if t.action == "sell_call":
+            gross += _to_base(t.amount or 0, t.currency, fx_rates, base_ccy)
+            fees += _to_base(t.commission or 0, t.currency, fx_rates, base_ccy)
+            written += 1
+            names.add(t.symbol)
+        elif t.action == "buy_call":
+            paid_back += _to_base(t.amount or 0, t.currency, fx_rates, base_ccy)
+            fees += _to_base(t.commission or 0, t.currency, fx_rates, base_ccy)
+            bought += 1
+    return {"net": gross - paid_back - fees, "gross": gross, "paid_back": paid_back, "fees": fees,
+            "written": written, "bought_back": bought, "names": len(names)}
+
+
 def _build_top_performers(holdings) -> list[dict]:
     """Top and bottom performers by unrealized P&L %."""
     performers = []
@@ -520,6 +547,17 @@ async def portfolio_page(request: Request):
     _park_h = next((h for h in holdings if h.symbol == _park_symbol), None)
     parked_amount = _to_base(_park_h.market_value or 0, _park_h.currency, fx_rates, _base_ccy) if _park_h else 0.0
     parked_base_sym = {"EUR": "€", "USD": "$", "GBP": "£"}.get(_base_ccy, "")
+
+    # Covered-call premium card (Rain, 2026-11-10): what the exit-call and "Sell call" cards have
+    # actually earned. Sums the sync's call fills, never touches the options account's books.
+    try:
+        with get_db() as _db:
+            _call_rows = _db.query(PortfolioTransaction).filter(
+                PortfolioTransaction.action.in_(("sell_call", "buy_call"))).all()
+        call_premium = summarise_call_premium(_call_rows, fx_rates, _base_ccy)
+    except Exception as e:
+        log.warning("portfolio_call_premium_failed", error=str(e))
+        call_premium = summarise_call_premium([], fx_rates, _base_ccy)
     ibkr_unrealized_pnl = None
     try:
         from src.portfolio.connection import get_cached_portfolio_account
@@ -906,6 +944,7 @@ async def portfolio_page(request: Request):
         "parked_amount": parked_amount,
         "parked_annual_pct": _park_annual_pct,
         "parked_base_sym": parked_base_sym,
+        "call_premium": call_premium,      # summarise_call_premium(): net/gross/fees/written/names, BASE ccy
     })
 
 
