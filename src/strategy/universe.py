@@ -59,6 +59,7 @@ class UniverseManager:
         # Options trader reads from options_universe.yaml (top 50 by options_score)
         # Falls back to watchlist.yaml until first monthly screener run
         self._stocks = get_options_universe()
+        self._stocks = self._apply_options_filter(self._stocks)
         log.info(
             "universe_loaded",
             total=len(self._stocks),
@@ -66,6 +67,29 @@ class UniverseManager:
             dividend=len(self.dividend_stocks),
             markets=list(self.markets),
         )
+
+    @staticmethod
+    def _apply_options_filter(stocks: list[StockEntry]) -> list[StockEntry]:
+        """Rain 2026-11-11: keep only the names the options-universe filter passes (off → no-op).
+        Never raises and never empties the list: any failure keeps the unfiltered universe."""
+        try:
+            from src.core.config import get_settings
+            from src.strategy.universe_filter import filtered_symbols
+            cfg = get_settings().options_universe_filter
+            res = filtered_symbols(cfg)
+            if res is None:
+                return stocks
+            keep, dropped = res
+            out = [s for s in stocks if s.symbol in keep]
+            if not out:
+                log.warning("universe_filter_empty_kept_unfiltered", before=len(stocks))
+                return stocks
+            log.info("universe_filtered", before=len(stocks), after=len(out),
+                     dropped={e["symbol"]: why for e, why in dropped})
+            return out
+        except Exception as e:
+            log.warning("universe_filter_failed_kept_unfiltered", error=str(e))
+            return stocks
 
     @property
     def all_symbols(self) -> list[str]:

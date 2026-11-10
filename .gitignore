@@ -66,3 +66,4 @@ data/bookkeeping_posted*.jsonl
 *.pre-*
 config/settings.yaml.bak
 data/xsp_chain.jsonl
+data/options_universe_filter.json

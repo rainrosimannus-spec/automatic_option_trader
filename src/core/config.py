@@ -582,6 +582,28 @@ from src.portfolio.config import PortfolioConfig
 
 
 # ── Root config ─────────────────────────────────────────────
+class OptionsUniverseFilterConfig(BaseModel):
+    """Options-side read filter over the screener's options_universe.yaml (Rain 2026-11-11).
+
+    The screener is NOT touched: it keeps writing its 75 names monthly from the compounder 100.
+    The wheel then keeps the ≤max_names that pass: not in an excluded tier (breakthrough = early
+    stage, not a 10-15 year hold), realised risk within bounds on the name's OWN trailing history
+    (annualised vol, 1y max drawdown, worst single day, 3-day breach rate), options liquidity
+    floor, and a share price under the one-lot ceiling. Ranked by the screener's options_score.
+    Ships OFF — Rain reviews the preview (scripts/options_universe_preview.py) first."""
+    enabled: bool = False
+    max_names: int = 50
+    exclude_tiers: list[str] = ["breakthrough"]
+    max_ann_vol: float = 0.50           # trailing-1y annualised daily vol (IREN ~100%, CRCL ~90%, LRCX ~45%)
+    max_drawdown_1y: float = 0.45       # worst peak-to-trough over the history window
+    worst_day_floor: float = -0.15      # a single −15% day in the window = gap-prone, out
+    max_breach_rate: float = 0.40       # trailing-120d share of days with a >2.5% 3-day decline
+    min_liquidity: float = 50.0         # screener's options_liquidity field
+    max_share_price: float = 380.0      # one lot ≤ 20% of ~190k NLV; edit with the account
+    history_days: int = 400             # calendar days of FMP history (~270 bars)
+    cache_path: str = "data/options_universe_filter.json"
+
+
 class Settings(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
@@ -593,6 +615,7 @@ class Settings(BaseModel):
     web: WebConfig = WebConfig()
     portfolio: PortfolioConfig = PortfolioConfig()
     index_puts: IndexPutConfig = IndexPutConfig()
+    options_universe_filter: OptionsUniverseFilterConfig = OptionsUniverseFilterConfig()
     raw: dict = {}  # full YAML dict for sections not modeled (alerts, bridge)
 
 
