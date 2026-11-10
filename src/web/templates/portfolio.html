@@ -197,6 +197,18 @@ function syncInjections() {
                 {% if call_premium.written %}premium collected · {{ call_premium.written }} fill{{ "s" if call_premium.written != 1 else "" }} on {{ call_premium.names }} name{{ "s" if call_premium.names != 1 else "" }}{% if call_premium.paid_back > 0 %} · {{ parked_base_sym }}{{"{:,.0f}".format(call_premium.paid_back)}} bought back{% endif %}{% else %}no calls written yet{% endif %}
             </div>
         </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4" title="IBKR FIFO realised P&L on {{ parked_symbol }} sales (net of commissions), from the daily Flex statement.">
+            <div class="text-xs text-gray-500 uppercase tracking-wider">Park Realised · {{ parked_symbol }}</div>
+            {% if park_realized %}
+            <div class="text-2xl font-bold mt-1 {% if park_realized.realized >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">{{ parked_base_sym }}{{"{:,.0f}".format(park_realized.realized)}}</div>
+            <div class="text-xs text-gray-500 mt-1">
+                {% if park_realized.sells %}{{ park_realized.sells }} sell{{ "s" if park_realized.sells != 1 else "" }} · {{"{:,.0f}".format(park_realized.shares_sold)}} sh{% if park_realized.first %} · since {{ park_realized.first }}{% endif %}{% else %}no {{ parked_symbol }} sold{% if park_realized.from %} since {{ park_realized.from }}{% endif %}{% endif %}
+            </div>
+            {% else %}
+            <div class="text-2xl font-bold text-gray-500 mt-1">—</div>
+            <div class="text-xs text-gray-500 mt-1">awaiting Flex statement with a Trades section</div>
+            {% endif %}
+        </div>
     </div>
 
     <!-- ═══ Performance Chart + Tier Breakdown ═══ -->

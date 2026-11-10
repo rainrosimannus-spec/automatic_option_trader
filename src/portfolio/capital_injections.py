@@ -579,6 +579,59 @@ def parse_dividends_ytd_usd(xml_content: str) -> float:
     return 0.0
 
 
+def parse_park_realized(xml_content: str, symbol: str) -> Optional[Dict]:
+    """Realised P&L on SALES of the park ETF (XEON) from an already-fetched Flex statement.
+
+    Why Flex and not the transaction ledger: the IBKR execution sync only records fills for
+    watchlist names, and the park ETF was taken off the watchlist on 2026-07-07 (it had been bought
+    as a growth stock). Every un-park sale since — and every later park buy — is missing from
+    portfolio_transactions, so the ledger cannot say what parking has earned. The Flex Trades
+    section carries IBKR's own FIFO realised P&L per fill (`fifoPnlRealized`, net of commissions,
+    the same "Realized P/L" column as the Activity statement), which is the figure the card shows.
+
+    Returns None when the statement has NO Trades section at all (the Flex query on IBKR's side
+    must include "Trades" for this to work — the card then says so instead of printing 0), else
+    {"realized": base ccy, "sells": n, "shares_sold": n, "first": YYYY-MM-DD, "last": YYYY-MM-DD,
+     "commission": base ccy (sell legs, signed, for the audit), "from": stmt fromDate,
+     "to": stmt toDate}. A statement with trades but no park sale returns zeros, not None."""
+    try:
+        root = ET.fromstring(xml_content)
+    except Exception as e:
+        log.warning("parse_park_realized_failed", error=str(e))
+        return None
+    trades = list(root.iter("Trade"))
+    if not trades and root.find(".//Trades") is None:
+        return None
+    # A query that selects several levels of detail repeats each fill: EXECUTION rows are the
+    # fills themselves, ORDER rows the per-order roll-up, CLOSED_LOT the FIFO lots. Count once.
+    levels = {t.attrib.get("levelOfDetail", "") for t in trades}
+    keep = "EXECUTION" if "EXECUTION" in levels else ("ORDER" if "ORDER" in levels else None)
+    stmt = root.find(".//FlexStatement")
+    out = {"realized": 0.0, "commission": 0.0, "sells": 0, "shares_sold": 0.0,
+           "first": "", "last": "",
+           "from": _norm_flex_date(stmt.attrib.get("fromDate", "")) if stmt is not None else "",
+           "to": _norm_flex_date(stmt.attrib.get("toDate", "")) if stmt is not None else ""}
+    for t in trades:
+        a = t.attrib
+        if a.get("symbol", "") != symbol or a.get("assetCategory", "STK") != "STK":
+            continue
+        if keep and a.get("levelOfDetail", "") != keep:
+            continue
+        qty = float(a.get("quantity", 0) or 0)
+        if not (a.get("buySell", "").upper().startswith("SELL") or qty < 0):
+            continue
+        fx = float(a.get("fxRateToBase", 1) or 1)
+        out["realized"] += float(a.get("fifoPnlRealized", 0) or 0) * fx
+        out["commission"] += float(a.get("ibCommission", 0) or 0) * fx
+        out["sells"] += 1
+        out["shares_sold"] += abs(qty)
+        d = _norm_flex_date(a.get("tradeDate", ""))
+        if d:
+            out["first"] = min(out["first"], d) if out["first"] else d
+            out["last"] = max(out["last"], d)
+    return out
+
+
 def fetch_accrued_interest_usd() -> float:
     """Fetch today's accrued interest from IBKR Flex (BASE_SUMMARY, already in USD).
 
@@ -650,6 +703,10 @@ def sync_portfolio_flex(
     added = _upsert_injections(deposits, account_id)
     interest = parse_accrued_interest_usd(xml_content)
     dividends_ytd = parse_dividends_ytd_usd(xml_content)
+    park_symbol = getattr(cfg, "cash_yield_symbol", None)
+    park_realized = parse_park_realized(xml_content, park_symbol) if park_symbol else None
     log.info("portfolio_flex_synced", added=added,
-             interest=round(interest, 2), dividends_ytd=round(dividends_ytd, 2))
-    return {"added": added, "interest": interest, "dividends_ytd": dividends_ytd}
+             interest=round(interest, 2), dividends_ytd=round(dividends_ytd, 2),
+             park_realized=(round(park_realized["realized"], 2) if park_realized else None))
+    return {"added": added, "interest": interest, "dividends_ytd": dividends_ytd,
+            "park_realized": park_realized}

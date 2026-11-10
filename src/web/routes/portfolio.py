@@ -548,6 +548,15 @@ async def portfolio_page(request: Request):
     parked_amount = _to_base(_park_h.market_value or 0, _park_h.currency, fx_rates, _base_ccy) if _park_h else 0.0
     parked_base_sym = {"EUR": "€", "USD": "$", "GBP": "£"}.get(_base_ccy, "")
 
+    # Park Realised card (Rain, 2026-11-10): IBKR's FIFO realised P&L on XEON sales, read from the
+    # daily Flex statement via the account cache (parse_park_realized). None until the first
+    # statement with a Trades section has been synced.
+    try:
+        from src.portfolio.connection import get_cached_portfolio_account as _gcpa
+        park_realized = (_gcpa() or {}).get("park_realized")
+    except Exception:
+        park_realized = None
+
     # Covered-call premium card (Rain, 2026-11-10): what the exit-call and "Sell call" cards have
     # actually earned. Sums the sync's call fills, never touches the options account's books.
     try:
@@ -945,6 +954,7 @@ async def portfolio_page(request: Request):
         "parked_annual_pct": _park_annual_pct,
         "parked_base_sym": parked_base_sym,
         "call_premium": call_premium,      # summarise_call_premium(): net/gross/fees/written/names, BASE ccy
+        "park_realized": park_realized,    # parse_park_realized() dict from the daily Flex statement, or None
     })
 
 

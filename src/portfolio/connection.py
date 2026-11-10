@@ -415,13 +415,23 @@ def refresh_accrued_interest_from_flex():
             return
         interest = result.get("interest", 0.0)
         dividends_ytd = result.get("dividends_ytd", 0.0)
-        if interest == 0.0 and dividends_ytd == 0.0:
-            log.warning('accrued_interest_flex_returned_zero')
-            return
+        park_realized = result.get("park_realized")      # None = statement has no Trades section
         import json as _json, os as _os
         _os.makedirs(_os.path.dirname(_CACHE_FILE), exist_ok=True)
         with open(_CACHE_FILE, 'r') as f:
             _data = _json.load(f)
+        # Park-ETF realised P&L (the /portfolio "Park Realised" card) rides this same daily
+        # statement; written whenever the statement carried a Trades section, even on a day the
+        # interest/dividend figures happen to be zero.
+        if park_realized is not None:
+            _data['park_realized'] = park_realized
+            with _portfolio_cache_lock:
+                _cached_portfolio_account['park_realized'] = park_realized
+        if interest == 0.0 and dividends_ytd == 0.0:
+            with open(_CACHE_FILE, 'w') as f:
+                _json.dump(_data, f)
+            log.warning('accrued_interest_flex_returned_zero')
+            return
         if interest != 0.0:
             _data['accrued_interest'] = interest
         if dividends_ytd != 0.0:
@@ -431,7 +441,8 @@ def refresh_accrued_interest_from_flex():
         with _portfolio_cache_lock:
             _cached_portfolio_account['accrued_interest'] = interest
             _cached_portfolio_account['dividends_ytd'] = dividends_ytd
-        log.info('accrued_interest_flex_refreshed', interest=round(interest, 2), dividends_ytd=round(dividends_ytd, 2))
+        log.info('accrued_interest_flex_refreshed', interest=round(interest, 2), dividends_ytd=round(dividends_ytd, 2),
+                 park_realized=(round(park_realized["realized"], 2) if park_realized else None))
     except Exception as e:
         log.warning('accrued_interest_flex_failed', error=str(e))
 
@@ -606,6 +617,8 @@ def refresh_portfolio_account_cache_from(ib: IB):
                     _cached = _json.load(_f)
                 data["accrued_interest"] = _cached.get("accrued_interest", 0.0)
                 data["dividends_ytd"] = _cached.get("dividends_ytd", 0.0)
+                if _cached.get("park_realized") is not None:     # daily Flex figure, same as above
+                    data["park_realized"] = _cached["park_realized"]
             except Exception:
                 data["accrued_interest"] = 0.0
                 data["dividends_ytd"] = 0.0
@@ -630,7 +643,7 @@ def refresh_portfolio_account_cache_from(ib: IB):
             try:
                 with open(_CACHE_FILE, "r") as f:
                     existing = json.load(f)
-                for _key in BENCHMARK_CACHE_KEYS:
+                for _key in BENCHMARK_CACHE_KEYS + ("park_realized",):
                     if _key in existing and _key not in data:
                         data[_key] = existing[_key]
             except Exception:
