@@ -33,6 +33,10 @@ def test_judge_rules():
     assert not ok and why[0].startswith("price:410")
     ok, why = judge({"symbol": "X", "tier": "growth", "options_liquidity": 30}, calm, cfg)
     assert not ok and why[0].startswith("liquidity")
+    ok, why = judge({"symbol": "6857", "tier": "growth", "currency": "JPY"}, None,
+                    OptionsUniverseFilterConfig(usd_only=True))
+    assert not ok and why == ["non_usd:JPY"]
+    assert OptionsUniverseFilterConfig().usd_only is False
     # fail-open: no history → kept, flagged
     assert judge({"symbol": "NEW", "tier": "growth"}, None, cfg) == (True, ["no_history"])
     assert judge({"symbol": "NEW", "tier": "breakthrough"}, None, cfg) == (False, ["tier:breakthrough"])

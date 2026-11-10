@@ -55,6 +55,8 @@ def judge(entry: dict, metrics: Optional[dict], cfg) -> tuple[bool, list[str]]:
     Missing metrics → kept with the single flag 'no_history' (fail-open)."""
     reasons: list[str] = []
     tier = str(entry.get("tier", "growth"))
+    if getattr(cfg, "usd_only", False) and str(entry.get("currency", "USD")).upper() != "USD":
+        reasons.append(f"non_usd:{entry.get('currency')}")
     if tier in set(cfg.exclude_tiers or []):
         reasons.append(f"tier:{tier}")
     liq = entry.get("options_liquidity")

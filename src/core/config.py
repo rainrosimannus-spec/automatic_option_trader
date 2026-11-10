@@ -594,6 +594,7 @@ class OptionsUniverseFilterConfig(BaseModel):
     enabled: bool = False
     max_names: int = 50
     exclude_tiers: list[str] = ["breakthrough"]
+    usd_only: bool = False              # Rain 2026-11-11: 86 foreign scans, 0 candidates, 0 trades ever; FMP has no history for them → live true
     max_ann_vol: float = 0.50           # trailing-1y annualised daily vol (IREN ~100%, CRCL ~90%, LRCX ~45%)
     max_drawdown_1y: float = 0.45       # worst peak-to-trough over the history window
     worst_day_floor: float = -0.15      # a single −15% day in the window = gap-prone, out
