@@ -120,6 +120,47 @@ def stop_triggered(ask: Optional[float], credit: float, stop_mult: float) -> boo
     return ask >= stop_mult * credit
 
 
+def chain_strikes(spot: float, strikes: list[float], max_otm: float) -> list[float]:
+    """Listed strikes from the money down to spot × (1 − max_otm), descending. Empty on no spot."""
+    if not spot or spot <= 0 or not strikes:
+        return []
+    lo = spot * (1.0 - max_otm)
+    return sorted((float(k) for k in strikes if lo <= k <= spot), reverse=True)
+
+
+def append_jsonl(path, row: dict) -> None:
+    import json
+    from pathlib import Path
+    pth = Path(path)
+    pth.parent.mkdir(parents=True, exist_ok=True)
+    with pth.open("a") as fh:
+        fh.write(json.dumps(row) + "\n")
+
+
+def read_jsonl(path) -> list[dict]:
+    import json
+    from pathlib import Path
+    pth = Path(path)
+    if not pth.exists():
+        return []
+    rows = []
+    for line in pth.read_text().splitlines():
+        line = line.strip()
+        if line:
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+    return rows
+
+
+def unsettled_expiries(rows: list[dict], today_yyyymmdd: str) -> list[str]:
+    """Expiries that have chain rows, are past, and have no settle row yet."""
+    have = {r["expiry"] for r in rows if r.get("type") == "chain" and r.get("expiry")}
+    done = {r["expiry"] for r in rows if r.get("type") == "settle" and r.get("expiry")}
+    return sorted(e for e in have - done if e < today_yyyymmdd)
+
+
 def pick_expiry(expirations: list[str], today: date, dte: int) -> Optional[str]:
     """The expiry `dte` trading days out (Mon-Fri; holidays ignored — the chain only lists
     real expiries, so the next listed one at/after the target date is taken)."""
@@ -229,6 +270,7 @@ class IndexPutSeller:
                 below = [k for k in strikes if k <= strike]
                 if below:
                     strike = max(below)
+            self._log_chain(expiry, spot, sigma, strikes)
             bid, ask, con_id = get_index_option_quote(self.cfg.symbol, expiry, strike, "P",
                                                       self.cfg.exchange, self.cfg.trading_class)
             if not bid or bid < self.cfg.min_bid:
@@ -336,6 +378,7 @@ class IndexPutSeller:
         from src.portfolio.fmp import get_price_history
         acted: list[str] = []
         today = date.today().strftime("%Y%m%d")
+        self._settle_chain_log(today, get_price_history)
         with get_db() as db:
             rows = db.query(Position).filter(
                 Position.position_type == POSITION_TYPE,
@@ -427,6 +470,61 @@ class IndexPutSeller:
                                                  notes="index_put wing sold after stop"))
                                     db.commit()
         return acted
+
+    def _log_chain(self, expiry: str, spot: float, sigma: float, strikes: list[float]) -> int:
+        """Dry-run chain log: quote every strike from the money down to chain_log_max_otm in one
+        burst and append one JSONL row. Never raises into the scan. Returns strikes quoted."""
+        if not getattr(self.cfg, "chain_log_enabled", False) or not self.cfg.dry_run:
+            return 0
+        try:
+            from src.broker.market_data import get_index_option_chain_quotes
+            ks = chain_strikes(spot, strikes, float(self.cfg.chain_log_max_otm))
+            if not ks:
+                log.info("index_put_chain_no_strikes", spot=spot, have=len(strikes))
+                return 0
+            quotes = get_index_option_chain_quotes(self.cfg.symbol, expiry, ks, "P",
+                                                   self.cfg.exchange, self.cfg.trading_class)
+            row = {
+                "type": "chain", "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "symbol": self.cfg.symbol, "expiry": expiry, "spot": round(spot, 2),
+                "sigma_daily": round(sigma, 5), "vix": None,
+                "quotes": [{"strike": k, "otm_pct": round((1 - k / spot) * 100, 2),
+                            "bid": quotes.get(k, (None, None))[0], "ask": quotes.get(k, (None, None))[1]}
+                           for k in ks],
+            }
+            try:
+                row["vix"] = getattr(self.risk.get_regime(), "vix", None) if self.risk else None
+            except Exception:
+                row["vix"] = None
+            append_jsonl(self.cfg.chain_log_path, row)
+            n_quoted = sum(1 for q in row["quotes"] if q["bid"] is not None)
+            log.info("index_put_chain_logged", expiry=expiry, spot=round(spot, 2), strikes=len(ks),
+                     quoted=n_quoted, nearest_bid=row["quotes"][0]["bid"] if row["quotes"] else None,
+                     path=self.cfg.chain_log_path)
+            return len(ks)
+        except Exception as e:
+            log.warning("index_put_chain_log_error", error=str(e))
+            return 0
+
+    def _settle_chain_log(self, today: str, get_price_history) -> list[str]:
+        """Append a settle row for every logged expiry that has passed and has none yet."""
+        if not getattr(self.cfg, "chain_log_enabled", False):
+            return []
+        done: list[str] = []
+        try:
+            rows = read_jsonl(self.cfg.chain_log_path)
+            for exp in unsettled_expiries(rows, today):
+                px = self._settlement_price(exp, get_price_history)
+                if px is None:
+                    continue
+                append_jsonl(self.cfg.chain_log_path, {
+                    "type": "settle", "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "symbol": self.cfg.symbol, "expiry": exp, "settle_px": px})
+                log.info("index_put_chain_settled", expiry=exp, settle_px=px)
+                done.append(exp)
+        except Exception as e:
+            log.warning("index_put_chain_settle_error", error=str(e))
+        return done
 
     def _settlement_price(self, expiry: str, get_price_history) -> Optional[float]:
         """XSP settles on the SPX close of expiry day. Proxy: live XSP/SPX spot is wrong after

@@ -568,6 +568,13 @@ class IndexPutConfig(BaseModel):
                                          # the sim prices the wing with flat VIX (no skew) so its net credit is
                                          # overstated; raise toward 0.10 only after live fills show the real credit
     min_net_credit: float = 0.10         # skip when short bid − wing ask is below this
+    # Dry-run chain log (Rain 2026-11-10): every scan quotes EVERY strike from the money down to
+    # chain_log_max_otm and appends them to data/xsp_chain.jsonl; manage() appends the settlement
+    # price of each expiry the morning after. scripts/xsp_chain_report.py joins them = the strike
+    # sweep on REAL premiums (the sim's flat-vol pricer paid $11 for a strike the market pays $5).
+    chain_log_enabled: bool = True
+    chain_log_max_otm: float = 0.035
+    chain_log_path: str = "data/xsp_chain.jsonl"
 
 
 # ── Portfolio config ─────────────────────────────────────────

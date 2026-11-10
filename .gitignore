@@ -65,3 +65,4 @@ data/bookkeeping_posted*.jsonl
 *.v1-backup
 *.pre-*
 config/settings.yaml.bak
+data/xsp_chain.jsonl

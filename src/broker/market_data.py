@@ -1213,6 +1213,42 @@ def get_index_option_params(symbol: str = "XSP", exchange: str = "CBOE") -> tupl
         return [], [], None
 
 
+def get_index_option_chain_quotes(symbol: str, expiry: str, strikes: list[float], right: str = "P",
+                                  exchange: str = "CBOE", trading_class: str | None = None,
+                                  settle_secs: float = 4.0) -> dict[float, tuple[Optional[float], Optional[float]]]:
+    """{strike: (bid, ask)} for many strikes of one expiry in ONE market-data burst
+    (qualify all, subscribe all, wait once, cancel all) — ~5 s for 30 strikes instead of
+    3 s each. Used by the XSP dry-run chain log (Rain 2026-11-10). Missing quotes → (None, None)."""
+    out: dict[float, tuple[Optional[float], Optional[float]]] = {k: (None, None) for k in strikes}
+    if not strikes:
+        return out
+    try:
+        with get_ib_lock():
+            _ensure_market_data_type()
+            ib = get_ib()
+            contracts = []
+            for k in strikes:
+                c = Option(symbol, expiry, k, right, exchange, currency="USD")
+                c.multiplier = "100"
+                if trading_class:
+                    c.tradingClass = trading_class
+                contracts.append(c)
+            ib.qualifyContracts(*contracts)
+            live = [(c, ib.reqMktData(c, "", False, False)) for c in contracts if c.conId]
+            ib.sleep(settle_secs)
+            for c, t in live:
+                try:
+                    ib.cancelMktData(c)
+                except Exception:
+                    pass
+                bid = float(t.bid) if t.bid and t.bid > 0 else None
+                ask = float(t.ask) if t.ask and t.ask > 0 else None
+                out[float(c.strike)] = (bid, ask)
+    except Exception as e:
+        log.warning("index_option_chain_quotes_error", symbol=symbol, expiry=expiry, error=str(e))
+    return out
+
+
 def get_index_option_quote(symbol: str, expiry: str, strike: float, right: str = "P",
                            exchange: str = "CBOE", trading_class: str | None = None
                            ) -> tuple[Optional[float], Optional[float], Optional[int]]:
