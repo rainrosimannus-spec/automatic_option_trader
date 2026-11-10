@@ -236,6 +236,12 @@ class Params:
     put_otm_realized_lookback: int = 60
     put_otm_realized_pctl: float = 0.80
     put_otm_realized_horizon: int = 3
+    # ── Post-sale re-entry cooldown (Rain 2026-11-10; live RiskConfig.put_reentry_cooldown_*) ──
+    # After a lot leaves the book the name is barred from NEW puts for N trading days.
+    # scope "stop" = only after the assigned-lot stop (the name proved broken);
+    # "any_sale" = also after unwind / early-close / called-away. 0 = off (byte-identical).
+    put_reentry_cooldown_days: int = 0
+    put_reentry_cooldown_scope: str = "stop"
     # ── Per-name breach-rate gate (rule 4; live RiskConfig.put_universe_*) ──
     # Skip a name whose trailing fraction of >threshold forward declines exceeds the ceiling.
     # 1.0 = off (default, byte-identical). Proposed live 0.30 after the sweep.
@@ -809,6 +815,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     threshold=params.put_universe_breach_threshold) if closes else None
             return _move_cache[key]
     n_breach_skips = 0
+    n_cooldown_skips = 0     # put entries skipped by the post-sale re-entry cooldown
+    cooldown_until: dict[str, int] = {}   # sym -> first day_idx a new put is allowed again
 
     # Per-symbol running IV min/max up to each date (for the IV-rank gate).
     iv_rank_lut: dict[str, dict] = {}
@@ -1174,6 +1182,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     st["shares"] -= 100 * c["qty"]
                     if st["shares"] <= 0:
                         stocks.pop(c["sym"], None)
+                        if params.put_reentry_cooldown_days > 0 and params.put_reentry_cooldown_scope == "any_sale":
+                            cooldown_until[c["sym"]] = day_idx + params.put_reentry_cooldown_days
                 else:
                     if st:
                         st["realized_cc"] = st.get("realized_cc", 0.0) + c["premium"]
@@ -1220,6 +1230,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 st["shares"] -= 100 * qty
                 if st["shares"] <= 0:
                     stocks.pop(c["sym"], None)
+                    if params.put_reentry_cooldown_days > 0 and params.put_reentry_cooldown_scope == "any_sale":
+                        cooldown_until[c["sym"]] = day_idx + params.put_reentry_cooldown_days
                 n_cc_early_closes += 1
                 n_trades += 1
             short_calls = keep
@@ -1255,6 +1267,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 st["shares"] -= 100 * qty
                 if st["shares"] <= 0:
                     stocks.pop(c["sym"], None)
+                    if params.put_reentry_cooldown_days > 0 and params.put_reentry_cooldown_scope == "any_sale":
+                        cooldown_until[c["sym"]] = day_idx + params.put_reentry_cooldown_days
                 n_cc_unwinds += 1
                 n_trades += 1
             short_calls = keep
@@ -1288,6 +1302,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 cash += spot * st["shares"]
                 cash -= params.cc_early_close_fees_per_share * st["shares"]
                 stocks.pop(sym, None)
+                if params.put_reentry_cooldown_days > 0:
+                    cooldown_until[sym] = day_idx + params.put_reentry_cooldown_days
                 n_stop_losses += 1
                 n_trades += 1
 
@@ -1771,6 +1787,10 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             ranked = []
             for sym in scan_universe:
                 if sym in held:
+                    continue
+                # Post-sale re-entry cooldown (mirrors RiskManager.check_reentry_cooldown).
+                if cooldown_until.get(sym, -1) > day_idx:
+                    n_cooldown_skips += 1
                     continue
                 q = pv(sym, d)
                 if not q:
@@ -2261,6 +2281,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "n_stop_losses": n_stop_losses,
         "n_cc_unwinds": n_cc_unwinds,
         "n_breach_skips": n_breach_skips,
+        "n_cooldown_skips": n_cooldown_skips,
         "n_index_puts": n_index_puts, "n_index_itm": n_index_itm, "n_index_stops": n_index_stops,
         "index_premium_sum": round(index_premium_sum, 2), "index_intrinsic_sum": round(index_intrinsic_sum, 2),
         "index_commission_sum": round(index_commission_sum, 2),

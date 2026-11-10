@@ -4,13 +4,13 @@ Risk management — VIX gate, SPY MA gate, position limits, exposure checks.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from src.broker.market_data import get_vix, get_stock_price, get_spy_moving_averages, get_iv_rank, has_upcoming_earnings, get_stock_ma200
 from src.broker.account import get_account_summary, get_portfolio_positions
 from src.core.config import get_settings
 from src.core.database import get_db
-from src.core.models import Position, PositionStatus, SystemState
+from src.core.models import Position, PositionStatus, SystemState, Trade, TradeType
 from src.core.logger import get_logger
 from src.strategy.universe import UniverseManager
 
@@ -1439,6 +1439,36 @@ class RiskManager:
             return RiskCheck(False, f"Already have open put on {symbol}")
         return RiskCheck(True)
 
+    def check_reentry_cooldown(self, symbol: str) -> RiskCheck:
+        """Rain 2026-11-10: no new put on a name for N weekdays after its lot was sold.
+
+        scope "stop"     → only sales recorded by the assigned-lot stop (notes 'wheel_stop:…')
+        scope "any_sale" → any SELL_STOCK row (stop, unwind, exit, manual IBKR sale).
+        0 days = off. DB read only — instant, no IBKR/FMP call. Mirrors MarsWalk
+        Params.put_reentry_cooldown_* (engine section 4 gate)."""
+        from src.strategy.wheel_rules import reentry_cooldown_active
+        days = int(getattr(self.cfg, "put_reentry_cooldown_days", 0) or 0)
+        if days <= 0:
+            return RiskCheck(True)
+        scope = str(getattr(self.cfg, "put_reentry_cooldown_scope", "stop") or "stop")
+        since = datetime.utcnow() - timedelta(days=days * 2 + 10)   # weekdays → generous calendar window
+        with get_db() as db:
+            q = (db.query(Trade.created_at, Trade.notes)
+                 .filter(Trade.symbol == symbol,
+                         Trade.trade_type == TradeType.SELL_STOCK,
+                         Trade.created_at >= since))
+            if scope != "any_sale":
+                q = q.filter(Trade.notes.like("wheel_stop:%"))
+            last = q.order_by(Trade.created_at.desc()).first()
+        if not last:
+            return RiskCheck(True)
+        sale_dt = last[0]
+        if reentry_cooldown_active(sale_dt, date.today(), days):
+            return RiskCheck(False, reason=(
+                f"{symbol} re-entry cooldown: lot sold {sale_dt.date().isoformat()} "
+                f"({'stop' if scope != 'any_sale' else 'any sale'}), {days} weekdays bar"))
+        return RiskCheck(True)
+
     def check_iv_rank(self, symbol: str) -> RiskCheck:
         """
         Only sell puts when IV rank is elevated (premium is rich).
@@ -2445,6 +2475,7 @@ class RiskManager:
         checks = [
             self.check_position_limit(),       # DB read — instant
             self.check_duplicate_position(symbol),  # DB read — instant
+            self.check_reentry_cooldown(symbol),  # DB read — instant; off at 0 days
             self.check_daily_limit(),          # DB read — instant
             self.check_vix_gate(),             # cached — instant
             self.check_daily_circuit_breaker(),  # state cached after first call/day

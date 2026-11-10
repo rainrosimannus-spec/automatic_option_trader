@@ -120,6 +120,7 @@ def run_one(reg, universe, earnings, overrides: dict, start_capital=None) -> dic
         "n_puts_sold": nps, "put_assign_rate": (res["n_assignments"] / nps) if nps else None,
         "n_stop_losses": res.get("n_stop_losses", 0), "n_cc_unwinds": res.get("n_cc_unwinds", 0),
         "n_breach_skips": res.get("n_breach_skips", 0),
+        "n_cooldown_skips": res.get("n_cooldown_skips", 0),
         "margin_interest_total": res.get("margin_interest_total", 0.0),
         "n_index_puts": res.get("n_index_puts", 0), "n_index_itm": res.get("n_index_itm", 0),
         "n_index_stops": res.get("n_index_stops", 0),

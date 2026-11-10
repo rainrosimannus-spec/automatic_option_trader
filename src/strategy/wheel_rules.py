@@ -53,3 +53,21 @@ def package_unwind_triggered(stock_bid: float | None, call_ask: float | None,
     net_basis = package_unwind_net_basis(cost_basis, realized_cc_per_share, open_cc_premium)
     package = stock_bid - (call_ask + pad) - fees_per_share
     return (package - net_basis) >= min_profit_pct * cost_basis
+
+
+def reentry_cooldown_active(sale_date, today, cooldown_days: int) -> bool:
+    """True while fewer than `cooldown_days` weekdays have passed since `sale_date`.
+
+    Rain 2026-11-10: after a lot leaves the book (scope decides which exits count) the
+    name is barred from NEW puts, so a broken name cannot be re-assigned on the bounce
+    and the −8% stop cannot cycle on it. Weekdays stand in for trading days (holidays
+    make the bar one day longer, never shorter). 0 days or missing dates = never active.
+    Accepts date or datetime for either argument."""
+    if not cooldown_days or cooldown_days <= 0 or sale_date is None or today is None:
+        return False
+    import numpy as np
+    sd = sale_date.date() if hasattr(sale_date, "hour") else sale_date
+    td = today.date() if hasattr(today, "hour") else today
+    if td < sd:
+        return True
+    return int(np.busday_count(sd, td)) < int(cooldown_days)

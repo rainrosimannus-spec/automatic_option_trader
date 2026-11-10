@@ -211,6 +211,13 @@ class RiskConfig(BaseModel):
     put_universe_breach_lookback: int = 120
     put_universe_breach_horizon: int = 3
     put_universe_breach_threshold: float = 0.025
+    # Post-sale RE-ENTRY cooldown (Rain, 2026-11-10). After a lot leaves the book the name is
+    # barred from new puts for N weekdays. scope "stop" = only after the assigned-lot stop
+    # (the name proved broken); "any_sale" = after every stock sale incl. manual/unwind.
+    # Live fills: 4 of 11 same-week re-entries were assigned, two became the CIEN/VRT bags.
+    # 0 = off; the sweep (scripts/reentry_cooldown_sweep.py) sets the live value in settings.yaml.
+    put_reentry_cooldown_days: int = 0
+    put_reentry_cooldown_scope: str = "stop"
     daily_deployment_pct: float = 0.03       # max new collateral per day as % of NLV
     max_daily_deployment: float = 500000.0   # hard ceiling new collateral per day
     intraday_loss_halt_pct: float = 0.025    # halt if unrealized loss > 2.5% of NLV (Option C: max of pct or floor)
