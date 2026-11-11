@@ -329,6 +329,58 @@ _TASE_TICK_BANDS = ((1_000, 0.1), (10_000, 1.0), (100_000, 10.0))
 _TASE_TICK_ABOVE = 100.0
 
 
+# SGX "Forced Order Range" (SGX Rulebook): the exchange REJECTS a limit order priced more than 30
+# minimum bids from the last traded price; the Force Key override exists only on human terminals,
+# and IBKR relays the refusal as a bare Cancelled with no message. 2026-11-04 and 11-11: every
+# queue-leader buy on SGX (DBS, OCBC) carried the 1.5% delayed-venue premium = ~110 ticks above the
+# tape and died in 3 s; a non-leader bid just below the market (SGX Ltd) rested fine. Stay inside the
+# band with margin for the 10–20 min quote delay: at most 25 ticks either side of the reference.
+_SGX_FORCED_ORDER_RANGE_TICKS = 25
+# SGX minimum bid sizes for stocks: below S$0.20 → 0.001; S$0.20–1.995 → 0.005; S$2.00 and up → 0.01.
+_SGX_TICK_BANDS: list[tuple[float, float]] = [(0.1999, 0.001), (1.9999, 0.005), (float("inf"), 0.01)]
+
+
+def _sgx_tick(price: float) -> float:
+    for bound, tick in _SGX_TICK_BANDS:
+        if price <= bound:
+            return tick
+    return 0.01
+
+
+def _sgx_range_clamp(price: float, reference: float | None,
+                     ticks: int = _SGX_FORCED_ORDER_RANGE_TICKS) -> tuple[float | None, str]:
+    """Keep a BUY limit inside SGX's forced order range around `reference` (the last trade).
+
+    Returns (price, note): the price unchanged ("ok"), clamped DOWN to reference + ticks ("clamped",
+    a marketable limit still fills at the ask), or None ("below") when the bid sits more than `ticks`
+    below the reference — the exchange would refuse it, so the caller must not send it. Unknown
+    reference → unchanged ("no_reference")."""
+    if not reference or reference <= 0 or not price or price <= 0:
+        return price, "no_reference"
+    tick = _sgx_tick(reference)
+    hi = reference + ticks * tick
+    lo = reference - ticks * tick
+    if price > hi + 1e-9:
+        return _round_to_tick(hi, tick, "BUY"), "clamped"
+    if price < lo - 1e-9:
+        return None, "below"
+    return price, "ok"
+
+
+def _sgx_reference_price(ib, contract, fallback: float | None) -> float | None:
+    """Last traded price for the SGX band: the current daily bar's close (a 10–20 min delayed print on
+    this login, which is why the band keeps a 5-tick margin), else the caller's fallback."""
+    try:
+        with get_portfolio_lock():
+            bars = ib.reqHistoricalData(contract, endDateTime="", durationStr="1 D",
+                                        barSizeSetting="1 day", whatToShow="TRADES", useRTH=True)
+        if bars and float(bars[-1].close or 0) > 0:
+            return float(bars[-1].close)
+    except Exception:
+        pass
+    return fallback if fallback and fallback > 0 else None
+
+
 def _venue_band_tick(currency: str | None, price: float) -> float:
     """Conservative tick for venues whose grid widens with price and whose IBKR minTick lies.
 
@@ -3555,6 +3607,17 @@ class PortfolioBuyer:
             # only here (no IBKR round trip in the scan loop); the executor still applies the
             # authoritative market-rule tick, which can only round the same way or finer.
             price = _round_to_tick(price, _venue_band_tick(ccy, price) or None, "BUY")
+            if (getattr(stock, "exchange", "") or "").upper() == "SGX":
+                _clamped, _band = _sgx_range_clamp(price, px)
+                if _clamped is None:
+                    log.info("compounder_rung_sgx_range_skipped", symbol=stock.symbol, rung=i,
+                             price=price, reference=px, ticks=_SGX_FORCED_ORDER_RANGE_TICKS)
+                    continue
+                if _band == "clamped":
+                    log.info("compounder_rung_sgx_range_clamped", symbol=stock.symbol, rung=i,
+                             raw_price=price, price=_clamped, reference=px,
+                             ticks=_SGX_FORCED_ORDER_RANGE_TICKS)
+                    price = _clamped
             shares = int((core_amount * frac) / (price * rate))
             notional_base = shares * price * rate
             # Core rung must clear the NLV-scaled min order; dip rungs just need to be non-trivial.
@@ -4721,6 +4784,7 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         symbol = s.symbol
         shares = int(s.quantity)
         limit_price = round(float(s.limit_price), 2)
+        _card_price = float(getattr(s, "current_price", None) or 0.0)   # SGX band fallback reference
 
         s.status = "executing"
         s.review_note = "Placing order on portfolio account"
@@ -4862,6 +4926,26 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
         _tick = _effective_tick(ib, contract, _raw_price, details=details, currency=ccy,
                                 exchange=getattr(contract, "exchange", None))
         order_price = _round_to_tick(_raw_price, _tick, "BUY")
+        if (exch or "").upper() == "SGX":
+            _ref = _sgx_reference_price(ib, contract, _card_price)
+            _clamped, _band = _sgx_range_clamp(order_price, _ref)
+            if _clamped is None:
+                log.info("portfolio_order_sgx_range_skipped", id=suggestion_id, symbol=symbol,
+                         limit=order_price, reference=_ref, ticks=_SGX_FORCED_ORDER_RANGE_TICKS)
+                with get_db() as db:
+                    s = db.query(TradeSuggestion).filter(TradeSuggestion.id == suggestion_id).first()
+                    if s:
+                        s.status = "expired"   # retired, NOT retried — the next scan re-prices it
+                        s.reviewed_at = datetime.utcnow()
+                        s.review_note = (f"SGX forced order range: bid {order_price} is more than "
+                                         f"{_SGX_FORCED_ORDER_RANGE_TICKS} ticks below the last trade "
+                                         f"{_ref} — the exchange would refuse it; re-priced next scan")
+                return "expired"
+            if _band == "clamped":
+                log.info("portfolio_order_sgx_range_clamped", id=suggestion_id, symbol=symbol,
+                         raw_limit=order_price, limit=_clamped, reference=_ref,
+                         ticks=_SGX_FORCED_ORDER_RANGE_TICKS)
+                order_price = _clamped
         if _tick or _magnifier != 1.0:
             log.info("portfolio_order_price_ticked", id=suggestion_id, symbol=symbol,
                      min_tick=_tick,
