@@ -270,7 +270,7 @@ def _get_performance_data() -> dict:
     """
     Build performance chart as % return using daily account snapshots.
     - "actual" line: NLV return vs invested capital, anchored to 0% at inception
-    - "target" line: 24% annualized return % over same period
+    - "target" line: 12% annualized return % over same period
 
     Capital deposits are deposit-proof: each snapshot's return divides NLV by the
     cumulative deposits *as of that date*, so fresh cash lifts NLV and invested
@@ -284,7 +284,7 @@ def _get_performance_data() -> dict:
     # ── Inception (separation day) — also filters out pre-split snapshots ──
     start_date_str = _get_options_start_date()
     start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
-    daily_target_rate = (1.24 ** (1 / 365)) - 1
+    daily_target_rate = (1.12 ** (1 / 365)) - 1   # 12%/yr (was 24% until 2026-11-11)
 
     options_account = get_settings().ibkr.account
 
