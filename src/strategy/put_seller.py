@@ -34,7 +34,8 @@ class PutSeller:
             from src.broker.account import get_account_summary
             acct = get_account_summary()
             if acct and acct.net_liquidation > 0:
-                return acct.net_liquidation
+                from src.broker.account import nlv_usd
+                return nlv_usd(acct)          # USD: compared against USD strikes
         except Exception as e:
             log.warning("net_liq_fetch_failed", error=str(e))
         return None
@@ -410,7 +411,8 @@ class PutSeller:
             from src.core.config import get_settings
             acct = get_account_summary()
             if acct and acct.net_liquidation > 0:
-                nlv = acct.net_liquidation
+                from src.broker.account import nlv_usd
+                nlv = nlv_usd(acct)          # USD: whatif margin impact is USD
                 buying_power = acct.buying_power
                 maintenance_margin = acct.maintenance_margin
                 risk_cfg = get_settings().risk

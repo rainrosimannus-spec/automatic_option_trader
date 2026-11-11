@@ -11,6 +11,7 @@ from src.broker.account import get_account_summary, get_portfolio_positions
 from src.core.config import get_settings
 from src.core.database import get_db
 from src.core.models import Position, PositionStatus, SystemState, Trade, TradeType
+from src.broker.account import nlv_usd   # USD view of the EUR-base NLV (Rain 2026-11-11)
 from src.core.logger import get_logger
 from src.strategy.universe import UniverseManager
 
@@ -876,7 +877,7 @@ class RiskManager:
         """
         try:
             summary = get_account_summary()
-            net_liq = summary.net_liquidation
+            net_liq = nlv_usd(summary)
         except Exception:
             return self.cfg.max_daily_positions  # fallback to base
 
@@ -959,7 +960,7 @@ class RiskManager:
         """
         try:
             summary = get_account_summary()
-            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+            net_liq = nlv_usd(summary) if summary and nlv_usd(summary) > 0 else 0
         except Exception as e:
             log.warning("position_limit_check_skipped", error=str(e))
             return RiskCheck(True)  # fail open
@@ -1012,7 +1013,7 @@ class RiskManager:
         """
         try:
             summary = get_account_summary()
-            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+            net_liq = nlv_usd(summary) if summary and nlv_usd(summary) > 0 else 0
         except Exception as e:
             log.warning("position_size_check_skipped", error=str(e))
             return RiskCheck(True)  # fail open
@@ -1119,7 +1120,7 @@ class RiskManager:
         """
         try:
             summary = get_account_summary()
-            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+            net_liq = nlv_usd(summary) if summary and nlv_usd(summary) > 0 else 0
         except Exception:
             return RiskCheck(True)
 
@@ -1186,7 +1187,7 @@ class RiskManager:
         """
         try:
             summary = get_account_summary()
-            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+            net_liq = nlv_usd(summary) if summary and nlv_usd(summary) > 0 else 0
         except Exception:
             return RiskCheck(True)
 
@@ -1250,7 +1251,7 @@ class RiskManager:
         # Get adaptive limit — permissive when small, tightens as NLV grows
         try:
             summary = get_account_summary()
-            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+            net_liq = nlv_usd(summary) if summary and nlv_usd(summary) > 0 else 0
         except Exception:
             net_liq = 0
         if net_liq <= 0:
@@ -1476,20 +1477,17 @@ class RiskManager:
                 with get_db() as db:
                     row = (db.query(AccountSnapshot).filter(AccountSnapshot.net_liquidation > 0)
                            .order_by(AccountSnapshot.date.desc()).first())
-                    nlv = float(row.net_liquidation) if row else 0.0
+                    nlv = float(row.net_liquidation) * _eur_usd() if row else 0.0   # snapshots are EUR
             except Exception:
                 nlv = 0.0
         else:
             try:
                 summary = get_account_summary()
-                nlv = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0.0
+                nlv = nlv_usd(summary) if summary and summary.net_liquidation > 0 else 0.0
             except Exception:
                 nlv = 0.0
         if nlv <= 0:
             return None, 0.0
-        # The account is EUR-base but every strike and lot here is USD: put NLV in USD too
-        # (hourly IBKR ExchangeRate cache; falls back to the static table if unavailable).
-        nlv = nlv * _eur_usd()
         puts, stocks, idx = [], [], []
         with get_db() as db:
             rows = db.query(Position).filter(Position.status == PositionStatus.OPEN).all()
@@ -2092,7 +2090,7 @@ class RiskManager:
         """
         try:
             summary = get_account_summary()
-            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+            net_liq = nlv_usd(summary) if summary and nlv_usd(summary) > 0 else 0
         except Exception:
             return RiskCheck(True)
 
@@ -2151,7 +2149,7 @@ class RiskManager:
         """Original % NLV cap — retained for reference only (not called)."""
         try:
             summary = get_account_summary()
-            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+            net_liq = nlv_usd(summary) if summary and nlv_usd(summary) > 0 else 0
         except Exception:
             return RiskCheck(True)
 
@@ -2206,7 +2204,7 @@ class RiskManager:
         """
         try:
             summary = get_account_summary()
-            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+            net_liq = nlv_usd(summary) if summary and nlv_usd(summary) > 0 else 0
         except Exception:
             return RiskCheck(True)
 
@@ -2450,7 +2448,7 @@ class RiskManager:
         """
         try:
             summary = get_account_summary()
-            net_liq = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0
+            net_liq = nlv_usd(summary) if summary and nlv_usd(summary) > 0 else 0
         except Exception:
             net_liq = 0
         if net_liq <= 0:

@@ -28,6 +28,49 @@ class AccountSummary:
     # so the empty/error fallbacks below remain valid without listing every field.
     excess_liquidity: float = 0.0
     available_funds: float = 0.0
+    # USD per 1 unit of the account's BASE currency (Rain 2026-11-11). The account is
+    # EUR-base, every strike / lot / collateral figure the gates compare against is USD.
+    # get_account_summary() fills this from the hourly IBKR ExchangeRate cache; a summary
+    # built by hand (tests, fallbacks) keeps 1.0 so nothing shifts there.
+    fx_usd_per_base: float = 1.0
+
+    @property
+    def net_liquidation_usd(self) -> float:
+        return self.net_liquidation * self.fx_usd_per_base
+
+    @property
+    def buying_power_usd(self) -> float:
+        return self.buying_power * self.fx_usd_per_base
+
+    @property
+    def maintenance_margin_usd(self) -> float:
+        return self.maintenance_margin * self.fx_usd_per_base
+
+    @property
+    def excess_liquidity_usd(self) -> float:
+        return self.excess_liquidity * self.fx_usd_per_base
+
+
+def usd_per_base() -> float:
+    """USD per 1 BASE-currency unit from the hourly IBKR ExchangeRate cache (LOCAL→BASE,
+    base = 1.0, so USD-per-base = 1 / rate[USD]). 1.0 when the cache is missing (USD base
+    or no data) — logged once so a silent EUR≈USD never hides."""
+    try:
+        from src.portfolio.fx import load_fx_rates
+        r = float(load_fx_rates().get("USD") or 0.0)
+        if r > 0:
+            return 1.0 / r
+    except Exception as e:
+        log.warning("usd_per_base_unavailable", error=str(e))
+    return 1.0
+
+
+def nlv_usd(summary) -> float:
+    """NLV in USD from any summary-like object (falls back to the raw figure)."""
+    if not summary:
+        return 0.0
+    v = getattr(summary, "net_liquidation_usd", None)
+    return float(v) if v is not None else float(getattr(summary, "net_liquidation", 0.0) or 0.0)
 
 
 def get_account_summary() -> AccountSummary:
@@ -93,6 +136,7 @@ def get_account_summary() -> AccountSummary:
         maintenance_margin=_val("MaintMarginReq"),
         excess_liquidity=_val("ExcessLiquidity"),
         available_funds=_val("AvailableFunds"),
+        fx_usd_per_base=usd_per_base(),
     )
 
 

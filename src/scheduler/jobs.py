@@ -462,8 +462,9 @@ def job_execute_queued():
                 from src.strategy.universe import UniverseManager
                 rm = RiskManager(UniverseManager())
                 dynamic_ceiling = rm.dynamic_margin_ceiling()
-                headroom = acct.net_liquidation * (dynamic_ceiling - margin_pct)
-                per_position_cap = acct.net_liquidation * 0.60
+                from src.broker.account import nlv_usd
+                headroom = nlv_usd(acct) * (dynamic_ceiling - margin_pct)   # USD: est_margin_impact is USD
+                per_position_cap = nlv_usd(acct) * 0.60
         except Exception as e:
             log.warning("execute_queued_acct_failed", error=str(e))
             log.warning("execute_queued_blocking_on_error", msg="headroom unknown — blocking execution for safety")

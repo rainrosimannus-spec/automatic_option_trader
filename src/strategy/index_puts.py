@@ -194,7 +194,8 @@ class IndexPutSeller:
         try:
             from src.broker.account import get_account_summary
             summ = get_account_summary()
-            v = summ.get("net_liquidation") if isinstance(summ, dict) else getattr(summ, "net_liquidation", None)
+            v = (summ.get("net_liquidation_usd") or summ.get("net_liquidation")) if isinstance(summ, dict) \
+                else (getattr(summ, "net_liquidation_usd", None) or getattr(summ, "net_liquidation", None))
             return float(v) if v else None
         except Exception as e:
             log.warning("index_put_nlv_unavailable", error=str(e))
