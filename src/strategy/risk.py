@@ -33,6 +33,19 @@ _FX_TO_USD = {
 }
 
 
+def _eur_usd() -> float:
+    """USD per 1 EUR from the hourly IBKR ExchangeRate cache (same source as the dashboard's
+    "$" sub-lines); static-table fallback. Used where USD exposure meets the EUR-base NLV."""
+    try:
+        from src.portfolio.fx import load_fx_rates
+        usd_to_eur = float(load_fx_rates().get("USD") or 0.0)
+        if usd_to_eur > 0:
+            return 1.0 / usd_to_eur
+    except Exception:
+        pass
+    return _FX_TO_USD["EUR"]
+
+
 def _convert_to_usd(price: float, currency: str) -> float:
     """Convert a price in local currency to approximate USD for risk comparison."""
     rate = _FX_TO_USD.get(currency, 1.0)
@@ -1440,20 +1453,43 @@ class RiskManager:
         return RiskCheck(True)
 
     # ── Total worst-case cap (Rain 2026-11-11; src/strategy/worst_case.py) ──
-    def worst_case_book(self):
-        """(WorstCaseBook, nlv) for everything open, or (None, 0) when the cap is off / no NLV."""
+    _wc_cache: tuple[float, object, float] | None = None   # (ts, book, nlv) — 60 s, shared per process
+
+    def worst_case_book(self, light: bool = False):
+        """(WorstCaseBook, nlv) for everything open, or (None, 0) when the cap is off / no NLV.
+
+        light=True (dashboard/API): NO IBKR calls — NLV from the latest AccountSnapshot, stock
+        marked at cost basis — so a running scan can never stall the page. The trading path
+        uses live marks but caches the book for 60 s (one scan evaluates ~24 names)."""
+        import time as _t
         from src.core.config import get_settings
         from src.strategy.worst_case import book_worst_case
         wc = get_settings().worst_case_cap
         if not wc.enabled:
             return None, 0.0
-        try:
-            summary = get_account_summary()
-            nlv = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0.0
-        except Exception:
-            nlv = 0.0
+        if not light and RiskManager._wc_cache and _t.time() - RiskManager._wc_cache[0] < 60:
+            return RiskManager._wc_cache[1], RiskManager._wc_cache[2]
+        nlv = 0.0
+        if light:
+            try:
+                from src.core.models import AccountSnapshot
+                with get_db() as db:
+                    row = (db.query(AccountSnapshot).filter(AccountSnapshot.net_liquidation > 0)
+                           .order_by(AccountSnapshot.date.desc()).first())
+                    nlv = float(row.net_liquidation) if row else 0.0
+            except Exception:
+                nlv = 0.0
+        else:
+            try:
+                summary = get_account_summary()
+                nlv = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0.0
+            except Exception:
+                nlv = 0.0
         if nlv <= 0:
             return None, 0.0
+        # The account is EUR-base but every strike and lot here is USD: put NLV in USD too
+        # (hourly IBKR ExchangeRate cache; falls back to the static table if unavailable).
+        nlv = nlv * _eur_usd()
         puts, stocks, idx = [], [], []
         with get_db() as db:
             rows = db.query(Position).filter(Position.status == PositionStatus.OPEN).all()
@@ -1463,28 +1499,32 @@ class RiskManager:
                     puts.append({"symbol": r.symbol, "strike": r.strike or 0.0, "qty": r.quantity or 0})
                 elif r.position_type == "stock":
                     mark = r.cost_basis or 0.0
-                    try:
-                        px = get_stock_price(r.symbol)
-                        if px and px > 0:
-                            mark = px
-                    except Exception:
-                        pass
+                    if not light:
+                        try:
+                            px = get_stock_price(r.symbol)
+                            if px and px > 0:
+                                mark = px
+                        except Exception:
+                            pass
                     stocks.append({"symbol": r.symbol, "mark": mark, "shares": r.quantity or 0})
                 elif r.position_type == "index_put":
                     idx.append({"symbol": r.symbol, "strike": r.strike or 0.0, "qty": r.quantity or 0,
                                 "wing": wings.get((r.symbol, r.expiry)), "net_credit": r.entry_premium or 0.0})
-        return book_worst_case(puts, stocks, idx, wc), float(nlv)
+        book = book_worst_case(puts, stocks, idx, wc)
+        if not light:
+            RiskManager._wc_cache = (_t.time(), book, float(nlv))
+        return book, float(nlv)
 
-    def worst_case_headroom(self) -> tuple[float | None, dict]:
+    def worst_case_headroom(self, light: bool = False) -> tuple[float | None, dict]:
         """(dollars of stress loss still allowed or None when off, snapshot dict for the dashboard)."""
         from src.core.config import get_settings
         from src.strategy.worst_case import headroom
-        book, nlv = self.worst_case_book()
+        book, nlv = self.worst_case_book(light=light)
         if book is None:
             return None, {"enabled": False}
         wc = get_settings().worst_case_cap
         room = headroom(book.total, nlv, wc.cap_pct)
-        snap = {"enabled": True, "cap_pct": wc.cap_pct, "nlv": round(nlv), "cap_usd": round(wc.cap_pct * nlv),
+        snap = {"enabled": True, "cap_pct": wc.cap_pct, "nlv_usd": round(nlv), "cap_usd": round(wc.cap_pct * nlv),
                 "used_usd": round(book.total), "used_pct": round(100 * book.total / nlv, 1) if nlv else None,
                 "single_puts": round(book.single_puts), "stock": round(book.stock), "index": round(book.index),
                 "headroom_usd": round(room)}

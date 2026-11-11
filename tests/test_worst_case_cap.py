@@ -46,12 +46,12 @@ def test_live_gate_blocks_when_over_and_clamps(monkeypatch):
     import src.core.config as cfgmod
     monkeypatch.setattr(cfgmod, "get_settings", lambda: _WC)
     over = WorstCaseBook(single_puts=17140, stock=21500)
-    monkeypatch.setattr(rm, "worst_case_book", lambda: (over, 222_800.0))
+    monkeypatch.setattr(rm, "worst_case_book", lambda light=False: (over, 222_800.0))
     chk = rm.check_worst_case_cap()
     assert chk.allowed is False and "worst-case cap" in chk.reason
     assert rm.worst_case_clamp("X", 300.0, 2) == 0
     small = WorstCaseBook(stock=10_000)
-    monkeypatch.setattr(rm, "worst_case_book", lambda: (small, 222_800.0))
+    monkeypatch.setattr(rm, "worst_case_book", lambda light=False: (small, 222_800.0))
     assert rm.check_worst_case_cap().allowed is True
     assert rm.worst_case_clamp("X", 300.0, 5) == 3      # headroom 23,420 / 6,000 per contract
 
