@@ -40,7 +40,21 @@ def system_status():
         "open_positions": open_count,
         "daily_trades": daily_count,
         "daily_limit": 10,
+        "worst_case": _worst_case_snapshot(),
     }
+
+
+def _worst_case_snapshot() -> dict:
+    """Total worst-case cap usage for the dashboard (never raises; {'enabled': False} when off)."""
+    try:
+        from src.strategy.risk import RiskManager
+        from src.strategy.universe import UniverseManager
+        rm = RiskManager.__new__(RiskManager)
+        rm.cfg = __import__("src.core.config", fromlist=["get_settings"]).get_settings().risk
+        _room, snap = rm.worst_case_headroom()
+        return snap
+    except Exception as e:
+        return {"enabled": None, "error": str(e)[:80]}
 
 
 @router.get("/positions")

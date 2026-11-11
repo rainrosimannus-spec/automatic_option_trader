@@ -305,6 +305,22 @@ class IndexPutSeller:
                 in_use = sum(margin_proxy_per_contract(spot, p.strike, self.cfg.margin_pct_fallback) * p.quantity
                              for p in open_puts)
                 qty = contracts_for_budget(nlv, self.cfg.budget_pct, margin_pc, in_use, self.cfg.max_contracts)
+            # Total worst-case cap (Rain 2026-11-11): the sleeve never goes past the book's dome.
+            wc_note = None
+            if self.risk is not None and hasattr(self.risk, "worst_case_headroom"):
+                try:
+                    from src.core.config import get_settings as _gs
+                    from src.strategy.worst_case import contracts_within
+                    room, _snap = self.risk.worst_case_headroom()
+                    if room is not None:
+                        wc = _gs().worst_case_cap
+                        per = (max((strike - wing) - net_credit, 0.0) * 100) if wing else (strike * 100 * wc.index_gap)
+                        q_wc = contracts_within(room, per, qty)
+                        if q_wc < qty:
+                            wc_note = f"worst_case_cap {qty}->{q_wc} (headroom ${room:,.0f}, per ${per:,.0f})"
+                            qty = q_wc
+                except Exception as e:
+                    log.warning("index_put_worst_case_error", error=str(e))
             decision = {
                 "symbol": self.cfg.symbol, "expiry": expiry, "strike": strike, "spot": round(spot, 2),
                 "sigma_daily": round(sigma, 5), "otm_pct": round((1 - strike / spot) * 100, 2),
@@ -312,7 +328,7 @@ class IndexPutSeller:
                 "net_credit": round(net_credit, 2),
                 "max_loss_or_margin_per_contract": round(margin_pc, 0),
                 "sizing": ("max_loss" if wing else ("whatif" if m1 else "proxy")), "nlv": round(nlv, 0),
-                "qty": qty, "dry_run": self.cfg.dry_run, "blocked_by": blocked_by,
+                "qty": qty, "dry_run": self.cfg.dry_run, "blocked_by": blocked_by, "worst_case": wc_note,
             }
             if qty <= 0:
                 log.info("index_put_no_budget", **decision)

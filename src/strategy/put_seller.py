@@ -268,6 +268,10 @@ class PutSeller:
             quantity = max(1, int(round(quantity * risk_check.size_multiplier)))
             log.info("ma200_breadth_halve_applied", symbol=symbol,
                      mult=risk_check.size_multiplier, final_quantity=quantity)
+        quantity = self.risk.worst_case_clamp(symbol, candidate.strike, quantity, contract_size)
+        if quantity <= 0:
+            log.info("put_skipped_worst_case_cap", symbol=symbol, strike=candidate.strike)
+            return None
         collateral = candidate.strike * contract_size * quantity
 
         try:
@@ -393,6 +397,11 @@ class PutSeller:
             quantity = max(1, int(round(quantity * risk_check.size_multiplier)))
             log.info("ma200_breadth_halve_applied", symbol=symbol,
                      mult=risk_check.size_multiplier, final_quantity=quantity)
+
+        quantity = self.risk.worst_case_clamp(symbol, candidate.strike, quantity, contract_size)
+        if quantity <= 0:
+            log.info("put_skipped_worst_case_cap", symbol=symbol, strike=candidate.strike)
+            return False
 
         # Whatif margin check: ask IBKR exactly how much buying power this contract consumes
         try:

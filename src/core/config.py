@@ -605,6 +605,20 @@ class OptionsUniverseFilterConfig(BaseModel):
     cache_path: str = "data/options_universe_filter.json"
 
 
+class WorstCaseCapConfig(BaseModel):
+    """Total worst-case cap (Rain 2026-11-11): the containment dome over the WHOLE book.
+    One stress day: single names gap `single_gap` through their strikes, held stock falls
+    `stock_gap`, the index gaps `index_gap` (spreads lose their defined width). The sum of
+    all open positions' stress losses plus the candidate must stay ≤ cap_pct × NLV; the
+    candidate's size is clamped to what fits. Applies to single-name puts AND the XSP sleeve
+    (which must not go live without it). Mirrored in MarsWalk Params.worst_case_*."""
+    enabled: bool = False
+    cap_pct: float = 0.15
+    single_gap: float = 0.20
+    stock_gap: float = 0.20
+    index_gap: float = 0.10
+
+
 class Settings(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
@@ -617,6 +631,7 @@ class Settings(BaseModel):
     portfolio: PortfolioConfig = PortfolioConfig()
     index_puts: IndexPutConfig = IndexPutConfig()
     options_universe_filter: OptionsUniverseFilterConfig = OptionsUniverseFilterConfig()
+    worst_case_cap: WorstCaseCapConfig = WorstCaseCapConfig()
     raw: dict = {}  # full YAML dict for sections not modeled (alerts, bridge)
 
 

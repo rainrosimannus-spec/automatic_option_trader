@@ -236,6 +236,13 @@ class Params:
     put_otm_realized_lookback: int = 60
     put_otm_realized_pctl: float = 0.80
     put_otm_realized_horizon: int = 3
+    # ── Total worst-case cap (Rain 2026-11-11; live WorstCaseCapConfig) ──
+    # Sum of stress losses (puts: strike×gap, stock: mark×gap, index spreads: width−credit,
+    # naked index: strike×index_gap) + candidate ≤ cap × NLV. 0 = off (byte-identical).
+    worst_case_cap_pct: float = 0.0
+    worst_case_single_gap: float = 0.20
+    worst_case_stock_gap: float = 0.20
+    worst_case_index_gap: float = 0.10
     # ── Post-sale re-entry cooldown (Rain 2026-11-10; live RiskConfig.put_reentry_cooldown_*) ──
     # After a lot leaves the book the name is barred from NEW puts for N trading days.
     # scope "stop" = only after the assigned-lot stop (the name proved broken);
@@ -816,6 +823,20 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             return _move_cache[key]
     n_breach_skips = 0
     n_cooldown_skips = 0     # put entries skipped by the post-sale re-entry cooldown
+    n_worst_case_skips = 0   # put entries skipped/clamped by the total worst-case cap
+
+    def _wc_book(d_):
+        """Stress loss of everything open (mirrors RiskManager.worst_case_book)."""
+        tot = sum(p["strike"] * 100 * p["qty"] * params.worst_case_single_gap for p in short_puts)
+        for sym_, st_ in stocks.items():
+            q_ = pv(sym_, d_)
+            tot += st_["shares"] * (q_[0] if q_ else st_["cost_basis"]) * params.worst_case_stock_gap
+        for ip_ in index_puts:
+            if ip_.get("wing"):
+                tot += max((ip_["strike"] - ip_["wing"]) - ip_["premium"], 0.0) * 100 * ip_["qty"]
+            else:
+                tot += ip_["strike"] * 100 * ip_["qty"] * params.worst_case_index_gap
+        return tot
     cooldown_until: dict[str, int] = {}   # sym -> first day_idx a new put is allowed again
 
     # Per-symbol running IV min/max up to each date (for the IV-rank gate).
@@ -1987,6 +2008,18 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 # or above the NLV-tier max (mirrors live, src/strategy/risk.py:744).
                 if delta_cap_on and portfolio_delta >= max_delta_cap:
                     continue
+                # Total worst-case cap (mirrors RiskManager.worst_case_clamp).
+                if params.worst_case_cap_pct > 0 and prev_nlv > 0:
+                    _room = params.worst_case_cap_pct * prev_nlv - _wc_book(d)
+                    _per = top.strike * 100 * params.worst_case_single_gap
+                    _fit = int(max(0.0, _room) // _per) if _per > 0 else contracts
+                    if _fit <= 0:
+                        n_worst_case_skips += 1
+                        continue
+                    if _fit < contracts:
+                        n_worst_case_skips += 1
+                        contracts = _fit
+                        need = top.strike * 100 * contracts
                 cash += top.bid * 100 * contracts
                 cum_premium_collected += top.bid * 100 * contracts
                 cash -= params.put_commission_per_contract * contracts
@@ -2123,6 +2156,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                         qty = int(max(0.0, budget - used) / margin_pc)
                         ok = bid * 100 >= params.index_put_commission * 2
                     qty = min(qty, params.index_put_max_contracts)
+                    if params.worst_case_cap_pct > 0 and qty > 0:
+                        _room = params.worst_case_cap_pct * prev_nlv - _wc_book(d)
+                        _per = (max((strike - wing_k) - net_credit, 0.0) * 100) if wing_k else \
+                               (strike * 100 * params.worst_case_index_gap)
+                        _fit = int(max(0.0, _room) // _per) if _per > 0 else qty
+                        if _fit < qty:
+                            n_worst_case_skips += 1
+                            qty = _fit
                     if qty > 0 and ok:
                         legs = 2 if wing_k else 1
                         cash += net_credit * 100 * qty
@@ -2282,6 +2323,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "n_cc_unwinds": n_cc_unwinds,
         "n_breach_skips": n_breach_skips,
         "n_cooldown_skips": n_cooldown_skips,
+        "n_worst_case_skips": n_worst_case_skips,
         "n_index_puts": n_index_puts, "n_index_itm": n_index_itm, "n_index_stops": n_index_stops,
         "index_premium_sum": round(index_premium_sum, 2), "index_intrinsic_sum": round(index_intrinsic_sum, 2),
         "index_commission_sum": round(index_commission_sum, 2),

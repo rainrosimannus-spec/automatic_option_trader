@@ -1439,6 +1439,84 @@ class RiskManager:
             return RiskCheck(False, f"Already have open put on {symbol}")
         return RiskCheck(True)
 
+    # ── Total worst-case cap (Rain 2026-11-11; src/strategy/worst_case.py) ──
+    def worst_case_book(self):
+        """(WorstCaseBook, nlv) for everything open, or (None, 0) when the cap is off / no NLV."""
+        from src.core.config import get_settings
+        from src.strategy.worst_case import book_worst_case
+        wc = get_settings().worst_case_cap
+        if not wc.enabled:
+            return None, 0.0
+        try:
+            summary = get_account_summary()
+            nlv = summary.net_liquidation if summary and summary.net_liquidation > 0 else 0.0
+        except Exception:
+            nlv = 0.0
+        if nlv <= 0:
+            return None, 0.0
+        puts, stocks, idx = [], [], []
+        with get_db() as db:
+            rows = db.query(Position).filter(Position.status == PositionStatus.OPEN).all()
+            wings = {(r.symbol, r.expiry): r.strike for r in rows if r.position_type == "index_put_wing"}
+            for r in rows:
+                if r.position_type == "short_put":
+                    puts.append({"symbol": r.symbol, "strike": r.strike or 0.0, "qty": r.quantity or 0})
+                elif r.position_type == "stock":
+                    mark = r.cost_basis or 0.0
+                    try:
+                        px = get_stock_price(r.symbol)
+                        if px and px > 0:
+                            mark = px
+                    except Exception:
+                        pass
+                    stocks.append({"symbol": r.symbol, "mark": mark, "shares": r.quantity or 0})
+                elif r.position_type == "index_put":
+                    idx.append({"symbol": r.symbol, "strike": r.strike or 0.0, "qty": r.quantity or 0,
+                                "wing": wings.get((r.symbol, r.expiry)), "net_credit": r.entry_premium or 0.0})
+        return book_worst_case(puts, stocks, idx, wc), float(nlv)
+
+    def worst_case_headroom(self) -> tuple[float | None, dict]:
+        """(dollars of stress loss still allowed or None when off, snapshot dict for the dashboard)."""
+        from src.core.config import get_settings
+        from src.strategy.worst_case import headroom
+        book, nlv = self.worst_case_book()
+        if book is None:
+            return None, {"enabled": False}
+        wc = get_settings().worst_case_cap
+        room = headroom(book.total, nlv, wc.cap_pct)
+        snap = {"enabled": True, "cap_pct": wc.cap_pct, "nlv": round(nlv), "cap_usd": round(wc.cap_pct * nlv),
+                "used_usd": round(book.total), "used_pct": round(100 * book.total / nlv, 1) if nlv else None,
+                "single_puts": round(book.single_puts), "stock": round(book.stock), "index": round(book.index),
+                "headroom_usd": round(room)}
+        return room, snap
+
+    def check_worst_case_cap(self) -> RiskCheck:
+        """Pre-trade: block any new put while the book's stress loss already sits at/over the cap."""
+        room, snap = self.worst_case_headroom()
+        if room is None:
+            return RiskCheck(True)
+        if room <= 0:
+            return RiskCheck(False, reason=(
+                f"worst-case cap: book stress ${snap['used_usd']:,.0f} ({snap['used_pct']}% NLV) "
+                f">= cap {snap['cap_pct']:.0%} (${snap['cap_usd']:,.0f}); puts ${snap['single_puts']:,.0f} "
+                f"stock ${snap['stock']:,.0f} index ${snap['index']:,.0f}"))
+        return RiskCheck(True)
+
+    def worst_case_clamp(self, symbol: str, strike: float, quantity: int, contract_size: int = 100) -> int:
+        """Largest qty ≤ quantity whose single-name stress fits the remaining headroom (0 = skip)."""
+        from src.core.config import get_settings
+        from src.strategy.worst_case import contracts_within
+        room, snap = self.worst_case_headroom()
+        if room is None:
+            return quantity
+        wc = get_settings().worst_case_cap
+        per = float(strike) * contract_size * wc.single_gap
+        q = contracts_within(room, per, quantity)
+        if q < quantity:
+            log.info("worst_case_cap_clamped", symbol=symbol, strike=strike, wanted=quantity, allowed=q,
+                     headroom=round(room), per_contract=round(per), **{k: snap[k] for k in ("used_pct", "cap_pct")})
+        return q
+
     def check_reentry_cooldown(self, symbol: str) -> RiskCheck:
         """Rain 2026-11-10: no new put on a name for N weekdays after its lot was sold.
 
@@ -2476,6 +2554,7 @@ class RiskManager:
             self.check_position_limit(),       # DB read — instant
             self.check_duplicate_position(symbol),  # DB read — instant
             self.check_reentry_cooldown(symbol),  # DB read — instant; off at 0 days
+            self.check_worst_case_cap(),          # total stress loss vs cap; off when disabled
             self.check_daily_limit(),          # DB read — instant
             self.check_vix_gate(),             # cached — instant
             self.check_daily_circuit_breaker(),  # state cached after first call/day
