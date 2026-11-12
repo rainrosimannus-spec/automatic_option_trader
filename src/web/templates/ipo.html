@@ -398,7 +398,7 @@
                     <th class="text-right py-2 px-3">Flip Entry</th>
                     <th class="text-right py-2 px-3">Flip Exit</th>
                     <th class="text-right py-2 px-3">Flip P&L</th>
-                    <th class="text-right py-2 px-3">Lockup Entry</th>
+                    <th class="text-right py-2 px-3" title="Market price when the post-lockup dip fired (a fill price only for rows marked In portfolio)">Lockup Trigger</th>
                     <th class="text-right py-2 px-3">Date</th>
                     <th class="text-center py-2 px-3"></th>
                 </tr>
@@ -412,7 +412,13 @@
                         {% if ipo.status == 'flip_done' %}
                         <span class="text-emerald-400 text-xs">Flip done</span>
                         {% elif ipo.status == 'lockup_done' %}
+                        {% if ipo.lockup_order_id %}
                         <span class="text-blue-400 text-xs">In portfolio</span>
+                        {% else %}
+                        <span class="text-blue-400 text-xs" title="Post-lockup dip fired: name added to the compounder watchlist. No order was placed by the IPO rider.">Handed to compounder</span>
+                        {% endif %}
+                        {% elif ipo.status == 'lockup_missed' %}
+                        <span class="text-gray-500 text-xs" title="No qualifying dip within the window after lock-up expiry.">No dip — retired</span>
                         {% elif ipo.status == 'cancelled' %}
                         <span class="text-gray-500 text-xs">Cancelled</span>
                         {% endif %}

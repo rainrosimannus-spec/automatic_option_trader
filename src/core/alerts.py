@@ -268,6 +268,11 @@ class AlertManager:
             lines.append(f"✅ All holdings still qualify — no action needed")
         self._send("\n".join(lines), priority="high", tags="clipboard")
 
+    def send(self, title: str, body: str = "", priority: str = "default", tags: str = ""):
+        """Generic titled alert. The IPO rider's seven call sites all call this; it did not exist, so
+        every IPO alert raised AttributeError into a swallowing except and was never delivered."""
+        self._send(f"{title}\n{body}" if body else title, priority=priority, tags=tags)
+
     # ── Backend dispatch ─────────────────────────────────────
 
     def _send(self, message: str, priority: str = "default", tags: str = ""):

@@ -52,7 +52,9 @@ class IpoWatchlist(Base):
     # "flip_done"      — day-one flip complete (sold)
     # "lockup_waiting" — waiting for lockup expiry
     # "lockup_trading" — lockup expired, monitoring for dip/re-entry
-    # "lockup_done"    — re-entry complete, now in long-term portfolio
+    # "lockup_done"    — post-lockup dip fired: name HANDED to the compounder watchlist (no order
+    #                    placed here; lockup_entry_price = price at the trigger, not a fill)
+    # "lockup_missed"  — dip window after expiry passed with no qualifying dip; retired
     # "cancelled"      — user cancelled
 
     # Phase 1 execution tracking
@@ -82,3 +84,23 @@ class IpoWatchlist(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# A name the rider hands to the compounder is not in the screener's pool yet, and the monthly screen
+# deletes every unheld watchlist name it did not select — OMDA, AKTS and BOLT were all handed off and
+# wiped at the next screen without one buy. Handed-off names are kept for this long so the compounder
+# gets a real chance; after that they stand or fall with the screen like any other name.
+HANDOFF_PROTECT_DAYS = 90
+
+
+def handoff_protected_symbols(db, now: Optional[datetime] = None,
+                              days: int = HANDOFF_PROTECT_DAYS) -> set[str]:
+    """Tickers handed to the compounder within the last `days` (status lockup_done, no rider order)."""
+    from datetime import timedelta
+    cutoff = (now or datetime.utcnow()) - timedelta(days=days)
+    rows = db.query(IpoWatchlist.expected_ticker).filter(
+        IpoWatchlist.status == "lockup_done",
+        IpoWatchlist.lockup_order_id.is_(None),
+        IpoWatchlist.lockup_entry_time >= cutoff,
+    ).all()
+    return {r[0] for r in rows if r[0]}

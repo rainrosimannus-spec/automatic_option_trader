@@ -46,6 +46,64 @@ FLIP_MIN_CLOSE_ABOVE_OPEN_PCT = 3.0   # day-1 close must be >= this % above day-
 FLIP_TRAIL_MIN_PCT = 10.0             # vol-scaled trailing-stop floor
 FLIP_TRAIL_MAX_PCT = 25.0             # …and cap
 FLIP_MAX_ENTRY_DAY = 4                # only enter within the first N trading days of listing (no chasing)
+FLIP_ENTRY_FROM_MIN = 20              # earliest entry, minutes after the 09:30 ET open
+FLIP_ENTRY_UNTIL_MIN = 360            # latest entry (15:30 ET) — never queue a market order for tomorrow
+# The flip has NEVER executed: until 2026-11-12 it priced its order from LIVE quotes, which the options
+# login does not have (Error 10089 → every field NaN → "ipo_no_price"). It now prices from the delayed
+# feed, so for the first time it can reach placeOrder. It therefore ships in DRY RUN: it does everything
+# up to the order, then logs + alerts what it WOULD buy. Set False (and restart) to arm it.
+FLIP_DRY_RUN = True
+_FLIP_SIGNAL_DAY: dict[str, str] = {}   # ticker → last UTC day a dry-run signal alert went out
+
+
+def us_session_minute(now_et=None) -> Optional[float]:
+    """Minutes since the 09:30 ET open on a weekday inside the regular session, else None."""
+    import pytz
+    now_et = now_et or datetime.now(pytz.timezone("America/New_York"))
+    if now_et.weekday() >= 5:
+        return None
+    m = (now_et.hour * 60 + now_et.minute + now_et.second / 60.0) - (9 * 60 + 30)
+    return m if 0 <= m < 390 else None
+
+
+def flip_sell_qty(recorded_shares: Optional[int], position_qty: Optional[float]) -> int:
+    """Shares a flip exit may SELL: never more than IBKR says the account holds. Unknown position
+    (None) or flat/short → 0. A sell sized from the DB row alone turns a stop that already filled
+    into a naked short."""
+    if position_qty is None or position_qty <= 0 or not recorded_shares or recorded_shares <= 0:
+        return 0
+    return int(min(recorded_shares, position_qty))
+
+
+# ── Phase 2 (post-lockup) timing ────────────────────────────────────────────────────────────
+# The dip only means "lock-up supply" if it is measured FROM a price taken before the expiry AND
+# happens soon after it. Until 2026-11-12 neither held: the reference was recorded on the first run
+# after the row existed (OMDA: 7 months after its expiry; BOLT: 5 years) and the row then waited
+# forever, so "fell 10% at some point" was handed to the compounder as a lock-up dip.
+LOCKUP_PRE_REF_DAYS = 14       # reference price = ~2 weeks before expiry
+LOCKUP_DIP_WINDOW_DAYS = 30    # the dip must come within this many days AFTER expiry
+
+
+_ESTIMATE_ALERT_DAY: dict[str, str] = {}   # ticker → last UTC day the "unconfirmed date" alert went out
+
+
+def lockup_step(today: str, lockup: str, has_pre_price: bool) -> str:
+    """Pure Phase-2 clock. Returns what to do today for one name:
+       'wait'         — nothing yet (too early, or reference already taken and expiry not reached)
+       'record_pre'   — inside the 2 weeks before expiry, no reference yet → take today's price
+       'backfill_pre' — expiry reached with no reference → fetch the HISTORICAL close from before it
+       'watch_dip'    — expiry reached, reference held, still inside the dip window
+       'expired'      — the dip window has passed → retire the name, never hand off"""
+    lock_dt = datetime.strptime(lockup, "%Y-%m-%d")
+    pre_start = (lock_dt - timedelta(days=LOCKUP_PRE_REF_DAYS)).strftime("%Y-%m-%d")
+    window_end = (lock_dt + timedelta(days=LOCKUP_DIP_WINDOW_DAYS)).strftime("%Y-%m-%d")
+    if today > window_end:
+        return "expired"
+    if today < pre_start:
+        return "wait"
+    if today < lockup:
+        return "wait" if has_pre_price else "record_pre"
+    return "watch_dip" if has_pre_price else "backfill_pre"
 
 
 def flip_decision(d_open: float, d_high: float, d_low: float, d_close: float) -> dict:
@@ -120,6 +178,11 @@ class IpoTrader:
                 # CLOSE before judging. Only flip within the first few sessions (no chasing a week-old IPO).
                 if not listing or listing["days_listed"] < 2:
                     continue
+                if listing["days_listed"] > FLIP_MAX_ENTRY_DAY and not ipo.ticker_confirmed:
+                    # A long price history under an UNCONFIRMED ticker is most likely an unrelated
+                    # company that already owns the symbol — never route that into Phase 2.
+                    log.debug("ipo_unconfirmed_ticker_has_history", ticker=ipo.expected_ticker)
+                    continue
                 if listing["days_listed"] > FLIP_MAX_ENTRY_DAY:
                     self._skip_flip(ipo, f"listed >{FLIP_MAX_ENTRY_DAY} sessions ago — no chase")
                     continue
@@ -132,7 +195,7 @@ class IpoTrader:
                          company=ipo.company_name, reason=decision["reason"])
                 self._execute_day_two_buy(ipo, d1, decision)
             except Exception as e:
-                log.debug("ipo_scan_check", ticker=ipo.expected_ticker, error=str(e))
+                log.warning("ipo_scan_check_failed", ticker=ipo.expected_ticker, error=str(e) or repr(e))
 
     def _skip_flip(self, ipo: IpoWatchlist, reason: str):
         """The day-1 close didn't qualify (weak, or too late) — skip the Phase-1 scalp and route the
@@ -148,7 +211,7 @@ class IpoTrader:
         """Listing state for a freshly-public ticker, or None if not yet tradeable.
 
         Returns {days_listed, day1:{open,high,low,close,date}, last}. days_listed is the count of
-        completed daily bars (1 = debut session still in progress)."""
+        daily bars (1 = debut session still in progress)."""
         contract = Stock(ticker, exchange, currency)
         qualified = self.ib.qualifyContracts(contract)
         if not qualified:
@@ -157,68 +220,74 @@ class IpoTrader:
             bars = self.ib.reqHistoricalData(
                 contract, endDateTime="", durationStr="10 D",
                 barSizeSetting="1 day", whatToShow="TRADES", useRTH=True,
-                formatDate=1, timeout=8,
+                # 8 s was under the options gateway's paced round-trip (same finding as
+                # market_data.get_stock_price) — the request died and the name was silently skipped.
+                formatDate=1, timeout=20,
             )
-        except Exception:
+        except Exception as e:
+            log.warning("ipo_listing_history_error", ticker=ticker, error=str(e) or repr(e))
             return None
         if not bars:
+            # The ticker EXISTS at IBKR but history did not answer: say so — the flip window is 3 sessions.
+            log.warning("ipo_listing_history_unavailable", ticker=ticker)
             return None
         d1 = bars[0]
-        last = None
-        try:
-            self.ib.reqMarketDataType(1)   # live data only, not delayed
-            td = self.ib.reqMktData(contract, "", False, False)
-            self.ib.sleep(2)
-            last = td.last
-            self.ib.cancelMktData(contract)
-        except Exception:
-            pass
-        if not last or math.isnan(last) or last <= 0:
-            last = d1.close
         return {
             "days_listed": len(bars),
             "day1": {"open": d1.open, "high": d1.high, "low": d1.low,
                      "close": d1.close, "date": str(d1.date)},
-            "last": last,
+            "last": bars[-1].close,
         }
+
+    def _position_qty(self, symbol: str) -> Optional[float]:
+        """Live IBKR stock position in `symbol` on this connection's account. None = could not tell
+        (call failed, or the position list came back empty, which on this account means "not synced")."""
+        try:
+            positions = self.ib.positions()
+        except Exception as e:
+            log.warning("ipo_positions_unavailable", ticker=symbol, error=str(e))
+            return None
+        if not positions:
+            return None
+        return float(sum(p.position for p in positions
+                         if p.contract.secType == "STK" and p.contract.symbol == symbol))
+
+    def _delayed_price(self, contract) -> Optional[float]:
+        """Last (else previous close) from the DELAYED feed — the options login has no live stock
+        quotes, and asking for live-only data returns nothing at all."""
+        self.ib.reqMarketDataType(4)
+        td = self.ib.reqMktData(contract, "", False, False)
+        try:
+            self.ib.sleep(3)
+            for px in (td.last, td.close):
+                if px and not math.isnan(px) and px > 0:
+                    return float(px)
+            return None
+        finally:
+            self.ib.cancelMktData(contract)
 
     def _execute_day_two_buy(self, ipo: IpoWatchlist, d1: dict, decision: dict):
         """Day-2 entry on a name that CLOSED strong on its debut (see flip_decision). Market buy, then
-        a trailing stop SCALED to the day-1 range + a hard stop-loss. No opening-print 'chase' gate —
-        the entry is gated on the day-1 close, not on intraday premium (that gate was inert anyway)."""
-        from datetime import datetime as dt
-        import pytz
-
-        # ── Cooldown gate ──────────────────────────────────────────────
-        et = pytz.timezone("America/New_York")
-        now_et = dt.now(et)
-        market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
-        minutes_since_open = (now_et - market_open).total_seconds() / 60
-
-        cooldown_minutes = 20  # minimum wait after open
-        if minutes_since_open < cooldown_minutes:
-            log.info("ipo_cooldown_waiting",
-                     ticker=ipo.expected_ticker,
-                     minutes_since_open=round(minutes_since_open, 1),
-                     cooldown=cooldown_minutes)
-            return  # scheduler will retry on next 30s scan
+        a trailing stop SCALED to the day-1 range + a hard stop-loss, linked one-cancels-the-other."""
+        minute = us_session_minute()
+        if minute is None or not (FLIP_ENTRY_FROM_MIN <= minute <= FLIP_ENTRY_UNTIL_MIN):
+            log.info("ipo_flip_outside_entry_window", ticker=ipo.expected_ticker,
+                     session_minute=None if minute is None else round(minute, 1))
+            return  # retried on the next scan
 
         contract = Stock(ipo.expected_ticker, ipo.exchange, ipo.currency)
         self.ib.qualifyContracts(contract)
 
-        # Get current price for position sizing
-        ticker_data = self.ib.reqMktData(contract, "", False, False)
-        self.ib.sleep(2)
-
-        price = ticker_data.last
-        if not price or math.isnan(price) or price <= 0:
-            price = ticker_data.close
-        if not price or math.isnan(price) or price <= 0:
-            log.warning("ipo_no_price", ticker=ipo.expected_ticker)
-            self.ib.cancelMktData(contract)
+        # Never buy on top of shares already there (an earlier buy that filled after we stopped waiting).
+        held = self._position_qty(ipo.expected_ticker)
+        if held is None or held != 0:
+            log.warning("ipo_flip_position_precheck_blocked", ticker=ipo.expected_ticker, held=held)
             return
 
-        self.ib.cancelMktData(contract)
+        price = self._delayed_price(contract)
+        if not price:
+            log.warning("ipo_no_price", ticker=ipo.expected_ticker)
+            return
 
         # Calculate shares based on configured amount
         shares = int(ipo.flip_amount / price)
@@ -243,6 +312,26 @@ class IpoTrader:
             log.warning("ipo_buying_power_check_failed", error=str(e))
             return  # fail closed — don't buy if we can't verify buying power
 
+        trail_pct = decision.get("trail_pct", ipo.flip_trailing_pct)
+        if FLIP_DRY_RUN:
+            log.info("ipo_flip_dry_run", ticker=ipo.expected_ticker, shares=shares,
+                     est_price=round(price, 2), trail_pct=trail_pct, reason=decision.get("reason"))
+            day = datetime.utcnow().strftime("%Y-%m-%d")
+            if _FLIP_SIGNAL_DAY.get(ipo.expected_ticker) != day:
+                _FLIP_SIGNAL_DAY[ipo.expected_ticker] = day
+                try:
+                    from src.core.alerts import get_alert_manager
+                    get_alert_manager().send(
+                        title=f"🚀 IPO flip SIGNAL (dry run): {ipo.expected_ticker}",
+                        body=(f"{ipo.company_name}\nDay 1: {decision.get('reason')}\n"
+                              f"Would buy {shares} @ ~${price:.2f}, trail {trail_pct}%, "
+                              f"stop −{ipo.flip_stop_loss_pct}%.\nNo order placed (FLIP_DRY_RUN)."),
+                        priority="high", tags="ipo",
+                    )
+                except Exception as e:
+                    log.warning("ipo_alert_failed", error=str(e))
+            return
+
         # Place market buy order
         buy_order = MarketOrder("BUY", shares)
         buy_order.tif = "DAY"
@@ -260,26 +349,38 @@ class IpoTrader:
             self.ib.sleep(1)
 
         if buy_trade.orderStatus.status != "Filled":
+            # Do not leave a market order working with no record of it: the next scan would send another.
             log.warning("ipo_buy_not_filled", ticker=ipo.expected_ticker,
                         status=buy_trade.orderStatus.status)
-            return
+            try:
+                self.ib.cancelOrder(buy_order)
+                self.ib.sleep(3)
+            except Exception as e:
+                log.error("ipo_buy_cancel_failed", ticker=ipo.expected_ticker, error=str(e))
+            shares = int(buy_trade.orderStatus.filled or 0)
+            if shares < 1:
+                return
+            log.warning("ipo_buy_partial_fill", ticker=ipo.expected_ticker, filled=shares)
 
         fill_price = buy_trade.orderStatus.avgFillPrice
         log.info("ipo_buy_filled", ticker=ipo.expected_ticker,
                  shares=shares, fill_price=fill_price)
 
-        # Place trailing stop sell order
+        # Trailing stop + hard stop for the SAME shares: one-cancels-the-other, or a gap through both
+        # sells the lot twice.
+        oca = f"ipoflip-{ipo.id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
         trailing_order = Order()
         trailing_order.action = "SELL"
         trailing_order.totalQuantity = shares
         trailing_order.orderType = "TRAIL"
-        trailing_order.trailingPercent = decision.get("trail_pct", ipo.flip_trailing_pct)
+        trailing_order.trailingPercent = trail_pct
         trailing_order.tif = "GTC"
+        trailing_order.ocaGroup = oca
+        trailing_order.ocaType = 1
 
         trailing_trade = self.ib.placeOrder(contract, trailing_order)
         self.ib.sleep(1)
 
-        # Place hard stop-loss as separate order
         stop_price = round(fill_price * (1 - ipo.flip_stop_loss_pct / 100), 2)
         stop_order = Order()
         stop_order.action = "SELL"
@@ -287,6 +388,8 @@ class IpoTrader:
         stop_order.orderType = "STP"
         stop_order.auxPrice = stop_price
         stop_order.tif = "GTC"
+        stop_order.ocaGroup = oca
+        stop_order.ocaType = 1
 
         stop_trade = self.ib.placeOrder(contract, stop_order)
         self.ib.sleep(1)
@@ -302,6 +405,9 @@ class IpoTrader:
                 entry.flip_order_id = trailing_trade.order.orderId
                 entry.flip_stop_order_id = stop_trade.order.orderId
                 entry.updated_at = datetime.utcnow()
+
+        log.info("ipo_flip_protected", ticker=ipo.expected_ticker, shares=shares,
+                 trail_pct=trail_pct, stop_price=stop_price, oca=oca)
 
     def check_flip_exits(self):
         """
@@ -347,28 +453,41 @@ class IpoTrader:
                 count += 1
         return count
 
-    def _force_sell_flip(self, ipo: IpoWatchlist):
-        """Cancel existing orders and sell at market (max hold days exceeded)."""
-        contract = Stock(ipo.expected_ticker, ipo.exchange, ipo.currency)
-        self.ib.qualifyContracts(contract)
-
-        # Cancel trailing stop and hard stop-loss
-        open_trades = self.ib.openTrades()
-        for t in open_trades:
+    def _cancel_flip_orders(self, ipo: IpoWatchlist):
+        for t in self.ib.openTrades():
             if t.order.orderId in (ipo.flip_order_id, ipo.flip_stop_order_id):
                 if t.orderStatus.status not in ("Filled", "Cancelled", "Inactive"):
                     try:
                         self.ib.cancelOrder(t.order)
-                        self.ib.sleep(1)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.warning("ipo_flip_cancel_failed", ticker=ipo.expected_ticker, error=str(e))
 
-        # Sell at market
-        sell_order = MarketOrder("SELL", ipo.flip_shares)
+    def _force_sell_flip(self, ipo: IpoWatchlist):
+        """Max hold reached: cancel the resting stops and sell at market — but only what IBKR says
+        the account still holds, and only inside the regular session."""
+        if us_session_minute() is None:
+            return  # a market order now would queue for the next open with the stops already pulled
+        qty = flip_sell_qty(ipo.flip_shares, self._position_qty(ipo.expected_ticker))
+        if qty < 1:
+            # Unknown position → do nothing (fail closed). Flat → _check_flip_filled books the exit.
+            log.warning("ipo_force_sell_skipped_no_position", ticker=ipo.expected_ticker)
+            return
+
+        contract = Stock(ipo.expected_ticker, ipo.exchange, ipo.currency)
+        self.ib.qualifyContracts(contract)
+
+        self._cancel_flip_orders(ipo)
+        self.ib.sleep(2)
+        # A stop may have filled while we were cancelling: size from the position AFTER the cancel.
+        qty = flip_sell_qty(ipo.flip_shares, self._position_qty(ipo.expected_ticker))
+        if qty < 1:
+            log.warning("ipo_force_sell_skipped_no_position", ticker=ipo.expected_ticker)
+            return
+
+        sell_order = MarketOrder("SELL", qty)
         sell_order.tif = "DAY"
 
-        log.info("ipo_flip_force_sell", ticker=ipo.expected_ticker,
-                 shares=ipo.flip_shares)
+        log.info("ipo_flip_force_sell", ticker=ipo.expected_ticker, shares=qty)
 
         sell_trade = self.ib.placeOrder(contract, sell_order)
         self.ib.sleep(3)
@@ -383,47 +502,50 @@ class IpoTrader:
             exit_price = sell_trade.orderStatus.avgFillPrice
             self._record_flip_exit(ipo, exit_price, f"IPO max hold ({ipo.flip_max_hold_days}d) market sell")
         else:
-            log.warning("ipo_force_sell_not_filled", ticker=ipo.expected_ticker,
-                        status=sell_trade.orderStatus.status)
+            # Don't leave it working: the next pass re-reads the position and sells what is left.
+            log.error("ipo_force_sell_not_filled", ticker=ipo.expected_ticker,
+                      status=sell_trade.orderStatus.status)
+            try:
+                self.ib.cancelOrder(sell_order)
+            except Exception as e:
+                log.error("ipo_force_sell_cancel_failed", ticker=ipo.expected_ticker, error=str(e))
 
     def _check_flip_filled(self, ipo: IpoWatchlist) -> bool:
-        """Check if trailing stop or hard stop-loss has been filled. Returns True if sold."""
-        # Check all open orders for this account
-        open_trades = self.ib.openTrades()
-        executions = self.ib.fills()
+        """Has the flip been sold? Returns True if so (and books the exit).
 
-        trailing_filled = False
+        ib.fills() and order statuses only cover THIS session, so a stop that filled before a restart
+        is invisible to them and the lot used to look unsold forever — until max-hold sold it again.
+        The live IBKR position decides: flat ⇒ sold."""
         exit_price = None
-
-        # Check if trailing stop order filled
-        for fill in executions:
+        for fill in self.ib.fills():
             if (fill.contract.symbol == ipo.expected_ticker
+                    and fill.contract.secType == "STK"
                     and fill.execution.side == "SLD"):
                 exit_price = fill.execution.price
-                trailing_filled = True
                 break
-
-        # Also check via order status
-        if not trailing_filled:
-            for t in open_trades:
+        if not exit_price:
+            for t in self.ib.openTrades():
                 if t.order.orderId in (ipo.flip_order_id, ipo.flip_stop_order_id):
                     if t.orderStatus.status == "Filled":
                         exit_price = t.orderStatus.avgFillPrice
-                        trailing_filled = True
 
-        if not trailing_filled or not exit_price:
-            return False
+        qty = self._position_qty(ipo.expected_ticker)
+        if qty is None or qty > 0:
+            return False   # still held (or unknown) — whatever a partial fill says
 
-        # Cancel the other order
-        for t in open_trades:
-            if t.order.orderId in (ipo.flip_order_id, ipo.flip_stop_order_id):
-                if t.orderStatus.status not in ("Filled", "Cancelled", "Inactive"):
-                    try:
-                        self.ib.cancelOrder(t.order)
-                    except Exception:
-                        pass
+        reason = "IPO trailing/stop exit"
+        if not exit_price:
+            # Sold in an earlier session: the fill is gone from the API. Book at the latest price and say so.
+            exit_price = self._get_current_price(ipo.expected_ticker, ipo.exchange, ipo.currency)
+            if not exit_price:
+                return False
+            reason = "IPO trailing/stop exit (fill not in session — exit price approximated)"
+            log.warning("ipo_flip_exit_price_approximated", ticker=ipo.expected_ticker, price=exit_price)
+        else:
+            # Evidence of the fill in hand: clear the sibling (one-cancels-other already does this).
+            self._cancel_flip_orders(ipo)
 
-        self._record_flip_exit(ipo, exit_price, "IPO trailing/stop exit")
+        self._record_flip_exit(ipo, exit_price, reason)
         return True
 
     def _record_flip_exit(self, ipo: IpoWatchlist, exit_price: float, exit_reason: str):
@@ -507,8 +629,8 @@ class IpoTrader:
                 priority="high",
                 tags="ipo",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("ipo_alert_failed", error=str(e))
 
     # ══════════════════════════════════════════════════════════
     # PHASE 2: Lockup re-entry
@@ -538,22 +660,42 @@ class IpoTrader:
         if not lockup:
             return
 
-        from datetime import datetime as dt
-        lockup_dt = dt.strptime(lockup, "%Y-%m-%d")
-        # Record the pre-lockup reference ~2 weeks (≈10 trading days) before expiry (matches backtest).
-        pre_start = (lockup_dt - timedelta(days=14)).strftime("%Y-%m-%d")
-        if today >= pre_start and not ipo.pre_lockup_price:
-            price = self._get_current_price(ipo.expected_ticker, ipo.exchange, ipo.currency)
-            if price and price > 0:
-                with get_db() as db:
-                    entry = db.query(IpoWatchlist).filter(IpoWatchlist.id == ipo.id).first()
-                    if entry:
-                        entry.pre_lockup_price = price
-                        entry.updated_at = datetime.utcnow()
-                log.info("ipo_pre_lockup_price_recorded", ticker=ipo.expected_ticker, price=price)
+        try:
+            step = lockup_step(today, lockup, bool(ipo.pre_lockup_price))
+        except ValueError:
+            log.warning("ipo_lockup_date_invalid", ticker=ipo.expected_ticker, lockup=lockup)
+            return
+        if step == "wait":
+            return
+        if step == "expired":
+            self._retire_lockup(ipo, lockup)
+            return
+        if step in ("record_pre", "backfill_pre"):
+            if step == "record_pre":
+                price = self._get_current_price(ipo.expected_ticker, ipo.exchange, ipo.currency)
+            else:
+                # Expiry already here and no reference was taken in time (row added late, or we were
+                # down): use the real close from before the expiry, never today's price.
+                pre_day = (datetime.strptime(lockup, "%Y-%m-%d")
+                           - timedelta(days=LOCKUP_PRE_REF_DAYS)).strftime("%Y-%m-%d")
+                price = self._get_close_on_or_before(ipo.expected_ticker, ipo.exchange,
+                                                     ipo.currency, pre_day)
+            if not price or price <= 0:
+                log.warning("ipo_pre_lockup_price_unavailable", ticker=ipo.expected_ticker, step=step)
+                return
+            with get_db() as db:
+                entry = db.query(IpoWatchlist).filter(IpoWatchlist.id == ipo.id).first()
+                if entry:
+                    entry.pre_lockup_price = price
+                    entry.updated_at = datetime.utcnow()
+            ipo.pre_lockup_price = price
+            log.info("ipo_pre_lockup_price_recorded", ticker=ipo.expected_ticker, price=price,
+                     source=step)
+            if step == "record_pre":
+                return
 
         # After expiry: on the forced-supply dip, hand off to the compounder (confirmed dates only).
-        if today >= lockup and ipo.pre_lockup_price:
+        if ipo.pre_lockup_price:
             price = self._get_current_price(ipo.expected_ticker, ipo.exchange, ipo.currency)
             if not price or price <= 0:
                 return
@@ -567,6 +709,35 @@ class IpoTrader:
                 self._handoff_to_compounder(ipo, price, dip_pct)
             else:
                 self._alert_lockup_estimate(ipo, price, dip_pct)
+
+    def _retire_lockup(self, ipo: IpoWatchlist, lockup: str):
+        """The dip window after the lock-up expiry passed without a qualifying dip — stop watching.
+        A later 10% drop is not lock-up supply and must not reach the compounder."""
+        log.info("ipo_lockup_window_passed", ticker=ipo.expected_ticker, lockup=lockup,
+                 window_days=LOCKUP_DIP_WINDOW_DAYS)
+        with get_db() as db:
+            entry = db.query(IpoWatchlist).filter(IpoWatchlist.id == ipo.id).first()
+            if entry:
+                entry.status = "lockup_missed"
+                entry.updated_at = datetime.utcnow()
+
+    def _get_close_on_or_before(self, ticker: str, exchange: str, currency: str,
+                                day: str) -> Optional[float]:
+        """Daily close of the last session on or before `day` (YYYY-MM-DD)."""
+        contract = Stock(ticker, exchange, currency)
+        try:
+            self.ib.qualifyContracts(contract)
+            contract.exchange = "SMART"
+            bars = self.ib.reqHistoricalData(
+                contract, endDateTime=day.replace("-", "") + "-23:59:59",
+                durationStr="5 D", barSizeSetting="1 day",
+                whatToShow="TRADES", useRTH=True, formatDate=1, timeout=8,
+            )
+        except Exception as e:
+            log.warning("ipo_history_close_error", ticker=ticker, day=day, error=str(e))
+            return None
+        ok = [b for b in (bars or []) if str(b.date)[:10] <= day]
+        return float(ok[-1].close) if ok else None
 
     def _ensure_lockup_date(self, ipo: IpoWatchlist, today: str) -> tuple[Optional[str], str]:
         """Return (lockup_date, confidence). Resolves the REAL lock-up period from the SEC prospectus
@@ -644,13 +815,18 @@ class IpoTrader:
                       f"Added to the compounder universe — it sizes & accumulates (suggestion-gated)."),
                 priority="high", tags="ipo",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("ipo_alert_failed", error=str(e))
 
     def _alert_lockup_estimate(self, ipo: IpoWatchlist, price: float, dip_pct: float):
         """Lock-up date is only an ESTIMATE (couldn't confirm from the prospectus). Don't auto-trade a
         possibly-wrong unlock — alert the user to confirm the date manually."""
         log.info("ipo_lockup_estimate_dip", ticker=ipo.expected_ticker, dip_pct=round(dip_pct, 1))
+        # The check runs every 30 min: one alert per name per day, not 48.
+        day = datetime.utcnow().strftime("%Y-%m-%d")
+        if _ESTIMATE_ALERT_DAY.get(ipo.expected_ticker) == day:
+            return
+        _ESTIMATE_ALERT_DAY[ipo.expected_ticker] = day
         try:
             from src.core.alerts import get_alert_manager
             get_alert_manager().send(
@@ -659,8 +835,8 @@ class IpoTrader:
                       f"Confirm the real lock-up date before entering."),
                 priority="default", tags="ipo",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("ipo_alert_failed", error=str(e))
 
     def _place_lockup_trailing_buy(self, ipo: IpoWatchlist, current_price: float):
         """Place trailing stop buy order to catch the bounce after lockup dip."""
@@ -807,8 +983,8 @@ class IpoTrader:
                 priority="high",
                 tags="ipo",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("ipo_alert_failed", error=str(e))
 
     # ══════════════════════════════════════════════════════════
     # Helpers

@@ -28,7 +28,7 @@ def ipo_page(request: Request):
 
         # Completed
         completed = db.query(IpoWatchlist).filter(
-            IpoWatchlist.status.in_(["flip_done", "lockup_done", "cancelled"]),
+            IpoWatchlist.status.in_(["flip_done", "lockup_done", "lockup_missed", "cancelled"]),
         ).order_by(IpoWatchlist.updated_at.desc()).limit(20).all()
 
     return templates.TemplateResponse("ipo.html", {
@@ -170,7 +170,10 @@ def edit_ipo(
             ipo.flip_stop_loss_pct = flip_stop_loss_pct
             ipo.flip_max_hold_days = flip_max_hold_days
             ipo.lockup_enabled = lockup_enabled
-            ipo.lockup_date = lockup_date.strip() or None
+            _new_lockup = lockup_date.strip() or None
+            if _new_lockup != ipo.lockup_date:
+                ipo.pre_lockup_price = None   # the reference belongs to the old date
+            ipo.lockup_date = _new_lockup
             ipo.lockup_dip_pct = lockup_dip_pct
             ipo.lockup_trailing_buy_pct = lockup_trailing_buy_pct
             ipo.lockup_amount = lockup_amount

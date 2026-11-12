@@ -861,9 +861,22 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                     elif _r.get("category") == "market_cap_ceiling":
                         _why_dropped.setdefault(_r.get("symbol"), f"size ceiling: {_r.get('detail') or ''}".strip())
 
+                # Names the IPO rider handed over recently: the screen has not had them in its pool,
+                # so "not selected" is not a verdict. Keep them — unless the screen DID score and
+                # reject them (growth gate / size ceiling), which is a verdict.
+                try:
+                    from src.ipo.models import handoff_protected_symbols
+                    _ipo_protected = handoff_protected_symbols(db) - set(_why_dropped)
+                except Exception as e:
+                    log.warning("ipo_handoff_protect_failed", error=str(e))
+                    _ipo_protected = set()
+
                 # Flag stocks no longer in screener results
                 for sym, wl_entry in current_watchlist.items():
                     if sym not in new_symbols:
+                        if sym in _ipo_protected and sym not in open_positions:
+                            log.info("monthly_screen_kept_ipo_handoff", symbol=sym)
+                            continue
                         if sym in open_positions:
                             # Cannot remove — open position exists
                             if hasattr(wl_entry, "pending_removal"):
