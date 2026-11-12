@@ -269,94 +269,513 @@ growth:
     niche, delivering 5-year revenue CAGR above 20% with exceptional consistency and
     operating margins above 20% that have expanded every year. ROIC exceeds 50% because
     the business is almost entirely working-capital-funded with ne
-dividend: []
-breakthrough:
-- symbol: FORM
+- symbol: FTNT
   exchange: SMART
   currency: USD
-  name: FORMFACTOR INC
-  megatrend: 2. Compute infrastructure
-  thesis_latest: Advanced probe cards essential for testing AI chips at 3nm and beyond,
-    oligopoly position in critical bottleneck.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
+  region: US
+  score: 84.0
+  added_date: '2026-06-01'
+  thesis: 'Fortinet has delivered 20%+ revenue CAGR over 5 years with a proprietary
+    ASIC-driven security platform that generates best-in-class operating margins (25%+
+    adjusted) and strong FCF conversion. ROIC has consistently exceeded 30%, driven
+    by a vertically integrated model with minimal M&A dilution. R&D '
+- symbol: INTU
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 71.3
+  added_date: '2026-06-01'
+  thesis: 'Intuit''s platform ecosystem (TurboTax, QuickBooks, Credit Karma) delivers
+    highly recurring, mission-critical revenue with 5-year revenue CAGR near 15% and
+    sustained ROIC above 20%. Operating leverage is evident as the platform scales
+    with AI-driven automation, and FCF margins are consistently above '
+- symbol: CPAY
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 62.2
+  added_date: '2026-06-01'
+  thesis: Corpay (formerly Fleetcor) operates a fleet card and B2B payments network
+    with deep switching costs, generating 15%+ revenue CAGR, ROIC above 20%, and FCF
+    margins above 30%. Operating leverage is embedded in the network model as volume
+    scales with minimal incremental cost, and the company has been a
+- symbol: MSCI
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 75.6
+  added_date: '2026-06-24'
+  thesis: MSCI operates a near-monopolistic index and analytics franchise with subscription
+    revenues approaching 90% recurring, yielding exceptional revenue durability and
+    compounding quality with sustained ROIC well above 50%. Operating leverage is
+    structurally embedded as incremental revenues flow at very h
+- symbol: TXRH
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 61.1
+  added_date: '2026-06-24'
+  thesis: Texas Roadhouse has delivered consistent mid-to-high single-digit revenue
+    CAGR with industry-leading restaurant-level margins, reflecting strong operating
+    leverage as new units mature. ROIC has been sustained above 20% through an owned-real-estate-light
+    franchise-heavy model with minimal goodwill, a
+- symbol: KNSL
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 75.8
+  added_date: '2026-06-24'
+  thesis: Kinsale Capital is a specialty excess-and-surplus lines insurer with a proprietary
+    technology platform that enables underwriting discipline and expense ratios materially
+    below peers, sustaining ROIC consistently above 20% through the cycle. Revenue
+    has grown at a 25%+ CAGR as E&S market share expand
+- symbol: FICO
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 82.0
+  added_date: '2026-07-06'
+  thesis: Fair Isaac commands near-monopoly pricing power in credit scoring with 5yr
+    revenue CAGR ~15% and ROIC consistently above 50%, driving elite compounding_quality.
+    Operating leverage is exceptional as software segment scales at 80%+ gross margins
+    with minimal incremental cost. Capital allocation is dis
+- symbol: TYL
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 64.6
+  added_date: '2026-07-11'
+  thesis: Tyler Technologies is a sticky vertical-SaaS monopoly in government software
+    with recurring revenue, high retention and expanding cloud margins driving operating
+    leverage. Consistent profitability, low dilution and steady R&D reinvestment support
+    strong rev durability and compounding scores above cu
+- symbol: MANH
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 81.8
+  added_date: '2026-07-11'
+  thesis: Manhattan Associates leads supply-chain/warehouse management software with
+    a cloud transition boosting recurring revenue and margins. Very high ROIC (30%+),
+    minimal debt, consistent buybacks and appropriate R&D intensity yield strong cmp,
+    op and cap subscores well above 61.7.
+- symbol: FIX
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 76.0
+  added_date: '2026-07-11'
+  thesis: Comfort Systems USA is a mechanical/electrical contractor riding data-center
+    and reshoring demand with surging revenue, expanding margins and rising ROIC.
+    Strong backlog, high FCF and disciplined capital allocation support rev durability
+    and operating leverage above 61.7.
+- symbol: ODFL
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 55.2
+  added_date: '2026-08-03'
+  thesis: "Old Dominion sustains 25%+ ROIC and industry-leading operating ratio with\
+    \ steady margin expansion, high revenue durability through freight cycles, near-zero\
+    \ share dilution, and strong FCF conversion \u2014 easily clears the mid-50s cutoff\
+    \ on compounding quality and capital efficiency."
+- symbol: MCK
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 66.2
+  added_date: '2026-08-03'
+  thesis: "McKesson posts very high ROIC on thin distribution margins with steady\
+    \ revenue durability, improving operating leverage and aggressive buybacks reducing\
+    \ share count \u2014 strong capital_efficiency and compounding_quality lift it\
+    \ above rank-60."
+- symbol: LII
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 61.8
+  added_date: '2026-08-03'
+  thesis: "Lennox International has expanded margins substantially with 30%+ ROIC,\
+    \ durable HVAC replacement-driven revenue, strong operating leverage and disciplined\
+    \ capital return with low dilution \u2014 high compounding_quality and operating_leverage\
+    \ clear the cutoff."
+- symbol: GGG
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 58.9
+  added_date: '2026-08-03'
+  thesis: "Graco sustains 20%+ ROIC, best-in-class fluid-handling margins, steady\
+    \ R&D-driven innovation, durable niche revenue and consistent FCF with minimal\
+    \ dilution \u2014 a compounder that beats 54.8 on capital_efficiency and compounding_quality."
+- symbol: TT
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 65.4
+  added_date: '2026-08-03'
+  thesis: Trane Technologies benefits from secular HVAC/decarbonization demand with
+    durable revenue growth, expanding operating margins and strong FCF. High incremental
+    ROIC, disciplined buybacks and appropriate R&D in energy-efficient systems support
+    solid scores across durability, operating leverage and cap
+- symbol: NU
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 67.2
+  added_date: '2026-10-06'
+  thesis: Graduated from the breakthrough tier (growth-tier financials). Latin American
+    digital bank adding tens of millions of users across Brazil, Mexico, Colombia;
+    ARPU expansion via credit and secondary products drives earnings compounding as
+    it displaces legacy banks.
+- symbol: '6146'
+  exchange: TSEJ
+  currency: JPY
+  region: JP
+  score: 80.3
+  added_date: '2026-10-06'
+  thesis: Graduated from the breakthrough tier (growth-tier financials). Dominant
+    precision dicing/grinding tools for advanced packaging; chiplet and HBM stacking
+    intensify demand for its unique cutting equipment, driving structural revenue
+    growth and pricing power.
+- symbol: '6920'
+  exchange: TSEJ
+  currency: JPY
+  region: JP
+  score: 86.0
+  added_date: '2026-10-06'
+  thesis: Graduated from the breakthrough tier (growth-tier financials). Monopoly
+    in EUV photomask inspection. Every advanced logic and HBM node requires its tools;
+    leading-edge capex intensity and node complexity drive recurring high-margin equipment
+    demand.
+- symbol: VRT
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 65.6
+  added_date: '2026-10-06'
+  thesis: Graduated from the breakthrough tier (growth-tier financials). Data-center
+    power and liquid-cooling supplier at center of AI thermal-density crisis; liquid-cooling
+    adoption drives content-per-rack growth and margin expansion across a multi-year
+    buildout.
+- symbol: TSM
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 85.2
+  added_date: '2026-10-06'
+  thesis: TSMC is the leading foundry for AI accelerators. Revenue has compounded
+    at roughly 20-25% a year over four years, and trailing growth has picked up rather
+    than slowed, so revenue durability should score 85-100. Its 5-year ROIC of about
+    25-30%, operating margin rising toward 50%, large and growing R&
+- symbol: APP
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 83.6
+  added_date: '2026-10-06'
+  thesis: AppLovin's AXON ad engine has grown revenue far faster than the 8% gate,
+    both over four years and in the last twelve months. Operating margins went from
+    mid-teens to over 60%, and ROIC has been very high since 2023, so operating leverage
+    should max out and compounding quality should be strong. Heavy
+- symbol: '6857'
+  exchange: TSEJ
+  currency: JPY
+  region: Japan
+  score: 88.3
+  added_date: '2026-10-06'
+  thesis: Advantest dominates SoC and HBM testing for AI chips. Revenue has compounded
+    at about 25% a year since FY2021 and trailing growth is still strong. ROIC has
+    been above 20% for most of the 5-year window, operating margins have expanded
+    sharply, R&D is high for semi-equipment, and the company buys back
+- symbol: PME
+  exchange: ASX
+  currency: AUD
+  region: Australia
+  score: 85.0
+  added_date: '2026-10-06'
+  thesis: Pro Medicus, a cloud imaging software company, has grown revenue 25-30%
+    a year on long-term contracts with US academic hospitals. That gives highly durable
+    growth with no recent slowdown. Its ROIC and EBIT margin are both above 70% and
+    still rising, R&D is fully self-funded, and the company has no a
+- symbol: '9992'
+  exchange: SEHK
+  currency: HKD
+  region: Hong Kong
+  score: 82.3
+  added_date: '2026-10-06'
+  thesis: Pop Mart's revenue has grown several times over since 2021, driven by Labubu
+    and overseas expansion, and trailing growth is still very high, so revenue durability
+    should be 100. Net income and FCF were positive in every year of the window, and
+    ROIC and operating margin have risen sharply, toward 30%
+- symbol: EME
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 67.8
+  added_date: '2026-10-06'
+  thesis: EMCOR's business looks a lot like FIX (78.8). Revenue has compounded in
+    the low-to-mid teens, helped by data center and manufacturing construction. ROIC
+    is above 20%, operating margin has expanded from about 5% to 9%+, and steady buybacks
+    have cut the share count, which should push compounding quali
+- symbol: HWM
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 65.8
+  added_date: '2026-10-06'
+  thesis: Howmet makes engine components for the aerospace aftermarket and new-build
+    programs, where it has strong pricing power. Revenue has compounded at low-teens
+    rates with double-digit trailing growth. Operating margin has expanded by more
+    than 700bps and ROIC has climbed into the high teens or above. FC
+- symbol: TNE
+  exchange: ASX
+  currency: AUD
+  region: Australia
+  score: 69.5
+  added_date: '2026-10-06'
+  thesis: TechnologyOne is an enterprise SaaS company. Its SaaS transition is finished
+    and revenue is growing at about 15-20% a year on recurring ARR. ROIC is above
+    30%, profit margins have expanded for years, and it spends about 20-25% of revenue
+    on R&D, so the innovation score should be high. It grew organi
+- symbol: HCA
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 55.2
+  added_date: '2026-11-02'
+  thesis: 'durability: HCA owns the scarce asset, dense local hospital networks, while
+    the US population ages, and it has a long record of buying back its own shares.
+    AI could improve its efficiency without replacing the care it sells.'
+- symbol: CIEN
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 54.5
+  added_date: '2026-11-02'
+  thesis: Graduated from the breakthrough tier (growth-tier financials). AI training
+    clusters require 400G/800G optical networking; Ciena's WaveLogic coherent optics
+    displace legacy Cisco/Nokia DWDM at hyperscalers and carrier backbone, with 25%+
+    revenue CAGR embedded in multi-year backlog.
+- symbol: ESLT
+  exchange: TASE
+  currency: ILS
+  region: IL
+  score: 54.7
+  added_date: '2026-11-02'
+  thesis: Graduated from the breakthrough tier (growth-tier financials). Elbit has
+    a record backlog of more than $25bn from European rearmament, artillery and munitions,
+    plus electronic warfare proven in combat. Its operating margins are single-digit;
+    a move to a higher-margin export mix could double earnings and re-rate the stock.
+- symbol: GRMN
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 69.5
+  added_date: '2026-11-02'
+  thesis: 'Garmin''s revenue has compounded at about 10% a year over four years. Growth
+    sped up again in 2026: Q3 fitness rose 16%, outdoor 20% and marine 16%, while
+    consolidated gross margin expanded 420bp to 63.3%. That points to strong revenue_durability
+    and operating_leverage. It has earned ROIC above 20% f'
+- symbol: UI
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 85.7
+  added_date: '2026-11-02'
+  thesis: 'Ubiquiti''s revenue growth sped up sharply in fiscal 2025-26 (30%+ year
+    on year), which lifts the four-year compound rate well above 8% while trailing
+    growth stays strong. ROIC is exceptional (50%+), operating margins are 30%+ and
+    expanding, and the share count is flat or shrinking with no goodwill. '
+- symbol: NBIX
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 77.2
+  added_date: '2026-11-02'
+  thesis: Neurocrine's revenue has compounded at about 25% a year since 2021, driven
+    by Ingrezza with Crenessity adding new growth, and it has been profitable and
+    FCF-positive every year. Operating margin is expanding and it reinvests heavily
+    in R&D, which should score well against biotech peers. Buybacks off
+- symbol: CORT
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 57.5
+  added_date: '2026-11-02'
+  thesis: Corcept has grown revenue about 20% a year (Korlym plus the hypercortisolism
+    market expansion) and has been profitable with positive FCF in every year of the
+    window. It carries no debt and no goodwill, and buybacks have offset dilution.
+    It earns high ROIC on a small asset base while R&D grows quickl
+- symbol: DOCS
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 71.4
+  added_date: '2026-11-02'
+  thesis: 'Doximity''s revenue has compounded at roughly 20% with trailing growth
+    still in the mid-to-high teens. Adjusted EBITDA margins are about 55%, GAAP operating
+    margin is 40%+ and expanding, and FCF conversion is very high. It has negligible
+    goodwill and runs large buybacks, and R&D spending on AI tools '
+- symbol: EHC
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 51.2
+  added_date: '2026-11-03'
+  thesis: 'durability: Encompass operates scarce, licensed hospital capacity serving
+    a fast-growing elderly population and adds 6 to 10 new hospitals a year. Demand
+    is demographic and its returns are high.'
+- symbol: THC
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 46.1
+  added_date: '2026-11-03'
+  thesis: 'durability: Tenet has become a high-return ambulatory surgery compounder
+    because procedures keep moving to lower-cost surgery centres it owns. Surgical
+    demand from an ageing population does not depend on AI.'
+- symbol: BVI
+  exchange: SBF
+  currency: EUR
+  region: FR
+  score: 43.0
+  added_date: '2026-11-03'
+  thesis: 'durability: Bureau Veritas has a franchise in statutory inspection of buildings
+    and infrastructure, and the number of qualified inspectors is shrinking. Its LEAP
+    2028 plan targets mid-single-digit organic growth with margins expanding.'
+- symbol: NVMI
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 72.8
+  added_date: '2026-11-03'
+  thesis: Nova (semiconductor metrology) has compounded revenue at roughly 30%+ a
+    year since 2021 on demand from advanced logic, gate-all-around transistors and
+    high-bandwidth memory, which should max out revenue_durability. Operating margins
+    are near 30% and rising, ROIC has stayed above 20% and R&D spending
+- symbol: FN
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 69.1
+  added_date: '2026-11-03'
+  thesis: Fabrinet (precision optical manufacturing) has compounded revenue in the
+    mid-to-high teens, sped up by AI-datacenter optical transceivers and new hyperscaler
+    programs. Five-year ROIC has held around 18-20% with no debt, no acquisition goodwill
+    and steady buybacks, so compounding_quality and capital_
+- symbol: APH
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 76.0
+  added_date: '2026-11-03'
+  thesis: Amphenol has compounded revenue at about 18-20% a year since 2021, and AI-datacenter
+    interconnect demand pushed trailing growth higher. Operating margin has risen
+    to the mid-20s and ROIC has stayed in the high teens or above, so compounding_quality
+    and operating_leverage should be very high. Goodwil
+- symbol: '7936'
+  exchange: TSEJ
+  currency: JPY
+  region: Japan
+  score: 69.5
+  added_date: '2026-11-03'
+  thesis: Asics has compounded revenue at about 15-20% a year since 2021, led by performance
+    running and the Onitsuka Tiger brand, and is still growing in the mid-teens. Operating
+    margin has gone from single digits to about 20%, which should max out operating_leverage.
+    ROIC has climbed above 20%, and growth h
+- symbol: '6532'
+  exchange: TSEJ
+  currency: JPY
+  region: Japan
+  score: 80.1
+  added_date: '2026-11-03'
+  thesis: BayCurrent (Japanese digital and strategy consulting) has grown revenue
+    at 20%+ a year for five years with no meaningful slowdown, because demand for
+    digital-transformation work in Japan is so strong. ROIC is about 30%+ and operating
+    margins are near 30%, all from hiring its own consultants rather t
+- symbol: AGX
+  exchange: SMART
+  currency: USD
+  region: US
+  score: 67.1
+  added_date: '2026-11-03'
+  thesis: Argan (power-plant engineering and construction) has grown revenue in the
+    mid-to-high teens over four years, and record gas-fired and data-center-driven
+    backlog keeps the trailing rate high. It carries large net cash and earns ROIC
+    well above 20%, and margins have more than doubled. Shares outstandi
+dividend:
+- symbol: CM
+  exchange: SMART
+  currency: CAD
+  region: CA_DIV
+  score: 81.0
+  added_date: '2026-08-03'
+  thesis: Canadian Imperial Bank of Commerce yields ~4.5% with a decade of steady
+    dividend growth around 5-7% CAGR. Payout ratio in the 50-60% range keeps the dividend
+    well-covered, and the retail/commercial banking franchise provides stable revenue.
+    Solid total-return candidate alongside the other Canadian b
+- symbol: TROW
+  exchange: SMART
+  currency: USD
+  region: US_DIV
+  score: 77.3
+  added_date: '2026-08-03'
+  thesis: T. Rowe Price is a dividend aristocrat with 35+ years of consecutive increases
+    and roughly 10%+ 5yr dividend CAGR. Yield sits around 4.5%, comfortably in the
+    sweet spot, with a payout ratio near 55% and a net-cash balance sheet. AUM-driven
+    revenue is cyclical but the dividend runway is well-protecte
+breakthrough:
 - symbol: IONQ
   exchange: SMART
   currency: USD
   name: IONQ INC
   megatrend: 13. Quantum computing
-  thesis_latest: Trapped-ion quantum computers achieve fault-tolerant advantage in
-    optimization problems; AWS partnership scales cloud quantum access rapidly.
+  thesis_latest: Trapped-ion quantum leader that has bought Oxford Ionics, Lightsynq
+    and ID Quantique to own computing, networking and quantum-safe security. Reaching
+    fault-tolerant advantage first would make it the default quantum cloud vendor
+    for a market that does not yet exist.
   first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-19T20:34:47'
+  last_seen: 2026-11
+  appearance_count: 7
+  last_run_at: '2026-11-04T06:47:06'
 - symbol: RKLB
   exchange: SMART
   currency: USD
   name: ROCKET LAB CORP
   megatrend: 14. Space
-  thesis_latest: Small satellite launch monopoly expands into satellite manufacturing;
-    reusable Neutron rocket captures medium-lift market from SpaceX overflow.
+  thesis_latest: Leading non-SpaceX launch provider and vertically integrated satellite-component
+    supplier; Neutron medium-lift and constellation contracts can carry it from losses
+    to high-margin scale on multi-billion revenue.
   first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-19T20:34:47'
-- symbol: ARVN
-  exchange: SMART
-  currency: USD
-  name: ARVINAS INC
-  megatrend: 3. Genomics & medical biotech
-  thesis_latest: PROTAC protein degradation platform creates new drug class targeting
-    'undruggable' proteins, capturing $50B+ oncology market share through novel mechanism.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-- symbol: SEDG
-  exchange: SMART
-  currency: USD
-  name: SOLAREDGE TECHNOLOGIES INC
-  megatrend: 6. Energy transition
-  thesis_latest: Power optimizer technology becomes standard in residential solar
-    installations globally, capturing margin premium as solar deployment accelerates
-    10x through 2035.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
+  last_seen: 2026-11
+  appearance_count: 7
+  last_run_at: '2026-11-04T06:47:06'
 - symbol: CRSP
   exchange: SMART
   currency: USD
   name: CRISPR THERAPEUTICS AG
   megatrend: 3. Genomics & medical biotech
-  thesis_latest: CTX001 sickle cell therapy launches create billion-dollar rare disease
-    franchise; CAR-T platform expands to solid tumors with improved efficacy.
+  thesis_latest: Casgevy commercial ramp funds in-vivo editing (CTX310 for ANGPTL3)
+    and allogeneic CAR-T in autoimmunity; one-time cardiovascular editing success
+    would open markets far beyond rare disease.
   first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-19T20:34:47'
+  last_seen: 2026-11
+  appearance_count: 5
+  last_run_at: '2026-11-04T06:47:06'
 - symbol: KTOS
   exchange: SMART
   currency: USD
   name: KRATOS DEFENSE & SECURITY
   megatrend: 10. Defense & sovereignty
-  thesis_latest: Low-cost drone and missile systems become standard military procurement
-    as Ukraine conflict validates attritable weapons doctrine, driving 5x revenue
-    growth.
+  thesis_latest: Low-cost attritable jet drones (Valkyrie), hypersonic test vehicles
+    and small turbine engines. Kratos takes share from the primes' exquisite platforms.
+    Moving from development to full-rate production can lift its single-digit margins
+    sharply.
   first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-- symbol: '4565'
-  exchange: TSEJ
-  currency: JPY
-  name: NXERA PHARMA CO LTD
-  megatrend: 4. GLP-1 & preventive consumer health
-  thesis_latest: Protein biomarker platform enables personalized medicine revolution
-    through AI-powered disease prediction, capturing preventive healthcare market
-    expansion worth $500B+.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
+  last_seen: 2026-11
+  appearance_count: 6
+  last_run_at: '2026-11-04T06:47:06'
 - symbol: FSLR
   exchange: SMART
   currency: USD
@@ -365,105 +784,9 @@ breakthrough:
   thesis_latest: Thin-film solar technology leader with cadmium telluride panels offering
     superior heat performance and US manufacturing capacity amid trade restrictions.
   first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-19T20:34:47'
-- symbol: NVTS
-  exchange: SMART
-  currency: USD
-  name: NAVITAS SEMICONDUCTOR CORP
-  megatrend: 2. Compute infrastructure
-  thesis_latest: GaN power semiconductors replace silicon in EV chargers and data
-    centers, capturing 30% of $50B power management market through superior efficiency.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-- symbol: RDWR
-  exchange: SMART
-  currency: USD
-  name: RADWARE LTD
-  megatrend: 12. Cybersecurity & digital sovereignty
-  thesis_latest: Application delivery and DDoS protection specialist expanding into
-    cloud-native security, benefiting from hybrid cloud adoption and 5G network complexity.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
-- symbol: MOS
-  exchange: SMART
-  currency: USD
-  name: MOSAIC CO/THE
-  megatrend: 8. Climate adaptation
-  thesis_latest: Fertilizer demand increases 50% through 2035 as climate stress requires
-    higher crop yields per acre, while supply constraints drive sustained pricing
-    power.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-- symbol: PAYO
-  exchange: SMART
-  currency: USD
-  name: PAYONEER GLOBAL INC
-  megatrend: 16. EM digital finance & fintech
-  thesis_latest: Cross-border B2B payments platform captures SME digitization in emerging
-    markets, processing $1T+ annually as global trade finance modernizes rapidly.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-- symbol: IONR
-  exchange: SMART
-  currency: USD
-  name: IONEER LTD - ADR
-  megatrend: 9. Critical minerals & advanced materials
-  thesis_latest: Rhyolite Ridge lithium-boron project becomes major US domestic source
-    as EV demand drives 10x lithium consumption while supply remains constrained globally.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-- symbol: NOG
-  exchange: SMART
-  currency: USD
-  name: NORTHERN OIL AND GAS INC
-  megatrend: 7. Energy bridge
-  thesis_latest: Non-operated Bakken acreage generates sustained free cash flow as
-    energy security concerns maintain oil prices above $80, enabling 15%+ dividend
-    yields.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-- symbol: RUN
-  exchange: SMART
-  currency: USD
-  name: SUNRUN INC
-  megatrend: 6. Energy transition
-  thesis_latest: Residential solar-plus-storage platform becomes virtual power plant
-    aggregator, monetizing grid services while residential adoption reaches 50% penetration
-    by 2035.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-- symbol: VCEL
-  exchange: SMART
-  currency: USD
-  name: VERICEL CORP
-  megatrend: 5. Aging populations & elder care
-  thesis_latest: Cell therapy platform for cartilage repair expands into age-related
-    joint degeneration, addressing $50B+ orthopedic market as aging populations delay
-    joint replacement.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-- symbol: RDNT
-  exchange: SMART
-  currency: USD
-  name: RADNET INC
-  megatrend: 4. GLP-1 & preventive consumer health
-  thesis_latest: AI-powered medical imaging network captures preventive screening
-    market expansion as early detection becomes standard care, driving 5x procedure
-    volume growth.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
+  last_seen: 2026-07
+  appearance_count: 3
+  last_run_at: '2026-07-06T21:29:38'
 - symbol: UUUU
   exchange: SMART
   currency: USD
@@ -472,9 +795,9 @@ breakthrough:
   thesis_latest: US uranium production scales with nuclear renaissance and SMR deployment,
     rare earth processing adds second revenue multiplier via strategic minerals.
   first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-19T20:34:47'
+  last_seen: 2026-07
+  appearance_count: 3
+  last_run_at: '2026-07-11T10:59:25'
 - symbol: STEM
   exchange: SMART
   currency: USD
@@ -483,9 +806,9 @@ breakthrough:
   thesis_latest: AI-powered energy storage platform optimizing battery deployment
     and grid services, capturing distributed energy resource orchestration market.
   first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-19T20:34:47'
+  last_seen: 2026-07
+  appearance_count: 3
+  last_run_at: '2026-07-06T21:29:38'
 - symbol: SMCI
   exchange: SMART
   currency: USD
@@ -494,101 +817,21 @@ breakthrough:
   thesis_latest: AI server demand driving 3x revenue growth; custom liquid cooling
     solutions capture higher ASPs as hyperscalers scale data centers.
   first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-19T20:34:47'
-- symbol: CVNA
-  exchange: SMART
-  currency: USD
-  name: CARVANA CO
-  megatrend: 11. Reindustrialization & automation
-  thesis_latest: Automated used car vending machines and AI-driven pricing capturing
-    share from traditional dealerships while achieving 15%+ unit economics at scale.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_seen: 2026-07
+  appearance_count: 3
+  last_run_at: '2026-07-06T21:29:38'
 - symbol: BEAM
   exchange: SMART
   currency: USD
   name: BEAM THERAPEUTICS INC
   megatrend: 3. Genomics & medical biotech
-  thesis_latest: Base editing technology enables precise genetic medicines without
-    double-strand breaks, platform generates multiple blockbuster therapies across
-    disease areas.
+  thesis_latest: Base editing offers precise single-nucleotide correction without
+    double-strand breaks. Sickle cell and rare-disease programs could validate safer
+    editing platform with broad licensing optionality.
   first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-19T20:34:47'
-- symbol: SITM
-  exchange: SMART
-  currency: USD
-  name: SITIME CORP
-  megatrend: 2. Compute infrastructure
-  thesis_latest: MEMS timing solutions replace quartz crystals in electronics, AI
-    and 5G infrastructure demand drives precision timing requirements and revenue
-    growth.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T11:24:02'
-- symbol: SPWR
-  exchange: SMART
-  currency: USD
-  name: SUNPOWER INC
-  megatrend: 6. Energy transition
-  thesis_latest: Residential solar installer pivoting to distributed energy platform
-    with storage and software, benefiting from IRA tax credits and grid modernization.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
-- symbol: ALB
-  exchange: SMART
-  currency: USD
-  name: ALBEMARLE CORP
-  megatrend: 9. Critical minerals & advanced materials
-  thesis_latest: Lithium mining leader with low-cost brine assets in Chile/Argentina
-    positioned for sustained EV battery demand growth and tight lithium supply dynamics.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
-- symbol: '6758'
-  exchange: TSEJ
-  currency: JPY
-  name: SONY GROUP CORP
-  megatrend: 1. AI/compute applications
-  thesis_latest: Image sensor dominance in smartphones expanding to automotive/industrial
-    AI applications, plus gaming/content synergies with PlayStation and entertainment
-    IP.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
-- symbol: TDOC
-  exchange: SMART
-  currency: USD
-  name: TELADOC HEALTH INC
-  megatrend: 4. GLP-1 & preventive consumer health
-  thesis_latest: Telehealth platform expanding into chronic care management and mental
-    health, capturing permanent adoption gains from COVID with AI-enhanced triage.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
-- symbol: EPAM
-  exchange: SMART
-  currency: USD
-  name: EPAM SYSTEMS INC
-  megatrend: 1. AI/compute applications
-  thesis_latest: Digital transformation consultant with AI/ML expertise helping enterprises
-    implement generative AI solutions, benefiting from $500B+ enterprise AI spending
-    wave.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_seen: 2026-07
+  appearance_count: 3
+  last_run_at: '2026-07-11T14:39:11'
 - symbol: PATH
   exchange: SMART
   currency: USD
@@ -597,101 +840,21 @@ breakthrough:
   thesis_latest: Robotic process automation becomes AI-powered workflow automation;
     enterprise customers expand from task automation to process intelligence and optimization.
   first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-19T20:34:47'
-- symbol: ZS
-  exchange: SMART
-  currency: USD
-  name: ZSCALER INC
-  megatrend: 12. Cybersecurity & digital sovereignty
-  thesis_latest: Cloud-native security platform replacing legacy VPN infrastructure
-    with zero-trust architecture, capturing enterprise digital transformation and
-    remote work trends.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
-- symbol: CHWY
-  exchange: SMART
-  currency: USD
-  name: CHEWY INC - CLASS A
-  megatrend: 5. Aging populations & elder care
-  thesis_latest: Pet e-commerce platform expanding into veterinary telehealth and
-    prescription services, benefiting from aging pet owner demographics and premiumization
-    trends.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
+  last_seen: 2026-07
+  appearance_count: 3
+  last_run_at: '2026-07-06T21:29:38'
 - symbol: TMDX
   exchange: SMART
   currency: USD
   name: TRANSMEDICS GROUP INC
   megatrend: 5. Aging populations & elder care
-  thesis_latest: Organ transport technology doubles transplant success rates; aging
-    population creates massive organ demand exceeding traditional preservation methods.
+  thesis_latest: Organ perfusion tech expands transplant supply by preserving organs
+    longer. Replacing static cold storage in aging-driven organ demand; owns logistics
+    network capturing per-transplant economics.
   first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-19T20:34:47'
-- symbol: DKNG
-  exchange: SMART
-  currency: USD
-  name: DRAFTKINGS INC-CL A
-  megatrend: 1. AI/compute applications
-  thesis_latest: Sports betting market expansion and AI-driven personalization increase
-    customer lifetime value, international expansion multiplies addressable market.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T11:24:02'
-- symbol: HUBS
-  exchange: SMART
-  currency: USD
-  name: HUBSPOT INC
-  megatrend: 1. AI/compute applications
-  thesis_latest: Inbound marketing platform expanding into AI-powered sales automation
-    and customer service, displacing legacy CRM systems with integrated approach.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
-- symbol: MNDY
-  exchange: SMART
-  currency: USD
-  name: MONDAY.COM LTD
-  megatrend: 1. AI/compute applications
-  thesis_latest: Work operating system platform using AI for project automation and
-    resource optimization, capturing enterprise workflow digitization with 85%+ gross
-    margins.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  appearance_count: 1
-  last_run_at: '2026-05-11T07:59:00'
-- symbol: QBTS
-  exchange: SMART
-  currency: USD
-  name: D-WAVE QUANTUM INC
-  megatrend: 13. Quantum computing
-  thesis_latest: Commercial quantum annealing leader with enterprise contracts in
-    optimization, positioning for 10x via fault-tolerant quantum breakthrough and
-    cloud scaling.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-11T13:32:30'
-  appearance_count: 1
-- symbol: TAK
-  exchange: SMART
-  currency: USD
-  name: TAKEDA PHARMACEUTIC-SP ADR
-  megatrend: 3. Genomics & medical biotech
-  thesis_latest: Cell therapy pipeline including CAR-T advances create new treatment
-    categories, licensing deals multiply valuation as therapies prove commercial.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-11T13:32:30'
-  appearance_count: 1
+  last_seen: 2026-08
+  appearance_count: 4
+  last_run_at: '2026-08-03T05:49:37'
 - symbol: RDDT
   exchange: SMART
   currency: USD
@@ -700,8 +863,727 @@ breakthrough:
   thesis_latest: User-generated content becomes premium AI training data; advertising
     revenue scales with authentic conversation data licensing to LLM developers.
   first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
+  last_seen: 2026-07
+  last_run_at: '2026-07-06T21:29:38'
+  appearance_count: 3
+- symbol: HWM
+  exchange: SMART
+  currency: USD
+  name: HOWMET AEROSPACE INC
+  megatrend: 10. Defense & sovereignty
+  thesis_latest: Aerospace components supplier benefits from defense spending increase
+    and commercial aviation recovery, advanced manufacturing capabilities drive margin
+    expansion.
+  first_seen: 2026-05
+  last_seen: 2026-07
+  last_run_at: '2026-07-06T21:29:38'
+  appearance_count: 3
+- symbol: MDB
+  exchange: SMART
+  currency: USD
+  name: MONGODB INC
+  megatrend: 1. AI/compute applications
+  thesis_latest: Document database becomes standard for AI applications requiring
+    flexible data structures, Atlas cloud service drives recurring revenue growth.
+  first_seen: 2026-05
+  last_seen: 2026-07
+  last_run_at: '2026-07-06T21:29:38'
+  appearance_count: 3
+- symbol: AEHR
+  exchange: SMART
+  currency: USD
+  name: AEHR TEST SYSTEMS
+  megatrend: 2. Compute infrastructure
+  thesis_latest: Semiconductor test equipment for silicon carbide and power devices
+    captures EV and renewable energy growth, wafer-level testing drives efficiency
+    gains.
+  first_seen: 2026-05
+  last_seen: 2026-07
+  last_run_at: '2026-07-06T21:29:38'
+  appearance_count: 3
+- symbol: VRNS
+  exchange: SMART
+  currency: USD
+  name: VARONIS SYSTEMS INC
+  megatrend: 12. Cybersecurity & digital sovereignty
+  thesis_latest: Data security platform captures enterprise data protection requirements,
+    SaaS transition and AI-powered threat detection drive recurring revenue growth.
+  first_seen: 2026-05
+  last_seen: 2026-07
+  last_run_at: '2026-07-11T10:59:25'
+  appearance_count: 3
+- symbol: ZIM
+  exchange: SMART
+  currency: USD
+  name: ZIM INTEGRATED SHIPPING SERV
+  megatrend: 10. Defense & sovereignty
+  thesis_latest: Red Sea shipping disruption creates permanent route changes; Israeli
+    flag carrier gains strategic premium for Western trade security.
+  first_seen: 2026-05
+  last_seen: 2026-07
+  last_run_at: '2026-07-06T21:29:38'
+  appearance_count: 3
+- symbol: '4385'
+  exchange: TSEJ
+  currency: JPY
+  name: MERCARI INC
+  megatrend: 16. EM digital finance & fintech
+  thesis_latest: Japan's leading C2C marketplace with integrated payments and financial
+    services, capturing aging population's asset monetization needs.
+  first_seen: 2026-05
+  last_seen: 2026-07
+  last_run_at: '2026-07-06T21:29:38'
+  appearance_count: 3
+- symbol: HIMS
+  exchange: SMART
+  currency: USD
+  name: HIMS & HERS HEALTH INC
+  megatrend: 4. GLP-1 & preventive consumer health
+  thesis_latest: Direct-to-consumer telehealth scaling GLP-1, longevity and preventive
+    subscriptions; recurring high-margin membership base and brand pricing power drive
+    durable compounding.
+  first_seen: 2026-05
+  last_seen: 2026-09
+  last_run_at: '2026-09-07T23:39:27'
+  appearance_count: 5
+- symbol: LAC
+  exchange: SMART
+  currency: USD
+  name: LITHIUM AMERICAS CORP
+  megatrend: 9. Critical minerals & advanced materials
+  thesis_latest: North American lithium development with Thacker Pass mine becoming
+    largest US lithium source, benefiting from domestic supply chain requirements.
+  first_seen: 2026-05
+  last_seen: 2026-07
+  last_run_at: '2026-07-06T21:29:38'
+  appearance_count: 3
+- symbol: OKTA
+  exchange: SMART
+  currency: USD
+  name: OKTA INC
+  megatrend: 12. Cybersecurity & digital sovereignty
+  thesis_latest: Identity management platform leader with zero-trust architecture
+    capturing enterprise security transformation and remote work authentication demands.
+  first_seen: 2026-05
+  last_seen: 2026-07
+  last_run_at: '2026-07-06T21:29:38'
+  appearance_count: 3
+- symbol: IREN
+  exchange: SMART
+  currency: USD
+  name: IREN LTD
+  megatrend: 2. Compute infrastructure
+  thesis_latest: Bitcoin mining infrastructure pivots to AI compute hosting; renewable
+    energy assets provide low-cost power for hyperscaler data centers.
+  first_seen: 2026-05
+  last_seen: 2026-07
+  last_run_at: '2026-07-06T21:29:38'
+  appearance_count: 3
+- symbol: POWL
+  exchange: SMART
+  currency: USD
+  name: POWELL INDUSTRIES INC
+  megatrend: 11. Reindustrialization & automation
+  thesis_latest: Switchgear and motor control centers are mission-critical for data
+    center power distribution and LNG terminal electrification; 2-year lead times
+    create pricing power; order backlog of $1.3B at a $2.4B cap implies near-term
+    revenue growth with expanding EBIT margins.
+  first_seen: 2026-05
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 7
+- symbol: CGNT
+  exchange: SMART
+  currency: USD
+  name: COGNYTE SOFTWARE LTD
+  megatrend: 10. Defense & sovereignty
+  thesis_latest: Security analytics software captures government surveillance spending;
+    AI-powered threat detection scales across law enforcement and intelligence agencies
+    globally.
+  first_seen: 2026-05
+  last_seen: 2026-07
+  last_run_at: '2026-07-06T21:29:38'
+  appearance_count: 3
+- symbol: MLAB
+  exchange: SMART
+  currency: USD
+  name: MESA LABORATORIES INC
+  megatrend: 8. Climate adaptation
+  thesis_latest: Cold chain monitoring systems capture pharmaceutical logistics demand;
+    temperature-sensitive drug storage requirements create recurring software subscription
+    revenue.
+  first_seen: 2026-05
+  last_seen: 2026-07
+  last_run_at: '2026-07-06T21:29:38'
+  appearance_count: 3
+- symbol: FTAI
+  exchange: SMART
+  currency: USD
+  name: FTAI AVIATION LTD
+  megatrend: 11. Reindustrialization & automation
+  thesis_latest: Aircraft engine leasing captures aftermarket MRO margins; infrastructure
+    assets benefit from reshoring-driven rail and port capacity needs.
+  first_seen: 2026-05
+  last_seen: 2026-07
+  last_run_at: '2026-07-06T21:29:38'
+  appearance_count: 3
+- symbol: '4523'
+  exchange: TSEJ
+  currency: JPY
+  name: EISAI CO LTD
+  megatrend: 5. Aging populations & elder care
+  thesis_latest: "Leqembi (lecanemab) with Biogen is the first disease-modifying Alzheimer's\
+    \ treatment; Japan approval and US full approval in 2023; global Alzheimer's market\
+    \ could reach $15B+ by 2030; Eisai retains 55% economics in Japan and 45% globally\
+    \ \u2014 currently mispriced vs. peak revenue."
+  first_seen: 2026-07
+  last_seen: 2026-07
+  last_run_at: '2026-07-11T10:59:25'
+  appearance_count: 1
+- symbol: NU
+  exchange: SMART
+  currency: USD
+  name: NU HOLDINGS LTD/CAYMAN ISL-A
+  megatrend: 16 EM digital finance & fintech
+  thesis_latest: Latin American digital bank adding tens of millions of users across
+    Brazil, Mexico, Colombia; ARPU expansion via credit and secondary products drives
+    earnings compounding as it displaces legacy banks.
+  first_seen: 2026-07
+  last_seen: 2026-09
+  last_run_at: '2026-09-07T23:39:27'
+  appearance_count: 3
+- symbol: ALAB
+  exchange: SMART
+  currency: USD
+  name: ASTERA LABS INC
+  megatrend: 2. Compute infrastructure
+  thesis_latest: Connectivity semiconductors (PCIe, CXL retimers) are the unsolved
+    bottleneck in AI cluster scaling; Astera is sole-source at multiple hyperscalers,
+    implying 40%+ revenue CAGR as rack density doubles every 2-3 years.
+  first_seen: 2026-07
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 5
+- symbol: MP
+  exchange: SMART
+  currency: USD
+  name: MP MATERIALS CORP
+  megatrend: 9. Critical minerals & advanced materials
+  thesis_latest: Only scaled US rare-earth mine-to-magnet chain. A Pentagon price
+    floor and offtake deal guarantee its economics. The magnet plants in Texas could
+    turn a loss-making miner into a high-margin, sovereign supplier of NdFeB magnets.
+  first_seen: 2026-07
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 5
+- symbol: WAB
+  exchange: SMART
+  currency: USD
+  name: WABTEC CORP
+  megatrend: 11. Reindustrialization & automation
+  thesis_latest: Rail electrification and digital train control are non-discretionary
+    upgrades for Class 1 railroads facing emissions regulation; Wabtec's installed
+    base of 10,000+ locomotives creates an aftermarket moat generating 40%+ gross
+    margins on services.
+  first_seen: 2026-07
+  last_seen: 2026-07
+  last_run_at: '2026-07-11T10:59:25'
+  appearance_count: 1
+- symbol: AWK
+  exchange: SMART
+  currency: USD
+  name: AMERICAN WATER WORKS CO INC
+  megatrend: 8. Climate adaptation
+  thesis_latest: Largest US water utility with regulated rate base growing 8-10% annually
+    via infrastructure replacement; PFAS remediation mandate creates a multi-decade
+    capex supercycle that utilities pass through to rate base; water scarcity drives
+    municipal acquisition pipeline.
+  first_seen: 2026-07
+  last_seen: 2026-09
+  last_run_at: '2026-09-07T23:39:27'
+  appearance_count: 3
+- symbol: ADMA
+  exchange: SMART
+  currency: USD
+  name: ADMA BIOLOGICS INC
+  megatrend: 3. Genomics & medical biotech
+  thesis_latest: Hyper-immune IVIG from high-titer plasma donors outperforms standard
+    IVIG in immunocompromised patients; FDA-cleared ASCENIV is ramping through underserved
+    plasma collection centers with 70%+ gross margins and a path to $500M+ revenue.
+  first_seen: 2026-07
+  last_seen: 2026-07
+  last_run_at: '2026-07-11T10:59:25'
+  appearance_count: 1
+- symbol: CCJ
+  exchange: SMART
+  currency: USD
+  name: CAMECO CORP
+  megatrend: 7 Energy bridge
+  thesis_latest: Top-tier uranium producer plus Westinghouse stake; structural uranium
+    deficit and nuclear renaissance for data-center power drive sustained price and
+    volume, expanding cash flows dramatically.
+  first_seen: 2026-07
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 5
+- symbol: '6146'
+  exchange: TSEJ
+  currency: JPY
+  name: DISCO CORP
+  megatrend: 2 Compute infrastructure
+  thesis_latest: Dominant precision dicing/grinding tools for advanced packaging;
+    chiplet and HBM stacking intensify demand for its unique cutting equipment, driving
+    structural revenue growth and pricing power.
+  first_seen: 2026-07
+  last_seen: 2026-09
+  last_run_at: '2026-09-07T23:39:27'
+  appearance_count: 3
+- symbol: SRPT
+  exchange: SMART
+  currency: USD
+  name: SAREPTA THERAPEUTICS INC
+  megatrend: 3. Genomics & medical biotech
+  thesis_latest: ELEVIDYS gene therapy for Duchenne muscular dystrophy has full FDA
+    approval; expanding label to ambulatory and non-ambulatory patients addresses
+    15,000+ US patients at $3.2M/dose, creating a multi-billion revenue stream with
+    durable orphan exclusivity.
+  first_seen: 2026-07
+  last_seen: 2026-09
+  last_run_at: '2026-09-07T23:39:27'
+  appearance_count: 3
+- symbol: CIEN
+  exchange: SMART
+  currency: USD
+  name: CIENA CORP
+  megatrend: 2. Compute infrastructure
+  thesis_latest: AI training clusters require 400G/800G optical networking; Ciena's
+    WaveLogic coherent optics displace legacy Cisco/Nokia DWDM at hyperscalers and
+    carrier backbone, with 25%+ revenue CAGR embedded in multi-year backlog.
+  first_seen: 2026-07
+  last_seen: 2026-10
+  last_run_at: '2026-10-06T07:52:26'
+  appearance_count: 4
+- symbol: IRTC
+  exchange: SMART
+  currency: USD
+  name: IRHYTHM HOLDINGS INC
+  megatrend: 4. GLP-1 & preventive consumer health
+  thesis_latest: Zio patch continuous cardiac monitor captures 90%+ of extended-wear
+    ECG market; GLP-1-driven weight loss increases arrhythmia monitoring demand; reimbursement
+    expansion and international rollout (UK, Japan) provide three separate growth
+    vectors.
+  first_seen: 2026-07
+  last_seen: 2026-07
+  last_run_at: '2026-07-11T14:39:11'
+  appearance_count: 1
+- symbol: KARO
+  exchange: SMART
+  currency: USD
+  name: KAROOOOO LTD
+  megatrend: 16. EM digital finance & fintech
+  thesis_latest: "Fleet telematics SaaS (Cartrack) dominant in Africa, Southeast Asia,\
+    \ and emerging Europe \u2014 markets Samsara/Verizon cannot profitably serve;\
+    \ 1.9M subscribers growing 20%+ with 95%+ retention; South African base funds\
+    \ Asian expansion; trading at 18x FCF for 25% organic growth."
+  first_seen: 2026-07
+  last_seen: 2026-07
+  last_run_at: '2026-07-11T10:59:25'
+  appearance_count: 1
+- symbol: IOT
+  exchange: SMART
+  currency: USD
+  name: SAMSARA INC-CL A
+  megatrend: 11. Reindustrialization & automation
+  thesis_latest: Connected Operations Cloud ingests real-time sensor data from physical
+    assets (fleets, equipment) at scale unavailable to any competitor; land-and-expand
+    model in $60B+ industrial IoT TAM drives 30%+ ARR growth with improving FCF margin.
+  first_seen: 2026-07
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 5
+- symbol: GTLS
+  exchange: SMART
+  currency: USD
+  name: CHART INDUSTRIES INC
+  megatrend: 7. Energy bridge
+  thesis_latest: Cryogenic equipment for LNG, liquid hydrogen, and CO2 capture is
+    a picks-and-shovels play on all three energy transition vectors simultaneously;
+    Howden acquisition doubles addressable market; order backlog near $4B implies
+    3+ years of revenue visibility.
+  first_seen: 2026-07
+  last_seen: 2026-07
+  last_run_at: '2026-07-11T10:59:25'
+  appearance_count: 1
+- symbol: DUOL
+  exchange: SMART
+  currency: USD
+  name: DUOLINGO
+  megatrend: 1. AI/compute applications
+  thesis_latest: AI-personalized language instruction converts 6% paying subscribers
+    out of 600M registered users; each 1-point DAU monetization rate improvement adds
+    $400M ARR; subscription gross margins above 70% drive EBIT inflection.
+  first_seen: 2026-07
+  last_seen: 2026-07
+  last_run_at: '2026-07-11T10:59:25'
+  appearance_count: 1
+- symbol: NBIS
+  exchange: SMART
+  currency: USD
+  name: NEBIUS GROUP NV
+  megatrend: sovereign-cloud infrastructure
+  thesis_latest: Neocloud GPU infrastructure provider with Nvidia backing. Building
+    sovereign/independent AI compute capacity; if utilization scales, becomes a pure-play
+    AI cloud rerating against hyperscaler capacity scarcity.
+  first_seen: 2026-07
+  last_seen: 2026-09
+  last_run_at: '2026-09-07T23:39:27'
+  appearance_count: 3
+- symbol: S
+  exchange: SMART
+  currency: USD
+  name: SENTINELONE INC -CLASS A
+  megatrend: 12. Cybersecurity & digital sovereignty
+  thesis_latest: SentinelOne is an AI-native endpoint and data security platform taking
+    share from legacy security vendors. It trades at a fraction of CrowdStrike's multiple;
+    reaching GAAP profitability and gaining share could drive margin expansion and
+    re-rating.
+  first_seen: 2026-07
+  last_seen: 2026-10
+  last_run_at: '2026-10-06T07:52:26'
+  appearance_count: 4
+- symbol: '6920'
+  exchange: TSEJ
+  currency: JPY
+  name: LASERTEC CORP
+  megatrend: 2. Compute infrastructure
+  thesis_latest: Monopoly in EUV photomask inspection. Every advanced logic and HBM
+    node requires its tools; leading-edge capex intensity and node complexity drive
+    recurring high-margin equipment demand.
+  first_seen: 2026-07
+  last_seen: 2026-09
+  last_run_at: '2026-09-07T23:39:27'
+  appearance_count: 3
+- symbol: BWXT
+  exchange: SMART
+  currency: USD
+  name: BWX TECHNOLOGIES INC
+  megatrend: 7 Energy bridge
+  thesis_latest: Sole US naval-nuclear reactor manufacturer expanding into microreactors
+    and medical isotopes; defense monopoly cash funds SMR optionality, giving stable
+    base plus asymmetric nuclear-renaissance upside.
+  first_seen: 2026-07
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 5
+- symbol: VRT
+  exchange: SMART
+  currency: USD
+  name: VERTIV HOLDINGS CO-A
+  megatrend: 2 Compute infrastructure
+  thesis_latest: Data-center power and liquid-cooling supplier at center of AI thermal-density
+    crisis; liquid-cooling adoption drives content-per-rack growth and margin expansion
+    across a multi-year buildout.
+  first_seen: 2026-07
+  last_seen: 2026-09
+  last_run_at: '2026-09-07T23:39:27'
+  appearance_count: 3
+- symbol: NTLA
+  exchange: SMART
+  currency: USD
+  name: INTELLIA THERAPEUTICS INC
+  megatrend: 3. Genomics & medical biotech
+  thesis_latest: Leading in-vivo CRISPR company; systemic gene editing for ATTR and
+    HAE could become durable multi-billion franchises with first-mover regulatory
+    pathway.
+  first_seen: 2026-07
+  last_seen: 2026-08
+  last_run_at: '2026-08-03T23:39:33'
+  appearance_count: 2
+- symbol: GEV
+  exchange: SMART
+  currency: USD
+  name: GE VERNOVA INC
+  megatrend: 6 Energy transition
+  thesis_latest: Grid-equipment and gas/wind turbine leader powering electrification
+    and AI load growth; grid backlog and pricing power drive margin inflection as
+    electricity demand structurally accelerates.
+  first_seen: 2026-07
+  last_seen: 2026-09
+  last_run_at: '2026-09-07T23:39:27'
+  appearance_count: 3
+- symbol: TEM
+  exchange: SMART
+  currency: USD
+  name: TEMPUS AI INC-CL A
+  megatrend: 3. Genomics & medical biotech
+  thesis_latest: One of the largest clinical-plus-molecular oncology datasets, monetized
+    through genomic testing and data licensing to pharma for AI drug discovery. High-margin
+    data revenue scaling past testing costs could drive a large step-up in operating
+    leverage.
+  first_seen: 2026-07
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 5
+- symbol: PODD
+  exchange: SMART
+  currency: USD
+  name: INSULET CORP
+  megatrend: 4. GLP-1 & preventive consumer health
+  thesis_latest: Tubeless insulin patch pump gaining share and expanding into type-2
+    diabetes. Automated dosing plus GLP-1-era metabolic monitoring broadens TAM; recurring
+    pod consumables compound revenue.
+  first_seen: 2026-08
+  last_seen: 2026-08
+  last_run_at: '2026-08-03T05:49:37'
+  appearance_count: 1
+- symbol: ASTS
+  exchange: SMART
+  currency: USD
+  name: AST SPACEMOBILE INC
+  megatrend: 14. Space
+  thesis_latest: Space-based cellular broadband straight to unmodified phones, with
+    AT&T, Verizon and Vodafone as partners. Revenue-share wholesale income from billions
+    of subscribers could reach multi-billion dollars at high incremental margins once
+    the constellation is deployed.
+  first_seen: 2026-08
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 4
+- symbol: XYL
+  exchange: SMART
+  currency: USD
+  name: XYLEM INC
+  megatrend: 8 Climate adaptation
+  thesis_latest: Water-infrastructure pure-play with smart-metering and treatment;
+    aging pipes, scarcity and regulation drive multi-decade capex; recurring digital-water
+    software expands margins beyond hardware.
+  first_seen: 2026-08
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 4
+- symbol: TENB
+  exchange: SMART
+  currency: USD
+  name: TENABLE HOLDINGS INC
+  megatrend: 12. Cybersecurity & digital sovereignty
+  thesis_latest: Exposure-management leader expanding from vulnerability scanning
+    to unified cyber-risk platform; consolidation of point tools drives net-retention
+    and margin expansion.
+  first_seen: 2026-08
+  last_seen: 2026-08
+  last_run_at: '2026-08-03T23:39:33'
+  appearance_count: 1
+- symbol: AVAV
+  exchange: SMART
+  currency: USD
+  name: AEROVIRONMENT INC
+  megatrend: 10. Defense & sovereignty
+  thesis_latest: Loitering-munition and small-UAS leader with proven combat demand;
+    NATO restocking and expanding loitering-munition adoption drive multi-year backlog
+    and margin expansion.
+  first_seen: 2026-08
+  last_seen: 2026-09
+  last_run_at: '2026-09-07T23:39:27'
+  appearance_count: 2
+- symbol: OKLO
+  exchange: SMART
+  currency: USD
+  name: OKLO INC
+  megatrend: 7 Energy bridge
+  thesis_latest: Fast-reactor micro-nuclear with build-own-operate model selling power
+    not reactors; data-center power scarcity creates enormous demand if NRC licensing
+    and first Aurora deployment succeed.
+  first_seen: 2026-08
+  last_seen: 2026-09
+  last_run_at: '2026-09-07T23:39:27'
+  appearance_count: 2
+- symbol: NKT
+  exchange: CPH
+  currency: DKK
+  name: NKT A/S
+  megatrend: 19. Power grid & the electricity shortage
+  thesis_latest: One of three Western makers of HVDC extra-high-voltage cable. Its
+    order backlog runs years ahead, and the Karlskrona expansion adds capacity. As
+    the newer, higher-priced contracts reach revenue, margins should expand steadily.
+  first_seen: 2026-10
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 2
+- symbol: '042660'
+  exchange: KRX
+  currency: KRW
+  name: HANWHA OCEAN CO LTD
+  megatrend: 22. Structural shortages & bottlenecks
+  thesis_latest: Korean shipyard in turnaround with LNG-carrier strength and US naval
+    access via Philly Shipyard; after a ~60% drawdown, margin normalization and US
+    Navy newbuild/MRO orders can drive earnings and re-rating.
+  first_seen: 2026-10
+  last_seen: 2026-11
+  last_run_at: '2026-11-02T23:12:19'
+  appearance_count: 2
+- symbol: GRAB
+  exchange: SMART
+  currency: USD
+  name: GRAB HOLDINGS LTD - CL A
+  megatrend: 21. EM consumer & infrastructure
+  thesis_latest: Southeast Asia's dominant super-app, newly profitable; digital banking,
+    lending and deliveries across ~700M people let EBITDA margins scale from low single
+    digits toward Uber-like levels on growing GMV.
+  first_seen: 2026-10
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 2
+- symbol: ESLT
+  exchange: TASE
+  currency: ILS
+  name: ELBIT SYSTEMS LTD
+  megatrend: 10. Defense & sovereignty
+  thesis_latest: Elbit has a record backlog of more than $25bn from European rearmament,
+    artillery and munitions, plus electronic warfare proven in combat. Its operating
+    margins are single-digit; a move to a higher-margin export mix could double earnings
+    and re-rate the stock.
+  first_seen: 2026-10
+  last_seen: 2026-10
+  last_run_at: '2026-10-06T07:52:26'
+  appearance_count: 1
+- symbol: '4062'
+  exchange: TSEJ
+  currency: JPY
+  name: IBIDEN CO LTD
+  megatrend: 2. Compute infrastructure
+  thesis_latest: Leading maker of the high-layer ABF substrates that AI accelerators
+    need. Its new Ono plant puts heavy capex into a bottleneck. As the plant fills,
+    operating margins can roughly double from the low teens, lifting earnings severalfold.
+  first_seen: 2026-10
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 2
+- symbol: PRCT
+  exchange: SMART
+  currency: USD
+  name: PROCEPT BIOROBOTICS CORP
+  megatrend: 20. Medical technology & healthcare productivity
+  thesis_latest: Aquablation surgical robot replacing TURP and laser procedures for
+    enlarged prostate, a large and aging-driven market. A growing installed base drives
+    recurring handpiece revenue. Reaching profitability could turn a $2B company into
+    a durable compounder.
+  first_seen: 2026-10
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 2
+- symbol: ZEAL
+  exchange: CPH
+  currency: DKK
+  name: ZEALAND PHARMA A/S
+  megatrend: 4. GLP-1 & preventive consumer health
+  thesis_latest: Amylin-analog petrelintide is partnered with Roche for weight loss
+    with better tolerability, alongside a multi-asset peptide pipeline. Royalties
+    and milestones on a share of a market above $100B could dwarf its current valuation.
+  first_seen: 2026-10
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 2
+- symbol: CRCL
+  exchange: SMART
+  currency: USD
+  name: CIRCLE INTERNET GROUP INC
+  megatrend: 24. Tokenised finance & payment rails
+  thesis_latest: Issuer of USDC, the regulated stablecoin under the GENIUS Act. Stablecoins
+    are taking over cross-border payments and settlement from correspondent banking.
+    If circulation grows tenfold, with network and payments revenue reducing dependence
+    on interest rates, earnings could compound.
+  first_seen: 2026-10
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 2
+- symbol: LEU
+  exchange: SMART
+  currency: USD
+  name: CENTRUS ENERGY CORP-CLASS A
+  megatrend: 7. Energy bridge
+  thesis_latest: Only US-owned uranium enrichment technology holder and the sole licensed
+    HALEU producer. The ban on Russian uranium and fuel demand from advanced reactors
+    could fund a centrifuge plant buildout. That would turn a trading business into
+    a scarce-capacity owner.
+  first_seen: 2026-10
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 2
+- symbol: '6324'
+  exchange: TSEJ
+  currency: JPY
+  name: HARMONIC DRIVE SYSTEMS INC
+  megatrend: 18. Robotics & physical AI
+  thesis_latest: Dominant maker of precision strain-wave gears used in robot joints.
+    Every humanoid needs dozens of these actuators. Volume ramps on idle capacity
+    would return profitability from today's depressed level to peak, with large operating
+    leverage.
+  first_seen: 2026-10
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 2
+- symbol: INTR
+  exchange: SMART
+  currency: USD
+  name: INTER & CO INC - CL A
+  megatrend: 16. EM digital finance & fintech
+  thesis_latest: "Brazilian digital bank with more than 35 million clients. Its cost-to-serve\
+    \ is a fraction of Ita\xFA's or Bradesco's. Return on equity rising from the low\
+    \ teens toward 30% as the platform scales could compound book value and re-rate\
+    \ the stock."
+  first_seen: 2026-11
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 1
+- symbol: RBRK
+  exchange: SMART
+  currency: USD
+  name: RUBRIK INC-A
+  megatrend: 12. Cybersecurity & digital sovereignty
+  thesis_latest: Displacing legacy backup vendors with a cyber-recovery platform;
+    35%+ ARR growth and ~80% gross margins mean the GAAP profitability inflection
+    can drive outsized earnings expansion and re-rating.
+  first_seen: 2026-11
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 1
+- symbol: SDF
+  exchange: IBIS
+  currency: EUR
+  name: K+S AG-REG
+  megatrend: 23. Food security & agricultural technology
+  thesis_latest: German potash producer trading near book value; Bethune mine ramp
+    in Canada lowers unit costs while food-security demand tightens potash, giving
+    trough-price operating leverage that can multiply free cash flow.
+  first_seen: 2026-11
+  last_seen: 2026-11
+  last_run_at: '2026-11-02T23:12:19'
+  appearance_count: 1
+- symbol: COHR
+  exchange: SMART
+  currency: USD
+  name: COHERENT CORP
+  megatrend: 2. Compute infrastructure
+  thesis_latest: Vertically integrated maker of 800G/1.6T optical transceivers and
+    indium phosphide lasers. Return on capital is still low because of debt from the
+    II-VI deal. Paying down debt and shifting to datacom can grow earnings per share
+    faster than revenue.
+  first_seen: 2026-11
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
+  appearance_count: 1
+- symbol: MOS
+  exchange: SMART
+  currency: USD
+  name: MOSAIC CO/THE
+  megatrend: 23. Food security & agricultural technology
+  thesis_latest: Low-cost potash and phosphate producer valued at trough multiples.
+    China's phosphate export curbs and depleting arable land tighten nutrient supply.
+    Mine productivity fixes plus a stronger price cycle could multiply free cash flow
+    on a cyclically depressed base.
+  first_seen: 2026-11
+  last_seen: 2026-11
+  last_run_at: '2026-11-04T06:47:06'
   appearance_count: 1
 - symbol: EQT
   exchange: SMART
@@ -726,63 +1608,6 @@ breakthrough:
   last_seen: 2026-05
   last_run_at: '2026-05-11T11:24:02'
   appearance_count: 1
-- symbol: HWM
-  exchange: SMART
-  currency: USD
-  name: HOWMET AEROSPACE INC
-  megatrend: 10. Defense & sovereignty
-  thesis_latest: Aerospace components supplier benefits from defense spending increase
-    and commercial aviation recovery, advanced manufacturing capabilities drive margin
-    expansion.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
-- symbol: MDB
-  exchange: SMART
-  currency: USD
-  name: MONGODB INC
-  megatrend: 1. AI/compute applications
-  thesis_latest: Document database becomes standard for AI applications requiring
-    flexible data structures, Atlas cloud service drives recurring revenue growth.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
-- symbol: AEHR
-  exchange: SMART
-  currency: USD
-  name: AEHR TEST SYSTEMS
-  megatrend: 2. Compute infrastructure
-  thesis_latest: Semiconductor test equipment for silicon carbide and power devices
-    captures EV and renewable energy growth, wafer-level testing drives efficiency
-    gains.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
-- symbol: VRNS
-  exchange: SMART
-  currency: USD
-  name: VARONIS SYSTEMS INC
-  megatrend: 12. Cybersecurity & digital sovereignty
-  thesis_latest: Data security platform captures enterprise data protection requirements,
-    SaaS transition and AI-powered threat detection drive recurring revenue growth.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
-- symbol: ZIM
-  exchange: SMART
-  currency: USD
-  name: ZIM INTEGRATED SHIPPING SERV
-  megatrend: 10. Defense & sovereignty
-  thesis_latest: Red Sea shipping disruption creates permanent route changes; Israeli
-    flag carrier gains strategic premium for Western trade security.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
 - symbol: NMDC
   exchange: NSE
   currency: INR
@@ -804,105 +1629,4 @@ breakthrough:
   first_seen: 2026-05
   last_seen: 2026-05
   last_run_at: '2026-05-11T13:32:30'
-  appearance_count: 1
-- symbol: '4385'
-  exchange: TSEJ
-  currency: JPY
-  name: MERCARI INC
-  megatrend: 16. EM digital finance & fintech
-  thesis_latest: Japan's leading C2C marketplace with integrated payments and financial
-    services, capturing aging population's asset monetization needs.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
-- symbol: HIMS
-  exchange: SMART
-  currency: USD
-  name: HIMS & HERS HEALTH INC
-  megatrend: 4. GLP-1 & preventive consumer health
-  thesis_latest: Direct-to-consumer telehealth captures primary care market; GLP-1
-    weight management access drives subscriber growth and retention expansion.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
-- symbol: LAC
-  exchange: SMART
-  currency: USD
-  name: LITHIUM AMERICAS CORP
-  megatrend: 9. Critical minerals & advanced materials
-  thesis_latest: North American lithium development with Thacker Pass mine becoming
-    largest US lithium source, benefiting from domestic supply chain requirements.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
-- symbol: OKTA
-  exchange: SMART
-  currency: USD
-  name: OKTA INC
-  megatrend: 12. Cybersecurity & digital sovereignty
-  thesis_latest: Identity management platform leader with zero-trust architecture
-    capturing enterprise security transformation and remote work authentication demands.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
-- symbol: IREN
-  exchange: SMART
-  currency: USD
-  name: IREN LTD
-  megatrend: 2. Compute infrastructure
-  thesis_latest: Bitcoin mining infrastructure pivots to AI compute hosting; renewable
-    energy assets provide low-cost power for hyperscaler data centers.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
-- symbol: POWL
-  exchange: SMART
-  currency: USD
-  name: POWELL INDUSTRIES INC
-  megatrend: 2. Compute infrastructure
-  thesis_latest: Electrical infrastructure equipment captures data center power demand
-    surge; custom switchgear and transformers command premium pricing for AI facilities.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
-- symbol: CGNT
-  exchange: SMART
-  currency: USD
-  name: COGNYTE SOFTWARE LTD
-  megatrend: 10. Defense & sovereignty
-  thesis_latest: Security analytics software captures government surveillance spending;
-    AI-powered threat detection scales across law enforcement and intelligence agencies
-    globally.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
-- symbol: MLAB
-  exchange: SMART
-  currency: USD
-  name: MESA LABORATORIES INC
-  megatrend: 8. Climate adaptation
-  thesis_latest: Cold chain monitoring systems capture pharmaceutical logistics demand;
-    temperature-sensitive drug storage requirements create recurring software subscription
-    revenue.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
-  appearance_count: 1
-- symbol: FTAI
-  exchange: SMART
-  currency: USD
-  name: FTAI AVIATION LTD
-  megatrend: 11. Reindustrialization & automation
-  thesis_latest: Aircraft engine leasing captures aftermarket MRO margins; infrastructure
-    assets benefit from reshoring-driven rail and port capacity needs.
-  first_seen: 2026-05
-  last_seen: 2026-05
-  last_run_at: '2026-05-19T20:34:47'
   appearance_count: 1
