@@ -334,8 +334,13 @@ _TASE_TICK_ABOVE = 100.0
 # and IBKR relays the refusal as a bare Cancelled with no message. 2026-11-04 and 11-11: every
 # queue-leader buy on SGX (DBS, OCBC) carried the 1.5% delayed-venue premium = ~110 ticks above the
 # tape and died in 3 s; a non-leader bid just below the market (SGX Ltd) rested fine. Stay inside the
-# band with margin for the 10–20 min quote delay: at most 25 ticks either side of the reference.
-_SGX_FORCED_ORDER_RANGE_TICKS = 25
+# band with margin for the quote delay: the reference is a 10–20 min old print on this login, and
+# 2026-11-12 showed a 25-tick cushion is too thin (DBS slid 11 ticks during the lag → 71.40 vs a live
+# 71.04 = 36 ticks → refused; DBS moves >5 ticks in 15 min 22% of the time in the buy window). At
+# 10 ticks none of DBS/OCBC/SGX Ltd moved far enough in 20 sessions to be refused; a buy limit above
+# the ask fills AT the ask, so a smaller cushion never raises the price paid — it only rests the order
+# below the ask (~7% of the time on DBS) instead of paying up.
+_SGX_FORCED_ORDER_RANGE_TICKS = 10
 # SGX minimum bid sizes for stocks: below S$0.20 → 0.001; S$0.20–1.995 → 0.005; S$2.00 and up → 0.01.
 _SGX_TICK_BANDS: list[tuple[float, float]] = [(0.1999, 0.001), (1.9999, 0.005), (float("inf"), 0.01)]
 
@@ -369,7 +374,7 @@ def _sgx_range_clamp(price: float, reference: float | None,
 
 def _sgx_reference_price(ib, contract, fallback: float | None) -> float | None:
     """Last traded price for the SGX band: the current daily bar's close (a 10–20 min delayed print on
-    this login, which is why the band keeps a 5-tick margin), else the caller's fallback."""
+    this login, which is why the band keeps a 20-tick margin), else the caller's fallback."""
     try:
         with get_portfolio_lock():
             bars = ib.reqHistoricalData(contract, endDateTime="", durationStr="1 D",
