@@ -16,6 +16,7 @@ from src.web.routes import consigliere as consigliere_route
 from src.web.routes import marswalk as marswalk_route
 from src.web.routes import ipo as ipo_route
 from src.web.routes import borrower as borrower_route
+from src.web.routes import reports as reports_route
 from src.lender_portal import router as lender_portal_route
 from src.borrower.admin_auth import current_principal as _current_admin_principal
 from src.borrower.deadman import compute_state as _compute_deadman_state
@@ -101,6 +102,7 @@ def create_app() -> FastAPI:
     app.include_router(consigliere_route.router)
     app.include_router(marswalk_route.router)
     app.include_router(ipo_route.router, prefix="/ipo")
+    app.include_router(reports_route.router)
     app.include_router(borrower_route.router, prefix="/borrower")
     app.include_router(lender_portal_route.router, prefix="/lenders")
 

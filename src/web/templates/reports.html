@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+
+{% block title %}Account Statements{% endblock %}
+{% block nav_reports %}bg-gray-800 text-amber-300{% endblock %}
+{% block m_nav_reports %}bg-gray-800 text-amber-300{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto">
+
+    <div class="mb-5">
+        <h1 class="text-2xl font-semibold">Account Statements</h1>
+        <p class="text-gray-400 text-sm mt-1">
+            All transactions over a date range, plus the state of holdings on chosen dates,
+            as a PDF. The two accounts are reported on separately — one document per account,
+            never combined.
+        </p>
+    </div>
+
+    <!-- Account selector -->
+    <div class="flex gap-1 mb-5 border-b border-gray-800">
+        {% for s in sides %}
+        <a href="/reports?side={{ s.key }}"
+           class="px-4 py-2 text-sm rounded-t border-b-2 -mb-px transition
+                  {% if s.key == side %}border-amber-300 text-amber-300 bg-gray-900{% else %}border-transparent text-gray-400 hover:text-gray-200{% endif %}">
+            {{ s.label }}
+        </a>
+        {% endfor %}
+    </div>
+
+    <div class="text-xs text-gray-500 mb-5">
+        IBKR account <span class="text-gray-300 font-mono">{{ archive.account_id or '—' }}</span>
+    </div>
+
+    {% if last_import %}
+    <div class="mb-5 rounded border px-4 py-3 text-sm
+                {% if last_import.ok %}border-emerald-800 bg-emerald-950/40 text-emerald-200
+                {% else %}border-red-900 bg-red-950/40 text-red-200{% endif %}">
+        <div class="font-medium mb-0.5">{{ 'Import complete' if last_import.ok else 'Import failed' }}</div>
+        <div class="text-xs opacity-90">{{ last_import.message }}</div>
+    </div>
+    {% endif %}
+
+    {% if import_running %}
+    <div class="mb-5 rounded border border-amber-900 bg-amber-950/30 px-4 py-3 text-sm text-amber-200"
+         hx-get="/reports?side={{ side }}" hx-trigger="every 10s" hx-select=".import-status" hx-swap="none">
+        Fetching the Flex statement from IBKR — this polls for up to two minutes. Reload to see the result.
+    </div>
+    {% endif %}
+
+    <!-- ── Generate ───────────────────────────────────────────────── -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-5 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Generate statement</div>
+
+        <div class="mb-4">
+            <div class="text-xs text-gray-400 mb-2">Quick ranges</div>
+            <div class="flex flex-wrap gap-2">
+                {% for p in presets %}
+                <a href="/reports/{{ side }}/statement.pdf?preset={{ p.key }}"
+                   class="bg-gray-950 border border-gray-700 hover:border-amber-300/50 rounded px-3 py-2 text-sm">
+                    {{ p.label }} <span class="text-xs text-gray-500">PDF</span>
+                </a>
+                {% endfor %}
+            </div>
+            <p class="text-xs text-gray-600 mt-2">
+                Quick ranges use holdings snapshots at the 31.12. that closes the period and at today.
+            </p>
+        </div>
+
+        <form method="get" action="/reports/{{ side }}/statement.pdf" class="border-t border-gray-800 pt-4">
+            <div class="text-xs text-gray-400 mb-3">Custom range</div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                <label class="block">
+                    <span class="text-xs text-gray-500">Transactions from</span>
+                    <input type="date" name="start"
+                           value="{{ archive.first_event or '' }}"
+                           class="mt-1 w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm">
+                    <span class="text-[11px] text-gray-600">Leave empty for the beginning of the archive.</span>
+                </label>
+                <label class="block">
+                    <span class="text-xs text-gray-500">Transactions to</span>
+                    <input type="date" name="end" value="{{ today.isoformat() }}"
+                           class="mt-1 w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm">
+                </label>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                <label class="block">
+                    <span class="text-xs text-gray-500">Holdings as of (1)</span>
+                    <input type="date" name="as_of" value="{{ default_as_of_1 }}"
+                           class="mt-1 w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm">
+                </label>
+                <label class="block">
+                    <span class="text-xs text-gray-500">Holdings as of (2)</span>
+                    <input type="date" name="as_of" value="{{ default_as_of_2 }}"
+                           class="mt-1 w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm">
+                </label>
+            </div>
+            <p class="text-xs text-gray-600 mb-4">
+                Transactions are a range; holdings are a point in time. Each holdings date gets its
+                own section in the PDF. Clear a field to skip that snapshot.
+            </p>
+
+            <button type="submit"
+                    class="bg-amber-300/90 hover:bg-amber-300 text-gray-950 font-medium rounded px-4 py-2 text-sm">
+                Generate PDF
+            </button>
+        </form>
+    </div>
+
+    <!-- ── Archive coverage ───────────────────────────────────────── -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-5 mb-6 import-status">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Flex archive</div>
+
+        <p class="text-sm text-gray-400 mb-4">
+            Statements are built from archived IBKR Flex activity data, not from the internal
+            trade ledger — only Flex carries dividends, interest, fees, withholding tax and FX.
+            The Flex API serves only the period baked into the saved query, so history is
+            accumulated here.
+        </p>
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4 text-sm">
+            <div class="bg-gray-950 border border-gray-800 rounded px-3 py-2">
+                <div class="text-[10px] uppercase tracking-wider text-gray-600">Statements</div>
+                <div class="text-lg">{{ archive.n_statements }}</div>
+            </div>
+            <div class="bg-gray-950 border border-gray-800 rounded px-3 py-2">
+                <div class="text-[10px] uppercase tracking-wider text-gray-600">Transactions</div>
+                <div class="text-lg">{{ '{:,}'.format(archive.n_events) }}</div>
+            </div>
+            <div class="bg-gray-950 border border-gray-800 rounded px-3 py-2">
+                <div class="text-[10px] uppercase tracking-wider text-gray-600">Covered from</div>
+                <div class="text-lg">{{ archive.first_event or '—' }}</div>
+            </div>
+            <div class="bg-gray-950 border border-gray-800 rounded px-3 py-2">
+                <div class="text-[10px] uppercase tracking-wider text-gray-600">Covered to</div>
+                <div class="text-lg">{{ archive.last_event or '—' }}</div>
+            </div>
+        </div>
+
+        {% if archive.position_dates %}
+        <div class="text-xs text-gray-500 mb-4">
+            Holdings snapshots available on:
+            <span class="text-gray-300 font-mono">{{ archive.position_dates[:12] | join(', ') }}</span>
+            {% if archive.position_dates | length > 12 %}
+            <span class="text-gray-600">… and {{ archive.position_dates | length - 12 }} more</span>
+            {% endif %}
+        </div>
+        {% else %}
+        <div class="text-xs text-amber-300/80 mb-4">
+            No holdings snapshots archived yet. The Flex query must include the
+            <strong>Open Positions</strong> section (Summary level of detail) for as-of holdings to work.
+        </div>
+        {% endif %}
+
+        <div class="flex flex-wrap gap-3 items-end">
+            <form method="post" action="/reports/{{ side }}/import">
+                <button type="submit" {% if not archive.has_credentials %}disabled{% endif %}
+                        class="bg-gray-950 border border-gray-700 hover:border-amber-300/50 rounded px-3 py-2 text-sm
+                               disabled:opacity-40 disabled:cursor-not-allowed">
+                    Fetch Flex query{% if archive.query_id %} <span class="text-xs text-gray-500">#{{ archive.query_id }}</span>{% endif %}
+                </button>
+            </form>
+
+            <form method="post" action="/reports/{{ side }}/upload" enctype="multipart/form-data"
+                  class="flex gap-2 items-center">
+                <input type="file" name="xml_file" accept=".xml,text/xml,application/xml" required
+                       class="text-xs text-gray-400 file:mr-2 file:rounded file:border file:border-gray-700
+                              file:bg-gray-950 file:px-3 file:py-1.5 file:text-sm file:text-gray-300">
+                <button type="submit"
+                        class="bg-gray-950 border border-gray-700 hover:border-amber-300/50 rounded px-3 py-2 text-sm">
+                    Import XML
+                </button>
+            </form>
+        </div>
+
+        {% if not archive.has_credentials %}
+        <p class="text-xs text-amber-300/80 mt-3">
+            No Flex token/query configured for this account — set
+            <code>{{ 'ibkr' if side == 'options' else 'portfolio' }}.flex_token</code> and
+            <code>.report_flex_query_id</code> in <code>config/settings.yaml</code>.
+            You can still import downloaded XML.
+        </p>
+        {% endif %}
+
+        <p class="text-xs text-gray-600 mt-3">
+            To backfill history the API can't reach: IBKR Account Management → Performance &amp; Reports →
+            Flex Queries → run an Activity Flex for the year, download as XML, import it above.
+            Re-importing the same statement is safe — transactions dedupe on IBKR's transaction ID.
+        </p>
+    </div>
+
+    {% if archive.statements %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-5">
+        <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-3">Imported statements</div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead class="text-[10px] uppercase tracking-wider text-gray-600 border-b border-gray-800">
+                    <tr>
+                        <th class="text-left py-2 pr-4">Period</th>
+                        <th class="text-left py-2 pr-4">Source</th>
+                        <th class="text-right py-2 pr-4">Transactions</th>
+                        <th class="text-right py-2 pr-4">Positions</th>
+                        <th class="text-left py-2">Imported</th>
+                    </tr>
+                </thead>
+                <tbody class="text-gray-300">
+                    {% for s in archive.statements %}
+                    <tr class="border-b border-gray-800/60">
+                        <td class="py-2 pr-4 font-mono text-xs">{{ s.from_date }} → {{ s.to_date }}</td>
+                        <td class="py-2 pr-4 text-xs text-gray-500">
+                            {{ s.source }}{% if s.filename %} · {{ s.filename }}{% endif %}
+                        </td>
+                        <td class="py-2 pr-4 text-right">{{ s.n_events }}</td>
+                        <td class="py-2 pr-4 text-right">{{ s.n_positions }}</td>
+                        <td class="py-2 text-xs text-gray-500">{{ s.imported_at.strftime('%Y-%m-%d %H:%M') if s.imported_at else '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}

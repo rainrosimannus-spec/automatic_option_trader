@@ -15,6 +15,7 @@ from src.core.models import Base
 import src.portfolio.models  # noqa: F401 — registers portfolio tables with Base
 import src.consigliere.models  # noqa: F401 — registers consigliere tables with Base
 import src.ipo.models  # noqa: F401 — registers IPO tables with Base
+import src.reports.models  # noqa: F401 — registers Flex archive tables with Base
 
 
 _engine = None
