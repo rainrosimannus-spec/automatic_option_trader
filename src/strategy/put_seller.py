@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from src.broker.orders import sell_put, _is_permission_blocked
-from src.broker.market_data import get_stock_price
+from src.broker.market_data import get_stock_price, history_farm_dead
 from src.core.config import get_settings
 from src.core.database import get_db
 from src.core.models import Trade, Position, TradeType, PositionStatus, OrderStatus
@@ -150,6 +150,13 @@ class PutSeller:
                                 consecutive_failures=consecutive_failures,
                                 last_symbol=symbol)
                     break
+                if history_farm_dead():
+                    # Connection up, HMDS farm dead: every further name is 2 × 20 s of
+                    # timeouts under the scan lock. Free the lock for the CC / stop /
+                    # XSP jobs; the gateway needs a restart (deploy/restart-gateway-options.sh).
+                    log.warning("scan_aborted_history_farm_dead", market=market_label,
+                                scanned=len(candidates), last_symbol=symbol)
+                    break
 
             # Rank by screener score (highest = best trade)
             candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -171,6 +178,9 @@ class PutSeller:
                     self.risk.increment_daily_count()
             except Exception as e:
                 log.error("put_scan_error", symbol=symbol, error=str(e))
+            if history_farm_dead():
+                log.warning("scan_aborted_history_farm_dead", market=market_label, last_symbol=symbol)
+                break
 
         # Cash-and-carry orchestration — react to detector state once per scan.
         # No-op when cfg.risk.cash_carry_enabled is False. Idempotent within a

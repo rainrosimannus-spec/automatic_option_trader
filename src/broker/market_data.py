@@ -80,6 +80,59 @@ def _record_symbol_success(symbol: str):
     _price_fail_until.pop(symbol, None)
 
 
+# ── History-farm breaker (2026-11-14) ───────────────────────
+# get_stock_price() is history-based. When the gateway comes back from its nightly
+# auto-restart with the HMDS farm dead (11-12 and 11-13: every request timed out all
+# day), each name costs 2 × 20 s of timeouts, a 24-name put scan holds the scan lock
+# for the whole 30-min cycle, and the CC / stop / XSP jobs (60 s lock wait) all skip.
+# The connection itself is up, so the "connection dead" abort never fires. This tracks
+# consecutive TIMEOUT-shaped failures (slow, ≥ _FARM_SLOW_SECS) across symbols — a
+# permission refusal or an unknown contract fails fast and does not count — and the
+# put scan aborts once the farm is judged dead. The first success clears it.
+_FARM_DEAD_THRESHOLD = 4
+_FARM_SLOW_SECS = 15.0
+_farm: dict = {"consecutive": 0, "dead": False, "dead_since": None, "last_ok": None,
+               "last_fail": None, "last_symbol": None}
+
+
+def _farm_note_success(symbol: str) -> None:
+    was_dead = _farm["dead"]
+    _farm.update(consecutive=0, dead=False, last_ok=datetime.now())
+    if was_dead:
+        log.warning("history_farm_recovered", symbol=symbol,
+                    dead_since=_farm["dead_since"].strftime("%H:%M:%S") if _farm["dead_since"] else None)
+        _farm["dead_since"] = None
+
+
+def _farm_note_failure(symbol: str, elapsed_secs: float) -> None:
+    if elapsed_secs < _FARM_SLOW_SECS:
+        return  # fast refusal (permissions, unknown contract) — not a farm symptom
+    _farm["consecutive"] += 1
+    _farm["last_fail"] = datetime.now()
+    _farm["last_symbol"] = symbol
+    if _farm["consecutive"] >= _FARM_DEAD_THRESHOLD and not _farm["dead"]:
+        _farm.update(dead=True, dead_since=datetime.now())
+        log.warning("history_farm_dead", consecutive=_farm["consecutive"], last_symbol=symbol,
+                    action="restart the options gateway: deploy/restart-gateway-options.sh")
+
+
+def history_farm_dead() -> bool:
+    """True once _FARM_DEAD_THRESHOLD consecutive slow price failures have been seen
+    and no price has succeeded since."""
+    return bool(_farm["dead"])
+
+
+def history_farm_state() -> dict:
+    fmt = lambda d: d.strftime("%H:%M:%S") if d else None
+    return {"dead": bool(_farm["dead"]), "consecutive": int(_farm["consecutive"]),
+            "dead_since": fmt(_farm["dead_since"]), "last_ok": fmt(_farm["last_ok"]),
+            "last_fail": fmt(_farm["last_fail"]), "last_symbol": _farm["last_symbol"]}
+
+
+def _reset_history_farm_for_tests() -> None:
+    _farm.update(consecutive=0, dead=False, dead_since=None, last_ok=None, last_fail=None, last_symbol=None)
+
+
 # ── Option quote feed (live vs delayed) ─────────────────────
 # IBKR reports the data type it actually served on every reqMktData stream
 # (1 live, 2 frozen, 3 delayed, 4 delayed-frozen). The screener notes it after
@@ -151,6 +204,7 @@ def get_stock_price(
     _hit = _price_cache.get(_ck)
     if _hit and (datetime.now() - _hit[1]).total_seconds() < _PRICE_CACHE_TTL_SEC:
         return _hit[0]
+    _t0 = datetime.now()
     try:
         with get_ib_lock():
             _ensure_market_data_type()
@@ -178,6 +232,7 @@ def get_stock_price(
                     )
                     if bars:
                         _record_symbol_success(symbol)
+                        _farm_note_success(symbol)
                         _px = float(bars[-1].close)
                         _price_cache[_ck] = (_px, datetime.now())
                         try:
@@ -192,6 +247,7 @@ def get_stock_price(
 
         log.warning("no_price_data", symbol=symbol, exchange=exchange)
         _record_symbol_failure(symbol)
+        _farm_note_failure(symbol, (datetime.now() - _t0).total_seconds())
         try:
             from src.scheduler.jobs import record_price_failure
             record_price_failure()

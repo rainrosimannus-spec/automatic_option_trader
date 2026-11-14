@@ -41,7 +41,16 @@ def system_status():
         "daily_trades": daily_count,
         "daily_limit": 10,
         "worst_case": _worst_case_snapshot(),
+        "history_farm": _history_farm_snapshot(),
     }
+
+
+def _history_farm_snapshot() -> dict:
+    try:
+        from src.broker.market_data import history_farm_state
+        return history_farm_state()
+    except Exception as e:  # never break /status
+        return {"dead": False, "error": str(e)}
 
 
 def _worst_case_snapshot() -> dict:

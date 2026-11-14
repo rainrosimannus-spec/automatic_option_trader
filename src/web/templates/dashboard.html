@@ -25,6 +25,13 @@
             <span class="w-1.5 h-1.5 rounded-full {{ 'bg-emerald-400 pulse-green' if connected else 'bg-red-500' }}"></span>
             IBKR {{ 'Online' if connected else 'Offline' }}
         </span>
+        {% if history_farm and history_farm.dead %}
+        <span class="flex items-center gap-1.5 px-3 py-1 rounded-full border border-red-700 bg-red-950/40 text-red-300"
+              title="IBKR history farm on the options gateway is not answering (every price request times out since {{ history_farm.dead_since }}). Scans abort, no stock prices. Fix: run deploy/restart-gateway-options.sh and approve the IB Key push.">
+            <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+            History farm DEAD since {{ history_farm.dead_since }} — restart options gateway
+        </span>
+        {% endif %}
         {% if paused %}
         <span class="flex items-center gap-1.5 px-3 py-1 rounded-full border border-amber-700 bg-amber-950/40 text-amber-300">
             ⏸ PAUSED

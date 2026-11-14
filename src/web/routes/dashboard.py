@@ -711,6 +711,7 @@ def dashboard(request: Request):
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "connected": is_connected(),
+        "history_farm": _history_farm_for_template(),
         "paused": paused_state == "true",
         "current_vix": float(current_vix) if current_vix else None,
         "vix_spike": float(vix_spike) if vix_spike else None,
@@ -773,3 +774,13 @@ def dashboard(request: Request):
         "perf_actual": performance["actual"],
         "perf_target": performance["target"],
     })
+
+
+def _history_farm_for_template() -> dict:
+    """Header chip: the options gateway's history farm died after its nightly restart
+    on 11-12 and 11-13 — no stock prices all day, nothing on the page said so."""
+    try:
+        from src.broker.market_data import history_farm_state
+        return history_farm_state()
+    except Exception:
+        return {"dead": False}
