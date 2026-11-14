@@ -245,9 +245,22 @@ def get_stock_price(
                     log.debug("price_request_failed", symbol=symbol, what=what, error=str(e) or repr(e))
                 ib.sleep(0.5)  # brief pause before retry
 
+        _elapsed = (datetime.now() - _t0).total_seconds()
+        _farm_note_failure(symbol, _elapsed)
+        # IBKR history gave nothing. On 11-12/11-13 that was a dead HMDS farm on the options
+        # session and this login has no real-time US stock feed, so history was the ONLY price
+        # path and the side went blind. FMP quote (same key as the daily closes) covers USD
+        # names; the farm flag above still records the miss, so the chip stays honest.
+        if currency == "USD":
+            _fx = _get_stock_price_from_fmp(symbol)
+            if _fx:
+                _record_symbol_success(symbol)
+                _price_cache[_ck] = (_fx, datetime.now())
+                log.warning("price_from_fmp_fallback", symbol=symbol, price=_fx,
+                            ibkr_secs=round(_elapsed, 1), farm_dead=history_farm_dead())
+                return _fx
         log.warning("no_price_data", symbol=symbol, exchange=exchange)
         _record_symbol_failure(symbol)
-        _farm_note_failure(symbol, (datetime.now() - _t0).total_seconds())
         try:
             from src.scheduler.jobs import record_price_failure
             record_price_failure()
@@ -263,6 +276,24 @@ def get_stock_price(
         except Exception:
             pass
         return None
+
+
+def _get_stock_price_from_fmp(symbol: str) -> Optional[float]:
+    """Last price of a US stock from FMP's quote endpoint (previousClose if the session
+    has not printed yet). Options-side fallback only; runs outside the IB lock."""
+    try:
+        from src.portfolio.fmp import _get
+        data = _get("quote", symbol)
+        if not data:
+            return None
+        item = data[0] if isinstance(data, list) else data
+        for key in ("price", "previousClose"):
+            v = item.get(key)
+            if v and float(v) > 0:
+                return float(v)
+    except Exception as e:
+        log.warning("fmp_stock_price_error", symbol=symbol, error=str(e))
+    return None
 
 
 def _get_vix_from_fmp() -> Optional[float]:

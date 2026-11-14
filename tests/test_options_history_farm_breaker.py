@@ -136,3 +136,56 @@ def test_put_scan_runs_whole_universe_when_farm_healthy(monkeypatch):
          patch("src.broker.connection.is_connected", lambda: True):
         seller.run_scan(market=None)
     assert len(seen) == 10
+
+
+# ── FMP price fallback (2026-11-14) ─────────────────────────
+from contextlib import nullcontext
+
+
+class _DeadFarmIB:
+    """qualifyContracts fine, every history request comes back empty (dead HMDS farm)."""
+    def qualifyContracts(self, c): return [c]
+    def reqHistoricalData(self, *a, **k): return []
+    def reqMarketDataType(self, t): pass
+    def sleep(self, s): pass
+
+
+def _dead_farm(monkeypatch):
+    md._price_cache.clear()
+    md._price_fail_counts.clear(); md._price_fail_until.clear()
+    monkeypatch.setattr(md, "get_ib_lock", lambda: nullcontext())
+    monkeypatch.setattr(md, "get_ib", lambda: _DeadFarmIB())
+
+
+def test_fmp_quote_covers_usd_name_when_history_is_dead(monkeypatch):
+    _dead_farm(monkeypatch)
+    import src.portfolio.fmp as fmp
+    monkeypatch.setattr(fmp, "_get", lambda ep, sym, params={}: [{"symbol": sym, "price": 243.08, "previousClose": 238.54}])
+    assert md.get_stock_price("ADBE", "SMART", "USD") == 243.08
+    # cached like an IBKR price, and the symbol is not put on the failure block list
+    assert md._price_cache[("ADBE", "SMART", "USD")][0] == 243.08
+    assert "ADBE" not in md._price_fail_counts
+
+
+def test_fmp_fallback_uses_previous_close_before_the_open(monkeypatch):
+    _dead_farm(monkeypatch)
+    import src.portfolio.fmp as fmp
+    monkeypatch.setattr(fmp, "_get", lambda ep, sym, params={}: [{"symbol": sym, "price": 0, "previousClose": 86.82}])
+    assert md.get_stock_price("DECK", "SMART", "USD") == 86.82
+
+
+def test_no_fmp_fallback_for_non_usd_names(monkeypatch):
+    _dead_farm(monkeypatch)
+    import src.portfolio.fmp as fmp
+    calls = []
+    monkeypatch.setattr(fmp, "_get", lambda ep, sym, params={}: calls.append(sym) or [{"price": 1.0}])
+    assert md.get_stock_price("ASML", "AEB", "EUR") is None
+    assert calls == []
+
+
+def test_fmp_miss_still_returns_none_and_blocks_symbol(monkeypatch):
+    _dead_farm(monkeypatch)
+    import src.portfolio.fmp as fmp
+    monkeypatch.setattr(fmp, "_get", lambda ep, sym, params={}: None)
+    assert md.get_stock_price("VRT", "SMART", "USD") is None
+    assert md._price_fail_counts.get("VRT") == 1
