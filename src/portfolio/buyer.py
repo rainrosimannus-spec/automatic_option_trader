@@ -339,8 +339,12 @@ _TASE_TICK_ABOVE = 100.0
 # 71.04 = 36 ticks → refused; DBS moves >5 ticks in 15 min 22% of the time in the buy window). At
 # 10 ticks none of DBS/OCBC/SGX Ltd moved far enough in 20 sessions to be refused; a buy limit above
 # the ask fills AT the ask, so a smaller cushion never raises the price paid — it only rests the order
-# below the ask (~7% of the time on DBS) instead of paying up.
-_SGX_FORCED_ORDER_RANGE_TICKS = 10
+# below the ask (~7% of the time on DBS) instead of paying up. The band is ASYMMETRIC: the lower side
+# keeps 25 ticks, because a 10-tick floor silently killed every SGX dip bid (S68's −1% = 21 ticks,
+# 11-13/11-16 "no_rungs") — that bid is only refused if the price ROSE >5 ticks during the lag.
+_SGX_TICKS_ABOVE_REFERENCE = 10   # BUY limit above the reference is clamped down to this
+_SGX_TICKS_BELOW_REFERENCE = 25   # BUY limit further below than this is not sent
+_SGX_FORCED_ORDER_RANGE_TICKS = _SGX_TICKS_ABOVE_REFERENCE   # kept for log readers / tests
 # SGX minimum bid sizes for stocks: below S$0.20 → 0.001; S$0.20–1.995 → 0.005; S$2.00 and up → 0.01.
 _SGX_TICK_BANDS: list[tuple[float, float]] = [(0.1999, 0.001), (1.9999, 0.005), (float("inf"), 0.01)]
 
@@ -353,7 +357,8 @@ def _sgx_tick(price: float) -> float:
 
 
 def _sgx_range_clamp(price: float, reference: float | None,
-                     ticks: int = _SGX_FORCED_ORDER_RANGE_TICKS) -> tuple[float | None, str]:
+                     ticks: int = _SGX_TICKS_ABOVE_REFERENCE,
+                     ticks_below: int | None = None) -> tuple[float | None, str]:
     """Keep a BUY limit inside SGX's forced order range around `reference` (the last trade).
 
     Returns (price, note): the price unchanged ("ok"), clamped DOWN to reference + ticks ("clamped",
@@ -363,8 +368,10 @@ def _sgx_range_clamp(price: float, reference: float | None,
     if not reference or reference <= 0 or not price or price <= 0:
         return price, "no_reference"
     tick = _sgx_tick(reference)
+    if ticks_below is None:
+        ticks_below = _SGX_TICKS_BELOW_REFERENCE if ticks == _SGX_TICKS_ABOVE_REFERENCE else ticks
     hi = reference + ticks * tick
-    lo = reference - ticks * tick
+    lo = reference - ticks_below * tick
     if price > hi + 1e-9:
         return _round_to_tick(hi, tick, "BUY"), "clamped"
     if price < lo - 1e-9:
@@ -3616,12 +3623,12 @@ class PortfolioBuyer:
                 _clamped, _band = _sgx_range_clamp(price, px)
                 if _clamped is None:
                     log.info("compounder_rung_sgx_range_skipped", symbol=stock.symbol, rung=i,
-                             price=price, reference=px, ticks=_SGX_FORCED_ORDER_RANGE_TICKS)
+                             price=price, reference=px, ticks_below=_SGX_TICKS_BELOW_REFERENCE)
                     continue
                 if _band == "clamped":
                     log.info("compounder_rung_sgx_range_clamped", symbol=stock.symbol, rung=i,
                              raw_price=price, price=_clamped, reference=px,
-                             ticks=_SGX_FORCED_ORDER_RANGE_TICKS)
+                             ticks=_SGX_TICKS_ABOVE_REFERENCE)
                     price = _clamped
             shares = int((core_amount * frac) / (price * rate))
             notional_base = shares * price * rate
@@ -4936,20 +4943,20 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
             _clamped, _band = _sgx_range_clamp(order_price, _ref)
             if _clamped is None:
                 log.info("portfolio_order_sgx_range_skipped", id=suggestion_id, symbol=symbol,
-                         limit=order_price, reference=_ref, ticks=_SGX_FORCED_ORDER_RANGE_TICKS)
+                         limit=order_price, reference=_ref, ticks_below=_SGX_TICKS_BELOW_REFERENCE)
                 with get_db() as db:
                     s = db.query(TradeSuggestion).filter(TradeSuggestion.id == suggestion_id).first()
                     if s:
                         s.status = "expired"   # retired, NOT retried — the next scan re-prices it
                         s.reviewed_at = datetime.utcnow()
                         s.review_note = (f"SGX forced order range: bid {order_price} is more than "
-                                         f"{_SGX_FORCED_ORDER_RANGE_TICKS} ticks below the last trade "
+                                         f"{_SGX_TICKS_BELOW_REFERENCE} ticks below the last trade "
                                          f"{_ref} — the exchange would refuse it; re-priced next scan")
                 return "expired"
             if _band == "clamped":
                 log.info("portfolio_order_sgx_range_clamped", id=suggestion_id, symbol=symbol,
                          raw_limit=order_price, limit=_clamped, reference=_ref,
-                         ticks=_SGX_FORCED_ORDER_RANGE_TICKS)
+                         ticks=_SGX_TICKS_ABOVE_REFERENCE)
                 order_price = _clamped
         if _tick or _magnifier != 1.0:
             log.info("portfolio_order_price_ticked", id=suggestion_id, symbol=symbol,

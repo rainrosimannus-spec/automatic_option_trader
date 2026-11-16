@@ -34,11 +34,22 @@ def test_ocbc_leader_limit_clamped_and_sgx_ltd_bid_untouched():
     assert note == "ok" and price == 20.56
 
 
+def test_sgx_ltd_dip_bid_21_ticks_below_is_still_sent():
+    # 11-13 and 11-16: the −1% low-urgency bid on S68 (−21 ticks) was skipped by a symmetric 10-tick
+    # band → "no_rungs". The lower side keeps 25 ticks; only refused if the price rose >5 in the lag.
+    price, note = _sgx_range_clamp(20.30, 20.51)
+    assert note == "ok" and price == 20.30
+    price, note = _sgx_range_clamp(20.47, 20.68)
+    assert note == "ok" and price == 20.47
+
+
 def test_bid_far_below_is_refused_not_sent():
     price, note = _sgx_range_clamp(69.50, 71.03)           # −153 ticks: exchange would reject
     assert price is None and note == "below"
-    price, note = _sgx_range_clamp(70.94, 71.03)           # −9 ticks: fine
+    price, note = _sgx_range_clamp(70.79, 71.03)           # −24 ticks: fine
     assert note == "ok"
+    price, note = _sgx_range_clamp(70.77, 71.03)           # −26 ticks: not sent
+    assert price is None and note == "below"
 
 
 def test_unknown_reference_leaves_price_alone():
