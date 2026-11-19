@@ -402,6 +402,15 @@ def get_pending_suggestions() -> list[TradeSuggestion]:
             TradeSuggestion.expires_at < now,
         ).all()
         for s in expired:
+            # A portfolio buy card in "submitted" has a LIVE IBKR order behind it (compounder orders
+            # are sent outside-RTH and rest until 20:00 ET). The 15:30 ET lifetime above was written
+            # for options cards; the compounder's US late-session pass creates cards after 20:20 UTC
+            # whose lifetime is minutes. Flipping such a card to "expired" here (POWL #3927, 2026-11-19
+            # 20:54 — the page load ran this sweep while the bid was still working) splits the card
+            # from the order; the scan's own re-price pass (`_expire_orphan_buy_suggestions`) retires
+            # these with "Order cancelled by scan re-price" once it has cancelled the order. Leave them.
+            if s.source == "portfolio" and s.status == "submitted":
+                continue
             s.status = "expired"
             s.reviewed_at = now
             s.review_note = "Expired (time limit)"
