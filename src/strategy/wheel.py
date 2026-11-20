@@ -313,12 +313,29 @@ class WheelManager:
             today = datetime.now().strftime("%Y%m%d")
 
             for put_pos in expired_puts:
+                symbol = put_pos.symbol
+
+                # EARLY ASSIGNMENT (2026-11-20, THC 280P exercised the evening before its
+                # 11-20 expiry): the stock-delivery fill is proof of assignment on ANY day, so
+                # book it as soon as trade_sync has pulled it. The expiry gate below is only
+                # for the worthless-expiry path. Without this, the lot sat unbooked all expiry
+                # day — open put on the dashboard, 100 shares at IBKR, no covered call, stop
+                # check blind — until the 00:20 check the morning after.
+                from src.broker.trade_sync import assignment_delivery_fill
+                if put_pos.expiry and put_pos.expiry >= today:
+                    early = assignment_delivery_fill(
+                        db, symbol, put_pos.strike, put_pos.opened_at, put_pos.quantity)
+                    if early is not None:
+                        log.info("put_assigned_early", symbol=symbol, strike=put_pos.strike,
+                                 expiry=put_pos.expiry, delivery_at=str(early.created_at))
+                        self._handle_assignment(db, put_pos, symbol)
+                        assigned_symbols.append(symbol)
+                    continue
+
                 # Only act once the expiry day has fully PASSED (strict <).
                 # Comparing <= today fires at 00:00 ET on expiry day, before the
                 # option has actually expired — premature. Matches trade_sync.
                 if put_pos.expiry and put_pos.expiry < today:
-                    symbol = put_pos.symbol
-
                     # IBKR is the source of truth. A worthless expiry is booked
                     # by IBKR as a buy-to-close (BUY_PUT, ~$0). If such a closing
                     # fill exists, the put was NOT assigned — let trade_sync mark
@@ -330,7 +347,6 @@ class WheelManager:
                     # ~strike, dated after the put opened) — NOT by the absence of a $0
                     # buy-to-close. IBKR books a $0 BUY_PUT close for assignments too, so
                     # the old "$0 close ⇒ worthless" test skipped every real assignment.
-                    from src.broker.trade_sync import assignment_delivery_fill
                     delivery = assignment_delivery_fill(
                         db, symbol, put_pos.strike, put_pos.opened_at, put_pos.quantity)
                     if delivery is not None:
