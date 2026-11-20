@@ -7,11 +7,14 @@ first scan would release the full one third (EUR 321k) again instead of the ~153
     .venv/bin/python scripts/compounder_reserve_seed.py            # seeds 168000 for 2026-11-20
     .venv/bin/python scripts/compounder_reserve_seed.py 0          # reset (nothing spent)
 """
+import os
 import sys
 from datetime import datetime
 
-from src.core.database import get_db
-from src.portfolio.models import PortfolioState
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.core.database import get_db  # noqa: E402
+from src.portfolio.models import PortfolioState  # noqa: E402
 
 spend_today = float(sys.argv[1]) if len(sys.argv) > 1 else 168000.0
 spend_date = sys.argv[2] if len(sys.argv) > 2 else "2026-11-20"
