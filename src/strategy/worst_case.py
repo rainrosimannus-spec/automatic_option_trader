@@ -70,6 +70,20 @@ def headroom(book_total: float, nlv: float, cap_pct: float) -> float:
     return float(cap_pct) * float(nlv) - float(book_total)
 
 
+def split_headroom(book: WorstCaseBook, nlv: float, cap_pct: float, index_carve_out_pct: float = 0.0
+                   ) -> tuple[float, float]:
+    """(single-name/stock headroom, index-sleeve headroom).
+
+    carve-out 0 → one shared dome: both = cap_pct × NLV − everything open.
+    carve-out > 0 (2026-11-20) → single names + stock vs cap_pct × NLV, index vs its own
+    index_carve_out_pct × NLV; neither sees the other's stress."""
+    carve = float(index_carve_out_pct or 0.0)
+    if carve <= 0:
+        shared = headroom(book.total, nlv, cap_pct)
+        return shared, shared
+    return headroom(book.single_puts + book.stock, nlv, cap_pct), headroom(book.index, nlv, carve)
+
+
 def contracts_within(headroom_usd: float, loss_per_contract: float, wanted: int) -> int:
     """Largest qty ≤ wanted whose stress fits the headroom (0 when none fits)."""
     if wanted <= 0 or loss_per_contract <= 0:

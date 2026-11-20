@@ -243,6 +243,7 @@ class Params:
     worst_case_single_gap: float = 0.20
     worst_case_stock_gap: float = 0.20
     worst_case_index_gap: float = 0.10
+    worst_case_index_carve_out_pct: float = 0.0   # 2026-11-20: >0 → sleeve judged on its own dome (mirrors live)
     # ── Post-sale re-entry cooldown (Rain 2026-11-10; live RiskConfig.put_reentry_cooldown_*) ──
     # After a lot leaves the book the name is barred from NEW puts for N trading days.
     # scope "stop" = only after the assigned-lot stop (the name proved broken);
@@ -825,18 +826,23 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     n_cooldown_skips = 0     # put entries skipped by the post-sale re-entry cooldown
     n_worst_case_skips = 0   # put entries skipped/clamped by the total worst-case cap
 
-    def _wc_book(d_):
-        """Stress loss of everything open (mirrors RiskManager.worst_case_book)."""
-        tot = sum(p["strike"] * 100 * p["qty"] * params.worst_case_single_gap for p in short_puts)
-        for sym_, st_ in stocks.items():
-            q_ = pv(sym_, d_)
-            tot += st_["shares"] * (q_[0] if q_ else st_["cost_basis"]) * params.worst_case_stock_gap
-        for ip_ in index_puts:
-            if ip_.get("wing"):
-                tot += max((ip_["strike"] - ip_["wing"]) - ip_["premium"], 0.0) * 100 * ip_["qty"]
-            else:
-                tot += ip_["strike"] * 100 * ip_["qty"] * params.worst_case_index_gap
+    def _wc_book(d_, part="all"):
+        """Stress loss of everything open (mirrors RiskManager.worst_case_book).
+        part "single" = puts + stock only, "index" = sleeve only, "all" = everything (2026-11-20 carve-out)."""
+        tot = 0.0
+        if part in ("all", "single"):
+            tot += sum(p["strike"] * 100 * p["qty"] * params.worst_case_single_gap for p in short_puts)
+            for sym_, st_ in stocks.items():
+                q_ = pv(sym_, d_)
+                tot += st_["shares"] * (q_[0] if q_ else st_["cost_basis"]) * params.worst_case_stock_gap
+        if part in ("all", "index"):
+            for ip_ in index_puts:
+                if ip_.get("wing"):
+                    tot += max((ip_["strike"] - ip_["wing"]) - ip_["premium"], 0.0) * 100 * ip_["qty"]
+                else:
+                    tot += ip_["strike"] * 100 * ip_["qty"] * params.worst_case_index_gap
         return tot
+    _wc_carve = float(params.worst_case_index_carve_out_pct or 0.0)
     cooldown_until: dict[str, int] = {}   # sym -> first day_idx a new put is allowed again
 
     # Per-symbol running IV min/max up to each date (for the IV-rank gate).
@@ -2010,7 +2016,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     continue
                 # Total worst-case cap (mirrors RiskManager.worst_case_clamp).
                 if params.worst_case_cap_pct > 0 and prev_nlv > 0:
-                    _room = params.worst_case_cap_pct * prev_nlv - _wc_book(d)
+                    _room = params.worst_case_cap_pct * prev_nlv - _wc_book(d, "single" if _wc_carve > 0 else "all")
                     _per = top.strike * 100 * params.worst_case_single_gap
                     _fit = int(max(0.0, _room) // _per) if _per > 0 else contracts
                     if _fit <= 0:
@@ -2157,7 +2163,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                         ok = bid * 100 >= params.index_put_commission * 2
                     qty = min(qty, params.index_put_max_contracts)
                     if params.worst_case_cap_pct > 0 and qty > 0:
-                        _room = params.worst_case_cap_pct * prev_nlv - _wc_book(d)
+                        _room = (_wc_carve * prev_nlv - _wc_book(d, "index")) if _wc_carve > 0 else \
+                                (params.worst_case_cap_pct * prev_nlv - _wc_book(d))
                         _per = (max((strike - wing_k) - net_credit, 0.0) * 100) if wing_k else \
                                (strike * 100 * params.worst_case_index_gap)
                         _fit = int(max(0.0, _room) // _per) if _per > 0 else qty

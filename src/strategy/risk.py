@@ -1513,19 +1513,28 @@ class RiskManager:
             RiskManager._wc_cache = (_t.time(), book, float(nlv))
         return book, float(nlv)
 
-    def worst_case_headroom(self, light: bool = False) -> tuple[float | None, dict]:
-        """(dollars of stress loss still allowed or None when off, snapshot dict for the dashboard)."""
+    def worst_case_headroom(self, light: bool = False, scope: str = "single") -> tuple[float | None, dict]:
+        """(dollars of stress loss still allowed or None when off, snapshot dict for the dashboard).
+
+        scope "single" → the single-name/stock dome (what check_worst_case_cap / worst_case_clamp use);
+        scope "index"  → the XSP sleeve's dome. With index_carve_out_pct == 0 both are the one shared
+        dome (cap_pct × NLV − everything). With it > 0 (Rain 2026-11-20) the sleeve is judged on its own
+        carve-out and no longer squeezed to 0 by the bags, and the bags no longer see the sleeve."""
         from src.core.config import get_settings
-        from src.strategy.worst_case import headroom
+        from src.strategy.worst_case import headroom, split_headroom
         book, nlv = self.worst_case_book(light=light)
         if book is None:
             return None, {"enabled": False}
         wc = get_settings().worst_case_cap
-        room = headroom(book.total, nlv, wc.cap_pct)
+        carve = float(getattr(wc, "index_carve_out_pct", 0.0) or 0.0)
+        single_room, index_room = split_headroom(book, nlv, wc.cap_pct, carve)
+        room = index_room if scope == "index" else single_room
         snap = {"enabled": True, "cap_pct": wc.cap_pct, "nlv_usd": round(nlv), "cap_usd": round(wc.cap_pct * nlv),
                 "used_usd": round(book.total), "used_pct": round(100 * book.total / nlv, 1) if nlv else None,
                 "single_puts": round(book.single_puts), "stock": round(book.stock), "index": round(book.index),
-                "headroom_usd": round(room)}
+                "headroom_usd": round(single_room),
+                "index_carve_out_pct": carve, "index_cap_usd": round(carve * nlv) if carve > 0 else None,
+                "index_headroom_usd": round(index_room)}
         return room, snap
 
     def check_worst_case_cap(self) -> RiskCheck:

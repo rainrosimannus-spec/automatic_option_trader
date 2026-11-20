@@ -1077,6 +1077,34 @@ def job_wheel_exit_check():
         log.error("wheel_exit_check_error", error=str(e))
 
 
+# Intraday stop window (ET): first check 09:35 (5 min after the open, past the opening print),
+# last 15:35; the 15:45 daily-close check is a separate job and always runs.
+_WHEEL_STOP_INTRADAY_START = (9, 35)
+_WHEEL_STOP_INTRADAY_END = (15, 40)
+
+
+def _wheel_stop_intraday_window(now_et) -> bool:
+    """True when a clock time (ET) is inside the intraday stop window [09:35, 15:40)."""
+    hm = (now_et.hour, now_et.minute)
+    return _WHEEL_STOP_INTRADAY_START <= hm < _WHEEL_STOP_INTRADAY_END
+
+
+def job_wheel_stop_check_intraday():
+    """🛑  Assigned-lot stop, INTRADAY pass (Rain, 2026-11-20) — every 30 min 09:35–15:35 ET.
+
+    Same routine as the 15:45 close check (buyback first, IBKR positions first, whole lot at
+    bid). Added after VRT closed 6.6 pts past the 20% stop on 11-20 because the once-a-day check
+    saw it once. Off via risk.wheel_stop_intraday_enabled. MarsWalk judges daily closes only, so
+    this pass is parity-exempt (chip says so)."""
+    from src.core.config import get_settings as _gs
+    if not getattr(_gs().risk, "wheel_stop_intraday_enabled", False):
+        return
+    now_et = datetime.now(pytz.timezone("US/Eastern"))
+    if not _wheel_stop_intraday_window(now_et):
+        return
+    _run_wheel_stop_check(label="intraday")
+
+
 def job_wheel_stop_check():
     """🛑  Assigned-lot stop (Rain, 2026-11-04) — once a day at 15:45 ET.
 
@@ -1085,6 +1113,10 @@ def job_wheel_stop_check():
     shares leave only after that fill. Serialized through _scan_lock because it mutates
     lots and places orders, like job_check_assignments.
     """
+    _run_wheel_stop_check(label="close")
+
+
+def _run_wheel_stop_check(label: str = "close"):
     _ensure_event_loop()
     if _is_paused():
         return
@@ -1092,7 +1124,7 @@ def job_wheel_stop_check():
         return
     acquired = _scan_lock.acquire(timeout=60)
     if not acquired:
-        log.warning("wheel_stop_skipped_scan_lock_timeout")
+        log.warning("wheel_stop_skipped_scan_lock_timeout", pass_=label)
         return
     try:
         universe = UniverseManager()
@@ -1100,7 +1132,7 @@ def job_wheel_stop_check():
         wheel = WheelManager(risk, universe)
         sold = wheel.check_stop_loss()
         if sold:
-            log.info("wheel_stop_check_completed", symbols=sold, count=len(sold))
+            log.info("wheel_stop_check_completed", symbols=sold, count=len(sold), pass_=label)
             try:
                 alerts._send(f"🛑 Assigned-lot stop sold: {', '.join(sold)}",
                              priority="default", tags="wheel,stop")
@@ -1865,6 +1897,14 @@ def create_scheduler() -> BackgroundScheduler:
         CronTrigger(hour=15, minute=45, day_of_week="mon-fri", timezone=us_tz),
         id="wheel_stop_check",
         name="Wheel Stop Check (assigned-lot −8% stop)",
+        max_instances=1,
+    )
+    # ── Assigned-lot stop — intraday pass every 30 min 09:35–15:35 ET (Rain 2026-11-20) ──
+    scheduler.add_job(
+        job_wheel_stop_check_intraday,
+        CronTrigger(hour="9-15", minute="5,35", day_of_week="mon-fri", timezone=us_tz),
+        id="wheel_stop_check_intraday",
+        name="Wheel Stop Check (intraday, every 30 min RTH)",
         max_instances=1,
     )
 

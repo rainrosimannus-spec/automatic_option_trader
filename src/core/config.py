@@ -404,6 +404,11 @@ class RiskConfig(BaseModel):
     wheel_stop_loss_enabled: bool = True
     wheel_stop_loss_pct: float = 0.08          # sell when mid <= assignment strike * (1 - this)
     wheel_stop_fill_wait_secs: float = 20.0    # how long to wait for the CC buyback to fill before selling
+    # 2026-11-20 (Rain): also check every 30 min during RTH (09:35–15:35 ET), not only at 15:45.
+    # VRT went 6.6 pts past the 20% stop on 11-20 because the daily-close check saw it once.
+    # Same routine, same buyback-first order, same IBKR-positions guard. MarsWalk judges daily
+    # closes only → parity-exempt (documented on the dashboard chip).
+    wheel_stop_intraday_enabled: bool = True
     # ── Package UNWIND (Rain's manual rule, 2026-11-04) ──
     # On a covered lot, whenever stock bid - (call ask + 5c) - fees clears the lot's NET basis
     # (cost basis - realized CC premium/share - this call's premium) by min_profit_pct of the
@@ -617,6 +622,11 @@ class WorstCaseCapConfig(BaseModel):
     single_gap: float = 0.20
     stock_gap: float = 0.20
     index_gap: float = 0.10
+    # 2026-11-20 (Rain): the XSP sleeve gets its OWN dome instead of sharing this one. With bags on
+    # the book the shared headroom was $500–$11k → the sleeve sized 0 contracts on every scan since
+    # 11-11. > 0: single names + stock are judged against cap_pct × NLV WITHOUT the index stress,
+    # and the index sleeve against index_carve_out_pct × NLV with only its own stress. 0 = shared.
+    index_carve_out_pct: float = 0.0
 
 
 class Settings(BaseModel):

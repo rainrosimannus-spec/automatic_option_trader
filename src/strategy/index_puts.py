@@ -312,7 +312,10 @@ class IndexPutSeller:
                 try:
                     from src.core.config import get_settings as _gs
                     from src.strategy.worst_case import contracts_within
-                    room, _snap = self.risk.worst_case_headroom()
+                    try:
+                        room, _snap = self.risk.worst_case_headroom(scope="index")   # own carve-out (2026-11-20)
+                    except TypeError:
+                        room, _snap = self.risk.worst_case_headroom()
                     if room is not None:
                         wc = _gs().worst_case_cap
                         per = (max((strike - wing) - net_credit, 0.0) * 100) if wing else (strike * 100 * wc.index_gap)
