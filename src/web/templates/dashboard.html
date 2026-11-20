@@ -20,11 +20,19 @@
             🚀 {{ ipo_confirmed }} IPO{{ 's' if ipo_confirmed > 1 else '' }}
         </a>
         {% endif %}
+        {% if not connected and gateway_restart %}
+        <span class="flex items-center gap-1.5 px-3 py-1 rounded-full border border-amber-700 bg-amber-950/40 text-amber-300"
+              title="The options gateway restarts itself every day at {{ gateway_restart.start }} {{ gateway_restart.tz }} (IBC AutoRestartTime, set after IBKR's 05:00 UTC server reset). The API port is gone for a few seconds and the trader reconnects by itself — usually within a minute, at most by {{ gateway_restart.until }}. Do NOT restart anything; a hand restart only costs an IB Key push.">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-400 pulse-green"></span>
+            IBKR reconnecting — daily gateway restart {{ gateway_restart.start }}, back by {{ gateway_restart.until }}
+        </span>
+        {% else %}
         <span class="flex items-center gap-1.5 px-3 py-1 rounded-full border
             {{ 'border-emerald-700 bg-emerald-950/40 text-emerald-300' if connected else 'border-red-700 bg-red-950/40 text-red-300' }}">
             <span class="w-1.5 h-1.5 rounded-full {{ 'bg-emerald-400 pulse-green' if connected else 'bg-red-500' }}"></span>
             IBKR {{ 'Online' if connected else 'Offline' }}
         </span>
+        {% endif %}
         {% if history_farm and history_farm.dead %}
         <span class="flex items-center gap-1.5 px-3 py-1 rounded-full border border-red-700 bg-red-950/40 text-red-300"
               title="IBKR history farm on the options gateway is not answering (every price request times out since {{ history_farm.dead_since }}). Scans abort, no stock prices. Fix: run deploy/restart-gateway-options.sh and approve the IB Key push.">

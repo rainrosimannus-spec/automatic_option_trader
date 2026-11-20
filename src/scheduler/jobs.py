@@ -90,6 +90,35 @@ _app_start_time: float = _time_mod.time()
 _last_successful_scan: float = _time_mod.time()
 _consecutive_disconnect_checks: int = 0  # how many health checks found TWS down
 _tws_unreachable_alerted: bool = False   # avoid spamming TWS-down alerts
+_disconnect_since: float | None = None   # epoch of the first health check that found us down
+_DISCONNECT_ALERT_MIN = 15               # TWS-unreachable alert after this long down (was 3 × 5-min checks)
+_HEALTH_RETRY_SECS = 60                  # while down, re-check every minute instead of every 5
+_DISCONNECT_EVENT_RETRY_SECS = 30        # first re-check after the socket-drop event (gateway relogin ~10 s)
+_reconnect_guard = threading.Lock()      # interval job + retry job must never reconnect at once
+
+
+def _arm_health_check_retry(seconds: int, why: str) -> None:
+    """One-shot health check `seconds` from now (2026-11-20). The options gateway's daily
+    07:00-Lux auto-restart drops :4002 for ~10 s; the 5-min interval check then left the trader
+    disconnected for 4–9 min every morning, long enough for a needless restart-all by hand. Fixed
+    job id + replace_existing so retries never pile up; no-op when the scheduler is not running
+    (shutdown fires the disconnect event too)."""
+    try:
+        from apscheduler.triggers.date import DateTrigger
+        sched = get_scheduler()
+        if sched is None or not getattr(sched, "running", False):
+            return
+        when = datetime.now(pytz.UTC) + timedelta(seconds=seconds)
+        sched.add_job(job_health_check, DateTrigger(run_date=when), id="health_check_retry",
+                      name="IBKR Health Check (retry)", max_instances=1, replace_existing=True)
+        log.info("health_check_retry_armed", in_secs=seconds, why=why)
+    except Exception as e:
+        log.warning("health_check_retry_arm_failed", error=str(e))
+
+
+def on_options_disconnected() -> None:
+    """Called from the options connection's disconnectedEvent (src/broker/connection.py)."""
+    _arm_health_check_retry(_DISCONNECT_EVENT_RETRY_SECS, "socket_disconnected")
 
 
 
@@ -691,38 +720,51 @@ def job_health_check():
     refresh VIX/SPY for dashboard, detect prolonged TWS outages.
     """
     _ensure_event_loop()
-    global _consecutive_disconnect_checks, _tws_unreachable_alerted
+    global _consecutive_disconnect_checks, _tws_unreachable_alerted, _disconnect_since
 
     if not is_connected():
-        _consecutive_disconnect_checks += 1
-        log.warning("ibkr_disconnected_attempting_reconnect",
-                     consecutive_failures=_consecutive_disconnect_checks)
+        if not _reconnect_guard.acquire(blocking=False):
+            return  # the interval job and a retry fired together — one reconnect at a time
         try:
-            _ensure_connected()
-            if is_connected():
-                log.info("ibkr_reconnected_successfully")
-                _consecutive_disconnect_checks = 0
-                _tws_unreachable_alerted = False
-        except Exception as e:
-            log.error("ibkr_reconnect_failed", error=str(e))
-
-        # Alert after 3 consecutive failed health checks (15 min of downtime)
-        if _consecutive_disconnect_checks >= 3 and not _tws_unreachable_alerted:
+            _consecutive_disconnect_checks += 1
+            if _disconnect_since is None:
+                _disconnect_since = _time_mod.time()
+            down_min = int((_time_mod.time() - _disconnect_since) // 60)
+            log.warning("ibkr_disconnected_attempting_reconnect",
+                         consecutive_failures=_consecutive_disconnect_checks, down_min=down_min)
             try:
-                from src.core.alerts import get_alert_manager
-                alerts = get_alert_manager()
-                alerts.tws_unreachable_alert(
-                    minutes_down=_consecutive_disconnect_checks * 5
-                )
-                _tws_unreachable_alerted = True
-            except Exception:
-                pass
+                _ensure_connected()
+                if is_connected():
+                    log.info("ibkr_reconnected_successfully", down_min=down_min)
+                    _consecutive_disconnect_checks = 0
+                    _tws_unreachable_alerted = False
+                    _disconnect_since = None
+                    return
+            except Exception as e:
+                log.error("ibkr_reconnect_failed", error=str(e))
+
+            # Still down: re-check in a minute, not in five (2026-11-20).
+            _arm_health_check_retry(_HEALTH_RETRY_SECS, "still_disconnected")
+
+            # Alert once after _DISCONNECT_ALERT_MIN minutes down — keyed to elapsed time, not to
+            # the number of checks, now that checks run every minute while down.
+            if down_min >= _DISCONNECT_ALERT_MIN and not _tws_unreachable_alerted:
+                try:
+                    from src.core.alerts import get_alert_manager
+                    alerts = get_alert_manager()
+                    alerts.tws_unreachable_alert(minutes_down=down_min)
+                    _tws_unreachable_alerted = True
+                except Exception:
+                    pass
+        finally:
+            _reconnect_guard.release()
         return
     else:
-        # Connected — reset counter
-        if _consecutive_disconnect_checks > 0:
+        # Connected — reset counters
+        if _consecutive_disconnect_checks > 0 or _disconnect_since is not None:
             _consecutive_disconnect_checks = 0
             _tws_unreachable_alerted = False
+            _disconnect_since = None
 
     # Stale connection detector: if connected but price fetches keep failing
     # during market hours, force reconnect

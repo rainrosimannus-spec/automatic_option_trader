@@ -118,6 +118,7 @@ def _connect(max_retries: int = 3) -> IB:
 
     ib = BoundIB(_ib_lock, loop)
     ib.errorEvent += _on_error
+    ib.disconnectedEvent += _on_disconnected
 
     log.info("connecting_to_ibkr",
              host=cfg.host, port=cfg.port,
@@ -192,6 +193,19 @@ def reconnect() -> IB:
     time.sleep(10)  # give IBKR gateway time to release client ID before reconnecting
     _ib = _connect(max_retries=3)
     return _ib
+
+
+def _on_disconnected() -> None:
+    """Socket to the options gateway dropped (its daily 07:00-Lux auto-restart, IBKR's nightly
+    reset, a hand restart). Arm an early health-check retry so the trader reconnects within ~30 s
+    instead of waiting for the next 5-min check (2026-11-20). Also fires on our own deliberate
+    disconnect/reconnect — harmless: the retry finds us connected (or the scheduler stopped)."""
+    log.warning("ibkr_socket_disconnected")
+    try:
+        from src.scheduler.jobs import on_options_disconnected
+        on_options_disconnected()
+    except Exception as e:
+        log.debug("ibkr_disconnect_hook_failed", error=str(e))
 
 
 def _on_error(reqId: int, errorCode: int, errorString: str, contract) -> None:

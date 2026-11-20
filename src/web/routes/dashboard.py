@@ -712,6 +712,7 @@ def dashboard(request: Request):
         "request": request,
         "connected": is_connected(),
         "history_farm": _history_farm_for_template(),
+        "gateway_restart": _gateway_restart_for_template(),
         "paused": paused_state == "true",
         "current_vix": float(current_vix) if current_vix else None,
         "vix_spike": float(vix_spike) if vix_spike else None,
@@ -784,3 +785,14 @@ def _history_farm_for_template() -> dict:
         return history_farm_state()
     except Exception:
         return {"dead": False}
+
+
+def _gateway_restart_for_template():
+    """{"start","until","tz"} while the options gateway's daily auto-restart window is open
+    (07:00–07:10 Luxembourg), else None. Only used when the connection is down, so the header
+    says "reconnecting — daily gateway restart" instead of a bare "Offline" (2026-11-20)."""
+    try:
+        from src.broker.gateway_schedule import gateway_restart_window
+        return gateway_restart_window()
+    except Exception:
+        return None
