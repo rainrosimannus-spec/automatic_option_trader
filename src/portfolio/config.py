@@ -244,6 +244,15 @@ class CompounderConfig(BaseModel):
     # instead of all-at-30%'s 4.1pp. That is the trade; no trigger design removes it.
     crash_leverage_ladder: list[tuple[float, float]] = [(0.40, 0.1125), (0.30, 0.075)]
     drawdown_tranches: list[float] = [0.10, 0.20, 0.30]  # 20% reserve fires at these SPY drawdowns
+    # Cumulative share of the crash RESERVE released once N tranches have fired (index N-1). Rain,
+    # 2026-11-20: a -10% drawdown may spend one third of the reserve, -20% the rest, and at -30% the
+    # reserve is gone and the margin basket (crash_margin_pct, capitulation-gated) is what opens. The
+    # unreleased remainder stays parked and is ring-fenced from the budget gate, so the first leg can
+    # never spend the deeper legs' powder — on 11-20 the first leg sized itself at the WHOLE park
+    # (EUR 1.96M: the undeployed base plus all three legs of reserve) because the crash branch deployed
+    # the full remaining gap capped only by cash on hand. The base keeps its normal DCA pace in a crash;
+    # only the released reserve goes in fast.
+    reserve_release_schedule: list[float] = [1.0 / 3.0, 1.0, 1.0]
     backstop_start_days: int = 90      # if no crash within ~3mo, start bleeding the reserve in
     backstop_bleed_days: int = 180     # ...fully deployed over the following ~6mo (never idle long)
     # Entry-mode intensity thresholds

@@ -1214,7 +1214,11 @@ class PortfolioBuyer:
             dd = cmp.gauge_drawdown_fallback(self._get_state_value("compounder_drawdown_pct"))
             log.warning("compounder_market_gauge_stale", last_known_dd_pct=round(dd * 100, 1),
                         gauge_at=self._get_state_value("compounder_gauge_at"))
-        unlocked_dd = cmp.reserve_unlocked_fraction(rstate.tranches_fired, len(cc.drawdown_tranches))
+        # Rain, 2026-11-20: -10% releases one third of the reserve, -20% the rest, -30% opens the margin
+        # basket (cc.reserve_release_schedule). The unreleased remainder is ring-fenced below.
+        unlocked_dd = cmp.reserve_released_fraction(rstate.tranches_fired,
+                                                    getattr(cc, "reserve_release_schedule", None),
+                                                    len(cc.drawdown_tranches))
         # Crash dump (deploy the parked cash reserve fast) on ANY real drawdown tranche.
         crash_active = unlocked_dd > 0 and dd >= (cc.drawdown_tranches[0] if cc.drawdown_tranches else 1.0)
         # Capitulation = the DEEPEST tranche has been hit. The margin facility (below) is gated to this,
@@ -1501,7 +1505,22 @@ class PortfolioBuyer:
         # gate would read the parked reserve as "no cash" and starve deployment.
         margin_ok = capitulation if cc.margin_capitulation_only else crash_active
         crash_margin = max(0.0, cc.crash_margin_pct * nlv - already_borrowed) if margin_ok else 0.0
-        free_cash = (deployable_cash + parked + crash_margin) * soft_scale
+        # ...but ONLY while the park's venue is open. 2026-11-20: the first crash tranche fired after
+        # Xetra had closed; the gate still counted the EUR 1.95M park, the scan wrote 59 US cards against
+        # it, and 53 died at the FX leg (the euros were in XEON, unsellable until Monday) — 53 alerts,
+        # nothing bought. Outside Xetra hours only liquid cash above the buffer is real money; the parker
+        # keeps that runway topped up on every European scan (buffer + a day's pace + any released
+        # reserve). The UNRELEASED reserve is ring-fenced out of the park's contribution so neither the
+        # base pace nor the first leg can spend the deeper legs' powder.
+        _base_ccy = (getattr(self.cfg, "base_currency", "EUR") or "EUR").upper()
+        _park_open = _market_open(_base_ccy)
+        _unreleased = cmp.unreleased_reserve(investable, cc.base_pct, unlocked)
+        free_cash = cmp.fundable_cash(deployable_cash, parked, _park_open, _unreleased,
+                                      crash_margin, soft_scale)
+        if parked > 0 and not _park_open:
+            log.info("compounder_park_not_fundable_now", parked=round(parked),
+                     liquid_deployable=round(deployable_cash), free_cash=round(free_cash),
+                     note="park venue shut — only liquid cash counts this session")
         # Per-day DCA throttle: base_pace is a per-DAY budget but the scan runs every 30 min, so cap
         # the day's TOTAL deployment at base_pace by subtracting what's already gone out today. Measure
         # that from ACTUALLY FILLED buys (PortfolioTransaction), NOT the scan's intended spend — orders
@@ -1557,11 +1576,43 @@ class PortfolioBuyer:
             _frac = min(1.0, (spy_ext - cc.deploy_throttle_start_pct) / _span)
             pace_throttle = max(cc.deploy_throttle_floor, 1.0 - _frac * (1.0 - cc.deploy_throttle_floor))
         self._store_state("compounder_pace_throttle", str(round(pace_throttle, 2)))
+        # Reserve accounting (Rain 2026-11-20). What a live tranche may deploy on TOP of the base pace is
+        # the released share of the reserve not yet spent. "Spent" = deployment above the base allowance
+        # on crash-active days: today's share is live (deployed_today - base pace, so a dying card hands
+        # its room back); earlier days roll into a persisted counter at the first scan of a new day.
+        # Monotonic like the tranches themselves — nothing re-locks reserve once it has been spent.
+        _gap_now = max(0.0, target_total - deployed_eff)
+        _base_pace_today = cmp.base_daily_pace(investable, cc.base_pct, cc.dca_horizon_days,
+                                               _gap_now, deployed_today,
+                                               cc.lump_horizon_days, pace_throttle)
+        _rs_prior = float(self._get_state_value("compounder_reserve_spent") or 0.0)
+        _rs_date = self._get_state_value("compounder_reserve_spend_date") or ""
+        _rs_today_saved = float(self._get_state_value("compounder_reserve_spend_today") or 0.0)
+        if _rs_date and _rs_date != _today:
+            _rs_prior += _rs_today_saved                      # yesterday's reserve spend is final
+            self._store_state("compounder_reserve_spent", str(round(_rs_prior)))
+            _rs_today_saved = 0.0
+        _rs_today = cmp.reserve_spend_today(deployed_today, _base_pace_today) if crash_active else 0.0
+        self._store_state("compounder_reserve_spend_today", str(round(_rs_today)))
+        self._store_state("compounder_reserve_spend_date", _today)
+        reserve_room = cmp.reserve_room(investable, cc.base_pct, unlocked_dd,
+                                        _rs_prior + _rs_today) if crash_active else 0.0
+        self._store_state("compounder_reserve_room", str(round(reserve_room)))
+        self._store_state("compounder_reserve_released",
+                          str(round(cmp.reserve_total(investable, cc.base_pct) * unlocked_dd)))
+        if crash_active:
+            log.info("compounder_crash_reserve", tranches=rstate.tranches_fired,
+                     released_frac=round(unlocked_dd, 3),
+                     released=round(cmp.reserve_total(investable, cc.base_pct) * unlocked_dd),
+                     spent_prior_days=round(_rs_prior), spent_today=round(_rs_today),
+                     room=round(reserve_room), base_pace=round(_base_pace_today),
+                     unreleased=round(_unreleased), park_open=_park_open)
         budget = cmp.daily_deploy_budget(
             investable, cc.base_pct, cc.dca_horizon_days, unlocked,
             deployed_eff, target_total, crash_active, free_cash,
             deployed_today=deployed_today,
-            lump_horizon_days=cc.lump_horizon_days, pace_throttle=pace_throttle)
+            lump_horizon_days=cc.lump_horizon_days, pace_throttle=pace_throttle,
+            reserve_room=reserve_room)
 
         # Middle road: when the per-DAY pace is below the minimum ORDER size (froth-throttled and/or
         # lump-stretched on a large account — e.g. ~$19k/day vs a $44k min_buy at $11M NLV), the daily
@@ -1922,7 +1973,8 @@ class PortfolioBuyer:
                                           remaining_gap, deployed_today,
                                           cc.lump_horizon_days, pace_throttle)
         self._park_compounder_excess(nlv, spent, deposit_runway=self._deposit_runway(cc),
-                                     day_budget=_day_budget, crash_active=crash_active)
+                                     day_budget=_day_budget, crash_active=crash_active,
+                                     reserve_room=reserve_room)
 
         self._store_state("compounder_last_spent", str(round(spent)))
         # deployed_today is computed live from actual fills each scan (see above) — just persist the
@@ -2308,8 +2360,14 @@ class PortfolioBuyer:
     def _park_compounder_excess(self, nlv: float, spent_this_scan: float,
                                 deposit_runway: float = 0.0,
                                 day_budget: float = 0.0,
-                                crash_active: bool = False) -> None:
+                                crash_active: bool = False,
+                                reserve_room: float = 0.0) -> None:
         """Hold the base-currency cash line at the deploy runway, parking or un-parking the ETF to suit.
+
+        `reserve_room` (crash only) is the released-but-unspent crash reserve: it joins the runway so the
+        first European scan after a tranche fires raises it from the park, in daylight, for the US
+        session that follows. 2026-11-20: the tranche fired after Xetra closed, nothing was raised, and
+        every US buy died unfunded.
 
         Idle cash above the runway is parked for yield; a runway that has drained below it is refilled
         out of the park. Cash committed to in-flight buys (resting orders + suggestion cards) is never
@@ -2356,9 +2414,13 @@ class PortfolioBuyer:
             # while the park venue is shut, so it cannot be raised just-in-time. Keeping it liquid IS
             # the "sell one day's budget of XEON per day" behaviour: the un-park leg replenishes it on
             # a European scan, funding the Asian session that follows ~9 hours later.
-            _reserve = max(nlv * cc.cash_buffer_pct,
-                           max(0.0, deposit_runway),
-                           max(0.0, day_budget))
+            # ADDITIVE, as the paragraph above says: the buffer is the floor the budget gate subtracts
+            # (deployable_cash = cash - buffer), so a runway equal to the buffer leaves deployable_cash at
+            # zero exactly when the park is shut and cannot be sold. One day's pace (or the deposit
+            # remainder, whichever is larger) sits ON TOP of it, plus any released crash reserve.
+            _reserve = (nlv * cc.cash_buffer_pct
+                        + max(0.0, deposit_runway, day_budget)
+                        + max(0.0, reserve_room))
             _park_min = getattr(cc, "cash_park_min", 5000.0)
 
             # Both legs key off the BASE-CURRENCY CASH LINE, never TotalCashValue. The park ETF is
@@ -2408,6 +2470,7 @@ class PortfolioBuyer:
             log.info("compounder_runway_restore", base_ccy=base_ccy, target=round(target),
                      cash=round(base_cash), short=round(-excess), spent=round(spent_this_scan),
                      day_budget=round(day_budget), deposit_runway=round(deposit_runway),
+                     reserve_room=round(reserve_room),
                      note="pre-funds the next Asian session — Xetra is shut when Tokyo opens")
             _unpark_yield(self.ib, self.cfg, target, settle_ccy=base_ccy)
         except Exception as e:
@@ -4390,6 +4453,25 @@ def _fx_rate_ccy_per_base(ib, pair, base: str, ccy: str) -> float:
         return 0.0
 
 
+# Why the last FX funding attempt for a currency deferred ("liquidity" = the base cash is parked and
+# the park venue is shut). The executor reads it to word the card honestly and to keep a cash-timing
+# wait from being treated as a broken FX pair (24 h permission block + one alert per card).
+_FX_DEFER_REASON: dict[str, str] = {}
+_UNFUNDED_ALERT_EVERY_MIN = 30.0
+_unfunded_alert_at: datetime | None = None
+_unfunded_since_alert: list[str] = []
+
+
+def _unfunded_alert_due(now: datetime | None = None) -> bool:
+    """One 'buys unfunded' alert per _UNFUNDED_ALERT_EVERY_MIN, not one per card (53 on 2026-11-20)."""
+    global _unfunded_alert_at
+    now = now or datetime.utcnow()
+    if _unfunded_alert_at is None or (now - _unfunded_alert_at).total_seconds() >= _UNFUNDED_ALERT_EVERY_MIN * 60:
+        _unfunded_alert_at = now
+        return True
+    return False
+
+
 def _ensure_currency_funding(ib, stock_ccy: str, base_ccy: str, notional_ccy: float,
                              cfg=None, min_convert: float = 1000.0) -> bool:
     """Auto-convert base currency into a foreign stock's settlement currency BEFORE the buy, so the
@@ -4469,7 +4551,9 @@ def _ensure_currency_funding(ib, stock_ccy: str, base_ccy: str, notional_ccy: fl
                             ccy=ccy, base=base, sold_ccy=pair.symbol,
                             need=round(plan["qty"]), have=round(liquid_sold),
                             pair=pair.symbol + pair.currency)
+                _FX_DEFER_REASON[ccy] = "liquidity"
                 return False
+        _FX_DEFER_REASON.pop(ccy, None)
 
         # Above the IDEALPRO minimum → place the real conversion and verify the fill (fail-closed).
         with get_portfolio_lock():
@@ -4983,12 +5067,38 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
             # instead of a silent perpetual retry. (A genuinely transient shortfall recovers well
             # within the cap.)
             max_tries = int(getattr(pcfg, "fx_funding_max_attempts", 6) or 6)
+            _liquidity_wait = _FX_DEFER_REASON.get((ccy or "").upper()) == "liquidity"
+            _park = getattr(pcfg, "cash_yield_symbol", None) or "the park ETF"
             log.warning("portfolio_suggestion_unfunded_skip", id=suggestion_id, symbol=symbol,
-                        ccy=ccy, notional=round(notional_settle))
+                        ccy=ccy, notional=round(notional_settle),
+                        reason=("base cash parked, park venue shut" if _liquidity_wait else "fx"))
             with get_db() as db:
                 s = db.query(TradeSuggestion).filter(TradeSuggestion.id == suggestion_id).first()
                 if s:
                     s.funding_attempts = (s.funding_attempts or 0) + 1
+                    if s.funding_attempts >= max_tries and _liquidity_wait:
+                        # Not an FX failure: the euros exist but sit in the park while its venue is
+                        # shut. Retire the card without blaming the pair, never stand the name down,
+                        # and alert once per half hour instead of once per card. The scan re-creates
+                        # the buy once the parker has raised the cash (first European scan).
+                        s.status = "expired"
+                        s.review_note = (f"Not funded: EUR cash is parked in {_park} and its venue is "
+                                         f"shut — raised at the next Xetra session, re-created then")
+                        _unfunded_since_alert.append(symbol)
+                        if _unfunded_alert_due():
+                            try:
+                                from src.core.alerts import get_alert_manager
+                                _n = len(_unfunded_since_alert)
+                                get_alert_manager().critical(
+                                    "Portfolio buys waiting for cash",
+                                    f"{_n} buy card(s) ({', '.join(_unfunded_since_alert[:8])}"
+                                    f"{'…' if _n > 8 else ''}) could not be funded: EUR is parked in "
+                                    f"{_park} and its venue is shut. They are re-created once the "
+                                    f"parker raises the cash at the next Xetra session.")
+                                _unfunded_since_alert.clear()
+                            except Exception:
+                                pass
+                        return "expired"
                     if s.funding_attempts >= max_tries:
                         s.status = "expired"
                         s.review_note = (f"Could not fund {ccy} leg after {s.funding_attempts} "
@@ -5010,7 +5120,9 @@ def execute_portfolio_buy_suggestion(suggestion_id: int) -> str:
                             pass
                         return "expired"
                     s.status = "approved"   # retry next cycle; do not place an unfunded (margin) order
-                    s.review_note = (f"Skipped — could not fund {ccy} leg (try {s.funding_attempts}/"
+                    s.review_note = (f"Waiting for EUR cash (parked in {_park}, venue shut) — try "
+                                     f"{s.funding_attempts}/{max_tries}" if _liquidity_wait else
+                                     f"Skipped — could not fund {ccy} leg (try {s.funding_attempts}/"
                                      f"{max_tries}); will retry")
             return "approved"
         order = LimitOrder("BUY", shares, order_price)

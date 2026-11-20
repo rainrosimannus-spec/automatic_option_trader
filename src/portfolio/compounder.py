@@ -302,6 +302,63 @@ def reserve_unlocked_fraction(fired: int, n_tranches: int = 3) -> float:
     return min(1.0, fired / n_tranches) if n_tranches > 0 else 0.0
 
 
+def reserve_released_fraction(fired: int, schedule=None, n_tranches: int = 3) -> float:
+    """Cumulative fraction of the crash reserve released after `fired` drawdown tranches.
+
+    `schedule[i]` is the fraction released once tranche i+1 has fired (cumulative, so it should be
+    non-decreasing). Rain, 2026-11-20: -10% → one third, -20% → the rest, -30% → the reserve is spent
+    and the margin basket opens. Without a schedule this is the old linear fired/n."""
+    if fired <= 0:
+        return 0.0
+    if schedule:
+        idx = min(int(fired), len(schedule)) - 1
+        try:
+            return max(0.0, min(1.0, float(schedule[idx])))
+        except (TypeError, ValueError):
+            pass
+    return reserve_unlocked_fraction(fired, n_tranches)
+
+
+def reserve_total(investable: float, base_pct: float) -> float:
+    """The crash reserve in base currency: the (1 - base_pct) share of investable capital."""
+    return max(0.0, investable) * max(0.0, 1.0 - base_pct)
+
+
+def reserve_room(investable: float, base_pct: float, released_frac: float, spent: float) -> float:
+    """Released-but-unspent reserve: what a live tranche may deploy ON TOP of the base pace.
+
+    `spent` is the cumulative reserve spend (today's spend is deployed_today above the base pace, see
+    reserve_spend_today; earlier days roll into a persisted counter). Monotonic like the tranches: a
+    new tranche enlarges the room, nothing ever re-locks what was spent."""
+    return max(0.0, reserve_total(investable, base_pct) * max(0.0, min(1.0, released_frac))
+               - max(0.0, spent))
+
+
+def unreleased_reserve(investable: float, base_pct: float, released_frac: float) -> float:
+    """The part of the reserve the current drawdown has NOT released — ring-fenced in the park."""
+    return reserve_total(investable, base_pct) * max(0.0, 1.0 - max(0.0, min(1.0, released_frac)))
+
+
+def reserve_spend_today(deployed_today: float, base_pace: float) -> float:
+    """Today's deployment above the base allowance is, by construction, reserve money."""
+    return max(0.0, max(0.0, deployed_today) - max(0.0, base_pace))
+
+
+def fundable_cash(deployable_cash: float, parked: float, park_open: bool,
+                  unreleased: float, crash_margin: float = 0.0, soft_scale: float = 1.0) -> float:
+    """Cash a scan may commit THIS session.
+
+    Liquid cash above the operational buffer always counts. The park ETF counts ONLY while its venue
+    is open — a just-in-time sale during Tokyo, Sydney or the US afternoon cannot fill, so cards
+    written against the park then die at the FX leg (2026-11-20: 53 cards, EUR 3.2M, 53 alerts, nothing
+    bought — the tranche fired after Xetra had closed). The ring-fenced unreleased reserve is taken
+    out of the park's contribution, so the base pace and the first leg can never reach the deeper
+    legs' powder. Crash margin (capitulation-gated by the caller) is added last; soft_scale is the
+    leverage de-rate."""
+    park_avail = max(0.0, max(0.0, parked) - max(0.0, unreleased)) if park_open else 0.0
+    return (max(0.0, deployable_cash) + park_avail + max(0.0, crash_margin)) * max(0.0, soft_scale)
+
+
 def burn_in_ceiling(armed_days: int, ramp_days: int, floor: float, investable: float) -> float:
     """Deployment ceiling during the self-arming burn-in: hold at `floor` on day 0 and ramp linearly to
     the full `investable` over `ramp_days`, returning 0.0 once the window has elapsed (the caller then
@@ -684,7 +741,8 @@ def daily_deploy_budget(investable: float, base_pct: float, dca_horizon_days: in
                         unlocked_fraction: float, deployed: float, target_total: float,
                         crash_active: bool, free_cash: float,
                         deployed_today: float = 0.0,
-                        lump_horizon_days: int = 126, pace_throttle: float = 1.0) -> float:
+                        lump_horizon_days: int = 126, pace_throttle: float = 1.0,
+                        reserve_room: float = 0.0) -> float:
     """How much new capital to put to work in THIS scan.
 
     - Base tranche (base_pct of investable) is DCA'd; subtract what's already deployed TODAY
@@ -698,17 +756,20 @@ def daily_deploy_budget(investable: float, base_pct: float, dca_horizon_days: in
     - FROTH THROTTLE: `pace_throttle` (0..1, set by the caller from SPY vs its 200-day trend) slows the
       base pace when the market is extended above trend (deploy slower into froth, faster after it
       falls). It never throttles the crash dump.
-    - When a drawdown tranche is active, deploy the unlocked reserve fast (full remaining gap) — dry
-      powder doing its job, NOT subject to the DCA or froth throttle.
+    - When a drawdown tranche is active, the base keeps its normal daily pace and the RELEASED
+      reserve (`reserve_room`, see reserve_room()) goes in on top of it, fast and un-throttled —
+      dry powder doing its job. The old branch deployed the whole remaining gap capped only by cash:
+      on 2026-11-20 that sized the first (-10%) leg at EUR 1.96M — the undeployed base plus all three
+      legs of reserve — instead of the one third Rain's design releases there.
     Always bounded by the remaining gap to target and by free cash on hand.
     """
     remaining_gap = max(0.0, target_total - deployed)
+    base_pace = base_daily_pace(investable, base_pct, dca_horizon_days, remaining_gap,
+                                deployed_today, lump_horizon_days, pace_throttle)
+    daily_room = max(0.0, base_pace - max(0.0, deployed_today))      # cap NEW deployment per DAY
     if crash_active:
-        budget = remaining_gap
+        budget = min(remaining_gap, daily_room + max(0.0, reserve_room))
     else:
-        base_pace = base_daily_pace(investable, base_pct, dca_horizon_days, remaining_gap,
-                                    deployed_today, lump_horizon_days, pace_throttle)
-        daily_room = max(0.0, base_pace - max(0.0, deployed_today))  # cap NEW deployment per DAY
         budget = min(remaining_gap, daily_room)
     return max(0.0, min(budget, free_cash))
 

@@ -131,9 +131,14 @@ def test_the_observed_round_trip_is_now_blocked():
 DAY_BUDGET = 79_885.0
 
 
-def _target2(deposit_runway: float, day_budget: float, open_buy: float = 0.0) -> float:
-    """Mirror of the reserve/target computation including the working-capital leg."""
-    return max(NLV * BUFFER_PCT, max(0.0, deposit_runway), max(0.0, day_budget)) + open_buy
+def _target2(deposit_runway: float, day_budget: float, open_buy: float = 0.0,
+             reserve_room: float = 0.0) -> float:
+    """Mirror of the reserve/target computation including the working-capital leg. ADDITIVE since
+    2026-11-20: the buffer is what the budget gate subtracts from cash, so a runway equal to the buffer
+    left deployable cash at zero whenever the park was shut; one day's pace (or the deposit remainder)
+    sits on top, plus any released crash reserve."""
+    return (NLV * BUFFER_PCT + max(0.0, deposit_runway, day_budget) + max(0.0, reserve_room)
+            + open_buy)
 
 
 def test_one_day_of_working_capital_is_always_reserved():
@@ -155,9 +160,13 @@ def test_shortfall_triggers_a_top_up_so_asia_is_pre_funded():
     assert excess < -PARK_MIN              # un-park branch fires (during EUR hours)
 
 
-def test_deposit_window_dominates_when_larger():
-    assert _target2(500_000.0, DAY_BUDGET) == NLV_FLOOR + 0.0 or \
-           _target2(500_000.0, DAY_BUDGET) == max(NLV_FLOOR, 500_000.0)
+def test_deposit_window_dominates_the_day_budget_on_top_of_the_cushion():
+    assert _target2(500_000.0, DAY_BUDGET) == NLV_FLOOR + 500_000.0
+
+
+def test_released_crash_reserve_joins_the_runway():
+    # The first European scan after a tranche fires must raise the released reserve from the park.
+    assert _target2(0.0, DAY_BUDGET, reserve_room=321_000.0) == NLV_FLOOR + DAY_BUDGET + 321_000.0
 
 
 def test_cushion_still_floors_everything():

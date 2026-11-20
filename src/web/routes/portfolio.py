@@ -798,7 +798,11 @@ async def portfolio_page(request: Request):
             _base_pace = _base_daily_pace(_investable, _ccfg.base_pct, _ccfg.dca_horizon_days,
                                           _remaining_gap, _deployed_today,
                                           _ccfg.lump_horizon_days, _throttle)
-            _live_daily_budget = max(0.0, min(_remaining_gap, _base_pace - _deployed_today))
+            # In a crash the engine adds the released-but-unspent reserve on top of the base pace
+            # (compounder.daily_deploy_budget reserve_room, persisted by the scan) — mirror it.
+            _room = (float(_get_state("compounder_reserve_room") or 0)
+                     if _get_state("market_status") == "crash" else 0.0)
+            _live_daily_budget = max(0.0, min(_remaining_gap, _base_pace - _deployed_today + _room))
             # Burn-in clamp — the scan's FINAL ceiling (buyer._compounder_burn_in_cap) caps TOTAL
             # committed capital, so while it binds the real budget is the room left under the cap, not
             # the DCA pace. Without this the card kept quoting the full pace during the burn-in while the

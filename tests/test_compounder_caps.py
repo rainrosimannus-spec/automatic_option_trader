@@ -154,10 +154,21 @@ def test_burn_in_arms_on_large_deposit_only():
     assert _should_arm(0, 60_000, 500_000) is False
 
 
-def test_crash_dump_ignores_lump_stretch_and_throttle():
-    # In a fired tranche, deploy the full remaining gap regardless of lump horizon / froth throttle.
-    b = _budget(deployed=100_000.0, crash=True, throttle=0.0, lump_horizon=126)
-    assert b == 800_000.0                                # full remaining gap (900k target - 100k)
+def test_crash_deploys_the_released_reserve_on_top_of_the_base_pace_not_the_whole_gap():
+    # Rain 2026-11-20: a fired tranche adds the RELEASED reserve (reserve_room) to the day's base pace;
+    # it no longer dumps the whole remaining gap (which on 11-20 was the undeployed base plus all three
+    # legs of reserve). The base pace keeps its lump stretch and froth throttle.
+    pace = cmp.base_daily_pace(1_000_000.0, 0.9, 21, 800_000.0, 0.0, 126, 1.0)
+    b = cmp.daily_deploy_budget(1_000_000.0, 0.9, 21, 1 / 3, 100_000.0, 900_000.0, True,
+                                free_cash=10_000_000.0, lump_horizon_days=126, pace_throttle=1.0,
+                                reserve_room=33_333.0)
+    assert abs(b - (pace + 33_333.0)) < 1.0
+    assert b < 800_000.0                                 # not the full remaining gap any more
+    # a throttled pace still throttles the base leg; the reserve leg is untouched
+    b0 = cmp.daily_deploy_budget(1_000_000.0, 0.9, 21, 1 / 3, 100_000.0, 900_000.0, True,
+                                 free_cash=10_000_000.0, lump_horizon_days=126, pace_throttle=0.0,
+                                 reserve_room=33_333.0)
+    assert b0 == 33_333.0
 
 
 def test_queue_orders_green_first_then_by_underweight_gap():
