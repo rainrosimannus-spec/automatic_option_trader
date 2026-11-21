@@ -421,7 +421,15 @@ def report_same_euros(px, hold, rates, base, day1, resolved, anchor2):
     # guards — a silently dropped name would corrupt every total below
     missing = [h["symbol"] for h in hold
                if h["symbol"] not in px or close_on(px[h["symbol"]], day1) is None]
-    assert not missing, f"no day-1 price for {missing}"
+    if missing:
+        # 2026-11-21: a rights entitlement (PRX.3DRTS, a corporate-action line with no price history)
+        # and a venue without history permission (EVO) killed the whole report. Exclude them, say so
+        # with the euros involved, and keep the totals honest for the names that CAN be priced.
+        for m in missing:
+            h = next(x for x in hold if x["symbol"] == m)
+            print(f"  !! {m}: EXCLUDED — no day-1 price (invested {h['total_invested'] or 0:,.0f} "
+                  f"{h['currency']}, market value {h['market_value'] or 0:,.0f})")
+        hold = [h for h in hold if h["symbol"] not in missing]
     azn = close_on(px.get("AZN", {}), day1)
     assert azn is None or 50 < azn < 500, f"AZN day-1 {azn} looks like pence, not pounds"
     for h in hold:
