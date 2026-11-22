@@ -1306,6 +1306,10 @@ class PortfolioBuyer:
             log.info("compounder_leverage_derate", soft_scale=round(soft_scale, 2),
                      loan_pct=round(loan_pct, 1), margin_pct=round(margin_pct, 1))
 
+        # Hand-pinned permanent members (src/portfolio/permanent.py) get their watchlist row here if
+        # the monthly screen has not run since they were configured — in the book after a restart.
+        self._ensure_permanent_members()
+
         # Build ranked universe from live technicals + refreshed fundamental scores
         watch = self._get_watchlist()
         if not watch:
@@ -4002,6 +4006,56 @@ class PortfolioBuyer:
             return pfx.to_base(h.market_value or h.total_invested or 0, h.currency) if h else 0
 
     # ── Database helpers ─────────────────────────────────────
+    def _ensure_permanent_members(self) -> list[str]:
+        """Every configured permanent member (PortfolioConfig.permanent_members) has a watchlist row
+        flagged durability_pick=True and not pending removal. Missing rows are inserted as plain
+        growth rows with zero scores — the scan prices them like any other name, and the ranker's
+        median floor sizes them, so the zero fundamentals never matter. Idempotent; one query when
+        nothing is missing. Returns the symbols inserted."""
+        from src.portfolio.permanent import permanent_rationale
+        from src.portfolio.symbols import canonical_symbol
+        members = list(getattr(self.cfg, "permanent_members", None) or [])
+        if not members:
+            return []
+        inserted: list[str] = []
+        try:
+            with get_db() as db:
+                rows = {w.symbol: w for w in db.query(PortfolioWatchlist).all()}
+                for m in members:
+                    sym = canonical_symbol(str(getattr(m, "symbol", "") or "").strip())
+                    if not sym:
+                        continue
+                    w = rows.get(sym)
+                    if w is None:
+                        db.add(PortfolioWatchlist(
+                            symbol=sym, name=(getattr(m, "name", "") or sym),
+                            exchange=(getattr(m, "exchange", None) or "SMART"),
+                            currency=(getattr(m, "currency", None) or "USD"),
+                            sector="Permanent", tier="growth", category="growth",
+                            rationale=permanent_rationale(m), durability_pick=True,
+                            growth_score=0.0, valuation_score=0.0, quality_score=0.0,
+                            forward_growth_score=0.0, fundamentals_complete=False,
+                            screened_at=datetime.utcnow()))
+                        inserted.append(sym)
+                        log.info("compounder_permanent_member_added", symbol=sym,
+                                 rationale=permanent_rationale(m))
+                        continue
+                    changed = False
+                    if not getattr(w, "durability_pick", False):
+                        w.durability_pick = True; changed = True
+                    if getattr(w, "pending_removal", False):
+                        w.pending_removal = False; w.pending_removal_reason = None; changed = True
+                    if (w.tier or "growth") != "growth":
+                        w.tier = "growth"; w.category = "growth"; changed = True
+                    if not (w.rationale or "").startswith("Permanent member"):
+                        w.rationale = permanent_rationale(m); changed = True
+                    if changed:
+                        log.info("compounder_permanent_member_repinned", symbol=sym)
+                db.commit()
+        except Exception as e:
+            log.warning("compounder_permanent_members_failed", error=str(e))
+        return inserted
+
     def _get_watchlist(self) -> list[PortfolioWatchlist]:
         with get_db() as db:
             all_stocks = db.query(PortfolioWatchlist).all()

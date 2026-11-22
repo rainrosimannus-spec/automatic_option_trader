@@ -283,6 +283,32 @@
     </div>
     {% endif %}
 
+    <!-- ═══ Permanent members (hand-pinned, kept in the growth tier every screen) ═══ -->
+    {% set pm = run_log.get('permanent', {}) %}
+    {% if pm and pm.get('members') %}
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-1">📌 Permanent Members</h2>
+        <div class="text-xs text-gray-500 mb-3">Hand-pinned names kept in the growth tier regardless of score or gate; never dropped by the screen or the review; sized at the growth-tier median rank.</div>
+        {% for p in pm.get('scored', []) %}
+        <div class="flex items-start gap-3 text-sm border-b border-gray-800/50 pb-1">
+            <span class="font-mono font-bold text-sky-300 w-16 shrink-0">{{ p.symbol }}</span>
+            <span class="px-1.5 py-0.5 rounded text-xs shrink-0 bg-gray-800 text-gray-400" title="growth score {{ p.growth_score }}, ${{ p.market_cap_bn }}B">
+                {% if p.was_in_top %}in top-60 anyway{% elif p.passes_growth_gate %}added (passes gate){% else %}added (gate bypassed){% endif %}
+            </span>
+            <span class="text-gray-500 text-xs">{{ p.note }}</span>
+        </div>
+        {% endfor %}
+        {% if pm.get('unscored') %}
+        <div class="text-xs text-amber-400 mt-1">Not scorable this run (row kept as is): {% for u in pm.get('unscored') %}<span class="font-mono">{{ u }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</div>
+        {% endif %}
+        {% if pm.get('displaced') %}
+        <div class="text-xs text-gray-500 mt-1">Displaced from the growth tier:
+            {% for d in pm.get('displaced') %}<span class="font-mono text-gray-400">{{ d.symbol }}</span> ({{ d.growth_score }}){% if not loop.last %}, {% endif %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
     <!-- ═══ Growth Gate (kept out of the growth tier) ═══ -->
     {% set gg = run_log.get('growth_gate', {}) %}
     {% if gg %}

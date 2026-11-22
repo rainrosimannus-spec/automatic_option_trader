@@ -354,6 +354,15 @@ class CompounderConfig(BaseModel):
     burn_in_ramp_days: int = 21                # ramp the ceiling floor→full over this many days, then disarm
 
 
+class PermanentMember(BaseModel):
+    """One hand-pinned universe member — see PortfolioConfig.permanent_members."""
+    symbol: str                     # internal symbol, IBKR spelling (share class with a space: "BRK B")
+    name: str = ""
+    exchange: str = "SMART"
+    currency: str = "USD"
+    reason: str = ""                # shown on the watchlist row after "Permanent member — "
+
+
 class PortfolioConfig(BaseModel):
     enabled: bool = True
 
@@ -421,6 +430,19 @@ class PortfolioConfig(BaseModel):
     tier_count_durability_picks: int = 5
     durability_growth_floor_pct: float = 3.0
     durability_min_market_cap_usd: float = 5e9
+    # Permanent members (Rain, 2026-11-22): names put in the book BY HAND that every monthly screen
+    # keeps in the growth tier regardless of score or gate, never deletes and never flags for
+    # removal; the review's growth drop-off rules do not judge them. Carried on the durability-pick
+    # rail (durability_pick=True on the row): sized at the growth tier's median rank like a
+    # durability pick (~1% of the book), ordinary growth row for everything else (green/yellow
+    # gate, ladder, timing). The buyer inserts the watchlist row at its next scan if it is missing,
+    # so a new entry is in the book after one restart. src/portfolio/permanent.py has the rules.
+    # First member: Berkshire Hathaway class B as the resilience pick after the November 2026 AI
+    # unwind — cash-rich, diversified, the ballast a 57%-AI book lacks. Override in settings.yaml.
+    permanent_members: list[PermanentMember] = [
+        PermanentMember(symbol="BRK B", name="Berkshire Hathaway B", exchange="SMART", currency="USD",
+                        reason="resilience pick: cash-rich diversified holding company, ballast against the AI-heavy book"),
+    ]
 
     # Put-entry mechanism
     put_entry: PutEntryConfig = PutEntryConfig()

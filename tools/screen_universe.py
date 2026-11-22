@@ -1615,6 +1615,37 @@ def apply_durability_protection(selected_growth: list, eligible: list, growth_co
     return selected, picks, displaced
 
 
+def apply_permanent_members(selected_growth: list, members: list, growth_count: int) -> tuple[list, list]:
+    """Pure. Every scored permanent member (src/portfolio/permanent.py) is IN the growth tier,
+    carried on the durability-pick rail. Returns (new_selected_growth, displaced).
+
+    Runs AFTER apply_durability_protection (which resets durability_pick on the selection). A
+    member already inside keeps its place; one from outside is added and the lowest-scored member
+    that is neither a durability pick nor permanent leaves, so the tier never exceeds
+    `growth_count`. A member bypasses the growth gate, the durable gate and the size floor — that
+    is what "permanent" means; the ordinary members still compete on merit for the other slots."""
+    selected = list(selected_growth)
+    have = {s.symbol for s in selected}
+    for m in members:
+        m.permanent_member = True
+        m.durability_pick = True
+        m.tier = "growth"
+        if m.symbol not in have:
+            selected.append(m)
+            have.add(m.symbol)
+    protected = {s.symbol for s in selected if getattr(s, "durability_pick", False)}
+    displaced = []
+    while len(selected) > growth_count:
+        victims = [s for s in selected if s.symbol not in protected]
+        if not victims:
+            break
+        v = min(victims, key=lambda s: ((s.portfolio_score or 0.0), s.symbol))
+        selected.remove(v)
+        displaced.append(v)
+    selected.sort(key=lambda s: -(s.portfolio_score or 0.0))
+    return selected, displaced
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # AUGMENTATION SWAP PROPOSALS (Commit J+K — building blocks, no callers yet)
 # ─────────────────────────────────────────────────────────────────────────
@@ -3765,6 +3796,10 @@ class StockScore:
     durability_score: Optional[float] = None
     durability_note: str = ""
     durability_pick: bool = False
+    # Hand-pinned universe member (PortfolioConfig.permanent_members, src/portfolio/permanent.py):
+    # in the growth tier every run, carried on the durability-pick rail. `durability_note` holds
+    # its configured reason.
+    permanent_member: bool = False
     dividend_yield: float = 0
     dividend_total_return_score: float = 0
     options_available: bool = False
@@ -4066,9 +4101,15 @@ class UniverseScreener:
         breakthrough_count: int = 25,
         options_count: int = 50,
         durability_protect_count: int = 5,
+        permanent_members: list[dict] | None = None,
     ) -> tuple[list[StockScore], list[StockScore]]:
         # Build merged universe (CANDIDATE_POOLS + discovered_pool - evicted)
         growth_universe = _get_growth_universe()
+        # Permanent members (src/portfolio/permanent.py) — hand-pinned names kept in the growth
+        # tier every run. Scored in Phase 1e, placed in Phase 3. Run-log record.
+        _perm_members = [dict(m) for m in (permanent_members or []) if (m or {}).get("symbol")]
+        self._permanent = {"members": [m["symbol"] for m in _perm_members], "scored": [],
+                           "unscored": [], "displaced": []}
         # Durability picks (see the DURABILITY PICKS section above) — run-log record.
         self._durability = {"protect_count": int(durability_protect_count), "proposed": [],
                             "accepted": [], "rejected": [], "indexed": 0, "index_failed_batches": 0,
@@ -4151,6 +4192,40 @@ class UniverseScreener:
                 except Exception as e:
                     self._note_score_error(str(symbol), e, "dividend")
                 time.sleep(0.3)
+
+        if _perm_members:
+            print(f"\n{'='*60}")
+            print(f"PHASE 1e: Permanent members ({len(_perm_members)} hand-pinned, kept regardless of score)")
+            print(f"{'='*60}")
+            from src.portfolio.permanent import permanent_rationale as _perm_rationale
+            for m in _perm_members:
+                sym = str(m["symbol"]).strip()
+                sc = next((x for x in all_scores if x.symbol == sym), None)
+                if sc is None:
+                    try:
+                        sc = self._score_stock(symbol=sym, exchange=m.get("exchange") or "SMART",
+                                               currency=m.get("currency") or "USD")
+                        self._timeout_streak = 0
+                    except BrokerNotAnswering:
+                        raise
+                    except Exception as e:
+                        self._note_score_error(sym, e, "growth")
+                        sc = None
+                    if sc is not None:
+                        all_scores.append(sc)       # no market-cap floor: permanent means permanent
+                if sc is None:
+                    # Not scorable this run — the row the buyer keeps on the watchlist stays (the
+                    # scheduler never deletes a permanent member); it just carries last month's scores.
+                    self._permanent["unscored"].append(sym)
+                    self._reject(sym, "no_data", tier="growth", source="permanent")
+                    print(f"  ⛔ {sym:8s} | no data this run — watchlist row kept as is")
+                    continue
+                sc.permanent_member = True
+                if m.get("name") and not sc.name:
+                    sc.name = str(m["name"])
+                sc.durability_note = _perm_rationale(m)[len("Permanent member — "):]
+                self._permanent["scored"].append(sym)
+                print(f"  📌 {sym:8s} | Port: {sc.portfolio_score:5.1f} | MCap: ${sc.market_cap/1e9:6.1f}B | {sc.durability_note[:70]}")
 
         print(f"PHASE 1d: Durability discovery via AI (scarce-human-labour names outside the pools)")
         print(f"{'='*60}")
@@ -4768,6 +4843,33 @@ class UniverseScreener:
                   + ", ".join(f"{p.symbol}({p.durability_score:.0f})" for p in _dur_picks)
                   + (f" — displaced: {', '.join(v.symbol for v in _dur_displaced)}" if _dur_displaced else ""))
 
+        # ── Permanent members (Rain, 2026-11-22): hand-pinned names are IN the growth tier ──────
+        # After the durability protection (which resets the pick flag on the selection) so the
+        # members ride the same rail: durability_pick=True → review-exempt, rank floor at the growth
+        # median. Gates and the size floor do not apply; the lowest ordinary member makes room.
+        _perm_scored = [x for x in all_scores if getattr(x, "permanent_member", False)
+                        and x.symbol not in breakthrough_symbols]
+        if _perm_scored:
+            _in_top_before = {x.symbol for x in selected_growth}
+            selected_growth, _perm_displaced = apply_permanent_members(selected_growth, _perm_scored, growth_count)
+            for v in _perm_displaced:
+                self._reject(v.symbol, "displaced_by_permanent", tier="growth", score=v.portfolio_score,
+                             detail=f"growth score {v.portfolio_score:.1f}: slot taken by a permanent member")
+            _perm_syms = {x.symbol for x in _perm_scored}
+            self._rejects = [r for r in self._rejects
+                             if not (r.get("category") in ("growth_gate", "below_min_market_cap")
+                                     and r.get("symbol") in _perm_syms)]
+            self._permanent["scored"] = [
+                {"symbol": x.symbol, "growth_score": round(x.portfolio_score or 0.0, 1),
+                 "passes_growth_gate": bool(x.growth_gate_ok), "was_in_top": x.symbol in _in_top_before,
+                 "market_cap_bn": round((x.market_cap or 0) / 1e9, 1), "note": x.durability_note[:200]}
+                for x in _perm_scored]
+            self._permanent["displaced"] = [{"symbol": v.symbol, "growth_score": round(v.portfolio_score or 0.0, 1)}
+                                            for v in _perm_displaced]
+            print(f"\n  Permanent members ({len(_perm_scored)}): "
+                  + ", ".join(x.symbol for x in _perm_scored)
+                  + (f" — displaced: {', '.join(v.symbol for v in _perm_displaced)}" if _perm_displaced else ""))
+
         selected_dividend = dividend_candidates[:dividend_count]
         selected_breakthrough = breakthrough_scores[:breakthrough_count]
 
@@ -5080,6 +5182,8 @@ def write_screened_universe(stocks: list[StockScore], path: Path) -> None:
             e["durability_pick"] = True
             if getattr(s, "durability_note", ""):
                 e["durability_note"] = s.durability_note
+        if getattr(s, "permanent_member", False):
+            e["permanent_member"] = True
         return e
 
     data = {

@@ -686,6 +686,7 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                 breakthrough_count=cfg.tier_count_breakthrough,
                 options_count=_opts_count,
                 durability_protect_count=getattr(cfg, "tier_count_durability_picks", 5),
+                permanent_members=[m.model_dump() for m in (getattr(cfg, "permanent_members", None) or [])],
             )
             if _run_dir is not None:
                 try:
@@ -755,6 +756,9 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
             # ══════════════════════════════════════════════════════
             from src.core.database import get_db
             from src.portfolio.models import PortfolioWatchlist, PortfolioHolding
+            from src.portfolio.permanent import (PERMANENT_RATIONALE_PREFIX as _PERM_PREFIX,
+                                                 is_permanent_rationale as _is_perm_rationale,
+                                                 permanent_symbols)
 
             added = []
             flagged_removal = []
@@ -797,7 +801,8 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                             sector=score.sector,
                             tier=score.tier,
                             rationale=(score.rationale if score.tier == "breakthrough"
-                                       else (f"Durability pick — {score.durability_note}" if getattr(score, "durability_pick", False) else None)),
+                                       else (f"{_PERM_PREFIX}{score.durability_note}" if getattr(score, "permanent_member", False)
+                                             else f"Durability pick — {score.durability_note}" if getattr(score, "durability_pick", False) else None)),
                             durability_score=getattr(score, "durability_score", None),
                             durability_pick=bool(getattr(score, "durability_pick", False)),
                             growth_score=score.growth_score,
@@ -834,9 +839,12 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                         w.durability_score = getattr(score, "durability_score", None)
                         _was_pick = bool(getattr(w, "durability_pick", False))
                         w.durability_pick = bool(getattr(score, "durability_pick", False))
-                        if w.durability_pick:
+                        if getattr(score, "permanent_member", False):
+                            w.rationale = f"{_PERM_PREFIX}{getattr(score, 'durability_note', '')}"
+                        elif w.durability_pick:
                             w.rationale = f"Durability pick — {getattr(score, 'durability_note', '')}"
-                        elif _was_pick and (w.rationale or "").startswith("Durability pick"):
+                        elif _was_pick and ((w.rationale or "").startswith("Durability pick")
+                                            or _is_perm_rationale(w.rationale)):
                             w.rationale = None
                         w.growth_score = score.growth_score
                         w.valuation_score = score.valuation_score
@@ -871,9 +879,20 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                     log.warning("ipo_handoff_protect_failed", error=str(e))
                     _ipo_protected = set()
 
+                # Permanent members (src/portfolio/permanent.py): never deleted, never flagged — a run
+                # that could not score one keeps the row as it is (the buyer re-creates it anyway).
+                _perm_syms = permanent_symbols(getattr(cfg, "permanent_members", None) or [])
+
                 # Flag stocks no longer in screener results
                 for sym, wl_entry in current_watchlist.items():
                     if sym not in new_symbols:
+                        if sym in _perm_syms:
+                            log.info("monthly_screen_kept_permanent_member", symbol=sym)
+                            if getattr(wl_entry, "pending_removal", False):
+                                wl_entry.pending_removal = False
+                                wl_entry.pending_removal_reason = None
+                            wl_entry.durability_pick = True
+                            continue
                         if sym in _ipo_protected and sym not in open_positions:
                             log.info("monthly_screen_kept_ipo_handoff", symbol=sym)
                             continue
@@ -1051,6 +1070,8 @@ def _job_portfolio_monthly_screen(cfg: PortfolioConfig, attempt: int = 1):
                 # Durability picks: what the discovery call proposed, what passed the durable gate,
                 # the five protected names and the ordinary members they displaced.
                 "durability": getattr(screener, "_durability", {}),
+                # Permanent members: hand-pinned names kept in the growth tier (and who made room).
+                "permanent": getattr(screener, "_permanent", {}),
                 # Ranked candidate lists per tier — the portfolio page's soft/hard drop-out rule.
                 "tier_rankings": getattr(screener, "_tier_rankings", {}),
                 "suggestions_created": [],
