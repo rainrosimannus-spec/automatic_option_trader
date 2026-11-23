@@ -253,6 +253,12 @@ class CompounderConfig(BaseModel):
     # the full remaining gap capped only by cash on hand. The base keeps its normal DCA pace in a crash;
     # only the released reserve goes in fast.
     reserve_release_schedule: list[float] = [1.0 / 3.0, 1.0, 1.0]
+    # Rain, 2026-11-23: after a tranche has fired, cash raised from the park is not re-parked until the
+    # drawdown has stayed under the first tranche line for this many consecutive calendar days. The
+    # crash switch has no hysteresis (live gauge, per scan); without this the parker sold EUR 690k of
+    # XEON at 08:10 and bought EUR 183k back at 10:10 when SPY pre-market crossed back over -10%.
+    # Un-parking (runway top-ups) is never held. 0 = off.
+    park_hold_days_after_crash: int = 10
     backstop_start_days: int = 90      # if no crash within ~3mo, start bleeding the reserve in
     backstop_bleed_days: int = 180     # ...fully deployed over the following ~6mo (never idle long)
     # Entry-mode intensity thresholds

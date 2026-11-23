@@ -334,6 +334,35 @@ def reserve_room(investable: float, base_pct: float, released_frac: float, spent
                - max(0.0, spent))
 
 
+def park_hold_after_crash(tranches_fired: int, dd: float, first_tranche: float,
+                          below_since: str | None, today: str, hold_days: int) -> tuple[bool, str | None]:
+    """Rain, 2026-11-23: once a crash tranche has fired, cash raised from the park is NOT re-parked until
+    the drawdown has stayed under the first tranche line for `hold_days` consecutive calendar days.
+
+    The switch (crash_active) is evaluated per scan against the live gauge with no hysteresis: on
+    2026-11-23 the 08:10 scan saw -10.7%, sold EUR 690k of XEON for the released reserve, and the 10:10
+    scan saw -9.4% (SPY pre-market) and bought EUR 183k straight back. Returns (hold, new_below_since):
+      * no tranche ever fired -> (False, None): ordinary parking, nothing to hold;
+      * dd at/over the line  -> (True, None): crash mode, the park leg is suspended anyway; the
+        below-the-line clock is reset;
+      * dd under the line    -> clock starts at `today` if not running; hold while fewer than
+        `hold_days` days have elapsed since it started.
+    `below_since`/`today` are ISO dates (YYYY-MM-DD). Pure; the buyer persists `new_below_since`."""
+    if int(tranches_fired or 0) <= 0:
+        return False, None
+    if dd >= first_tranche:
+        return True, None
+    since = below_since or today
+    try:
+        y0, m0, d0 = (int(x) for x in since[:10].split("-"))
+        y1, m1, d1 = (int(x) for x in today[:10].split("-"))
+        from datetime import date as _date
+        elapsed = (_date(y1, m1, d1) - _date(y0, m0, d0)).days
+    except Exception:
+        since, elapsed = today, 0
+    return elapsed < int(hold_days), since
+
+
 def unreleased_reserve(investable: float, base_pct: float, released_frac: float) -> float:
     """The part of the reserve the current drawdown has NOT released — ring-fenced in the park."""
     return reserve_total(investable, base_pct) * max(0.0, 1.0 - max(0.0, min(1.0, released_frac)))

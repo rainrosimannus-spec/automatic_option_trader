@@ -1976,9 +1976,21 @@ class PortfolioBuyer:
         _day_budget = cmp.base_daily_pace(investable, cc.base_pct, cc.dca_horizon_days,
                                           remaining_gap, deployed_today,
                                           cc.lump_horizon_days, pace_throttle)
+        # Rain, 2026-11-23: after a tranche fired, nothing goes back into the park until the drawdown has
+        # stayed under the line for cc.park_hold_days_after_crash days running (see cmp.park_hold_after_crash).
+        _first_line = cc.drawdown_tranches[0] if cc.drawdown_tranches else 1.0
+        _park_hold, _below_since = cmp.park_hold_after_crash(
+            rstate.tranches_fired, dd, _first_line,
+            self._get_state_value("compounder_dd_below_line_since"),
+            datetime.utcnow().strftime("%Y-%m-%d"),
+            int(getattr(cc, "park_hold_days_after_crash", 10) or 0))
+        self._store_state("compounder_dd_below_line_since", _below_since or "")
+        if _park_hold and not crash_active:
+            log.info("compounder_park_held_after_crash", below_line_since=_below_since,
+                     hold_days=getattr(cc, "park_hold_days_after_crash", 10), drawdown_pct=round(dd * 100, 1))
         self._park_compounder_excess(nlv, spent, deposit_runway=self._deposit_runway(cc),
                                      day_budget=_day_budget, crash_active=crash_active,
-                                     reserve_room=reserve_room)
+                                     reserve_room=reserve_room, park_hold=_park_hold)
 
         self._store_state("compounder_last_spent", str(round(spent)))
         # deployed_today is computed live from actual fills each scan (see above) — just persist the
@@ -2365,8 +2377,13 @@ class PortfolioBuyer:
                                 deposit_runway: float = 0.0,
                                 day_budget: float = 0.0,
                                 crash_active: bool = False,
-                                reserve_room: float = 0.0) -> None:
+                                reserve_room: float = 0.0,
+                                park_hold: bool = False) -> None:
         """Hold the base-currency cash line at the deploy runway, parking or un-parking the ETF to suit.
+
+        `park_hold` (Rain, 2026-11-23) suspends the PARK leg only — after a crash tranche has fired, cash
+        raised from the park stays cash until the drawdown has been under the line for
+        cc.park_hold_days_after_crash days running (cmp.park_hold_after_crash). The un-park leg is unaffected.
 
         `reserve_room` (crash only) is the released-but-unspent crash reserve: it joins the runway so the
         first European scan after a tranche fires raises it from the park, in daylight, for the US
@@ -2449,6 +2466,9 @@ class PortfolioBuyer:
                 # stays available below. Mirrors manage_fx_treasury, which likewise suspends in a crash.
                 if crash_active:
                     log.info("compounder_park_skipped_crash", excess=round(excess))
+                    return
+                if park_hold:
+                    log.info("compounder_park_skipped_hold_after_crash", excess=round(excess))
                     return
                 # Don't buy back what we just sold. An un-park inside the cool-down means cash was
                 # deliberately raised moments ago; parking it now is the round trip this pair keeps
