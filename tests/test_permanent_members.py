@@ -88,7 +88,23 @@ def _buyer(monkeypatch, members, rows=()):
     monkeypatch.setattr(buyer_mod, "get_db", fake_get_db)
     b = PortfolioBuyer.__new__(PortfolioBuyer)
     b.cfg = SimpleNamespace(permanent_members=members, cash_yield_symbol="XEON")
+    b.analyzer = _FakeAnalyzer()
     return b, sess
+
+
+class _FakeAnalyzer:
+    """Stands in for StockAnalyzer: answers off-hours like IBKR history does (last close)."""
+    def __init__(self, price=497.3):
+        self.price = price
+        self.calls: list[str] = []
+
+    def analyze_stock(self, symbol, exchange, currency, tier="growth"):
+        from src.portfolio.analyzer import StockAnalysis
+        self.calls.append(symbol)
+        a = StockAnalysis(symbol)
+        a.exchange, a.currency, a.current_price = exchange, currency, self.price
+        a.sma_200, a.discount_pct, a.rsi_14, a.high_52w = 470.0, -5.8, 55.0, 520.0
+        return a
 
 
 def test_buyer_inserts_the_missing_row_once(monkeypatch):
@@ -113,6 +129,35 @@ def test_buyer_repins_a_row_the_screen_had_flagged(monkeypatch):
     w = sess.query(PortfolioWatchlist).one()
     assert w.durability_pick and not w.pending_removal and w.pending_removal_reason is None
     assert is_permanent_rationale(w.rationale)
+
+
+def test_buyer_prices_the_fresh_row_off_hours_so_the_page_and_ranker_see_it(monkeypatch):
+    # 2026-11-23: BRK B was inserted at 11:04 UTC (US shut); the scan loop prices open venues only
+    # and /watchlist hides unpriced rows, so Rain could not see the row until the US opened.
+    cfg = PortfolioConfig()
+    b, sess = _buyer(monkeypatch, cfg.permanent_members)
+    assert b._ensure_permanent_members() == ["BRK B"]
+    w = sess.query(PortfolioWatchlist).one()
+    assert w.current_price == 497.3 and w.sma_200 == 470.0 and b.analyzer.calls == ["BRK B"]
+    b._ensure_permanent_members()                        # priced now → no second history call
+    assert b.analyzer.calls == ["BRK B"]
+
+
+def test_buyer_prices_an_existing_stub_that_sat_unpriced(monkeypatch):
+    cfg = PortfolioConfig()
+    b, sess = _buyer(monkeypatch, cfg.permanent_members, rows=[dict(
+        symbol="BRK B", name="Berkshire", exchange="SMART", currency="USD", tier="growth",
+        category="growth", durability_pick=True, current_price=None)])
+    assert b._ensure_permanent_members() == []
+    assert sess.query(PortfolioWatchlist).one().current_price == 497.3
+
+
+def test_buyer_survives_a_pricing_failure(monkeypatch):
+    cfg = PortfolioConfig()
+    b, sess = _buyer(monkeypatch, cfg.permanent_members)
+    b.analyzer = SimpleNamespace(analyze_stock=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("farm")))
+    assert b._ensure_permanent_members() == ["BRK B"]   # row still inserted, priced later by the scan
+    assert sess.query(PortfolioWatchlist).one().current_price is None
 
 
 def test_buyer_with_no_members_touches_nothing(monkeypatch):

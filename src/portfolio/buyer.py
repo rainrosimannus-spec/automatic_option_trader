@@ -12,6 +12,7 @@ Tier-aware: different buy criteria for dividend, breakthrough, growth stocks.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -4029,15 +4030,19 @@ class PortfolioBuyer:
     def _ensure_permanent_members(self) -> list[str]:
         """Every configured permanent member (PortfolioConfig.permanent_members) has a watchlist row
         flagged durability_pick=True and not pending removal. Missing rows are inserted as plain
-        growth rows with zero scores — the scan prices them like any other name, and the ranker's
-        median floor sizes them, so the zero fundamentals never matter. Idempotent; one query when
-        nothing is missing. Returns the symbols inserted."""
+        growth rows with zero scores — the ranker's median floor sizes them, so the zero fundamentals
+        never matter. A row without a price is priced HERE, venue open or not (IBKR history gives the
+        last close off-hours): the scan loop only prices names whose venue is open, and /watchlist hides
+        unpriced rows, so a member inserted on a Monday morning in Europe would otherwise be invisible
+        and unranked until the US opened. Idempotent; one query when nothing is missing. Returns the
+        symbols inserted."""
         from src.portfolio.permanent import permanent_rationale
         from src.portfolio.symbols import canonical_symbol
         members = list(getattr(self.cfg, "permanent_members", None) or [])
         if not members:
             return []
         inserted: list[str] = []
+        unpriced: list[tuple[str, str, str]] = []      # (symbol, exchange, currency) with no price yet
         try:
             with get_db() as db:
                 rows = {w.symbol: w for w in db.query(PortfolioWatchlist).all()}
@@ -4047,19 +4052,23 @@ class PortfolioBuyer:
                         continue
                     w = rows.get(sym)
                     if w is None:
+                        exch = getattr(m, "exchange", None) or "SMART"
+                        ccy = getattr(m, "currency", None) or "USD"
                         db.add(PortfolioWatchlist(
                             symbol=sym, name=(getattr(m, "name", "") or sym),
-                            exchange=(getattr(m, "exchange", None) or "SMART"),
-                            currency=(getattr(m, "currency", None) or "USD"),
+                            exchange=exch, currency=ccy,
                             sector="Permanent", tier="growth", category="growth",
                             rationale=permanent_rationale(m), durability_pick=True,
                             growth_score=0.0, valuation_score=0.0, quality_score=0.0,
                             forward_growth_score=0.0, fundamentals_complete=False,
                             screened_at=datetime.utcnow()))
                         inserted.append(sym)
+                        unpriced.append((sym, exch, ccy))
                         log.info("compounder_permanent_member_added", symbol=sym,
                                  rationale=permanent_rationale(m))
                         continue
+                    if not ((w.current_price or 0) > 0):
+                        unpriced.append((sym, w.exchange or "SMART", w.currency or "USD"))
                     changed = False
                     if not getattr(w, "durability_pick", False):
                         w.durability_pick = True; changed = True
@@ -4074,6 +4083,22 @@ class PortfolioBuyer:
                 db.commit()
         except Exception as e:
             log.warning("compounder_permanent_members_failed", error=str(e))
+        # Seed a price for rows that have none (fresh insert, or a stub that sat unpriced over a
+        # weekend). Off-hours this is the last close — enough to rank, size and show the row; the
+        # scan loop re-prices it live once the venue opens. Failure is not fatal: the scan loop
+        # prices it when the venue opens, exactly as before.
+        for sym, exch, ccy in unpriced:
+            try:
+                a = self.analyzer.analyze_stock(sym, exch, ccy, tier="growth")
+                if a and a.current_price and a.current_price > 0:
+                    # _update_watchlist_metrics reads only .symbol off the row object.
+                    self._update_watchlist_metrics(SimpleNamespace(symbol=sym), a)
+                    log.info("compounder_permanent_member_priced", symbol=sym,
+                             price=round(float(a.current_price), 2))
+                else:
+                    log.warning("compounder_permanent_member_unpriced", symbol=sym)
+            except Exception as e:
+                log.warning("compounder_permanent_member_price_failed", symbol=sym, error=str(e))
         return inserted
 
     def _get_watchlist(self) -> list[PortfolioWatchlist]:
