@@ -3,10 +3,46 @@ Stock universe manager — loads and manages the 50-stock watchlist.
 """
 from __future__ import annotations
 
+import hashlib
+from datetime import date
+from pathlib import Path
+
 from src.core.config import get_options_universe, StockEntry
 from src.core.logger import get_logger
 
 log = get_logger(__name__)
+
+
+UNIVERSE_FILE = Path("config/options_universe.yaml")
+UNIVERSE_HISTORY_DIR = Path("data/universe_history")
+
+
+def snapshot_universe_file(src: Path = UNIVERSE_FILE, history_dir: Path = UNIVERSE_HISTORY_DIR,
+                           today: date | None = None) -> Path | None:
+    """Keep a dated copy of the options universe whenever its content changes.
+
+    2026-11-24 (MarsWalk fidelity audit, Rain): the file has no git history after 2026-05-11,
+    so the sim replays the PAST on TODAY's universe — the 2026 screener's winners — and the names
+    the account actually lost on (CIEN, IREN, FTAI, CCJ …) are not in it. A dated archive lets the
+    live-replay regime use the membership that was actually in force. Writes
+    data/universe_history/YYYY-MM-DD.yaml only when the sha256 differs from the newest snapshot
+    (a second change on one day overwrites that day's file). Fail-safe: never raises."""
+    try:
+        if not src.exists():
+            return None
+        data = src.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        history_dir.mkdir(parents=True, exist_ok=True)
+        snaps = sorted(history_dir.glob("*.yaml"))
+        if snaps and hashlib.sha256(snaps[-1].read_bytes()).hexdigest() == digest:
+            return None
+        out = history_dir / f"{(today or date.today()).isoformat()}.yaml"
+        out.write_bytes(data)
+        log.info("universe_snapshot_written", path=str(out), sha=digest[:12], stocks_bytes=len(data))
+        return out
+    except Exception as e:  # pragma: no cover - fail-safe
+        log.warning("universe_snapshot_failed", error=str(e))
+        return None
 
 
 class UniverseManager:
@@ -58,6 +94,7 @@ class UniverseManager:
     def __init__(self):
         # Options trader reads from options_universe.yaml (top 50 by options_score)
         # Falls back to watchlist.yaml until first monthly screener run
+        snapshot_universe_file()
         self._stocks = get_options_universe()
         self._stocks = self._apply_options_filter(self._stocks)
         log.info(
