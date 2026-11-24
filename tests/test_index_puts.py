@@ -114,3 +114,33 @@ def test_dry_run_observes_through_gates_but_live_does_not(monkeypatch):
     # live: stops at the gate, returns None before touching anything
     seller.cfg = IndexPutConfig(enabled=True, dry_run=False)
     assert seller.scan() is None
+
+
+
+# ── 2026-11-24: settlement price matched by DATE (off-by-one booked the day-before close) ──
+
+def test_close_on_date_matches_by_date_not_position():
+    from src.strategy.index_puts import close_on_date, latest_close
+    rows = [{"date": "2026-11-24", "close": 718.78}, {"date": "2026-11-23", "close": 722.29},
+            {"date": "2026-11-20", "close": 689.81}, {"date": "2026-11-19", "close": 715.87}]
+    assert close_on_date(rows, "20261123") == 722.29
+    assert close_on_date(rows, "2026-11-20") == 689.81
+    assert close_on_date(rows, "20261122") is None          # Sunday: no bar
+    assert close_on_date([], "20261123") is None
+    assert latest_close(list(reversed(rows))) == 718.78
+
+
+def test_settlement_price_books_the_expiry_day_close(monkeypatch):
+    """Mon 11-23 expiry settled at 09:00 ET Tue 11-24: rows end at Monday (no Tuesday bar yet).
+    The old code returned Friday's 689.81 × ratio = 691.18; the fix returns Monday's 722.29 × ratio."""
+    from src.strategy.index_puts import IndexPutSeller
+    import src.broker.market_data as md
+    monkeypatch.setattr(md, "get_index_spot", lambda *a, **k: 723.73)   # pre-market XSP = Mon close
+    rows = [{"date": "2026-11-23", "close": 722.29}, {"date": "2026-11-20", "close": 689.81},
+            {"date": "2026-11-19", "close": 715.87}]
+    seller = IndexPutSeller.__new__(IndexPutSeller)
+    seller.cfg = IndexPutConfig()
+    px = IndexPutSeller._settlement_price(seller, "20261123", lambda days: rows)
+    assert abs(px - 723.73) < 0.01
+    assert IndexPutSeller._settlement_price(seller, "20261122", lambda days: rows) is None
+    assert IndexPutSeller._settlement_price(seller, "20261123", lambda days: []) is None

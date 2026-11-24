@@ -114,6 +114,47 @@ def spread_settlement_pnl(net_credit: float, short_strike: float, wing: Optional
     return round(intrinsic, 2), round(wing_pay, 2), round(realized, 2)
 
 
+def close_on_date(rows, expiry: str) -> Optional[float]:
+    """The close of the row whose date is `expiry` (YYYYMMDD or YYYY-MM-DD); None when that day
+    is not in `rows` (FMP historical-price-eod/full rows: {"date": "YYYY-MM-DD", "close": ...}).
+    Matched by DATE, never by position — see IndexPutSeller._settlement_price."""
+    want = expiry.replace("-", "")
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("date", ""))[:10].replace("-", "") == want and r.get("close") is not None:
+            try:
+                return float(r["close"])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def latest_close(rows) -> Optional[float]:
+    """Close of the newest dated row, whatever order FMP returned them in."""
+    best = None
+    for r in rows or []:
+        if isinstance(r, dict) and r.get("close") is not None and r.get("date"):
+            if best is None or str(r["date"]) > str(best["date"]):
+                best = r
+    try:
+        return float(best["close"]) if best else None
+    except (TypeError, ValueError):
+        return None
+
+
+def fetch_spy_dated(days: int = 14) -> list:
+    """Dated SPY daily bars for the last `days` calendar days (FMP, fail-safe → [])."""
+    try:
+        from src.portfolio.fmp import _get
+        today = date.today()
+        data = _get("historical-price-eod/full", "SPY",
+                    {"from": (today - timedelta(days=days)).isoformat(), "to": today.isoformat()})
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
 def stop_triggered(ask: Optional[float], credit: float, stop_mult: float) -> bool:
     if not ask or ask <= 0 or credit <= 0 or stop_mult <= 0:
         return False
@@ -395,10 +436,9 @@ class IndexPutSeller:
             return []
         from src.broker.market_data import get_index_option_quote, get_index_spot
         from src.broker.orders import buy_to_close_index_put, sell_index_put_close
-        from src.portfolio.fmp import get_price_history
         acted: list[str] = []
         today = date.today().strftime("%Y%m%d")
-        self._settle_chain_log(today, get_price_history)
+        self._settle_chain_log(today, fetch_spy_dated)
         with get_db() as db:
             rows = db.query(Position).filter(
                 Position.position_type == POSITION_TYPE,
@@ -413,7 +453,7 @@ class IndexPutSeller:
                     ).first()
                     if settled:
                         continue
-                    settle_px = self._settlement_price(pos.expiry, get_price_history)
+                    settle_px = self._settlement_price(pos.expiry, fetch_spy_dated)
                     if settle_px is None:
                         log.warning("index_put_settlement_price_missing", symbol=pos.symbol, expiry=pos.expiry)
                         continue
@@ -526,7 +566,7 @@ class IndexPutSeller:
             log.warning("index_put_chain_log_error", error=str(e))
             return 0
 
-    def _settle_chain_log(self, today: str, get_price_history) -> list[str]:
+    def _settle_chain_log(self, today: str, fetch_dated=None) -> list[str]:
         """Append a settle row for every logged expiry that has passed and has none yet."""
         if not getattr(self.cfg, "chain_log_enabled", False):
             return []
@@ -534,7 +574,7 @@ class IndexPutSeller:
         try:
             rows = read_jsonl(self.cfg.chain_log_path)
             for exp in unsettled_expiries(rows, today):
-                px = self._settlement_price(exp, get_price_history)
+                px = self._settlement_price(exp, fetch_dated)
                 if px is None:
                     continue
                 append_jsonl(self.cfg.chain_log_path, {
@@ -546,24 +586,22 @@ class IndexPutSeller:
             log.warning("index_put_chain_settle_error", error=str(e))
         return done
 
-    def _settlement_price(self, expiry: str, get_price_history) -> Optional[float]:
-        """XSP settles on the SPX close of expiry day. Proxy: live XSP/SPX spot is wrong after
-        the fact, so use the SPY close of that day scaled by the latest XSP/SPY ratio."""
+    def _settlement_price(self, expiry: str, fetch_dated=None) -> Optional[float]:
+        """XSP settles on the SPX close of expiry day. Proxy: the SPY close ON THE EXPIRY DATE
+        scaled by the latest XSP/SPY ratio.
+
+        2026-11-24 BUG FIXED: the old version took an undated list of closes and assumed its last
+        element was TODAY's close, then stepped back `trading days since expiry`. At the 09:00 ET
+        settle job today's bar does not exist yet, so closes[-1] was already the expiry-day close
+        and the step landed on the day BEFORE expiry: every chain-log settle (11-12 … 11-23) and
+        any live settlement would have booked the scan day's own close (Mon 11-23 booked 691.18 =
+        Fri's 689.81 × ratio; Monday closed 722.29). Rows are matched by DATE now."""
         from src.broker.market_data import get_index_spot
-        closes = get_price_history("SPY", 15) or []
-        if not closes:
+        rows = (fetch_dated or fetch_spy_dated)(14) or []
+        px = close_on_date(rows, expiry)
+        if px is None:
             return None
         spot_xsp = get_index_spot(self.cfg.symbol, self.cfg.exchange)
-        spy_last = closes[-1]
+        spy_last = latest_close(rows)
         ratio = (spot_xsp / spy_last) if (spot_xsp and spy_last) else 1.0
-        # expiry-day close = the close `n` days back where n = trading days since expiry
-        exp_d = datetime.strptime(expiry, "%Y%m%d").date()
-        n = 0
-        d = date.today()
-        while d > exp_d:
-            d -= timedelta(days=1)
-            if d.weekday() < 5:
-                n += 1
-        if n >= len(closes):
-            return None
-        return round(closes[-1 - n] * ratio, 2)
+        return round(px * ratio, 2)
