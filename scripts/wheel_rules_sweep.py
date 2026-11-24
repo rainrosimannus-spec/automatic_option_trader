@@ -40,6 +40,7 @@ from marswalk.data import (fetch_spy_yahoo, fetch_symbols_yahoo, fetch_vix_yahoo
 from marswalk.engine import Params, run_regime  # noqa: E402
 from marswalk.models import get_mw_db, MarketBar  # noqa: E402
 from marswalk.regimes import Regime, load_config  # noqa: E402
+from marswalk import pit_universe as pit  # noqa: E402
 
 REPLAY = "live_replay_2020"
 LIVE = "live_acct_2026b"
@@ -106,8 +107,19 @@ def run_one(reg, universe, earnings, overrides: dict, start_capital=None) -> dic
     ov = {**_CRISIS, **overrides}
     if start_capital:
         ov["start_capital"] = start_capital
-    res = run_regime(reg.id, reg.name, reg.category, reg.rank, universe, market, Params(**ov),
-                     earnings=earnings, cash_yield_annual=getattr(reg, "cash_yield_annual", None))
+    params = Params(**ov)
+    # 2026-11-24 fidelity: point-in-time universe when the PIT store exists (same swap as the
+    # dashboard service); the static list is the 2026 screener's winners replayed into the past.
+    universe_schedule = None
+    if getattr(params, "universe_mode", "static") == "pit" and pit.pit_available():
+        pit_names, pit_market, universe_schedule = pit.regime_inputs(reg)
+        if pit_names and universe_schedule:
+            pit_market.update({k: v for k, v in market.items() if k.startswith("^")})
+            market, universe = pit_market, pit_names
+            earnings = load_earnings(universe)
+    res = run_regime(reg.id, reg.name, reg.category, reg.rank, universe, market, params,
+                     earnings=earnings, cash_yield_annual=getattr(reg, "cash_yield_annual", None),
+                     universe_schedule=universe_schedule)
     if not res:
         return {"final_return_pct": None, "error": "engine_returned_none"}
     nps = res.get("n_puts_sold", 0)

@@ -28,7 +28,7 @@ from src.strategy.option_scoring import score_put_candidates, score_call_candida
 from src.marswalk import pricing
 from src.strategy import wheel_rules
 from src.strategy import realized_move
-from bisect import bisect_left as _bisect_left
+from bisect import bisect_left as _bisect_left, bisect_right as _bisect_right
 
 TARGET_ANNUAL = 0.24
 
@@ -175,6 +175,13 @@ class Params:
     # "otm_pct" picks the eligible strike nearest spot x (1 - put_strike_otm_pct); "score" = old.
     put_strike_mode: str = "otm_pct"
     put_strike_otm_pct: float = 0.025
+    # 2026-11-24 fidelity: live trades the first qualifying names in universe (screener-rank)
+    # order; "best_first" = the old sort by score across the universe.
+    selection_mode: str = "scan_order"
+    # 2026-11-24 fidelity: "pit" = point-in-time universe (S&P 500 ∪ Nasdaq-100 as of each date,
+    # monthly top-50 by momentum × dollar volume — src/marswalk/pit_universe.py) when the PIT store
+    # exists; "static" = today's config universe (the 2026 screener's winners replayed into the past).
+    universe_mode: str = "pit"
     # ── Covered calls ──
     cc_dte_min: int = 1            # live cfg.cc_dte_min
     cc_dte_max: int = 7            # live cfg.cc_dte_max
@@ -328,7 +335,7 @@ class Params:
     # strategy knob (parity-exempt).
     margin_interest_annual: float = 0.0
     # ── Portfolio ──
-    start_capital: float = 4_000_000.0   # forward-looking simulation scale (NOT matched to live account; see memory: marswalk-start-capital)
+    start_capital: float = 220_000.0     # 2026-11-24: the live account's scale (was 4M: flat 2-lot sizing there, regimes barely reacted to pricing)
     max_positions: int = 50           # live risk.max_portfolio_positions
     contracts: int = 2                # growth-mode 2026-05-26: double base size
     # ── Risk gates (model the live limits) ──
@@ -657,7 +664,8 @@ def _sector_cap(nlv: float, target: float) -> float:
 
 
 def run_regime(regime_id, regime_name, category, rank, universe, market, params: Params,
-               earnings=None, cash_yield_annual: float | None = None, ledger: list | None = None):
+               earnings=None, cash_yield_annual: float | None = None, ledger: list | None = None,
+               universe_schedule: list | None = None):
     """
     market: {symbol: [(date_obj, close, iv), ...]} (each symbol's bars).
     earnings: optional {symbol: set(date)} of historical earnings dates (gate off if None).
@@ -675,6 +683,17 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     def _led(kind, **kw):
         if ledger is not None:
             ledger.append({"kind": kind, **kw})
+    # Optional point-in-time universe (2026-11-24 fidelity audit): a sorted list of
+    # (date, [symbols in screener-rank order]). The names eligible for NEW puts on day d are
+    # those of the latest entry dated <= d; `universe` stays the union (bars, MA200 warm-up,
+    # breadth). None = the static `universe`, byte-identical.
+    _sched = sorted(universe_schedule, key=lambda e: e[0]) if universe_schedule else None
+    _sched_dates = [e[0] for e in _sched] if _sched else None
+    def _members_asof(d):
+        if not _sched:
+            return universe
+        i = _bisect_right(_sched_dates, d) - 1
+        return list(_sched[i][1]) if i >= 0 else []
 
     cc_dte_min = params.cc_dte_min
     cc_dte_max = params.cc_dte_max
@@ -1838,14 +1857,15 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         # SPY universe-halve gate (mirrors live src/strategy/put_seller.py:77 +
         # check_spy_ma_gate). When SPY 10d < 20d MA, scan half the universe per
         # day. Per-day seeded so the same backtest is reproducible.
-        if spy_bearish and len(universe) > 1:
+        universe_today = _members_asof(d)
+        if spy_bearish and len(universe_today) > 1:
             rng = random.Random(d.toordinal())
-            half_n = max(1, len(universe) // 2)
-            shuffled = list(universe)
+            half_n = max(1, len(universe_today) // 2)
+            shuffled = list(universe_today)
             rng.shuffle(shuffled)
             scan_universe = shuffled[:half_n]
         else:
-            scan_universe = universe
+            scan_universe = universe_today
         # Cash-and-carry gate: when high-vol-grind detector OR crash detector
         # is active AND the corresponding action mode is enabled, skip the
         # put-selling pass entirely. Precedence: strangle wins when both are
@@ -1965,7 +1985,10 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 if cands:
                     top = _pick_put_candidate(cands, spot, params)
                     ranked.append((top.score, sym, top, ivr))
-            ranked.sort(key=lambda x: x[0], reverse=True)
+            if getattr(params, "selection_mode", "best_first") == "best_first":
+                ranked.sort(key=lambda x: x[0], reverse=True)
+            # else "scan_order" (2026-11-24 fidelity): live PutSeller.scan sells on the first
+            # qualifying names in universe order (screener rank), not best-score-first.
             for _, sym, top, ivr in ranked:
                 if slots <= 0:
                     break

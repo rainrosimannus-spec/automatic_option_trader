@@ -14,6 +14,7 @@ from src.marswalk.engine import Params, run_regime, save_run
 from src.marswalk import data as mw_data
 from src.marswalk.synthetic import apply_halts, apply_shocks
 from src.marswalk.models import get_mw_db, Run, Point
+from src.marswalk import pit_universe as pit
 
 log = get_logger("marswalk.service")
 
@@ -87,6 +88,20 @@ def run_all_regimes(params: Params, fetch: bool = True):
                     log.warning("marswalk_no_data", regime=reg.id)
                     _state["done"] += 1
                     continue
+                # Point-in-time universe (2026-11-24 fidelity audit): replace the static list
+                # with the as-of screen when the PIT store exists; index bars come from the regime.
+                universe_schedule = None
+                if getattr(params, "universe_mode", "static") == "pit" and pit.pit_available():
+                    try:
+                        pit_names, pit_market, universe_schedule = pit.regime_inputs(reg)
+                        if pit_names and universe_schedule:
+                            pit_market.update({k: v for k, v in market.items() if k.startswith("^")})
+                            market, eff_universe = pit_market, pit_names
+                            log.info("marswalk_pit_universe", regime=reg.id, names=len(pit_names),
+                                     rebalances=len(universe_schedule))
+                    except Exception as e:
+                        log.warning("marswalk_pit_universe_failed", regime=reg.id, error=str(e))
+                        universe_schedule = None
                 # Synthetic exchange-blackout transform (blackout_3day etc.).
                 # Drops halt-window bars + gaps the first post-halt bar.
                 if reg.halts:
@@ -107,7 +122,8 @@ def run_all_regimes(params: Params, fetch: bool = True):
                 earnings = mw_data.load_earnings(eff_universe)
                 res = run_regime(reg.id, reg.name, reg.category, reg.rank,
                                  eff_universe, market, params, earnings=earnings,
-                                 cash_yield_annual=reg.cash_yield_annual)
+                                 cash_yield_annual=reg.cash_yield_annual,
+                                 universe_schedule=universe_schedule)
                 if res:
                     _replace_prior(reg.id, params)
                     save_run(res)
