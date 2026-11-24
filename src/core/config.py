@@ -419,6 +419,17 @@ class RiskConfig(BaseModel):
     cc_package_unwind_enabled: bool = True
     cc_package_unwind_min_profit_pct: float = 0.005   # package must beat net basis by 0.5% of cost basis
     cc_package_unwind_fill_wait_secs: float = 20.0    # wait for the buyback before selling the shares
+    # 2026-11-24 (Rain): lot-sale EXECUTION. Every stop / unwind / exit sale used to be a DAY limit
+    # at one bid snapshot, never touched again (ADSK exit rested unfilled into earnings). Now the
+    # limit is a hair under the bid and every CC scan / stop pass re-prices a resting sale to the
+    # live bid (an exit sale is cancelled when its condition is gone, never priced under its bar).
+    # Live-only — MarsWalk fills at the close and has no quotes.
+    wheel_sale_bid_pad_pct: float = 0.0005            # limit = bid × (1 − this), ≥ 1 tick under the bid
+    wheel_sale_reprice_enabled: bool = True
+    # 2026-11-24 (Rain): on earnings eve (print within this many days, 0 = the day of an after-close
+    # print) Rule C may unwind the package FLAT instead of carrying a capped lot through the event.
+    cc_package_unwind_earnings_eve_enabled: bool = True
+    cc_package_unwind_earnings_eve_days: int = 1
     # Sweep (cc_early_close_sweep.py, 2026-08-05): this TIGHT config (over=5%, ext≤0.5%)
     # is return-NEUTRAL on the 6y replay (−0.09pp, +1.2pp DD) and HELPS the bear_2022
     # recovery (+3.2pp, −2.4pp DD); the looser over=8%/ext=1% variant gave up 3pp

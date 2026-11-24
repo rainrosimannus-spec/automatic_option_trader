@@ -686,6 +686,20 @@ def cancel_order(trade: IBTrade) -> None:
         log.info("order_cancelled", order_id=trade.order.orderId)
 
 
+def modify_limit_price(trade: IBTrade, new_price: float) -> IBTrade:
+    """Re-price a resting limit order in place (same orderId, new lmtPrice) — IBKR treats a
+    placeOrder with an existing id as a modify. Used by the wheel to walk a lot sale to the
+    live bid every scan (2026-11-24, ADSK exit sale rested unfilled into earnings)."""
+    with get_ib_lock():
+        ib = get_ib()
+        old = trade.order.lmtPrice
+        trade.order.lmtPrice = round(float(new_price), 2)
+        out = ib.placeOrder(trade.contract, trade.order)
+        log.info("order_repriced", order_id=trade.order.orderId,
+                 symbol=getattr(trade.contract, "symbol", "?"), old=old, new=trade.order.lmtPrice)
+        return out
+
+
 def get_open_orders() -> list[IBTrade]:
     """Get all open/pending orders."""
     with get_ib_lock():

@@ -749,6 +749,21 @@ class ProfitTaker:
         realized = _realized_cc_premium_per_share(db, stock_pos)
         fees = float(getattr(rc, "cc_early_close_fees_per_share", 0.0))
         min_profit = float(getattr(rc, "cc_package_unwind_min_profit_pct", 0.005))
+        # Earnings eve (2026-11-24): a capped lot the day before a print may leave flat.
+        earnings_soon = False
+        if getattr(rc, "cc_package_unwind_earnings_eve_enabled", False):
+            try:
+                from src.broker.market_data import has_upcoming_earnings
+                earnings_soon = bool(has_upcoming_earnings(
+                    symbol, opt_exchange or "SMART", currency,
+                    within_days=int(getattr(rc, "cc_package_unwind_earnings_eve_days", 1))))
+            except Exception as e:
+                log.debug("cc_unwind_earnings_check_failed", symbol=symbol, error=str(e))
+        from src.strategy.lot_sale import unwind_min_profit
+        min_profit = unwind_min_profit(min_profit, earnings_soon,
+                                       bool(getattr(rc, "cc_package_unwind_earnings_eve_enabled", False)))
+        if earnings_soon and min_profit == 0.0:
+            log.info("cc_unwind_earnings_eve_flat_bar", symbol=symbol, strike=pos.strike)
         if not package_unwind_triggered(stock_bid, live_ask, stock_pos.cost_basis, realized,
                                         pos.entry_premium or 0.0,
                                         min_profit_pct=min_profit, fees_per_share=fees,

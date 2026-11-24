@@ -23,6 +23,7 @@ from src.strategy.screener import screen_calls
 from src.strategy.risk import RiskManager
 from src.strategy.universe import UniverseManager
 from src.strategy.wheel_rules import stop_loss_triggered
+from src.strategy.lot_sale import sale_limit, reprice_decision, LIQUIDATION_SOURCES_ALL
 
 log = get_logger(__name__)
 
@@ -220,6 +221,120 @@ def _liquidation_in_flight(db, symbol: str) -> bool:
     ).count() > 0
 
 
+def reprice_lot_sales(db, currency: str = "USD") -> dict[str, str]:
+    """Walk every resting lot sale placed TODAY (stop / unwind / exit) to the live bid.
+
+    2026-11-24 (Rain): the ADSK exit sale rested at a stale bid for 47 minutes while every
+    scan returned early on its "submitted" marker. Now each CC scan and stop pass re-judges
+    the resting order with a fresh two-sided quote (lot_sale.reprice_decision):
+      modify — new marketable limit (bid × (1 − pad), an exit never under strike + fee);
+      cancel — an EXIT whose condition is gone (mid < strike + fee): order cancelled, marker
+               expired, so the same scan can write the covered call instead;
+      keep   — unusable quote or the limit already sits where it should.
+    A marker whose order is no longer open at IBKR and has no fill (cancelled by hand,
+    rejected, swept) is expired so it cannot block the lot for the rest of the day — the exact
+    hole the ADSK unwind fell into. Returns {symbol: action}. Fail-safe: any IBKR error → {}.
+    """
+    from src.core.suggestions import TradeSuggestion
+    from datetime import date as _date
+    rc = get_settings().risk
+    if not getattr(rc, "wheel_sale_reprice_enabled", True):
+        return {}
+    pad = float(getattr(rc, "wheel_sale_bid_pad_pct", 0.0005))
+    fee = float(getattr(rc, "wheel_sell_fee_per_share", 0.04))
+    today_start = datetime.combine(_date.today(), datetime.min.time())
+    markers = db.query(TradeSuggestion).filter(
+        TradeSuggestion.action == "sell_stock",
+        TradeSuggestion.source.in_(LIQUIDATION_SOURCES_ALL),
+        TradeSuggestion.status == "submitted",
+        TradeSuggestion.created_at >= today_start,
+    ).all()
+    if not markers:
+        return {}
+    from src.broker.orders import get_open_orders, modify_limit_price, cancel_order
+    from src.broker.market_data import get_stock_live_quote
+    from src.scheduler.jobs import _order_is_ours
+    try:
+        open_orders = get_open_orders()
+    except Exception as e:
+        log.warning("wheel_lot_sale_reprice_no_orders", error=str(e))
+        return {}
+    out: dict[str, str] = {}
+    for sg in markers:
+        sym = sg.symbol
+        cands = [t for t in open_orders
+                 if str(getattr(t.contract, "symbol", "")).upper() == sym.upper()
+                 and str(getattr(t.contract, "secType", "")).upper() == "STK"
+                 and str(getattr(t.order, "action", "")).upper() == "SELL"
+                 and _order_is_ours(t)]
+        if not cands:
+            filled = db.query(Trade).filter(
+                Trade.symbol == sym,
+                Trade.trade_type == TradeType.SELL_STOCK,
+                Trade.order_status == OrderStatus.FILLED,
+                Trade.created_at >= sg.created_at,
+            ).first()
+            if filled:
+                sg.status = "filled"
+                sg.review_note = "Filled at IBKR (reconciled by the wheel)"
+            else:
+                sg.status = "expired"
+                sg.review_note = ("Sale order no longer open at IBKR and no fill seen — marker "
+                                  "cleared so the lot can be re-judged (reprice_lot_sales)")
+                log.warning("wheel_lot_sale_order_gone", symbol=sym, source=sg.source,
+                            limit=sg.limit_price)
+            out[sym] = "filled" if filled else "gone"
+            continue
+        cands.sort(key=lambda t: abs(float(getattr(t.order, "totalQuantity", 0) or 0) - float(sg.quantity or 0)))
+        t = cands[0]
+        quote = get_stock_live_quote(sym, "SMART", currency)
+        if quote is None:
+            out[sym] = "keep"
+            continue
+        bid, ask, _last = quote
+        floor = None
+        if sg.source == "wheel_exit":
+            strike = _assignment_strike(db, sym, max(1, int(sg.quantity or 100) // 100))
+            if strike is not None:
+                floor = strike + fee
+        current = float(getattr(t.order, "lmtPrice", 0) or 0) or (float(sg.limit_price) if sg.limit_price else None)
+        action, new = reprice_decision(sg.source, bid, ask, current, exit_floor=floor, pad_pct=pad)
+        if action == "modify":
+            try:
+                modify_limit_price(t, new)
+            except Exception as e:
+                log.warning("wheel_lot_sale_reprice_failed", symbol=sym, error=str(e))
+                out[sym] = "keep"
+                continue
+            sg.limit_price = new
+            sg.review_note = f"Re-priced to {new} (bid {round(bid, 2)}) by the wheel — awaiting fill"
+            row = db.query(Trade).filter(Trade.order_id == t.order.orderId,
+                                         Trade.trade_type == TradeType.SELL_STOCK).first()
+            if row is not None:
+                row.fill_price = new
+            log.info("wheel_lot_sale_repriced", symbol=sym, source=sg.source, old=current,
+                     new=new, bid=round(bid, 2), ask=round(ask, 2))
+        elif action == "cancel":
+            try:
+                cancel_order(t)
+            except Exception as e:
+                log.warning("wheel_lot_sale_cancel_failed", symbol=sym, error=str(e))
+                out[sym] = "keep"
+                continue
+            sg.status = "expired"
+            sg.review_note = (f"Exit condition gone (mid {round((bid + ask) / 2, 2)} < "
+                              f"{round(floor, 2)}) — sale cancelled, covered call may be written")
+            row = db.query(Trade).filter(Trade.order_id == t.order.orderId,
+                                         Trade.trade_type == TradeType.SELL_STOCK).first()
+            if row is not None:
+                row.order_status = OrderStatus.CANCELLED
+            log.info("wheel_exit_sale_cancelled_condition_lost", symbol=sym, bid=round(bid, 2),
+                     ask=round(ask, 2), floor=round(floor, 2))
+        out[sym] = action
+    db.commit()
+    return out
+
+
 def _sell_lot_direct(db, symbol: str, shares: int, bid: float, *, source: str,
                      rationale: str, signal: str, current_price: float | None,
                      currency: str = "USD"):
@@ -236,6 +351,12 @@ def _sell_lot_direct(db, symbol: str, shares: int, bid: float, *, source: str,
     from datetime import timedelta
     if shares <= 0 or not bid or bid <= 0:
         return None
+    # 2026-11-24: a hair UNDER the bid so the sale is marketable when it reaches IBKR (the
+    # ADSK exit at exactly the bid arrived 12 s later under the market and rested all day).
+    limit = sale_limit(bid, getattr(get_settings().risk, "wheel_sale_bid_pad_pct", 0.0005))
+    if limit is None:
+        return None
+    bid = limit
     trade = sell_stock(symbol, shares, limit_price=round(bid, 2), currency=currency)
     if not trade:
         log.warning("wheel_lot_sell_not_placed", symbol=symbol, shares=shares, source=source)
@@ -709,11 +830,15 @@ class WheelManager:
             return False
 
         # Conditions met — sell the stock directly instead of writing a covered call.
+        # 2026-11-24: limit a hair under the bid (marketable on arrival) but never under the
+        # exit bar itself; reprice_lot_sales walks it with the bid on every later scan.
+        exit_limit = max(sale_limit(bid, getattr(_gs().risk, "wheel_sale_bid_pad_pct", 0.0005)) or bid,
+                         round(threshold, 2))
         create_suggestion(
             symbol=symbol,
             action="sell_stock",
             quantity=qty_to_sell,
-            limit_price=bid,  # conservative — guarantees fill at bid or better
+            limit_price=exit_limit,
             source="wheel_exit",
             signal=f"mid={round(mid, 2)} strike={strike} fee={sell_fee}",
             rationale=(
@@ -758,6 +883,10 @@ class WheelManager:
 
         with get_db() as db:
             _reconcile_liquidation_suggestions(db)
+            try:
+                reprice_lot_sales(db)
+            except Exception as e:
+                log.warning("wheel_lot_sale_reprice_error", error=str(e))
             stock_positions = (
                 db.query(Position)
                 .filter(
@@ -903,6 +1032,10 @@ class WheelManager:
 
         with get_db() as db:
             _reconcile_liquidation_suggestions(db)
+            try:
+                reprice_lot_sales(db)
+            except Exception as e:
+                log.warning("wheel_lot_sale_reprice_error", error=str(e))
             stock_positions = (
                 db.query(Position)
                 .filter(
