@@ -574,7 +574,17 @@ function syncInjections() {
 
     <!-- ═══ Holdings Table ═══ -->
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
-        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Holdings</h2>
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider">Holdings
+                <span id="holdCount" class="normal-case tracking-normal text-gray-500 font-normal"></span></h2>
+            {% if holdings %}
+            <div class="relative w-full sm:w-80">
+                <input id="holdSearch" type="search" placeholder="Search holdings — ticker, company, sector…" autocomplete="off" spellcheck="false"
+                       oninput="filterHoldings()"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-indigo-500">
+            </div>
+            {% endif %}
+        </div>
         {% if flash_msg %}
         <div class="mb-3 px-3 py-2 rounded border text-sm {% if flash_msg.startswith('✓') %}bg-emerald-900/30 border-emerald-700 text-emerald-200{% else %}bg-red-900/30 border-red-700 text-red-200{% endif %}">{{ flash_msg }}</div>
         {% endif %}
@@ -598,7 +608,7 @@ function syncInjections() {
                 </thead>
                 <tbody class="divide-y divide-gray-800/50">
                     {% for h in holdings %}
-                    <tr class="hover:bg-gray-800/50">
+                    <tr class="hover:bg-gray-800/50 holdrow" data-search="{{ (h.symbol ~ ' ' ~ (h.name or '') ~ ' ' ~ (h.sector or ''))|lower|e }}">
                         <td class="px-3 py-2">
                             <div class="font-medium {{h.tier_cls}}" title="{{h.tier_shown}} tier">{{h.symbol}}{% if h.symbol in flagged_removal %} <span class="text-amber-400 cursor-help" title="⚠️ Flagged — open position blocking removal. {{flagged_removal[h.symbol]}}">⚠️</span>{% endif %}</div>
                             <div class="text-xs {{h.tier_cls}} opacity-70">{{h.name[:25]}}</div>
@@ -646,7 +656,37 @@ function syncInjections() {
                     {% endfor %}
                 </tbody>
             </table>
+            <div id="holdNoMatch" class="hidden text-gray-500 text-center py-6 text-sm">No holding matches that search.</div>
         </div>
+        <script>
+        // Quick search over the holdings table: every word typed must appear somewhere in the
+        // row's ticker, company name or sector (so "berk" finds BRK B, "semi" finds the sector).
+        // Pure client-side; the other tables on the page are untouched.
+        function filterHoldings() {
+            const words = document.getElementById('holdSearch').value.toLowerCase().trim().split(/\s+/).filter(Boolean);
+            let shown = 0, total = 0;
+            document.querySelectorAll('.holdrow').forEach(r => {
+                total++;
+                const hay = r.dataset.search || '';
+                const hit = words.every(w => hay.includes(w));
+                r.style.display = hit ? '' : 'none';
+                if (hit) shown++;
+            });
+            document.getElementById('holdNoMatch').classList.toggle('hidden', shown > 0);
+            document.getElementById('holdCount').textContent = words.length ? `(${shown} of ${total})` : `(${total})`;
+        }
+        document.addEventListener('DOMContentLoaded', () => {
+            const box = document.getElementById('holdSearch');
+            if (!box) return;
+            filterHoldings();
+            box.addEventListener('keydown', e => { if (e.key === 'Escape') { box.value = ''; filterHoldings(); } });
+            // "/" anywhere on the page jumps to the search box (unless already typing somewhere).
+            document.addEventListener('keydown', e => {
+                const tag = (document.activeElement && document.activeElement.tagName) || '';
+                if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) { e.preventDefault(); box.focus(); }
+            });
+        });
+        </script>
         {% else %}
         <div class="text-gray-500 text-center py-8">No holdings yet. The portfolio will start buying when signals appear.</div>
         {% endif %}
