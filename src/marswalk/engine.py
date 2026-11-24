@@ -665,7 +665,7 @@ def _sector_cap(nlv: float, target: float) -> float:
 
 def run_regime(regime_id, regime_name, category, rank, universe, market, params: Params,
                earnings=None, cash_yield_annual: float | None = None, ledger: list | None = None,
-               universe_schedule: list | None = None):
+               universe_schedule: list | None = None, forced_puts: dict | None = None):
     """
     market: {symbol: [(date_obj, close, iv), ...]} (each symbol's bars).
     earnings: optional {symbol: set(date)} of historical earnings dates (gate off if None).
@@ -687,6 +687,11 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     # (date, [symbols in screener-rank order]). The names eligible for NEW puts on day d are
     # those of the latest entry dated <= d; `universe` stays the union (bars, MA200 warm-up,
     # breadth). None = the static `universe`, byte-identical.
+    # Optional REAL-FILL replay (2026-11-24 fidelity audit): {date: [{"sym","strike","expiry"(date),
+    # "premium","qty"}]} — the engine books exactly these put sales at their real premiums, with no
+    # screening of its own (gates, ranking and sizing are bypassed), so what remains is its
+    # mechanics: assignment at the close, covered calls, exits, marks. None = normal selection.
+    _forced = forced_puts
     _sched = sorted(universe_schedule, key=lambda e: e[0]) if universe_schedule else None
     _sched_dates = [e[0] for e in _sched] if _sched else None
     def _members_asof(d):
@@ -1876,6 +1881,23 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         _crash_halt = (crash_active and params.crash_carry_when_active
                        and not params.crash_strangle_when_active)
         if _hvg_halt or _crash_halt:
+            slots = 0
+        if _forced is not None:
+            for f in _forced.get(d, []):
+                qty = int(f.get("qty") or 1)
+                prem = float(f["premium"])
+                cash += prem * 100 * qty
+                cash -= params.put_commission_per_contract * qty
+                cum_premium_collected += prem * 100 * qty
+                short_puts.append({"sym": f["sym"], "strike": float(f["strike"]),
+                                   "expiry": f["expiry"] if isinstance(f["expiry"], date) else _exp_date(str(f["expiry"])),
+                                   "premium": prem, "qty": qty, "entry_delta": 0.0})
+                held.add(f["sym"])
+                n_trades += 1
+                n_puts_sold += 1
+                put_bid_sum += prem
+                _led("put_sold", d=str(d), sym=f["sym"], strike=float(f["strike"]), expiry=str(f["expiry"]),
+                     qty=qty, premium=prem, spot=(pv(f["sym"], d) or (None,))[0], delta=0.0, nlv=prev_nlv, forced=True)
             slots = 0
         if slots > 0 and not single_name_halted:
             ranked = []

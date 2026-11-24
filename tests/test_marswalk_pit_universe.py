@@ -68,3 +68,11 @@ def test_engine_schedule_and_selection_knobs():
     p = Params()
     assert p.selection_mode == "scan_order" and p.start_capital == 220_000.0
     assert Params(selection_mode="best_first").selection_mode == "best_first"
+
+
+def test_forced_puts_replay_hook_present():
+    import inspect
+    from src.marswalk import engine
+    src = inspect.getsource(engine.run_regime)
+    assert "forced_puts: dict | None = None" in src
+    assert 'for f in _forced.get(d, [])' in src and "slots = 0" in src
