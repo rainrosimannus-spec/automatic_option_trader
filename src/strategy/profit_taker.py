@@ -677,7 +677,7 @@ class ProfitTaker:
                     # the shares in this same pass — profit banked now, capital freed weeks
                     # before expiry (VRT 10-29, CTAS 10-27, ISRG 10-07 were done by hand).
                     if getattr(rc, "cc_package_unwind_enabled", False) and \
-                            self._package_unwind(db, pos, live_ask, opt_exchange, currency, rc):
+                            self._package_unwind(db, pos, live_ask, opt_exchange, currency, rc, dte=dte):
                         acted.append(pos.symbol)
                         continue
 
@@ -716,7 +716,7 @@ class ProfitTaker:
         return acted
 
     def _package_unwind(self, db, pos: Position, live_ask: float, opt_exchange: str,
-                        currency: str, rc) -> bool:
+                        currency: str, rc, dte=None) -> bool:
         """Rule C body: judge the package with a fresh two-sided STOCK quote, buy the call back,
         wait for the fill, then sell the shares the call covered. True when the sale was placed.
         Every exit invariant is kept: IBKR positions read before any sale (fail-closed), the
@@ -727,9 +727,15 @@ class ProfitTaker:
         from src.strategy.fx_treasury import _wait_fill
         from src.strategy.wheel import (_realized_cc_premium_per_share, _ibkr_share_verdict,
                                         _liquidation_in_flight, _sell_lot_direct)
-        from src.strategy.wheel_rules import package_unwind_triggered, package_unwind_net_basis
+        from src.strategy.wheel_rules import (package_unwind_triggered, package_unwind_net_basis,
+                                              package_unwind_dte_ok)
 
         symbol = pos.symbol
+        # Rain 2026-11-24: bag rule — only while the call still has at least a week to run.
+        min_dte = int(getattr(rc, "cc_package_unwind_min_dte", 7))
+        if not package_unwind_dte_ok(dte, min_dte):
+            log.debug("cc_unwind_skip_short_dte", symbol=symbol, strike=pos.strike, dte=dte, min_dte=min_dte)
+            return False
         stock_pos = db.query(Position).filter(
             Position.symbol == symbol,
             Position.status == PositionStatus.OPEN,

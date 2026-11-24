@@ -59,7 +59,7 @@ def test_unwind_bar_drops_to_flat_on_earnings_eve_only_when_enabled():
 def test_live_defaults():
     rc = RiskConfig()
     assert rc.wheel_sale_bid_pad_pct == 0.0005 and rc.wheel_sale_reprice_enabled is True
-    assert rc.cc_package_unwind_earnings_eve_enabled is True and rc.cc_package_unwind_earnings_eve_days == 1
+    assert rc.cc_package_unwind_earnings_eve_enabled is False and rc.cc_package_unwind_earnings_eve_days == 1
 
 
 # ── wiring ───────────────────────────────────────────────────────────────────────────────
@@ -188,4 +188,4 @@ def test_live_exit_limit_is_marketable_but_never_under_the_bar():
     pt = open("src/strategy/profit_taker.py").read()
     assert "unwind_min_profit(" in pt and "cc_package_unwind_earnings_eve_enabled" in pt
     html = open("src/web/templates/dashboard.html").read()
-    assert "re-priced to the live bid every scan" in html and "on earnings eve the bar drops to flat" in html
+    assert "re-priced to the live bid every scan" in html and "only while the call has ≥ 7 days to run" in html

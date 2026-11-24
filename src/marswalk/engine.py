@@ -228,6 +228,7 @@ class Params:
     # spread). Live default ON; sim default OFF (byte-identical prior runs).
     cc_package_unwind_enabled: bool = False
     cc_package_unwind_min_profit_pct: float = 0.005
+    cc_package_unwind_min_dte: int = 7   # 2026-11-24 (Rain): bag rule, calls with ≥ a week to run only
     # ── Per-name strike floor from the realised 3-day move (rule 3; live StrategyConfig.put_otm_*) ──
     # "flat" = today's fixed window (default, byte-identical); "realized" = floor lifted to
     # max(put_otm_floor, k × pctl-quantile of trailing forward declines), target/cap ≥ floor.
@@ -1274,6 +1275,10 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 st = stocks.get(c["sym"])
                 q = pv(c["sym"], d)
                 if not st or not q or d >= c["expiry"]:
+                    keep.append(c)
+                    continue
+                if not wheel_rules.package_unwind_dte_ok((c["expiry"] - d).days,
+                                                         params.cc_package_unwind_min_dte):
                     keep.append(c)
                     continue
                 spot, iv = q

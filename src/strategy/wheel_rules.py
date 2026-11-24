@@ -55,6 +55,20 @@ def package_unwind_triggered(stock_bid: float | None, call_ask: float | None,
     return (package - net_basis) >= min_profit_pct * cost_basis
 
 
+def package_unwind_dte_ok(dte, min_dte: int) -> bool:
+    """Rain 2026-11-24: the unwind is a BAG rule — it pays the call's time value to leave a lot
+    that is only transiently above net basis while the call still has weeks to run and the stock
+    may well fall back under the strike. Inside the last `min_dte` calendar days the call-away
+    (or Rule A at parity) is the exit; paying the time value there buys nothing (ADSK 260C with
+    3 days left on earnings eve paid $10.27/share). Unknown dte fails CLOSED (no unwind)."""
+    if dte is None:
+        return False
+    try:
+        return int(dte) >= int(min_dte)
+    except (TypeError, ValueError):
+        return False
+
+
 def reentry_cooldown_active(sale_date, today, cooldown_days: int) -> bool:
     """True while fewer than `cooldown_days` weekdays have passed since `sale_date`.
 
