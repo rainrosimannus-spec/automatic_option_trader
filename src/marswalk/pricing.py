@@ -116,7 +116,13 @@ SHORT_DTE_T0 = 7        # apply the uplift below this DTE
 # acknowledgement of vol-smile + bid-floor amplification without the fudge.
 # MarsWalk magnitudes are now relative not absolute; anchor live P&L against
 # actual fills, not against backtested numbers.
-SHORT_DTE_K = 1.0       # max multiplicative uplift at 0 DTE (iv *= 1 + K)
+# 2026-11-24 (fidelity audit, Rain): measured against the account's own 162 put fills
+# (2026-06-15 → 11-03, median 3 DTE / 2.5% OTM): implied vol / RV20 = 1.51 at 0-1 DTE,
+# 1.21 at 2-3 DTE, 1.05 at 4-7 DTE. k=1.0 (1.57x at 3 DTE) priced those exact contracts at
+# 1.61x their real fills ($68.7k vs $41.4k); k=0.33 reproduces the DTE structure (median
+# ratio 0.98, same total within 5%). The sim's live-window return fell from +61% to +17%
+# on this alone.
+SHORT_DTE_K = 0.33      # max multiplicative uplift at 0 DTE (iv *= 1 + K)
 
 
 def effective_iv(iv: float, dte: int, k: float = SHORT_DTE_K) -> float:

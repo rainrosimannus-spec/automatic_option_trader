@@ -167,7 +167,14 @@ class Params:
     # that profit-taking DOUBLES the leg count on every position it closes.
     # Only short-put legs are charged; CC legs are untouched so wheel results
     # stay comparable to prior sweeps.
-    put_commission_per_contract: float = 0.0
+    put_commission_per_contract: float = 0.80   # 2026-11-24: IBKR real average $1.18/trade at 1.54 contracts
+    cc_commission_per_contract: float = 0.80    # charged when a covered call is written (same source)
+    # 2026-11-24 fidelity: the live screener, fed REAL quotes, lands its put a median 2.49% OTM
+    # (p25 1.78 / p75 3.56, 162 fills); the sim's score on synthetic BSM quotes landed 4.6% OTM at
+    # k=1.0 and 3.55% at k=0.33, i.e. assigned 9-17% of puts where the account assigned 33%.
+    # "otm_pct" picks the eligible strike nearest spot x (1 - put_strike_otm_pct); "score" = old.
+    put_strike_mode: str = "otm_pct"
+    put_strike_otm_pct: float = 0.025
     # ── Covered calls ──
     cc_dte_min: int = 1            # live cfg.cc_dte_min
     cc_dte_max: int = 7            # live cfg.cc_dte_max
@@ -344,7 +351,7 @@ class Params:
     max_margin_usage: float = 0.0     # 0 = use live settings.risk.max_margin_usage (60%
                                       # son-mode); >0 = override.
     # ── Pricing model ──
-    short_dte_uplift_k: float = 1.0   # near-expiry vol-premium uplift (see pricing.SHORT_DTE_K docstring for the 4.95 -> 1.0 climbdown)
+    short_dte_uplift_k: float = 0.33  # near-expiry vol-premium uplift; 2026-11-24 fill-calibrated (pricing.SHORT_DTE_K docstring)
     gap_stress: float = 0.0           # what-if: extra adverse mark on big down days
                                       # (>=5% drop) — models close understating an
                                       # intraday/overnight gap. 0 = off (historical).
@@ -581,6 +588,16 @@ def _tier_delta_range(tier: int, cfg, spy_bearish: bool) -> tuple[float, float]:
     return (cfg.delta_vix_high, cfg.delta_vix_high_max)
 
 
+def _pick_put_candidate(cands, spot: float, params) -> object:
+    """Which eligible put the sim 'sells'. put_strike_mode 'otm_pct' (2026-11-24 fidelity): the
+    strike nearest spot x (1 - put_strike_otm_pct), ties to the richer premium — what the live
+    screener does in practice on real quotes (median 2.49% OTM). 'score': the old best-score pick."""
+    if getattr(params, "put_strike_mode", "score") == "otm_pct" and spot and spot > 0:
+        target = spot * (1.0 - float(params.put_strike_otm_pct))
+        return min(cands, key=lambda c: (abs(c.strike - target), -getattr(c, "bid", 0.0)))
+    return max(cands, key=lambda c: c.score)
+
+
 def _drawdown_multiplier(dd: float, light: float, mid: float, severe: float) -> float:
     """Mirror risk._drawdown_cap_multiplier."""
     if dd > severe:
@@ -640,7 +657,7 @@ def _sector_cap(nlv: float, target: float) -> float:
 
 
 def run_regime(regime_id, regime_name, category, rank, universe, market, params: Params,
-               earnings=None, cash_yield_annual: float | None = None):
+               earnings=None, cash_yield_annual: float | None = None, ledger: list | None = None):
     """
     market: {symbol: [(date_obj, close, iv), ...]} (each symbol's bars).
     earnings: optional {symbol: set(date)} of historical earnings dates (gate off if None).
@@ -652,6 +669,12 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     cfg = get_settings().strategy
     rcfg = get_settings().risk
     earnings = earnings or {}
+    # Optional per-event trade ledger (2026-11-24, sim fidelity audit): when a list is passed,
+    # every put sale / expiry / assignment / CC write / call-away / exit appends a dict. None =
+    # no cost, byte-identical results.
+    def _led(kind, **kw):
+        if ledger is not None:
+            ledger.append({"kind": kind, **kw})
 
     cc_dte_min = params.cc_dte_min
     cc_dte_max = params.cc_dte_max
@@ -1109,7 +1132,11 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     st["shares"] = tot
                     st["assigned_idx"] = day_idx     # for coverage-lag gating
                     n_assign += 1
-                # else: expired worthless, premium already kept
+                    _led("put_assigned", d=str(d), sym=p["sym"], strike=p["strike"], qty=p["qty"],
+                         premium=p["premium"], close=close)
+                else:
+                    _led("put_expired", d=str(d), sym=p["sym"], strike=p["strike"], qty=p["qty"],
+                         premium=p["premium"], close=close)
             else:
                 keep.append(p)
         short_puts = keep
@@ -1159,6 +1186,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     # so dropping the position here releases its delta automatically.
                     n_put_profit_takes += 1
                     pt_captured_sum += captured
+                    _led("put_closed", d=str(d), sym=p["sym"], strike=p["strike"], qty=p["qty"],
+                         premium=p["premium"], paid=ask_now)
                 else:
                     keep.append(p)
             short_puts = keep
@@ -1205,6 +1234,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 close = q[0] if q else c["strike"]
                 st = stocks.get(c["sym"])
                 if st and close >= c["strike"]:  # called away
+                    _led("called_away", d=str(d), sym=c["sym"], strike=c["strike"], qty=c["qty"],
+                         premium=c["premium"], close=close, cost_basis=st["cost_basis"])
                     cash += c["strike"] * 100 * c["qty"]
                     st["realized_cc"] = st.get("realized_cc", 0.0) + c["premium"]
                     st["shares"] -= 100 * c["qty"]
@@ -1213,6 +1244,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                         if params.put_reentry_cooldown_days > 0 and params.put_reentry_cooldown_scope == "any_sale":
                             cooldown_until[c["sym"]] = day_idx + params.put_reentry_cooldown_days
                 else:
+                    _led("cc_expired", d=str(d), sym=c["sym"], strike=c["strike"], qty=c["qty"],
+                         premium=c["premium"], close=close)
                     if st:
                         st["realized_cc"] = st.get("realized_cc", 0.0) + c["premium"]
             else:
@@ -1262,6 +1295,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                         cooldown_until[c["sym"]] = day_idx + params.put_reentry_cooldown_days
                 n_cc_early_closes += 1
                 n_trades += 1
+                _led("cc_early_close", d=str(d), sym=c["sym"], strike=strike, qty=qty, spot=spot,
+                     paid=buy_limit, cost_basis=st["cost_basis"])
             short_calls = keep
 
         # ── 2a-bis. Package unwind (Rain's manual rule, 2026-11-04) ───────
@@ -1303,6 +1338,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                         cooldown_until[c["sym"]] = day_idx + params.put_reentry_cooldown_days
                 n_cc_unwinds += 1
                 n_trades += 1
+                _led("cc_unwind", d=str(d), sym=c["sym"], strike=c["strike"], qty=qty, spot=spot,
+                     paid=buy_limit, cost_basis=st["cost_basis"])
             short_calls = keep
 
         # ── 2e. Assigned-lot stop (Rain, 2026-11-04) ──────────────────────
@@ -1338,6 +1375,8 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                     cooldown_until[sym] = day_idx + params.put_reentry_cooldown_days
                 n_stop_losses += 1
                 n_trades += 1
+                _led("stop", d=str(d), sym=sym, spot=spot, assign_strike=k_assign,
+                     cost_basis=st["cost_basis"], shares=st["shares"])
 
         # ── 2b. Settle naked short calls (strangle/IC short-leg) ──────────
         # Settled in cash. If close > strike, pay out (close - strike) × 100
@@ -1504,11 +1543,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
             top = max(cands, key=lambda c: c.score)
             lots = st["shares"] // 100
             cash += top.bid * 100 * lots
+            cash -= params.cc_commission_per_contract * lots
             cum_premium_collected += top.bid * 100 * lots
             short_calls.append({"sym": sym, "strike": top.strike,
                                 "expiry": _exp_date(top.expiry),
                                 "premium": top.bid, "qty": lots})
             n_trades += 1
+            _led("cc_sold", d=str(d), sym=sym, strike=top.strike, expiry=top.expiry, qty=lots,
+                 premium=top.bid, spot=spot, branch=cc_branch, cost_basis=st["cost_basis"])
 
         # Dead-capital telemetry: 100-share lots still uncovered after today's CC
         # pass (either lag-gated or no coverable CC found). Σ over days.
@@ -1921,7 +1963,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                                              otm_floor=sym_otm[0], otm_target=sym_otm[1],
                                              otm_cap=sym_otm[2])
                 if cands:
-                    top = max(cands, key=lambda c: c.score)
+                    top = _pick_put_candidate(cands, spot, params)
                     ranked.append((top.score, sym, top, ivr))
             ranked.sort(key=lambda x: x[0], reverse=True)
             for _, sym, top, ivr in ranked:
@@ -2039,6 +2081,9 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                                    "expiry": _exp_date(top.expiry),
                                    "premium": top.bid, "qty": contracts,
                                    "entry_delta": entry_delta})
+                _led("put_sold", d=str(d), sym=sym, strike=top.strike, expiry=top.expiry, qty=contracts,
+                     premium=top.bid, spot=(pv(sym, d) or (None,))[0],
+                     delta=entry_delta, nlv=prev_nlv)
                 portfolio_delta += entry_delta * contracts * 100
                 held.add(sym)
                 slots -= 1
