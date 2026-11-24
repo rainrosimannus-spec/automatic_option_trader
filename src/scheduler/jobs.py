@@ -283,6 +283,23 @@ def _order_is_ours(trade) -> bool:
     return cid is None or int(cid) == own
 
 
+def _cc_sweep_may_cancel(trade) -> bool:
+    """The covered-call scan's pre-sweep exists only to clear stale short-option ENTRY orders
+    (last scan's unfilled CC sells) before fresh ones are written. It must never cancel:
+      - a stock order: a stop / unwind / wheel-exit lot sale is a STK SELL we WANT to fill
+        (ADSK 2026-11-24: cancelled 9 min after the unwind placed it);
+      - a BUY: a buy-to-close of a live short (CC profit-take, put buyback, stop/unwind
+        buyback) — cancelling it strands the short.
+    Unknown secType/action (test doubles, odd contracts) keep the old behaviour (cancel)."""
+    sec_type = str(getattr(getattr(trade, "contract", None), "secType", "") or "").upper()
+    if sec_type == "STK":
+        return False
+    action = str(getattr(getattr(trade, "order", None), "action", "") or "").upper()
+    if action == "BUY":
+        return False
+    return True
+
+
 def _catchup_monthly_screen_if_still_needed(portfolio_cfg):
     """Startup catch-up for the monthly screen, re-checked AT FIRE TIME.
 
@@ -360,6 +377,19 @@ def job_check_assignments():
                 log.debug("cc_scan_skipping_foreign_order",
                           symbol=getattr(oo.contract, 'symbol', '?'),
                           order_id=oo.order.orderId, client_id=oo.order.clientId)
+                continue
+            if not _cc_sweep_may_cancel(oo):
+                # 2026-11-24 ADSK: the package unwind bought the 260C back and placed the lot
+                # sale at 261.61; nine minutes later this sweep cancelled that STK order, so the
+                # lot sat uncovered AND unsold with its wheel_unwind marker blocking the stop,
+                # the CC writer and the exit for the rest of the day. Same guards as the put
+                # scan's sweep (jobs.py, the ISRG 2026-07-13 case): never a stock order, never
+                # a BUY (a buy-to-close strands a live short).
+                log.info("cc_scan_keeping_order",
+                         symbol=getattr(oo.contract, 'symbol', '?'),
+                         order_id=oo.order.orderId,
+                         sec_type=getattr(oo.contract, 'secType', '?'),
+                         action=getattr(oo.order, 'action', '?'))
                 continue
             log.info("cc_scan_cancelling_unfilled_order",
                      symbol=getattr(oo.contract, 'symbol', '?'),
