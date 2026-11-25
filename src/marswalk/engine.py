@@ -235,6 +235,11 @@ class Params:
     # sim default OFF so every prior run stays byte-identical — the sweep flips it.
     wheel_stop_loss_enabled: bool = False
     wheel_stop_loss_pct: float = 0.08
+    # 2026-11-25 (Rain): two-stage variant — arm at arm_pct, sell after confirm_days only if the
+    # mark kept falling (wheel_rules.armed_stop_decision); the hard stop_pct still fires at once.
+    # 0.0 = plain stop (byte-identical). Sim-only until decided.
+    wheel_stop_arm_pct: float = 0.0
+    wheel_stop_confirm_days: int = 3
     # ── Package UNWIND (Rain's manual rule; live RiskConfig.cc_package_unwind_*) ──
     # On a covered lot: when close - (call ask + 5c) - fees >= net basis + min_profit x basis
     # (net basis = cost basis - realized CC premium/share - this call's premium), buy the call
@@ -1378,7 +1383,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 if not q or not k_assign or st["shares"] <= 0:
                     continue
                 spot, iv = q
-                if not wheel_rules.stop_loss_triggered(spot, k_assign, params.wheel_stop_loss_pct):
+                if params.wheel_stop_arm_pct > 0:
+                    sell, st["stop_state"] = wheel_rules.armed_stop_decision(
+                        spot, k_assign, stop_pct=params.wheel_stop_loss_pct,
+                        arm_pct=params.wheel_stop_arm_pct, confirm_days=params.wheel_stop_confirm_days,
+                        state=st.get("stop_state"), day_idx=day_idx)
+                    if not sell:
+                        continue
+                elif not wheel_rules.stop_loss_triggered(spot, k_assign, params.wheel_stop_loss_pct):
                     continue
                 keep = []
                 for c in short_calls:

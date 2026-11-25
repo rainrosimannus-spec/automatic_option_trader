@@ -103,3 +103,30 @@ def test_stale_liquidation_markers_are_reconciled_and_do_not_block():
     assert _liquidation_in_flight(db, "FTNT") is False
     assert _liquidation_in_flight(db, "FTAI") is False
     assert _liquidation_in_flight(db, "CIEN") is True
+
+
+def test_armed_stop_decision_two_stage():
+    from src.strategy.wheel_rules import armed_stop_decision as dec
+    K = 100.0
+    kw = dict(stop_pct=0.20, arm_pct=0.17, confirm_days=3)
+    # hard stop fires at once, armed or not
+    assert dec(79.9, K, state=None, day_idx=0, **kw)[0] is True
+    # -17% arms, no sale
+    sell, st = dec(83.0, K, state=None, day_idx=10, **kw)
+    assert sell is False and st["arm_mark"] == 83.0 and st["arm_day"] == 10
+    # inside the window nothing happens
+    sell, st = dec(82.0, K, state=st, day_idx=12, **kw)
+    assert sell is False and "arm_mark" in st
+    # day 3: lower than the arming mark -> sell
+    assert dec(82.5, K, state=st, day_idx=13, **kw)[0] is True
+    # day 3: higher than the arming mark -> stand down, needs a fresh crossing
+    sell, st2 = dec(84.0, K, state=st, day_idx=13, **kw)
+    assert sell is False and st2.get("need_reset") and "arm_mark" not in st2
+    sell, st3 = dec(82.0, K, state=st2, day_idx=14, **kw)      # still below the line: not re-armed
+    assert sell is False and "arm_mark" not in st3
+    sell, st4 = dec(85.0, K, state=st3, day_idx=15, **kw)      # back above the line resets
+    sell, st5 = dec(82.0, K, state=st4, day_idx=16, **kw)      # crosses again -> re-armed
+    assert "arm_mark" in st5
+    # no data / arm >= stop -> plain behaviour, no sale
+    assert dec(None, K, state=None, day_idx=0, **kw) == (False, {})
+    assert dec(83.0, K, state=None, day_idx=0, stop_pct=0.20, arm_pct=0.25, confirm_days=3)[0] is False

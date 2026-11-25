@@ -27,6 +27,39 @@ def stop_loss_triggered(mark: float | None, assign_strike: float | None, stop_pc
     return mark <= assign_strike * (1.0 - stop_pct)
 
 
+def armed_stop_decision(mark: float | None, assign_strike: float | None, *, stop_pct: float,
+                        arm_pct: float, confirm_days: int, state: dict | None,
+                        day_idx: int) -> tuple[bool, dict]:
+    """Two-stage assigned-lot stop (Rain 2026-11-25, sim-only until decided).
+
+    Returns (sell, new_state).
+    - mark <= strike x (1 - stop_pct): sell at once (the hard stop never waits).
+    - arm_pct > 0 and mark <= strike x (1 - arm_pct): ARM (remember mark + day) unless a
+      previous confirmation failed and the mark has not yet risen back above the arm line.
+    - armed and confirm_days have passed: mark below the arming mark (moving toward the
+      stop) -> sell; otherwise stand down and wait for a fresh crossing.
+    Fails CLOSED on missing data (no sale, state unchanged)."""
+    st = dict(state or {})
+    if not mark or mark <= 0 or not assign_strike or assign_strike <= 0 or stop_pct <= 0:
+        return False, st
+    if mark <= assign_strike * (1.0 - stop_pct):
+        return True, st
+    if arm_pct <= 0 or arm_pct >= stop_pct:
+        return False, st
+    arm_line = assign_strike * (1.0 - arm_pct)
+    if st.get("need_reset") and mark > arm_line:
+        st.pop("need_reset", None)
+    if "arm_mark" in st:
+        if day_idx - int(st["arm_day"]) >= int(confirm_days):
+            if mark < float(st["arm_mark"]):
+                return True, st
+            st.pop("arm_mark", None); st.pop("arm_day", None); st["need_reset"] = True
+        return False, st
+    if mark <= arm_line and not st.get("need_reset"):
+        st["arm_mark"] = float(mark); st["arm_day"] = int(day_idx)
+    return False, st
+
+
 def package_unwind_net_basis(cost_basis: float, realized_cc_per_share: float,
                              open_cc_premium: float) -> float:
     """Net basis of a covered lot = cost basis (strike - put premium) minus CC
