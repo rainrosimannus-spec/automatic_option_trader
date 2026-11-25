@@ -16,6 +16,7 @@ from src.web.template_engine import templates
 from src.core.config import get_settings, StrategyConfig, RiskConfig
 from src.marswalk.regimes import load_config
 from src.marswalk.engine import Params
+from src.marswalk.pricing import SHORT_DTE_K
 from src.marswalk.models import get_mw_db, Run, Point
 from src.marswalk import service
 
@@ -42,6 +43,7 @@ def _build_params(form: dict) -> Params:
     """
     g = form.get
     r = get_settings().risk
+    wc = get_settings().worst_case_cap
     return Params(
         # ── account / DTE / delta knobs — from the form ──
         dte_min=max(0, int(g("dte_min"))),
@@ -84,6 +86,25 @@ def _build_params(form: dict) -> Params:
         crash_off_days_required=r.crash_off_days_required,
         crash_carry_when_active=r.crash_carry_when_active,
         crash_strangle_when_active=r.crash_strangle_when_active,
+        # ── Phase-1 wheel rules + caps — from the user's live config (2026-11-25: the page ran the
+        # pre-November rule set; it now mirrors what the trader actually enforces) ──
+        wheel_stop_loss_enabled=r.wheel_stop_loss_enabled,
+        wheel_stop_loss_pct=r.wheel_stop_loss_pct,
+        cc_package_unwind_enabled=r.cc_package_unwind_enabled,
+        cc_package_unwind_min_profit_pct=r.cc_package_unwind_min_profit_pct,
+        cc_package_unwind_min_dte=r.cc_package_unwind_min_dte,
+        max_single_name_notional_pct=r.max_single_name_notional_pct,
+        max_single_name_one_lot_pct=r.max_single_name_one_lot_pct,
+        put_reentry_cooldown_days=r.put_reentry_cooldown_days,
+        put_reentry_cooldown_scope=r.put_reentry_cooldown_scope,
+        put_universe_max_breach_rate=r.put_universe_max_breach_rate,
+        put_otm_floor_mode=get_settings().strategy.put_otm_floor_mode,
+        put_otm_realized_k=get_settings().strategy.put_otm_realized_k,
+        worst_case_cap_pct=(wc.cap_pct if wc.enabled else 0.0),
+        worst_case_single_gap=wc.single_gap,
+        worst_case_stock_gap=wc.stock_gap,
+        worst_case_index_gap=wc.index_gap,
+        worst_case_index_carve_out_pct=wc.index_carve_out_pct,
     )
 
 
@@ -118,7 +139,9 @@ def marswalk_page(request: Request):
     # runs. Put DTE is VIX-tiered in live; the US low/mid-VIX tier is 0-3.
     s = StrategyConfig()
     r = RiskConfig()
-    default_nlv = 4_000_000
+    # 2026-11-25 (Rain): the ACCOUNT's scale, not a $4M stress test — at $4M the sim sized flat
+    # 2-lot positions and barely reacted to pricing (fidelity audit 2026-11-24).
+    default_nlv = 220_000
     # Derive collateral_cap_pct + max_positions from the live NLV ramp (mirrors
     # risk._effective_total_exposure_pct + scheduler options-count ladder), not
     # the pre-ramp base. At $4M this lifts cap from 20% → 40%, which is what
@@ -139,8 +162,9 @@ def marswalk_page(request: Request):
         # Account & deployment knobs — large-account stress test ($4M).
         "start_nlv": default_nlv,
         "collateral_cap_pct": ramp_cap_pct,
-        # Lowered 2026-05-26 from 4.95 -> 1.0 (see pricing.SHORT_DTE_K docstring).
-        "uplift_k": 1.0,
+        # The calibrated short-DTE uplift (pricing.SHORT_DTE_K: 0.33 since the 2026-11-24 fidelity
+        # audit against the account's own fills; 1.0 priced the same contracts at 1.61x reality).
+        "uplift_k": SHORT_DTE_K,
         "gap_stress_pct": 0,
         # Live trades with IBKR portfolio margin → on by default.
         "margin_on": True,
