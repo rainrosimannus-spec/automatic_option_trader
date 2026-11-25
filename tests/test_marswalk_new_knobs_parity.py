@@ -118,3 +118,34 @@ def test_params_note_names_the_settings_that_differ():
     assert "dte_max 5 (form 3)" in note and "universe_mode static (form pit)" in note
     assert _params_note(None, canon) is not None       # empty params: every form key differs
     assert _params_note("not json", canon) is None
+
+
+
+# ── 2026-11-25 (Rain): sell-off mode — a trigger for the Q4-2018 "quiet crash" ─────────────────
+
+def test_selloff_mode_defaults_are_inert():
+    p = Params()
+    assert p.selloff_mode_enabled is False and p.selloff_action == "cash" and p.selloff_stop_pct == 0.0
+    assert p.selloff_ma_days == 50 and p.selloff_off_high_pct == 0.04 and p.selloff_exit_days == 3
+
+
+def test_selloff_state_machine_on_a_q4_2018_shaped_path():
+    from src.marswalk.engine import selloff_update
+    kw = dict(off_high_pct=0.04, on_days=1, exit_days=3)
+    st = (False, 0, 0)
+    # Oct 3-9 2018: below the high by <4%, still above/at the SMA → nothing
+    for close, sma, high in ((291.7, 287.4, 293.6), (289.4, 287.5, 293.6), (287.4, 287.9, 293.6)):
+        *st, ev = selloff_update(*st, close, sma, high, **kw); assert ev is None and st[0] is False
+    # Oct 10: 278.3 vs SMA 287.8, high 293.6 → -5.2% → arms the same close
+    *st, ev = selloff_update(*st, 278.3, 287.8, 293.6, **kw); assert ev == "on" and st[0] is True
+    # a bounce that stays below the SMA keeps it armed and does not count toward the exit
+    *st, ev = selloff_update(*st, 276.2, 286.9, 293.6, **kw); assert ev is None and st[0] is True and st[2] == 0
+    # three closes back above the SMA → off on the third
+    for i, close in enumerate((290.0, 291.0, 292.0)):
+        *st, ev = selloff_update(*st, close, 285.0, 293.6, **kw)
+        assert (ev == "off") is (i == 2)
+    assert st[0] is False
+    # on_days 2 needs two raw closes
+    st = (False, 0, 0)
+    *st, ev = selloff_update(*st, 278.3, 287.8, 293.6, off_high_pct=0.04, on_days=2, exit_days=3); assert ev is None
+    *st, ev = selloff_update(*st, 272.2, 287.0, 293.6, off_high_pct=0.04, on_days=2, exit_days=3); assert ev == "on"

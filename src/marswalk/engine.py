@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import random
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from datetime import date, datetime, timedelta
 
 from src.core.config import get_settings
@@ -240,6 +240,19 @@ class Params:
     # 0.0 = plain stop (byte-identical). Sim-only until decided.
     wheel_stop_arm_pct: float = 0.0
     wheel_stop_confirm_days: int = 3
+    # ── Sell-off mode (2026-11-25, Rain: a strategy for the Q4-2018 "quiet crash") ──────────
+    # Q4 2018 fell 20% at realized vol 13-24% / VIX 20-25, so neither the grind (RV > 25%) nor the
+    # crash (RV > 40%) detector fires. Trigger on the INDEX rolling over instead: SPY close below its
+    # selloff_ma_days SMA AND at least selloff_off_high_pct below its rolling high. Default OFF.
+    selloff_mode_enabled: bool = False
+    selloff_ma_days: int = 50
+    selloff_off_high_pct: float = 0.04
+    selloff_high_lookback: int = 60
+    selloff_on_days: int = 1             # consecutive raw-true closes to arm
+    selloff_exit_days: int = 3           # consecutive closes back above the SMA to disarm
+    selloff_action: str = "cash"         # "cash": no new single-name puts | "halve": slots × 0.5, strike at selloff_otm_pct
+    selloff_otm_pct: float = 0.05
+    selloff_stop_pct: float = 0.0        # >0: assigned-lot stop used WHILE the mode is active (else wheel_stop_loss_pct)
     # ── Package UNWIND (Rain's manual rule; live RiskConfig.cc_package_unwind_*) ──
     # On a covered lot: when close - (call ask + 5c) - fees >= net basis + min_profit x basis
     # (net basis = cost basis - realized CC premium/share - this call's premium), buy the call
@@ -598,6 +611,30 @@ def _tier_delta_range(tier: int, cfg, spy_bearish: bool) -> tuple[float, float]:
     if tier == 1:
         return (cfg.delta_vix_mid, cfg.delta_vix_mid_max)
     return (cfg.delta_vix_high, cfg.delta_vix_high_max)
+
+
+def selloff_update(active: bool, raw_streak: int, off_streak: int, close: float, sma: float, high: float, *,
+                   off_high_pct: float, on_days: int, exit_days: int):
+    """One close of the sell-off state machine (Params.selloff_*). Raw = index below its SMA AND at
+    least off_high_pct under its rolling high. Arms after on_days raw closes; disarms after exit_days
+    closes back above the SMA (a close between SMA and the off-high line resets neither way).
+    Returns (active, raw_streak, off_streak, event) with event in (None, "on", "off")."""
+    event = None
+    raw = (close < sma) and (close <= high * (1.0 - off_high_pct))
+    if raw:
+        raw_streak += 1
+        off_streak = 0
+        if not active and raw_streak >= on_days:
+            active, event = True, "on"
+    else:
+        raw_streak = 0
+        if close > sma:
+            off_streak += 1
+            if active and off_streak >= exit_days:
+                active, event = False, "off"
+        else:
+            off_streak = 0
+    return active, raw_streak, off_streak, event
 
 
 def _pick_put_candidate(cands, spot: float, params) -> object:
@@ -974,6 +1011,19 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     # (pre-1993 regimes). Default trend window = 180 trading days.
     spy_ret_trend: dict = {}
     trend_win = params.high_vol_grind_trend_window_days
+    spy_ma_sell: dict = {}      # sell-off mode SMA (selloff_ma_days)
+    spy_hi_sell: dict = {}      # sell-off mode rolling high (selloff_high_lookback)
+    _so_n = max(1, int(params.selloff_ma_days)); _so_hl = max(1, int(params.selloff_high_lookback))
+    # Sell-off mode reads ^SPY, or ^IDX (the SPY-close series the index sleeve uses) when a regime
+    # has no ^SPY bars (the 6-year replay) — its own dicts, so nothing else in the engine changes.
+    _so_bars = spy_bars or market.get("^IDX", [])
+    _so_closes = {b[0]: b[1] for b in _so_bars}
+    _so_dates = sorted(_so_closes.keys())
+    _so_in_order = [_so_closes[bd] for bd in _so_dates]
+    for i, bd in enumerate(_so_dates):
+        if i >= _so_n:
+            spy_ma_sell[bd] = sum(_so_in_order[i-_so_n:i]) / _so_n
+        spy_hi_sell[bd] = max(_so_in_order[max(0, i - _so_hl + 1):i + 1])
     if spy_dates:
         closes_in_order = [spy_closes[bd] for bd in spy_dates]
         for i, bd in enumerate(spy_dates):
@@ -1129,6 +1179,12 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
     crash_raw_true_streak = 0
     crash_raw_false_streak = 0
     crash_active_days = 0
+    # Sell-off mode state (index rollover; see Params.selloff_*).
+    selloff_active = False
+    selloff_raw_streak = 0
+    selloff_off_streak = 0
+    selloff_active_days = 0
+    n_selloff_skips = 0
     # Cash interest accrual telemetry — total dollars added across the regime.
     cash_yield_total = 0.0
     daily_yield_rate = (cash_yield_annual / 365.0) if cash_yield_annual else 0.0
@@ -1383,14 +1439,16 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                 if not q or not k_assign or st["shares"] <= 0:
                     continue
                 spot, iv = q
+                _stop_pct_today = (params.selloff_stop_pct if (params.selloff_mode_enabled and selloff_active
+                                   and params.selloff_stop_pct > 0) else params.wheel_stop_loss_pct)   # prior-day mode state
                 if params.wheel_stop_arm_pct > 0:
                     sell, st["stop_state"] = wheel_rules.armed_stop_decision(
-                        spot, k_assign, stop_pct=params.wheel_stop_loss_pct,
+                        spot, k_assign, stop_pct=_stop_pct_today,
                         arm_pct=params.wheel_stop_arm_pct, confirm_days=params.wheel_stop_confirm_days,
                         state=st.get("stop_state"), day_idx=day_idx)
                     if not sell:
                         continue
-                elif not wheel_rules.stop_loss_triggered(spot, k_assign, params.wheel_stop_loss_pct):
+                elif not wheel_rules.stop_loss_triggered(spot, k_assign, _stop_pct_today):
                     continue
                 keep = []
                 for c in short_calls:
@@ -1774,6 +1832,21 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         if crash_active:
             crash_active_days += 1
 
+        # (c-selloff) Sell-off mode: SPY below its SMA and off its rolling high (both from
+        # closes known at d). Arms after selloff_on_days raw-true closes, disarms after
+        # selloff_exit_days closes back above the SMA. Byte-identical when disabled.
+        if params.selloff_mode_enabled:
+            _so_c, _so_ma, _so_hi = _so_closes.get(d), spy_ma_sell.get(d), spy_hi_sell.get(d)
+            if _so_c and _so_ma and _so_hi:
+                selloff_active, selloff_raw_streak, selloff_off_streak, _so_ev = selloff_update(
+                    selloff_active, selloff_raw_streak, selloff_off_streak, _so_c, _so_ma, _so_hi,
+                    off_high_pct=params.selloff_off_high_pct, on_days=params.selloff_on_days,
+                    exit_days=params.selloff_exit_days)
+                if _so_ev:
+                    _led(f"selloff_{_so_ev}", d=str(d), spy=_so_c, sma=round(_so_ma, 2), high=round(_so_hi, 2))
+            if selloff_active:
+                selloff_active_days += 1
+
         # (c-stag) Stagnation detector (long-grind countermeasure candidate 3).
         # Rolling lookback_days NLV return < stagnation_threshold_pct → boost
         # qty_mult below by stagnation_multiplier (capped by existing ivr_cap).
@@ -1854,6 +1927,16 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
 
         held = {p["sym"] for p in short_puts} | set(stocks.keys())
         slots = int((params.max_positions - len(short_puts)) * dd_mult)
+        day_pick_params = params
+        if params.selloff_mode_enabled and selloff_active:
+            if params.selloff_action == "halve":
+                slots = int(slots * 0.5)
+                day_pick_params = replace(params, put_strike_otm_pct=float(params.selloff_otm_pct))
+            elif params.selloff_action == "cash":
+                if slots > 0:
+                    n_selloff_skips += 1
+                slots = 0
+            # "none": selling unchanged (used with selloff_stop_pct alone)
         corr_on = prev_nlv > rcfg.correlation_nlv_threshold
         # Portfolio delta cap (mirrors live src/strategy/risk.py:700-754).
         # Compute current total |delta|×qty×100 across open puts; set NLV-tier
@@ -2017,7 +2100,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                                              otm_floor=sym_otm[0], otm_target=sym_otm[1],
                                              otm_cap=sym_otm[2])
                 if cands:
-                    top = _pick_put_candidate(cands, spot, params)
+                    top = _pick_put_candidate(cands, spot, day_pick_params)
                     ranked.append((top.score, sym, top, ivr))
             if getattr(params, "selection_mode", "best_first") == "best_first":
                 ranked.sort(key=lambda x: x[0], reverse=True)
@@ -2435,6 +2518,7 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
         "n_cc_early_closes": n_cc_early_closes,
         "n_stop_losses": n_stop_losses,
         "n_cc_unwinds": n_cc_unwinds,
+        "selloff_active_days": selloff_active_days, "n_selloff_skips": n_selloff_skips,
         "n_breach_skips": n_breach_skips,
         "n_cooldown_skips": n_cooldown_skips,
         "n_worst_case_skips": n_worst_case_skips,

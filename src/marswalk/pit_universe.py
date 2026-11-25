@@ -103,7 +103,7 @@ def screen_asof(bars: dict, members: set[str], d: str, n: int = 50, min_price: f
     bars dated ≤ d only. Returns symbols in rank order (best first)."""
     mom: dict[str, float] = {}
     liq: dict[str, float] = {}
-    for s in members:
+    for s in sorted(members):          # deterministic: `members` is a set (hash order varies per process)
         b = bars.get(s)
         if not b:
             continue
@@ -121,7 +121,9 @@ def screen_asof(bars: dict, members: set[str], d: str, n: int = 50, min_price: f
         liq[s] = sum(x[1] * x[2] for x in b[i - vol_days + 1:i + 1]) / vol_days
     rm, rl = _pct_rank(mom), _pct_rank(liq)
     score = {s: w_momentum * rm[s] + w_liquidity * rl.get(s, 0.0) for s in mom}
-    return [s for s, _ in sorted(score.items(), key=lambda kv: kv[1], reverse=True)[:n]]
+    # ties broken by symbol so two processes rank identically (2026-11-25: bear_2022 swung 35-43%
+    # between sweeps on nothing but set iteration order)
+    return [s for s, _ in sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))[:n]]
 
 
 def month_starts(start: str, end: str, trading_dates: list[str]) -> list[str]:
