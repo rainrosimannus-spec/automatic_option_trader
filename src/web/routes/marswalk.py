@@ -123,6 +123,33 @@ def _active_triggers() -> dict:
     }
 
 
+_NOTE_KEYS = ("start_capital", "dte_min", "dte_max", "delta_min", "delta_max", "universe_mode",
+              "selection_mode", "collateral_cap_pct", "max_positions", "wheel_stop_loss_pct",
+              "max_single_name_notional_pct", "short_dte_uplift_k", "margin_enabled")
+
+
+def _params_note(run_params_json: str | None, canonical_json: str, limit: int = 6) -> str | None:
+    """Human line on how a stored run's settings differ from the page's current form values.
+    None when they match or cannot be compared."""
+    try:
+        a = json.loads(run_params_json or "{}"); b = json.loads(canonical_json or "{}")
+    except Exception:
+        return None
+    diffs = []
+    for k in list(_NOTE_KEYS) + sorted(set(a) | set(b)):
+        if k in {d[0] for d in diffs} or a.get(k) == b.get(k):
+            continue
+        diffs.append((k, a.get(k), b.get(k)))
+    if not diffs:
+        return None
+    def fmt(v):
+        return f"{v:,.0f}" if isinstance(v, (int, float)) and abs(v) >= 1000 else str(v)
+    parts = [f"{k} {fmt(x)} (form {fmt(y)})" for k, x, y in diffs[:limit]]
+    if len(diffs) > limit:
+        parts.append(f"+{len(diffs) - limit} more")
+    return "; ".join(parts)
+
+
 @router.get("/marswalk", response_class=HTMLResponse)
 def marswalk_page(request: Request):
     from datetime import date
@@ -192,6 +219,14 @@ def marswalk_page(request: Request):
             run = (db.query(Run).filter_by(regime_id=reg.id)
                    .filter(Run.params_json == canonical_json)
                    .order_by(Run.created_at.desc()).first())
+            stale = False
+            if run is None:
+                # 2026-11-25: a manual "Run now" with changed knobs writes a different signature and
+                # _replace_prior drops the canonical rows, so the card went blank and the page looked
+                # dead. Show the regime's latest run and say which settings it used.
+                run = (db.query(Run).filter_by(regime_id=reg.id)
+                       .order_by(Run.created_at.desc()).first())
+                stale = run is not None
             chart = None
             if run:
                 pts = (db.query(Point).filter_by(run_id=run.id)
@@ -248,7 +283,12 @@ def marswalk_page(request: Request):
                 "final_annual_pct": final_annual_pct,
                 "target_annual_pct": 24.0,   # TARGET_ANNUAL in engine.py
                 "short_window": days < ANNUAL_MIN_DAYS,
+                "stale": stale,
             })
+    shown = [c["run"] for c in cards if c["run"] is not None]
+    last_sweep_at = max((r.created_at for r in shown if r.created_at), default=None)
+    stale_runs = [c["run"] for c in cards if c.get("stale")]
+    params_note = _params_note(stale_runs[0].params_json, canonical_json) if stale_runs else None
 
     # First time this config is opened, no run matches the canonical signature.
     # Per the user's intent ("run it then first time"), auto-launch the sweep so
@@ -269,6 +309,9 @@ def marswalk_page(request: Request):
         "universe": universe,
         "running": service.is_running(),
         "status": service.status(),
+        "last_sweep_at": last_sweep_at.strftime("%Y-%m-%d %H:%M UTC") if last_sweep_at else None,
+        "params_note": params_note,
+        "n_stale": len(stale_runs),
         "is_rth": _is_us_rth_now(),
     })
 

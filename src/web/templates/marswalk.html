@@ -167,8 +167,14 @@
         {% if running %}⏳ Running…{% else %}▶ Run now (all regimes){% endif %}
       </button>
       {% if running %}
-      <span class="text-xs text-amber-300">{{ status.msg }} — {{ status.done }}/{{ status.total }} regimes (auto-refresh)</span>
+      <span class="text-xs text-amber-300">{{ status.msg }} — {{ status.done }}/{{ status.total }} regimes (auto-refresh){% if status.queued %} · your Run now is queued and starts right after{% endif %}</span>
       {% else %}
+        {% if last_sweep_at %}
+        <span class="text-xs text-gray-500" title="When the newest result shown below was written. The engine is deterministic: the same form values give the same numbers, so a re-run with unchanged settings changes nothing but this time.">last sweep {{ last_sweep_at }}</span>
+        {% endif %}
+        {% if params_note %}
+        <span class="text-xs text-amber-300" title="The latest run for {{ n_stale }} regime(s) was made with other settings than the form shows. Press Run now to redo them with the form values.">⚠ results from other settings: {{ params_note }}</span>
+        {% endif %}
         {% if is_rth %}
         <span class="text-xs text-red-300/80" title="US regular trading hours: fetch=False to avoid IBKR contention; sweep uses cached bars only">
           🔴 RTH — cached-only mode

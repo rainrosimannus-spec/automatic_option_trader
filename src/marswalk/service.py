@@ -7,6 +7,7 @@ off-hours scheduler job calls run_all_regimes directly.
 from __future__ import annotations
 
 import threading
+from datetime import datetime
 
 from src.core.logger import get_logger
 from src.marswalk.regimes import load_config
@@ -19,7 +20,12 @@ from src.marswalk import pit_universe as pit
 log = get_logger("marswalk.service")
 
 # Simple single-flight status (one sweep at a time).
-_state = {"active": False, "msg": "idle", "done": 0, "total": 0}
+_state = {"active": False, "msg": "idle", "done": 0, "total": 0, "queued": False, "finished_at": None}
+
+# 2026-11-25: a "Run now" pressed while a sweep is active used to be dropped silently
+# (run_all_regimes returned at its single-flight check). It is now queued — latest request
+# wins — and starts the moment the active sweep ends.
+_pending: list = []
 
 # Signature of the last config we auto-launched a sweep for. Guards the GET-side
 # "auto-run first time" so a config with no stored runs triggers exactly one sweep
@@ -135,7 +141,26 @@ def run_all_regimes(params: Params, fetch: bool = True):
         _state["msg"] = "done"
     finally:
         _state["active"] = False
+        _state["finished_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        _drain_pending()
+
+
+def _drain_pending() -> bool:
+    """Start the queued sweep, if any. True when one was started."""
+    if not _pending or _state["active"]:
+        return False
+    params, fetch = _pending.pop()
+    _pending.clear()
+    _state["queued"] = False
+    log.info("marswalk_sweep_dequeued")
+    run_all_async(params, fetch)
+    return True
 
 
 def run_all_async(params: Params, fetch: bool = True):
+    if _state["active"]:
+        _pending[:] = [(params, fetch)]          # latest request wins
+        _state["queued"] = True
+        log.info("marswalk_sweep_queued")
+        return
     threading.Thread(target=run_all_regimes, args=(params, fetch), daemon=True).start()

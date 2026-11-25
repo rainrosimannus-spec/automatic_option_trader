@@ -80,3 +80,41 @@ def test_marswalk_page_start_nlv_is_the_money_put_in(monkeypatch):
     assert m._default_nlv() == 220_000.0
     monkeypatch.setattr(dash, "_get_total_invested", lambda: (_ for _ in ()).throw(RuntimeError("no ledger")))
     assert m._default_nlv() == 220_000.0
+
+
+
+# ── 2026-11-25 (Rain: "MarsWalk is doing nothing when pushed to run") ─────────────────────────
+
+def test_run_now_during_a_sweep_is_queued_not_dropped(monkeypatch):
+    from src.marswalk import service as svc
+    from src.marswalk.engine import Params
+    started = []
+    class FakeThread:
+        def __init__(self, target=None, args=(), daemon=None):
+            started.append((target, args))
+        def start(self):
+            pass
+    monkeypatch.setattr(svc.threading, "Thread", FakeThread)
+    svc._pending.clear()
+    svc._state.update(active=True, queued=False)
+    p = Params(start_capital=123_000.0)
+    svc.run_all_async(p, fetch=False)
+    assert started == [] and svc._pending == [(p, False)] and svc.status()["queued"] is True
+    svc._state["active"] = False
+    assert svc._drain_pending() is True
+    assert started and started[0][0] is svc.run_all_regimes and started[0][1] == (p, False)
+    assert svc._pending == [] and svc.status()["queued"] is False
+    assert svc._drain_pending() is False
+
+
+def test_params_note_names_the_settings_that_differ():
+    import json
+    from src.web.routes.marswalk import _params_note
+    canon = json.dumps({"start_capital": 251000.0, "dte_min": 0, "dte_max": 3, "universe_mode": "pit", "x": 1})
+    assert _params_note(canon, canon) is None
+    other = json.dumps({"start_capital": 4000000.0, "dte_min": 0, "dte_max": 5, "universe_mode": "static", "x": 1})
+    note = _params_note(other, canon)
+    assert "start_capital 4,000,000 (form 251,000)" in note
+    assert "dte_max 5 (form 3)" in note and "universe_mode static (form pit)" in note
+    assert _params_note(None, canon) is not None       # empty params: every form key differs
+    assert _params_note("not json", canon) is None
