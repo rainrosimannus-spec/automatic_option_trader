@@ -139,9 +139,9 @@ def marswalk_page(request: Request):
     # runs. Put DTE is VIX-tiered in live; the US low/mid-VIX tier is 0-3.
     s = StrategyConfig()
     r = RiskConfig()
-    # 2026-11-25 (Rain): the ACCOUNT's scale, not a $4M stress test — at $4M the sim sized flat
-    # 2-lot positions and barely reacted to pricing (fidelity audit 2026-11-24).
-    default_nlv = 220_000
+    # 2026-11-25 (Rain): the money actually put in — net deposits from the Flex ledger in USD at
+    # the FX of each deposit date (the sim books in USD) — not a $4M stress test.
+    default_nlv = _default_nlv()
     # Derive collateral_cap_pct + max_positions from the live NLV ramp (mirrors
     # risk._effective_total_exposure_pct + scheduler options-count ladder), not
     # the pre-ramp base. At $4M this lifts cap from 20% → 40%, which is what
@@ -271,6 +271,22 @@ def marswalk_page(request: Request):
         "status": service.status(),
         "is_rth": _is_us_rth_now(),
     })
+
+
+def _default_nlv(fallback: float = 220_000.0) -> float:
+    """Start capital for the page = net capital deposited into the options account (deposits −
+    withdrawals, each at its deposit-date FX, in USD), rounded to the nearest $1,000 so the run
+    signature stays stable. Falls back to `fallback` until the options Flex sync has filled the
+    ledger. Rain 2026-11-25: "make the 220k dynamic, so the sum always represents the money
+    actually put in"."""
+    try:
+        from src.web.routes.dashboard import _get_total_invested
+        usd = float(_get_total_invested().get("usd") or 0.0)
+        if usd >= 1_000:
+            return float(round(usd / 1_000.0) * 1_000)
+    except Exception:
+        pass
+    return float(fallback)
 
 
 def _nlv_ramp(nlv: float) -> tuple[float, int]:

@@ -67,3 +67,16 @@ def test_ledger_is_optional_and_records_events():
     src = inspect.getsource(engine.run_regime)
     for kind in ("put_sold", "put_assigned", "put_expired", "cc_sold", "called_away", "stop", "cc_unwind"):
         assert f'_led("{kind}"' in src
+
+
+def test_marswalk_page_start_nlv_is_the_money_put_in(monkeypatch):
+    """2026-11-25 (Rain): the page's start capital = net deposits in USD (deposit-date FX), rounded to $1k;
+    falls back to 220k while the deposit ledger is empty."""
+    from src.web.routes import marswalk as m
+    import src.web.routes.dashboard as dash
+    monkeypatch.setattr(dash, "_get_total_invested", lambda: {"usd": 251116.7, "base": 220000.0})
+    assert m._default_nlv() == 251_000.0
+    monkeypatch.setattr(dash, "_get_total_invested", lambda: {"usd": 0.0, "base": 0.0})
+    assert m._default_nlv() == 220_000.0
+    monkeypatch.setattr(dash, "_get_total_invested", lambda: (_ for _ in ()).throw(RuntimeError("no ledger")))
+    assert m._default_nlv() == 220_000.0

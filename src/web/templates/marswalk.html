@@ -32,7 +32,7 @@
       <div class="text-xs font-semibold text-amber-300 mb-2">🧪 Test configuration</div>
       <div class="flex flex-wrap gap-x-4 gap-y-3 items-end">
         <div>
-          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Start NLV $</div>
+          <div class="text-[10px] uppercase tracking-widest text-gray-500 mb-1" title="Default = net deposits into the options account in USD at the FX of each deposit date (Flex ledger), rounded to $1k">Start NLV $ <span class="normal-case tracking-normal text-gray-600">(= money put in)</span></div>
           {{ num('start_nlv', defaults.start_nlv, 50000, 0, 100000000, 'w-28') }}
         </div>
         <div>
