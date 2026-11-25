@@ -144,3 +144,46 @@ def test_settlement_price_books_the_expiry_day_close(monkeypatch):
     assert abs(px - 723.73) < 0.01
     assert IndexPutSeller._settlement_price(seller, "20261122", lambda days: rows) is None
     assert IndexPutSeller._settlement_price(seller, "20261123", lambda days: []) is None
+
+
+
+# ── 2026-11-25: US session guard (Thanksgiving / 13:00 half-day / after-hours never place orders) ──
+
+def test_us_index_session_guard():
+    from datetime import datetime
+    from src.strategy.index_puts import us_index_session
+    assert us_index_session(datetime(2026, 11, 25, 10, 10)) == (True, "")
+    assert us_index_session(datetime(2026, 11, 26, 10, 10))[0] is False      # Thanksgiving
+    assert us_index_session(datetime(2026, 11, 27, 11, 0))[0] is True        # half day, morning
+    assert us_index_session(datetime(2026, 11, 27, 14, 10))[0] is False      # after the 13:00 close
+    assert us_index_session(datetime(2026, 11, 27, 12, 45))[0] is True
+    assert us_index_session(datetime(2026, 11, 27, 12, 45), entry=True)[0] is False   # last 20 min
+    assert us_index_session(datetime(2026, 11, 25, 15, 45), entry=True)[0] is False
+    assert us_index_session(datetime(2026, 11, 25, 15, 39), entry=True)[0] is True
+    assert us_index_session(datetime(2026, 11, 25, 16, 0))[0] is False
+    assert us_index_session(datetime(2026, 11, 25, 9, 29))[0] is False
+    assert us_index_session(datetime(2026, 11, 28, 10, 10))[0] is False      # Saturday
+    assert us_index_session(datetime(2027, 11, 25, 10, 10))[0] is False      # Thanksgiving 2027
+    assert us_index_session(datetime(2027, 11, 26, 13, 5))[0] is False       # 2027 half day
+
+
+def test_live_scan_stops_on_a_closed_session_dry_run_observes(monkeypatch):
+    from src.strategy import index_puts as ip
+    from src.core.config import IndexPutConfig
+    monkeypatch.setattr(ip, "us_index_session_now", lambda **kw: (False, "US holiday 2026-11-26"))
+    seller = ip.IndexPutSeller.__new__(ip.IndexPutSeller)
+    seller.risk = None
+    seller.cfg = IndexPutConfig(enabled=True, dry_run=False)
+    assert seller._gates() == (False, "session: US holiday 2026-11-26")
+
+    def boom():
+        raise RuntimeError("db touched")
+    monkeypatch.setattr(ip, "get_db", boom)
+    assert seller.scan() is None                    # live: nothing placed, db never opened
+    seller.cfg = IndexPutConfig(enabled=True, dry_run=True)
+    try:
+        seller.scan()                               # dry-run observes through the gate
+        reached = False
+    except RuntimeError as e:
+        reached = "db touched" in str(e)
+    assert reached

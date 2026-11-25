@@ -218,6 +218,62 @@ def pick_expiry(expirations: list[str], today: date, dte: int) -> Optional[str]:
     return None
 
 
+# ── 2026-11-25: US session guard ───────────────────────────────────────────────────────────────
+# The scan job fires every weekday at 10:10 / 14:10 ET and the stop every 5 min 9-16 ET, through
+# holidays and 13:00 half-days. A DAY order placed into a closed session rests to the NEXT open with
+# a stale strike and limit. Pure and tested; the IBKR calendar overlay (portfolio side's
+# venue_hours, read only) is consulted when the process has one — closed if EITHER source says so.
+US_INDEX_HOLIDAYS = {
+    # NYSE / CBOE full-day closures, observed dates
+    date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3), date(2026, 5, 25),
+    date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7), date(2026, 11, 26), date(2026, 12, 25),
+    date(2027, 1, 1), date(2027, 1, 18), date(2027, 2, 15), date(2027, 3, 26), date(2027, 5, 31),
+    date(2027, 6, 18), date(2027, 7, 5), date(2027, 9, 6), date(2027, 11, 25), date(2027, 12, 24),
+}
+US_INDEX_EARLY_CLOSE = {date(2026, 11, 27): (13, 0), date(2026, 12, 24): (13, 0), date(2027, 11, 26): (13, 0)}
+US_INDEX_OPEN = (9, 30)
+US_INDEX_CLOSE = (16, 0)
+LAST_ENTRY_MIN_BEFORE_CLOSE = 20
+
+
+def us_index_session(now_et: datetime, *, entry: bool = False) -> tuple[bool, str]:
+    """(open, reason) for the US index-option session at `now_et` (Eastern wall clock, naive or
+    aware). `entry=True` also refuses the last LAST_ENTRY_MIN_BEFORE_CLOSE minutes: a new spread
+    with no time to be worked is not worth placing."""
+    d = now_et.date()
+    if d.weekday() >= 5:
+        return False, "weekend"
+    if d in US_INDEX_HOLIDAYS:
+        return False, f"US holiday {d.isoformat()}"
+    ch, cm = US_INDEX_EARLY_CLOSE.get(d, US_INDEX_CLOSE)
+    mins = now_et.hour * 60 + now_et.minute
+    if mins < US_INDEX_OPEN[0] * 60 + US_INDEX_OPEN[1]:
+        return False, "before the 09:30 ET open"
+    close_min = ch * 60 + cm
+    if mins >= close_min:
+        return False, f"after the {ch:02d}:{cm:02d} ET close"
+    if entry and mins >= close_min - LAST_ENTRY_MIN_BEFORE_CLOSE:
+        return False, f"within {LAST_ENTRY_MIN_BEFORE_CLOSE} min of the {ch:02d}:{cm:02d} ET close"
+    return True, ""
+
+
+def us_index_session_now(*, entry: bool = False) -> tuple[bool, str]:
+    """`us_index_session` at the current Eastern time, then the IBKR calendar overlay when present."""
+    import pytz
+    now = datetime.now(pytz.timezone("US/Eastern"))
+    ok, why = us_index_session(now, entry=entry)
+    if not ok:
+        return ok, why
+    try:
+        from src.portfolio.venue_hours import overlay_sessions   # read-only; filled by the portfolio side
+        ov = overlay_sessions("USD", now)
+        if ov is not None and not any(a <= now < b for a, b in ov):
+            return False, "IBKR calendar: US venue closed now"
+    except Exception:
+        pass
+    return True, ""
+
+
 # ── the live seller ─────────────────────────────────────────────────────────────────────
 class IndexPutSeller:
     def __init__(self, risk=None):
@@ -246,6 +302,9 @@ class IndexPutSeller:
         """Reuse the wheel's account-level gates; none of the per-name ones."""
         if not self.cfg.enabled:
             return False, "disabled"
+        sess_ok, sess_why = us_index_session_now(entry=True)
+        if not sess_ok:
+            return False, f"session: {sess_why}"
         if self.risk is None:
             return True, ""
         for name in ("check_vix_gate", "check_daily_circuit_breaker", "check_intraday_loss",
@@ -488,6 +547,8 @@ class IndexPutSeller:
                     continue
                 if pos.status != PositionStatus.OPEN or self.cfg.stop_mult <= 0:
                     continue
+                if not us_index_session_now()[0]:
+                    continue        # closed session: quotes are stale, a buyback would rest to the next open
                 _bid, ask, _cid = get_index_option_quote(pos.symbol, pos.expiry, pos.strike, "P",
                                                          self.cfg.exchange, self.cfg.trading_class)
                 wing = self._wing_of(db, pos)
