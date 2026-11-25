@@ -105,6 +105,12 @@ def contracts_for_max_loss(nlv: float, max_loss_pct: float, max_loss_per_contrac
     return int(max(0, min(max_contracts, math.floor(free / max_loss_per_contract))))
 
 
+def per_position_max_loss_pct(max_loss_pct: float, max_open: int) -> float:
+    """Equal share of the sleeve's max-loss budget for ONE of `max_open` overlapping spreads.
+    max_open 1 → the whole budget (unchanged behaviour); 2 at 10% → 5% each."""
+    return float(max_loss_pct) / float(max(1, int(max_open or 1)))
+
+
 def spread_settlement_pnl(net_credit: float, short_strike: float, wing: Optional[float],
                           settle_px: float, qty: int, commission_total: float = 0.0) -> tuple[float, float, float]:
     """(short intrinsic paid, wing payoff received, realized) for a cash-settled put spread."""
@@ -397,7 +403,11 @@ class IndexPutSeller:
                 ml_pc = spread_max_loss_per_contract(strike, wing, net_credit)
                 in_use = sum(spread_max_loss_per_contract(p.strike, self._wing_of(db, p) or p.strike,
                                                           p.entry_premium or 0.0) * p.quantity for p in open_puts)
-                qty = contracts_for_max_loss(nlv, self.cfg.max_loss_pct, ml_pc, in_use, self.cfg.max_contracts)
+                # max_loss_pct is the SLEEVE total; each of the max_open overlapping spreads gets an equal
+                # share (Rain 2026-11-25: two open spreads at 10% = 5% each, daily cadence like the sim)
+                qty = min(contracts_for_max_loss(nlv, self.cfg.max_loss_pct, ml_pc, in_use, self.cfg.max_contracts),
+                          contracts_for_max_loss(nlv, per_position_max_loss_pct(self.cfg.max_loss_pct, self.cfg.max_open),
+                                                 ml_pc, 0.0, self.cfg.max_contracts))
                 margin_pc = ml_pc; m1 = None
             else:
                 m1 = get_whatif_margin_index(self.cfg.symbol, expiry, strike, 1, bid,

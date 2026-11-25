@@ -187,3 +187,20 @@ def test_live_scan_stops_on_a_closed_session_dry_run_observes(monkeypatch):
     except RuntimeError as e:
         reached = "db touched" in str(e)
     assert reached
+
+
+
+def test_two_open_spreads_share_the_sleeve_budget():
+    """Rain 2026-11-25: max_open 2 at max_loss 10% = 5% per spread, two overlapping (daily cadence)."""
+    from src.strategy.index_puts import per_position_max_loss_pct, contracts_for_max_loss
+    assert per_position_max_loss_pct(0.05, 1) == 0.05
+    assert per_position_max_loss_pct(0.10, 2) == 0.05
+    assert per_position_max_loss_pct(0.10, 0) == 0.10
+    nlv, ml_pc = 200_000.0, 2_000.0
+    def qty(total, max_open, in_use):
+        return min(contracts_for_max_loss(nlv, total, ml_pc, in_use, 50),
+                   contracts_for_max_loss(nlv, per_position_max_loss_pct(total, max_open), ml_pc, 0.0, 50))
+    assert qty(0.10, 2, 0.0) == 5              # first spread: 5% of NLV, not the whole 10%
+    assert qty(0.10, 2, 5 * ml_pc) == 5        # second spread beside it: another 5%
+    assert qty(0.10, 2, 8 * ml_pc) == 2        # only the remaining room
+    assert qty(0.05, 1, 0.0) == 5              # old setting unchanged

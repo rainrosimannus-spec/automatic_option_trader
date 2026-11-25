@@ -586,9 +586,11 @@ class IndexPutConfig(BaseModel):
     # and the short put sold second, so no naked window ever exists. Mirrors Params.index_put_spread_*.
     spread_enabled: bool = True
     spread_width_pct: float = 0.03
-    max_loss_pct: float = 0.05           # share of NLV at risk per spread position (defined risk). 0.05 to start:
-                                         # the sim prices the wing with flat VIX (no skew) so its net credit is
-                                         # overstated; raise toward 0.10 only after live fills show the real credit
+    max_loss_pct: float = 0.05           # share of NLV at risk for the WHOLE sleeve (defined risk); each of the
+                                         # max_open overlapping spreads gets max_loss_pct / max_open. A 1-DTE spread
+                                         # sold at 10:10 is still open through the next day's scans, so max_open 1
+                                         # trades every second day; Rain 2026-11-25: live max_open 2 at 0.10 = two
+                                         # 5% spreads, daily cadence (= the sim's "5%" row, which settles before it sells)
     min_net_credit: float = 0.10         # skip when short bid − wing ask is below this
     # Dry-run chain log (Rain 2026-11-10): every scan quotes EVERY strike from the money down to
     # chain_log_max_otm and appends them to data/xsp_chain.jsonl; manage() appends the settlement

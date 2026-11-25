@@ -76,7 +76,9 @@ def test_live_yaml_values():
     s = Settings.load() if hasattr(Settings, "load") else None
     import yaml
     y = yaml.safe_load((ROOT / "config/settings.yaml").read_text())
-    assert y["worst_case_cap"]["index_carve_out_pct"] == 0.05
+    # 2026-11-25 (Rain): two overlapping 5% spreads → the sleeve's own dome is 10%
+    assert y["worst_case_cap"]["index_carve_out_pct"] == 0.10
+    assert y["index_puts"]["max_open"] == 2 and y["index_puts"]["max_loss_pct"] == 0.10
     assert y["risk"]["wheel_stop_intraday_enabled"] is True
 
 
