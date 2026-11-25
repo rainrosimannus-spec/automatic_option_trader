@@ -646,6 +646,30 @@ class WorstCaseCapConfig(BaseModel):
     index_carve_out_pct: float = 0.0
 
 
+class ShadowSelectorConfig(BaseModel):
+    """Dry-run selector (Rain 2026-11-25): what the SIMULATOR's price-only rules would sell today.
+
+    MarsWalk's picks beat the live screener's picks by 17 pp on the account's own 2026 window, but
+    its own orderings disagree by 12-30 pp per window, so the only fair test is live: at each scan
+    walk the point-in-time momentum × liquidity top-N in rank order, take the first names with a
+    real bid at the strike nearest otm_pct below spot in the live DTE window, and book them on
+    paper (data/shadow_selector.jsonl, settled at the FMP close on expiry). Never places an order.
+    `scripts/shadow_selector_report.py` compares shadow vs the account's real put fills day by day."""
+    enabled: bool = True
+    universe_n: int = 50
+    otm_pct: float = 0.025                 # the live screener's median (2026-06 → 11)
+    per_scan: int = 2                      # new names booked per scan
+    max_open: int = 10                     # paper puts open at once
+    max_names_per_scan: int = 12           # chain lookups per scan (bounds the scan-lock time)
+    qty: int = 1
+    commission_per_contract: float = 1.18  # IBKR, measured on the account's fills
+    scan_times_et: list[str] = ["10:40", "14:40"]   # off the :00/:30 live scans and the :10 XSP scans
+    settle_time_et: str = "09:50"
+    log_path: str = "data/shadow_selector.jsonl"
+    refresh_days: int = 400                # bars refreshed monthly for the current index members
+    stale_after_days: int = 10             # warn when the universe store is older than this
+
+
 class Settings(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
@@ -659,6 +683,7 @@ class Settings(BaseModel):
     index_puts: IndexPutConfig = IndexPutConfig()
     options_universe_filter: OptionsUniverseFilterConfig = OptionsUniverseFilterConfig()
     worst_case_cap: WorstCaseCapConfig = WorstCaseCapConfig()
+    shadow_selector: ShadowSelectorConfig = ShadowSelectorConfig()
     raw: dict = {}  # full YAML dict for sections not modeled (alerts, bridge)
 
 

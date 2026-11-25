@@ -1197,6 +1197,60 @@ def job_index_put_scan():
         _scan_lock.release()
 
 
+def job_shadow_selector_scan():
+    """Shadow selector (Rain 2026-11-25): what the SIMULATOR's price-only rule would sell now — paper only."""
+    _ensure_event_loop()
+    from src.core.config import get_settings as _gs
+    if not _gs().shadow_selector.enabled:
+        return
+    if _is_paused() or not is_connected():
+        return
+    acquired = _scan_lock.acquire(timeout=600)
+    if not acquired:
+        log.warning("shadow_scan_skipped_scan_lock_timeout")
+        return
+    try:
+        from src.strategy.shadow_selector import ShadowSelector
+        universe = UniverseManager()
+        risk = RiskManager(universe)
+        ShadowSelector(universe, risk).scan()
+    except Exception as e:
+        log.error("shadow_scan_error", error=str(e))
+    finally:
+        _scan_lock.release()
+
+
+def job_shadow_selector_settle():
+    """Book yesterday's shadow expiries at the FMP close (no IBKR)."""
+    from src.core.config import get_settings as _gs
+    if not _gs().shadow_selector.enabled:
+        return
+    try:
+        from src.strategy.shadow_selector import ShadowSelector
+        ShadowSelector(None, None).settle()
+    except Exception as e:
+        log.error("shadow_settle_error", error=str(e))
+
+
+def job_shadow_universe_refresh(force: bool = False):
+    """Monthly (and on a stale store): refresh index membership + ~400 days of bars for the
+    current S&P 500 ∪ Nasdaq-100 members, the shadow selector's universe. FMP only, a few minutes."""
+    from src.core.config import get_settings as _gs
+    cfg = _gs().shadow_selector
+    if not cfg.enabled:
+        return
+    try:
+        from src.marswalk import pit_universe as pit
+        latest = pit.latest_bar_date()
+        if not force and latest and (datetime.utcnow().date() - datetime.strptime(latest, "%Y-%m-%d").date()).days < cfg.stale_after_days:
+            log.info("shadow_universe_fresh", latest_bar=latest)
+            return
+        res = pit.refresh_recent(days=cfg.refresh_days)
+        log.info("shadow_universe_refreshed", **{k: (v if k != "empty" else len(v)) for k, v in res.items()})
+    except Exception as e:
+        log.error("shadow_universe_refresh_error", error=str(e))
+
+
 def job_index_put_manage():
     """📐 Phase 2 — index put sleeve: stop (ask ≥ 3× credit) + cash settlement of expiries."""
     _ensure_event_loop()
@@ -1959,6 +2013,41 @@ def create_scheduler() -> BackgroundScheduler:
         )
     except Exception as _e:
         log.warning("index_put_jobs_not_registered", error=str(_e))
+
+    # ── Shadow selector (Rain 2026-11-25): the simulator's pick, on paper, beside the live screener ──
+    try:
+        from src.core.config import get_settings as _gs_sh
+        from apscheduler.triggers.date import DateTrigger as _ShDateTrigger
+        _sh = _gs_sh().shadow_selector
+        for _t in (_sh.scan_times_et or []):
+            _hh, _mm = [int(x) for x in _t.split(":")]
+            scheduler.add_job(
+                job_shadow_selector_scan,
+                CronTrigger(hour=_hh, minute=_mm, day_of_week="mon-fri", timezone=us_tz),
+                id=f"shadow_selector_scan_{_hh:02d}{_mm:02d}",
+                name=f"Shadow Selector Scan {_t} ET (paper)",
+                max_instances=1,
+            )
+        _sh_h, _sh_m = [int(x) for x in _sh.settle_time_et.split(":")]
+        scheduler.add_job(
+            job_shadow_selector_settle,
+            CronTrigger(hour=_sh_h, minute=_sh_m, day_of_week="mon-fri", timezone=us_tz),
+            id="shadow_selector_settle", name="Shadow Selector Settle (FMP close)", max_instances=1,
+        )
+        scheduler.add_job(
+            job_shadow_universe_refresh,
+            CronTrigger(day="1", hour=3, minute=20, timezone=utc_tz),
+            id="shadow_universe_refresh", name="Shadow Selector Universe Refresh (monthly, FMP)", max_instances=1,
+        )
+        # stale-store catch-up shortly after start (no-op when the store is fresh)
+        scheduler.add_job(
+            job_shadow_universe_refresh,
+            _ShDateTrigger(run_date=datetime.now(pytz.UTC) + _timedelta(seconds=240)),
+            id="shadow_universe_refresh_startup", name="Shadow Selector Universe Refresh (startup check)",
+            max_instances=1,
+        )
+    except Exception as _e:
+        log.warning("shadow_selector_jobs_not_registered", error=str(_e))
 
     # ── Margin & drawdown monitor — every 30 min during US hours ──
     scheduler.add_job(

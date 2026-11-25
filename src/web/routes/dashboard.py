@@ -497,6 +497,22 @@ def _estimate_suggestion_pnl(s) -> float:
     return 0.0
 
 
+def _shadow_stats() -> dict:
+    """Shadow selector (2026-11-25) tallies for the rules chip: paper puts sold / settled / net."""
+    try:
+        from src.core.config import get_settings as _gs
+        from src.strategy.shadow_selector import read_jsonl
+        cfg = _gs().shadow_selector
+        rows = read_jsonl(cfg.log_path)
+        sells = [r for r in rows if r.get("kind") == "sell"]
+        setts = [r for r in rows if r.get("kind") == "settle"]
+        return {"on": cfg.enabled, "sold": len(sells), "settled": len(setts),
+                "itm": sum(1 for r in setts if r.get("itm")),
+                "net": round(sum(float(r.get("pnl") or 0) for r in setts), 0)}
+    except Exception:
+        return {"on": False, "sold": 0, "settled": 0, "itm": 0, "net": 0}
+
+
 def _index_puts_on() -> bool:
     """Phase 2 chip state: sleeve enabled AND out of dry-run."""
     try:
@@ -769,6 +785,7 @@ def dashboard(request: Request):
         # Cash parking (FX treasury: EUR→XEON / USD→XFFE, USD debit auto-close)
         "parking": parking,
         "index_puts_on": _index_puts_on(),
+        "shadow": _shadow_stats(),
         "sleeve_pnl": sleeve_pnl,
         # Performance chart
         "perf_labels": performance["labels"],

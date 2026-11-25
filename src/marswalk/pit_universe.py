@@ -215,3 +215,71 @@ def regime_inputs(regime, n: int = 50, db_path: Path = PIT_DB) -> tuple[list[str
     bars = load_bars(names, db_path)
     market = market_from_bars(bars, names, start, end)
     return names, market, sched
+
+# ── live refresh (shadow selector, 2026-11-25) ───────────────────────────────────────────────
+
+def latest_bar_date(db_path: Path = PIT_DB) -> str | None:
+    """Newest bar date in the store (None when empty/missing)."""
+    if not db_path.exists():
+        return None
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        row = con.execute("select max(date) from pit_bars").fetchone()
+        return row[0] if row else None
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+
+
+def refresh_recent(days: int = 400, db_path: Path = PIT_DB, cons_path: Path = CONSTITUENTS,
+                   sleep_s: float = 0.05, fetch=None) -> dict:
+    """Refresh the constituent lists and the last `days` of daily bars for every CURRENT
+    S&P 500 ∪ Nasdaq-100 member (FMP, ~600 calls, a few minutes). Upserts, so history stays.
+    `fetch(symbol, from_iso, to_iso) -> list[{"date","close","volume"}]` is injectable for tests."""
+    import time
+    if fetch is None:
+        from src.portfolio.fmp import _get
+
+        def fetch(sym, a, b):
+            data = _get("historical-price-eod/full", sym, {"from": a, "to": b})
+            return data if isinstance(data, list) else []
+    cons = fetch_constituents(cons_path)
+    today = date.today()
+    members = sorted(members_asof(cons, today))
+    a, b = (today - timedelta(days=days)).isoformat(), today.isoformat()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(db_path)
+    db.execute("create table if not exists pit_bars (symbol text, date text, close real, volume real, primary key(symbol, date))")
+    db.execute("create table if not exists pit_fetched (symbol text primary key, rows int, fetched_at text)")
+    n_rows, empty = 0, []
+    for s in members:
+        try:
+            data = fetch(s, a, b)
+        except Exception:
+            data = []
+        rows = [(s, r["date"], float(r["close"]), float(r.get("volume") or 0)) for r in data if r.get("close") is not None]
+        if rows:
+            db.executemany("insert or replace into pit_bars values (?,?,?,?)", rows)
+            db.execute("insert or replace into pit_fetched values (?,?,datetime('now'))", (s, len(rows)))
+            n_rows += len(rows)
+        else:
+            empty.append(s)
+        db.commit()
+        if sleep_s:
+            time.sleep(sleep_s)
+    db.close()
+    return {"members": len(members), "rows": n_rows, "empty": empty, "latest": latest_bar_date(db_path)}
+
+
+def current_screen(n: int = 50, asof: date | None = None, db_path: Path = PIT_DB,
+                   cons_path: Path = CONSTITUENTS, **screen_kw) -> list[str]:
+    """Today's (or `asof`) top-`n` by the same momentum × liquidity screen MarsWalk uses, in rank
+    order. [] when the store is missing."""
+    if not pit_available(db_path, cons_path):
+        return []
+    d = (asof or date.today()).isoformat()
+    cons = load_constituents(cons_path)
+    members = members_asof(cons, d)
+    bars = load_bars(members, db_path)
+    return screen_asof(bars, members, d, n=n, **screen_kw)
