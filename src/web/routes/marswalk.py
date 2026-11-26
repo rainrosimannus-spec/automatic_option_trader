@@ -10,7 +10,7 @@ import json
 from dataclasses import asdict
 
 from fastapi import APIRouter, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
 from src.web.template_engine import templates
 from src.core.config import get_settings, StrategyConfig, RiskConfig
@@ -19,7 +19,9 @@ from src.marswalk.engine import Params
 from src.marswalk.pricing import SHORT_DTE_K
 from src.marswalk.models import get_mw_db, Run, Point
 from src.marswalk import service
+from src.core.logger import get_logger
 
+log = get_logger(__name__)
 router = APIRouter()
 
 
@@ -169,45 +171,7 @@ def marswalk_page(request: Request):
     # YAML migration is task #48). No DB-driven last_params override — the
     # form always starts at the canonical live config, never at stale prior
     # runs. Put DTE is VIX-tiered in live; the US low/mid-VIX tier is 0-3.
-    s = StrategyConfig()
-    r = RiskConfig()
-    # 2026-11-25 (Rain): the money actually put in — net deposits from the Flex ledger in USD at
-    # the FX of each deposit date (the sim books in USD) — not a $4M stress test.
-    default_nlv = _default_nlv()
-    # Derive collateral_cap_pct + max_positions from the live NLV ramp (mirrors
-    # risk._effective_total_exposure_pct + scheduler options-count ladder), not
-    # the pre-ramp base. At $4M this lifts cap from 20% → 40%, which is what
-    # the live trader would actually grant a $4M account. Otherwise the engine
-    # would silently bind notional at $4M × 20% × 5x = $4M and flatline.
-    ramp_cap_pct, ramp_max_pos = _nlv_ramp(default_nlv)
-    defaults = {
-        "dte_min": 0,
-        "dte_max": 3,
-        "delta_min": s.delta_min,
-        "delta_max": s.delta_max,
-        "put_min_premium": s.min_premium_put,
-        "cc_dte_min": s.cc_dte_min,
-        "cc_dte_max": s.cc_dte_max,
-        "cc_delta_min": s.cc_delta_min,
-        "cc_delta_max": s.cc_delta_max,
-        "cc_min_premium": s.min_premium,
-        # Account & deployment knobs — large-account stress test ($4M).
-        "start_nlv": default_nlv,
-        "collateral_cap_pct": ramp_cap_pct,
-        # The calibrated short-DTE uplift (pricing.SHORT_DTE_K: 0.33 since the 2026-11-24 fidelity
-        # audit against the account's own fills; 1.0 priced the same contracts at 1.61x reality).
-        "uplift_k": SHORT_DTE_K,
-        "gap_stress_pct": 0,
-        # Live trades with IBKR portfolio margin → on by default.
-        "margin_on": True,
-        "margin_multiple": 5.0,
-        "max_positions": ramp_max_pos,
-        # Risk gates — aggressive son-mode values.
-        "iv_rank_min": s.iv_rank_min,
-        "vix_halt": r.vix_pause_threshold,
-        # Son-mode 60% margin ceiling.
-        "max_margin_usage_pct": round(r.max_margin_usage * 100, 1),
-    }
+    defaults = _form_defaults()
 
     # Canonical config signature: the engine Params the rendered defaults + the
     # user's live triggers produce, serialized exactly as save_run does
@@ -321,6 +285,52 @@ def marswalk_page(request: Request):
     })
 
 
+def _form_defaults() -> dict:
+    """The form's default values = the canonical live config (see the comments inside). Pulled out of
+    the page route (2026-11-26) so a test can check every default against the min/max the template
+    puts on its input — the browser silently refuses to submit a form with a value outside them."""
+    s = StrategyConfig()
+    r = RiskConfig()
+    # 2026-11-25 (Rain): the money actually put in — net deposits from the Flex ledger in USD at
+    # the FX of each deposit date (the sim books in USD) — not a $4M stress test.
+    default_nlv = _default_nlv()
+    # Derive collateral_cap_pct + max_positions from the live NLV ramp (mirrors
+    # risk._effective_total_exposure_pct + scheduler options-count ladder), not
+    # the pre-ramp base. At $4M this lifts cap from 20% → 40%, which is what
+    # the live trader would actually grant a $4M account. Otherwise the engine
+    # would silently bind notional at $4M × 20% × 5x = $4M and flatline.
+    ramp_cap_pct, ramp_max_pos = _nlv_ramp(default_nlv)
+    defaults = {
+        "dte_min": 0,
+        "dte_max": 3,
+        "delta_min": s.delta_min,
+        "delta_max": s.delta_max,
+        "put_min_premium": s.min_premium_put,
+        "cc_dte_min": s.cc_dte_min,
+        "cc_dte_max": s.cc_dte_max,
+        "cc_delta_min": s.cc_delta_min,
+        "cc_delta_max": s.cc_delta_max,
+        "cc_min_premium": s.min_premium,
+        # Account & deployment knobs — large-account stress test ($4M).
+        "start_nlv": default_nlv,
+        "collateral_cap_pct": ramp_cap_pct,
+        # The calibrated short-DTE uplift (pricing.SHORT_DTE_K: 0.33 since the 2026-11-24 fidelity
+        # audit against the account's own fills; 1.0 priced the same contracts at 1.61x reality).
+        "uplift_k": SHORT_DTE_K,
+        "gap_stress_pct": 0,
+        # Live trades with IBKR portfolio margin → on by default.
+        "margin_on": True,
+        "margin_multiple": 5.0,
+        "max_positions": ramp_max_pos,
+        # Risk gates — aggressive son-mode values.
+        "iv_rank_min": s.iv_rank_min,
+        "vix_halt": r.vix_pause_threshold,
+        # Son-mode 60% margin ceiling.
+        "max_margin_usage_pct": round(r.max_margin_usage * 100, 1),
+    }
+    return defaults
+
+
 def _default_nlv(fallback: float = 220_000.0) -> float:
     """Start capital for the page = net capital deposited into the options account (deposits −
     withdrawals, each at its deposit-date FX, in USD), rounded to the nearest $1,000 so the run
@@ -424,8 +434,18 @@ def marswalk_run(
     # portfolio lock and the marswalk fetch otherwise stalls (45s per call ×
     # missing symbols). Off-hours, do the fresh fetch.
     fetch = not _is_us_rth_now()
+    # 2026-11-26: the web server keeps no access log, so a pressed button left no trace at all.
+    log.info("marswalk_run_requested", fetch=fetch, start_nlv=start_nlv, dte=f"{dte_min}-{dte_max}",
+             delta=f"{delta_min}-{delta_max}", uplift_k=uplift_k, already_running=service.is_running())
     service.run_all_async(params, fetch=fetch)
     return RedirectResponse(url="/marswalk", status_code=303)
+
+
+@router.get("/marswalk/status")
+def marswalk_status():
+    """Sweep progress for the page's 3-second poll: {active, msg, done, total, queued, finished_at}.
+    Reads an in-memory dict only — answers even while the sweep thread is busy."""
+    return JSONResponse(service.status())
 
 
 # ── Short-DTE pricing calibration ────────────────────────────────────────

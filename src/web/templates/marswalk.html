@@ -4,7 +4,6 @@
 {% block m_nav_marswalk %}bg-gray-800 text-emerald-400{% endblock %}
 
 {% block content %}
-{% if running %}<meta http-equiv="refresh" content="8">{% endif %}
 
 <div class="mb-5">
   <h1 class="text-lg font-semibold text-gray-100 flex items-center gap-2">🪐 MarsWalk
@@ -19,11 +18,11 @@
 
 <!-- ═══ Config panel ═══ -->
 <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
-  <form method="post" action="/marswalk/run">
+  <form method="post" action="/marswalk/run" id="mw-run-form">
 {% macro num(name, value, step, mn, mx, w='w-12') -%}
 <span class="inline-flex items-stretch">
   <button type="button" onclick="mwStep('{{ name }}',-1)" class="px-2 bg-gray-800 border border-gray-700 rounded-l text-gray-300 hover:bg-gray-700 active:bg-gray-600 select-none">−</button>
-  <input id="{{ name }}" name="{{ name }}" type="number" value="{{ value }}" step="{{ step }}" min="{{ mn }}" max="{{ mx }}" inputmode="decimal"
+  <input id="{{ name }}" name="{{ name }}" type="number" value="{{ value }}" step="any" data-step="{{ step }}" min="{{ mn }}" max="{{ mx }}" inputmode="decimal"
          class="{{ w }} bg-gray-800 border-y border-gray-700 px-1 py-1 text-sm text-gray-100 text-center">
   <button type="button" onclick="mwStep('{{ name }}',1)" class="px-2 bg-gray-800 border border-gray-700 rounded-r text-gray-300 hover:bg-gray-700 active:bg-gray-600 select-none">+</button>
 </span>
@@ -162,13 +161,13 @@
       </div>
     </div>
     <div class="flex items-center gap-4 mt-3">
-      <button type="submit" {% if running %}disabled{% endif %}
+      <button type="submit" id="mw-run-btn" {% if running %}disabled{% endif %}
               class="px-4 py-1.5 rounded text-sm font-medium {% if running %}bg-gray-700 text-gray-400 cursor-not-allowed{% else %}bg-emerald-600 hover:bg-emerald-500 text-white{% endif %}">
         {% if running %}⏳ Running…{% else %}▶ Run now (all regimes){% endif %}
       </button>
-      {% if running %}
-      <span class="text-xs text-amber-300">{{ status.msg }} — {{ status.done }}/{{ status.total }} regimes (auto-refresh){% if status.queued %} · your Run now is queued and starts right after{% endif %}</span>
-      {% else %}
+      <span id="mw-status" class="text-xs text-amber-300" {% if not running %}hidden{% endif %}>{{ status.msg }} — {{ status.done }}/{{ status.total }} regimes{% if status.queued %} · your Run now is queued and starts right after{% endif %}</span>
+      <span id="mw-invalid" class="text-xs text-red-300" hidden>a value is out of its range — fix the highlighted field and press again</span>
+      <span id="mw-idle" class="flex items-center gap-4" {% if running %}hidden{% endif %}>
         {% if last_sweep_at %}
         <span class="text-xs text-gray-500" title="When the newest result shown below was written. The engine is deterministic: the same form values give the same numbers, so a re-run with unchanged settings changes nothing but this time.">last sweep {{ last_sweep_at }}</span>
         {% endif %}
@@ -184,7 +183,7 @@
           🟢 Off-hours — fresh fetch
         </span>
         {% endif %}
-      {% endif %}
+      </span>
     </div>
   </form>
   <p class="text-[11px] text-gray-600 mt-2">
@@ -275,6 +274,46 @@
 </div>
 
 <script>
+// 2026-11-26 (Rain): "I pushed the button, I cannot see anything happening". Two causes, both fixed here.
+// (1) The number inputs carried step="0.05"/"50000"; the calibrated uplift 0.33 and the real deposit
+//     251,000 are not multiples, so the browser refused the submit and only showed a bubble on the
+//     field. Inputs now use step="any" (data-step drives the +/- buttons); an out-of-range value is
+//     reported loudly instead of silently.
+// (2) Progress was a whole-page refresh every 8 s. The page now polls /marswalk/status every 3 s,
+//     shows "running <regime> — n/22" live, and reloads once when the sweep ends.
+(function () {
+  const form = document.getElementById('mw-run-form'), btn = document.getElementById('mw-run-btn'),
+        st = document.getElementById('mw-status'), idle = document.getElementById('mw-idle'),
+        bad = document.getElementById('mw-invalid');
+  if (!form || !btn || !st) return;
+  let wasActive = {{ 'true' if running else 'false' }}, submitted = false;
+  form.addEventListener('submit', function (ev) {
+    bad.hidden = true;
+    if (!form.checkValidity()) { ev.preventDefault(); form.reportValidity(); bad.hidden = false; return; }
+    submitted = true;                       // the POST → 303 → GET takes over from here
+    btn.disabled = true; btn.textContent = '⏳ starting…';
+    st.textContent = 'sending the request…'; st.hidden = false; if (idle) idle.hidden = true;
+  });
+  function show(s) {
+    if (s.active) {
+      wasActive = true;
+      btn.disabled = true; btn.textContent = '⏳ Running…';
+      st.textContent = s.msg + ' — ' + s.done + '/' + s.total + ' regimes' +
+                       (s.queued ? ' · your Run now is queued and starts right after' : '');
+      st.hidden = false; if (idle) idle.hidden = true;
+    } else if (wasActive) {
+      st.textContent = 'done — loading the results…';
+      location.reload();
+    }
+  }
+  function poll() {
+    if (submitted) return;
+    fetch('/marswalk/status', {cache: 'no-store'}).then(function (r) { return r.json(); }).then(show)
+      .catch(function () {}).finally(function () { setTimeout(poll, 3000); });
+  }
+  poll();
+})();
+
 // Init: disable margin_multiple input when margin is OFF; wire NLV-ramp.
 document.addEventListener('DOMContentLoaded', function () {
   const t = document.getElementById('margin_on');
@@ -312,7 +351,7 @@ function mwApplyNlvRamp() {
 function mwStep(id, dir) {
   const el = document.getElementById(id);
   if (!el) return;
-  const step = parseFloat(el.step) || 1;
+  const step = parseFloat(el.dataset.step || el.step) || 1;
   const mn = el.min !== '' ? parseFloat(el.min) : -Infinity;
   const mx = el.max !== '' ? parseFloat(el.max) : Infinity;
   let v = parseFloat(el.value);
