@@ -90,6 +90,11 @@ def _build_params(form: dict) -> Params:
         # pre-November rule set; it now mirrors what the trader actually enforces) ──
         wheel_stop_loss_enabled=r.wheel_stop_loss_enabled,
         wheel_stop_loss_pct=r.wheel_stop_loss_pct,
+        # 2026-11-26 (Rain): stop 10% while SPY < MA200 → the sim's sell-off mode with ma 200, no
+        # off-high condition, same-day on/off, action none, selloff_stop_pct = the live bear stop
+        selloff_mode_enabled=bool(getattr(r, "wheel_stop_bear_enabled", False)),
+        selloff_ma_days=200, selloff_off_high_pct=0.0, selloff_on_days=1, selloff_exit_days=1,
+        selloff_action="none", selloff_stop_pct=float(getattr(r, "wheel_stop_bear_pct", 0.0) or 0.0),
         cc_package_unwind_enabled=r.cc_package_unwind_enabled,
         cc_package_unwind_min_profit_pct=r.cc_package_unwind_min_profit_pct,
         cc_package_unwind_min_dte=r.cc_package_unwind_min_dte,
@@ -124,7 +129,7 @@ def _active_triggers() -> dict:
 
 
 _NOTE_KEYS = ("start_capital", "dte_min", "dte_max", "delta_min", "delta_max", "universe_mode",
-              "selection_mode", "collateral_cap_pct", "max_positions", "wheel_stop_loss_pct",
+              "selection_mode", "collateral_cap_pct", "max_positions", "wheel_stop_loss_pct", "selloff_stop_pct",
               "max_single_name_notional_pct", "short_dte_uplift_k", "margin_enabled")
 
 

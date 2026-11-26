@@ -149,3 +149,22 @@ def test_selloff_state_machine_on_a_q4_2018_shaped_path():
     st = (False, 0, 0)
     *st, ev = selloff_update(*st, 278.3, 287.8, 293.6, off_high_pct=0.04, on_days=2, exit_days=3); assert ev is None
     *st, ev = selloff_update(*st, 272.2, 287.0, 293.6, off_high_pct=0.04, on_days=2, exit_days=3); assert ev == "on"
+
+
+
+def test_marswalk_page_mirrors_the_live_bear_stop(monkeypatch):
+    """The dashboard sweep must run the stop the trader enforces: 10% while SPY < MA200."""
+    from src.web.routes import marswalk as m
+    from src.core.config import get_settings
+    r = get_settings().risk
+    form = {"dte_min": 0, "dte_max": 3, "delta_min": 0.20, "delta_max": 0.30, "put_min_premium": 0.0,
+            "cc_dte_min": 1, "cc_dte_max": 7, "cc_delta_min": 0.30, "cc_delta_max": 0.45, "cc_min_premium": 0.0,
+            "start_nlv": 251000.0, "collateral_cap_pct": 30, "uplift_k": 0.33, "gap_stress_pct": 0,
+            "margin_on": True, "margin_multiple": 5.0, "max_positions": 15, "iv_rank_min": 20.0,
+            "vix_halt": 35.0, "max_margin_usage_pct": 80.0}
+    p = m._build_params(form)
+    assert p.selloff_mode_enabled is bool(r.wheel_stop_bear_enabled)
+    assert p.selloff_ma_days == 200 and p.selloff_off_high_pct == 0.0 and p.selloff_action == "none"
+    assert p.selloff_on_days == 1 and p.selloff_exit_days == 1
+    assert p.selloff_stop_pct == float(r.wheel_stop_bear_pct)
+    assert p.wheel_stop_loss_pct == float(r.wheel_stop_loss_pct)

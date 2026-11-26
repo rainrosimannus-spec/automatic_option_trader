@@ -130,3 +130,43 @@ def test_armed_stop_decision_two_stage():
     # no data / arm >= stop -> plain behaviour, no sale
     assert dec(None, K, state=None, day_idx=0, **kw) == (False, {})
     assert dec(83.0, K, state=None, day_idx=0, stop_pct=0.20, arm_pct=0.25, confirm_days=3)[0] is False
+
+
+
+# ── 2026-11-26 (Rain): 10% stop while the S&P 500 closes below its 200-day, 20% otherwise ──
+
+def test_effective_stop_pct_follows_the_index_regime():
+    from src.strategy.wheel_rules import effective_stop_pct
+    assert effective_stop_pct(0.20, 0.10, True) == 0.10
+    assert effective_stop_pct(0.20, 0.10, False) == 0.20
+    assert effective_stop_pct(0.20, 0.10, None) == 0.20          # unknown index state → base
+    assert effective_stop_pct(0.20, 0.10, True, enabled=False) == 0.20
+    assert effective_stop_pct(0.20, 0.0, True) == 0.20           # bear pct 0 = off
+
+
+def test_live_bear_stop_config_defaults_and_yaml():
+    from pathlib import Path
+    import yaml
+    from src.core.config import RiskConfig
+    r = RiskConfig()
+    assert r.wheel_stop_bear_enabled is True and r.wheel_stop_bear_pct == 0.10
+    y = yaml.safe_load((Path(__file__).resolve().parents[1] / "config/settings.yaml").read_text())
+    assert y["risk"]["wheel_stop_bear_enabled"] is True and y["risk"]["wheel_stop_bear_pct"] == 0.10
+
+
+def test_stop_check_reads_the_spy_regime_from_the_risk_module():
+    from types import SimpleNamespace
+    from src.strategy.wheel import WheelManager
+    wm = WheelManager.__new__(WheelManager)
+    wm.risk = SimpleNamespace(get_regime=lambda: SimpleNamespace(spy_distance_below_ma200=0.022))
+    assert wm._spy_below_ma200() is True
+    wm.risk = SimpleNamespace(get_regime=lambda: SimpleNamespace(spy_distance_below_ma200=-0.05))
+    assert wm._spy_below_ma200() is False
+    wm.risk = SimpleNamespace(get_regime=lambda: SimpleNamespace(spy_distance_below_ma200=None))
+    assert wm._spy_below_ma200() is None
+    wm.risk = None
+    assert wm._spy_below_ma200() is None
+    def boom():
+        raise RuntimeError("no gateway")
+    wm.risk = SimpleNamespace(get_regime=boom)
+    assert wm._spy_below_ma200() is None

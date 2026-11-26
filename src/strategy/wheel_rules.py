@@ -27,6 +27,17 @@ def stop_loss_triggered(mark: float | None, assign_strike: float | None, stop_pc
     return mark <= assign_strike * (1.0 - stop_pct)
 
 
+def effective_stop_pct(base_pct: float, bear_pct: float, spy_below_ma200: bool | None,
+                       enabled: bool = True) -> float:
+    """The assigned-lot stop distance for today (Rain 2026-11-26): `bear_pct` while the S&P 500
+    closes below its 200-day average, `base_pct` otherwise. Unknown index state → base (fail-safe:
+    never tighter than configured on missing data). Mirrors Params.selloff_* with ma 200 / action
+    none in the sim."""
+    if enabled and spy_below_ma200 is True and bear_pct and bear_pct > 0:
+        return float(bear_pct)
+    return float(base_pct)
+
+
 def armed_stop_decision(mark: float | None, assign_strike: float | None, *, stop_pct: float,
                         arm_pct: float, confirm_days: int, state: dict | None,
                         day_idx: int) -> tuple[bool, dict]:

@@ -9,3 +9,9 @@ def test_chips_present():
     for needle in ("Assigned-lot stop", "Package unwind", "breach gate", "Put strike floor",
                    "≤ 10% of NLV"):
         assert needle in t, needle
+
+
+def test_bear_stop_is_on_the_chip():
+    from pathlib import Path
+    html = (Path(__file__).resolve().parents[1] / "src/web/templates/dashboard.html").read_text()
+    assert "≥10% while the S&P 500 closes below its 200-day average" in html

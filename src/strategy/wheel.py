@@ -22,7 +22,7 @@ from src.core.logger import get_logger
 from src.strategy.screener import screen_calls
 from src.strategy.risk import RiskManager
 from src.strategy.universe import UniverseManager
-from src.strategy.wheel_rules import stop_loss_triggered
+from src.strategy.wheel_rules import stop_loss_triggered, effective_stop_pct
 from src.strategy.lot_sale import sale_limit, reprice_decision, LIQUIDATION_SOURCES_ALL
 
 log = get_logger(__name__)
@@ -854,6 +854,17 @@ class WheelManager:
                  strike=strike, shares=qty_to_sell)
         return True
 
+    def _spy_below_ma200(self) -> bool | None:
+        """True/False when the risk module knows where SPY closed against its 200-day average,
+        None when it does not (the stop then stays at its base distance)."""
+        try:
+            regime = self.risk.get_regime() if self.risk is not None else None
+            dist = getattr(regime, "spy_distance_below_ma200", None) if regime is not None else None
+            return None if dist is None else bool(dist > 0)
+        except Exception as e:
+            log.warning("wheel_stop_spy_regime_unavailable", error=str(e))
+            return None
+
     def check_stop_loss(self) -> list[str]:
         """Assigned-lot STOP (Rain, 2026-11-04): sell a wheel lot outright once its live mid is
         `wheel_stop_loss_pct` (8%) or more below the share-weighted assignment strike.
@@ -876,10 +887,13 @@ class WheelManager:
         rc = _gs().risk
         if not self.cfg.wheel_enabled or not getattr(rc, "wheel_stop_loss_enabled", False):
             return []
-        stop_pct = float(rc.wheel_stop_loss_pct)
+        spy_below = self._spy_below_ma200()
+        stop_pct = effective_stop_pct(float(rc.wheel_stop_loss_pct), float(getattr(rc, "wheel_stop_bear_pct", 0.0) or 0.0),
+                                      spy_below, enabled=bool(getattr(rc, "wheel_stop_bear_enabled", False)))
         wait_secs = float(getattr(rc, "wheel_stop_fill_wait_secs", 20.0))
         sold: list[str] = []
-        log.info("wheel_stop_scan_started", stop_pct=stop_pct)
+        log.info("wheel_stop_scan_started", stop_pct=stop_pct, spy_below_ma200=spy_below,
+                 base_pct=float(rc.wheel_stop_loss_pct))
 
         with get_db() as db:
             _reconcile_liquidation_suggestions(db)

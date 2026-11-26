@@ -403,6 +403,11 @@ class RiskConfig(BaseModel):
     # (wheel_stop_loss_enabled, sim default OFF so prior runs stay byte-identical).
     wheel_stop_loss_enabled: bool = True
     wheel_stop_loss_pct: float = 0.08          # sell when mid <= assignment strike * (1 - this)
+    # 2026-11-26 (Rain): tighter stop while the S&P 500 closes below its 200-day average — the one
+    # rule that fixed the Q4-2018 "quiet crash" in the sim (−10 → −4%) without touching the calm
+    # uptrend (SPY never crosses the line there). 22-regime sweep + 20-year state weighting.
+    wheel_stop_bear_enabled: bool = True
+    wheel_stop_bear_pct: float = 0.10          # stop used while SPY < MA200; wheel_stop_loss_pct otherwise
     wheel_stop_fill_wait_secs: float = 20.0    # how long to wait for the CC buyback to fill before selling
     # 2026-11-20 (Rain): also check every 30 min during RTH (09:35–15:35 ET), not only at 15:45.
     # VRT went 6.6 pts past the 20% stop on 11-20 because the daily-close check saw it once.
