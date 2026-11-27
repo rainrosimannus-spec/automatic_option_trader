@@ -11,7 +11,7 @@ from src.strategy.index_puts import (contracts_for_budget, daily_sigma, index_pu
 def test_ships_disabled_and_dry_run():
     c = IndexPutConfig()
     assert c.enabled is False and c.dry_run is True
-    assert (c.symbol, c.exchange, c.dte, c.sigma_k, c.budget_pct, c.stop_mult) == ("XSP", "CBOE", 1, 2.0, 0.30, 3.0)
+    assert (c.symbol, c.exchange, c.dte, c.sigma_k, c.budget_pct, c.stop_mult) == ("XSP", "CBOE", 1, 2.0, 0.30, 0.0)
     assert Settings().index_puts.enabled is False
 
 

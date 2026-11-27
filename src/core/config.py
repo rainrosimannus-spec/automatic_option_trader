@@ -581,8 +581,20 @@ class IndexPutConfig(BaseModel):
     max_contracts: int = 50
     margin_pct_fallback: float = 0.15    # SPAN-like proxy when whatIf margin is unavailable
     min_bid: float = 0.15                # skip when the put's bid is below this (fee floor)
-    stop_mult: float = 3.0               # buy back when ask ≥ this × credit (0 = off)
+    stop_mult: float = 0.0               # buy back when ask ≥ this × credit (0 = off). Rain 2026-11-27: OFF —
+                                         # on 20 yrs of SPY intraday lows the 3× stop made 1.6%/yr vs 13.7 without
+                                         # (78% of its fires were whipsaws on spreads that expired worthless); the
+                                         # wing is the stop (scripts/xsp_stop_rule_model.py)
     vix_max: float = 35.0                # no new puts above this VIX
+    # Tiered sell-off cut (Rain 2026-11-27, scripts/xsp_sleeve_cut_model.py): the first crash day is never
+    # flagged in advance, but the follow-through days are. New spreads are sized at selloff_cut_factor while
+    # SPY's 5-trading-day change (completed closes, FMP) is ≤ −selloff_cut_5d_pct and NOT sold at all below
+    # −selloff_pause_5d_pct. 20 yrs compounded at 2×5%: growth 42.5 → 41.7 (model units), max DD 31 → 21,
+    # covid month −28 → −14.5. Switches itself off when the 5-day change recovers. 0 disables a tier.
+    # Mirrors Params.index_put_selloff_*.
+    selloff_cut_5d_pct: float = 0.03
+    selloff_cut_factor: float = 0.5
+    selloff_pause_5d_pct: float = 0.05
     scan_times_et: list[str] = ["10:10", "14:10"]   # off the :00/:30 single-name scans, which hold the scan lock for minutes
     settle_time_et: str = "09:45"        # book yesterday's expiries at the official close
     # Defined-risk wing (2026-11-07, after the −4.4% SPY day): buy a put spread_width_pct below the

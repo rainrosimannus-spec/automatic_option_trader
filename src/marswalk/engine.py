@@ -27,6 +27,7 @@ from src.core.config import get_settings
 from src.strategy.option_scoring import score_put_candidates, score_call_candidates
 from src.marswalk import pricing
 from src.strategy import wheel_rules
+from src.strategy.index_puts import selloff_size_factor
 from src.strategy import realized_move
 from bisect import bisect_left as _bisect_left, bisect_right as _bisect_right
 
@@ -319,6 +320,12 @@ class Params:
     index_put_spread_width_pct: float = 0.03
     index_put_max_loss_pct: float = 0.10  # share of NLV risked per spread position (defined risk)
     index_put_min_net_credit: float = 0.10
+    # Tiered sell-off cut (Rain 2026-11-27, mirrors IndexPutConfig.selloff_*): new sleeve positions sized
+    # × index_put_selloff_cut_factor while the index's 5-session change ≤ −cut_pct, none at ≤ −pause_pct.
+    # Default 0 = off → byte-identical runs. Shared predicate: src.strategy.index_puts.selloff_size_factor.
+    index_put_selloff_cut_pct: float = 0.0
+    index_put_selloff_cut_factor: float = 0.5
+    index_put_selloff_pause_pct: float = 0.0
     # ── SPY tail hedge (mirror of live src/strategy/hedge.py, 2026-11-07 sweep) ──
     # One rolling long put on the index series (^IDX = SPY): strike spot × (1 − otm), target
     # DTE, rolled (sold at bid) at/below roll_dte, settled at the close at expiry. Budget =
@@ -2352,6 +2359,14 @@ def run_regime(regime_id, regime_name, category, rank, universe, market, params:
                         qty = int(max(0.0, budget - used) / margin_pc)
                         ok = bid * 100 >= params.index_put_commission * 2
                     qty = min(qty, params.index_put_max_contracts)
+                    # Tiered sell-off cut (2026-11-27): the sim enters at the close, so the 5-session change
+                    # runs through today's close (live uses the last 5 completed closes before the 10:10 scan).
+                    if params.index_put_selloff_cut_pct > 0 or params.index_put_selloff_pause_pct > 0:
+                        c_back = idx_closes.get(dates[i_d - 5]) if i_d >= 5 else None
+                        chg5 = (idx_spot / c_back - 1.0) if (c_back and idx_spot) else None
+                        qty = int(qty * selloff_size_factor(chg5, params.index_put_selloff_cut_pct,
+                                                            params.index_put_selloff_cut_factor,
+                                                            params.index_put_selloff_pause_pct))
                     if params.worst_case_cap_pct > 0 and qty > 0:
                         _room = (_wc_carve * prev_nlv - _wc_book(d, "index")) if _wc_carve > 0 else \
                                 (params.worst_case_cap_pct * prev_nlv - _wc_book(d))

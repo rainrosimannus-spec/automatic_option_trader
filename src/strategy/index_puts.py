@@ -105,6 +105,32 @@ def contracts_for_max_loss(nlv: float, max_loss_pct: float, max_loss_per_contrac
     return int(max(0, min(max_contracts, math.floor(free / max_loss_per_contract))))
 
 
+def five_day_change(closes: list[float]) -> Optional[float]:
+    """SPY's change over the last 5 completed sessions: closes[-1] / closes[-6] − 1 (oldest→newest).
+    None when fewer than 6 closes — the caller treats None as 'no cut' (fail-open)."""
+    if not closes or len(closes) < 6:
+        return None
+    try:
+        return float(closes[-1]) / float(closes[-6]) - 1.0
+    except (TypeError, ZeroDivisionError):
+        return None
+
+
+def selloff_size_factor(change_5d: Optional[float], cut_pct: float, cut_factor: float,
+                        pause_pct: float) -> float:
+    """Tiered sell-off cut (Rain 2026-11-27). Multiplier on the size of a NEW spread:
+    1.0 normally; `cut_factor` once the 5-day change is at or below −cut_pct; 0.0 (no new spread)
+    at or below −pause_pct. A tier set to 0 is disabled. None (no data) → 1.0, fail-open.
+    Shared by the live scan and the MarsWalk sim so the two cannot drift."""
+    if change_5d is None:
+        return 1.0
+    if pause_pct and pause_pct > 0 and change_5d <= -pause_pct:
+        return 0.0
+    if cut_pct and cut_pct > 0 and change_5d <= -cut_pct:
+        return max(0.0, min(1.0, float(cut_factor)))
+    return 1.0
+
+
 def per_position_max_loss_pct(max_loss_pct: float, max_open: int) -> float:
     """Equal share of the sleeve's max-loss budget for ONE of `max_open` overlapping spreads.
     max_open 1 → the whole budget (unchanged behaviour); 2 at 10% → 5% each."""
@@ -334,6 +360,30 @@ class IndexPutSeller:
         return True, ""
 
     # -- scan
+    _spy_5d_cache: tuple[str, Optional[float]] | None = None
+
+    def _spy_change_5d(self) -> Optional[float]:
+        """SPY's change over the last 5 COMPLETED sessions from dated FMP rows (today's partial bar is
+        dropped — the 10:10 scan must not see the morning as a finished day). Cached per calendar day.
+        None on any failure → the cut stays off (fail-open) and a warning is logged."""
+        today = date.today().isoformat()
+        if self._spy_5d_cache and self._spy_5d_cache[0] == today:
+            return self._spy_5d_cache[1]
+        chg: Optional[float] = None
+        try:
+            from src.portfolio.fmp import _get
+            start = (date.today() - timedelta(days=21)).isoformat()
+            rows = _get("historical-price-eod/full", "SPY", {"from": start, "to": today}) or []
+            done = sorted((r["date"], float(r["close"])) for r in rows
+                          if isinstance(r, dict) and r.get("close") is not None and str(r.get("date", ""))[:10] < today)
+            chg = five_day_change([c for _d, c in done])
+            if chg is None:
+                log.warning("index_put_spy_5d_unavailable", bars=len(done))
+        except Exception as e:
+            log.warning("index_put_spy_5d_failed", error=str(e))
+        self._spy_5d_cache = (today, chg)
+        return chg
+
     def scan(self) -> dict | None:
         """One scan: returns the decision dict (also logged), or None when nothing to do."""
         ok, why = self._gates()
@@ -416,6 +466,15 @@ class IndexPutSeller:
                 in_use = sum(margin_proxy_per_contract(spot, p.strike, self.cfg.margin_pct_fallback) * p.quantity
                              for p in open_puts)
                 qty = contracts_for_budget(nlv, self.cfg.budget_pct, margin_pc, in_use, self.cfg.max_contracts)
+            # Tiered sell-off cut (Rain 2026-11-27): half size after a −3% week, nothing after −5%.
+            chg5 = self._spy_change_5d()
+            size_factor = selloff_size_factor(chg5, self.cfg.selloff_cut_5d_pct, self.cfg.selloff_cut_factor,
+                                              self.cfg.selloff_pause_5d_pct)
+            if size_factor < 1.0:
+                before = qty
+                qty = int(qty * size_factor)
+                log.info("index_put_selloff_cut", spy_change_5d=round(chg5 * 100, 2) if chg5 is not None else None,
+                         size_factor=size_factor, qty_before=before, qty=qty)
             # Total worst-case cap (Rain 2026-11-11): the sleeve never goes past the book's dome.
             wc_note = None
             if self.risk is not None and hasattr(self.risk, "worst_case_headroom"):
@@ -443,7 +502,11 @@ class IndexPutSeller:
                 "max_loss_or_margin_per_contract": round(margin_pc, 0),
                 "sizing": ("max_loss" if wing else ("whatif" if m1 else "proxy")), "nlv": round(nlv, 0),
                 "qty": qty, "dry_run": self.cfg.dry_run, "blocked_by": blocked_by, "worst_case": wc_note,
+                "spy_change_5d": round(chg5 * 100, 2) if chg5 is not None else None, "size_factor": size_factor,
             }
+            if size_factor <= 0.0:
+                log.info("index_put_selloff_pause", **decision)
+                return decision
             if qty <= 0:
                 log.info("index_put_no_budget", **decision)
                 return decision
