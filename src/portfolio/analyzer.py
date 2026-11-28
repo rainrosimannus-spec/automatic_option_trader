@@ -374,7 +374,13 @@ class PortfolioAnalyzer:
                         durationStr=f"{max_period} D",
                         barSizeSetting="1 day",
                         whatToShow=what,
-                        useRTH=False,
+                        # Regular hours only (2026-11-28, for IBKR's 23x5 US stock hours from
+                        # 2026-12-06): with extended hours in, a thin overnight print on a small name
+                        # sets a phantom 52-week high/low, the name reads further below fair than it
+                        # is, turns green early and gets bought above fair. Closes become the 16:00
+                        # official close instead of the 20:00 last print — matching the vendor data
+                        # the screener scores on. Non-US venues have no extended session: identical.
+                        useRTH=True,
                         formatDate=1,
                         timeout=BAR_TIMEOUT_S,
                     )

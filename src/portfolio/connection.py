@@ -133,12 +133,19 @@ def get_portfolio_stock_price(
             if exchange not in _NON_SMART_EXCHANGES:
                 contract.exchange = "SMART"
             # Try TRADES first, then MIDPOINT (needed for many non-US names).
+            # Regular hours only (2026-11-28): this price is the crash gauge (SPY drawdown → one-way
+            # reserve release, crash timing bypass). With extended hours in, the "today" bar exists
+            # from the first pre-market print — from 2026-12-06 that is 21:00 ET the evening before
+            # (Sunday night on Mondays) — so the 08:10 UTC Xetra scan sat on overnight prints and the
+            # switch flipped on and off between scans (2026-11-23: on at 08:10, off at 10:10, XEON
+            # round trip). Pre-market SPY buys nothing here: Xetra prices already carry the US
+            # overnight move. Until the US opens this now returns the last official close.
             for what in ("TRADES", "MIDPOINT"):
                 try:
                     bars = ib.reqHistoricalData(
                         contract, endDateTime="",
                         durationStr="2 D", barSizeSetting="1 day",
-                        whatToShow=what, useRTH=False,
+                        whatToShow=what, useRTH=True,
                         formatDate=1, timeout=8,
                     )
                     if bars:
